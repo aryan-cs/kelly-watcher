@@ -1,0 +1,50 @@
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Runtime artifacts and local data
+data/
+logs/
+*.log
+*.pid
+*.joblib
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Dashboard / Node artifacts
+dashboard/node_modules/
+dashboard/dist/
+dashboard/coverage/
+dashboard/.cache/
+dashboard/.eslintcache
+dashboard/*.tsbuildinfo
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

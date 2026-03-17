@@ -1,0 +1,901 @@
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import shutil
+import time
+from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
+
+from alerter import send_alert
+from auto_retrain import retrain_cycle, should_retrain_early
+from beliefs import sync_belief_priors
+from config import (
+    live_min_shadow_resolved,
+    live_require_shadow_history,
+    max_bet_fraction,
+    max_live_drawdown_pct,
+    min_bet_usd,
+    min_confidence,
+    poll_interval,
+    private_key,
+    use_real_money,
+    wallet_address,
+    watched_wallets,
+)
+from db import DB_PATH, get_conn, init_db
+from dedup import DedupeCache
+from evaluator import daily_report, resolve_shadow_trades
+from executor import PolymarketExecutor
+from kelly import size_signal
+from market_scorer import build_market_features
+from signal_engine import SignalEngine
+from tracker import PolymarketTracker
+from trader_scorer import get_trader_features, refresh_trader_cache
+
+load_dotenv()
+
+Path("logs").mkdir(exist_ok=True)
+Path("data").mkdir(exist_ok=True)
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        RotatingFileHandler("logs/bot.log", maxBytes=10 * 1024 * 1024, backupCount=5),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
+
+EVENT_FILE = Path("data/events.jsonl")
+BOT_STATE_FILE = Path("data/bot_state.json")
+_emit_count = 0
+WATCHED_WALLETS = watched_wallets()
+_HEURISTIC_CONF_RE = re.compile(r"heuristic conf ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
+_MODEL_EDGE_RE = re.compile(r"model edge (-?[0-9.]+) < threshold ([0-9.]+)", re.IGNORECASE)
+_MAX_SIZE_RE = re.compile(r"max size \$([0-9.]+) < min \$([0-9.]+)", re.IGNORECASE)
+_BANKROLL_RE = re.compile(r"available bankroll \$([0-9.]+) < min \$([0-9.]+)", re.IGNORECASE)
+_SIZE_ZERO_RE = re.compile(r"size \$([0-9.]+) <= 0", re.IGNORECASE)
+_CONF_RE = re.compile(r"conf ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
+_SCORE_RE = re.compile(r"score ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
+_INVALID_PRICE_RE = re.compile(r"invalid price ([0-9.]+)", re.IGNORECASE)
+_EXPIRES_RE = re.compile(r"expires in <([0-9]+)s", re.IGNORECASE)
+_MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECASE)
+
+
+@dataclass
+class LiveEntryGuard:
+    start_balance: float
+    drawdown_limit_pct: float
+    stop_balance: float
+    triggered: bool = False
+    alerted: bool = False
+
+    def block_reason(self, bankroll: float) -> str | None:
+        if self.drawdown_limit_pct <= 0 or self.start_balance <= 0:
+            return None
+        if self.triggered or bankroll <= self.stop_balance + 1e-9:
+            self.triggered = True
+            return (
+                f"live entry guard tripped after a {self.drawdown_limit_pct * 100:.1f}% drawdown "
+                f"(start ${self.start_balance:.2f}, current ${bankroll:.2f})"
+            )
+        return None
+
+
+def _emit_event(payload: dict) -> None:
+    global _emit_count
+    EVENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with EVENT_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+    _emit_count += 1
+    if _emit_count % 100 == 0:
+        try:
+            lines = EVENT_FILE.read_text(encoding="utf-8").splitlines(True)
+            if len(lines) > 1000:
+                EVENT_FILE.write_text("".join(lines[-1000:]), encoding="utf-8")
+        except Exception:
+            pass
+
+
+def _write_bot_state(**extra) -> None:
+    state = {
+        "started_at": int(extra.pop("started_at", time.time())),
+        "mode": "live" if use_real_money() else "shadow",
+        "n_wallets": len(WATCHED_WALLETS),
+        "poll_interval": poll_interval(),
+    }
+    state.update(extra)
+    BOT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _format_percent_text(value: str) -> str:
+    return f"{float(value) * 100:.1f}%"
+
+
+def _humanize_market_veto(veto: str) -> str:
+    detail = (veto or "").strip()
+    expires_match = _EXPIRES_RE.fullmatch(detail)
+    if expires_match:
+        return f"too close to resolution, less than {expires_match.group(1)} seconds remained to place the trade"
+    max_horizon_match = _MAX_HORIZON_RE.fullmatch(detail)
+    if max_horizon_match:
+        return f"market resolves too far out, beyond the {max_horizon_match.group(1)} maximum horizon"
+    if detail == "crossed order book":
+        return "market data looked invalid because the order book was crossed"
+    if detail == "missing order book":
+        return "market data was incomplete because there was no order book snapshot"
+    if detail == "no visible order book depth":
+        return "market looked too thin to trade because there was no visible order book depth"
+    if detail == "invalid market mid":
+        return "market data looked invalid because the midpoint price was out of bounds"
+    if detail == "invalid order book values":
+        return "market data looked invalid because the order book values were negative"
+    return f"market veto, {detail}"
+
+
+def _humanize_reason(reason: str) -> str:
+    text = (reason or "").strip()
+    if not text:
+        return "trade was rejected for an unspecified reason"
+
+    lower = text.lower()
+    if lower.startswith("heuristic sizing, "):
+        return _humanize_reason(text.split(",", 1)[1].strip())
+    if lower.startswith("kelly, "):
+        return _humanize_reason(text.split(",", 1)[1].strip())
+    if lower.startswith("market veto, "):
+        return _humanize_market_veto(text.split(",", 1)[1].strip())
+    if lower == "observed sell - not copying exits yet":
+        return "watched trader was exiting a position, and the bot only copies entries right now"
+    if lower == "missing market snapshot":
+        return "market data was unavailable when this trade was observed"
+    if lower == "failed to build market features":
+        return "could not build the market snapshot needed to score this trade"
+    if lower == "duplicate trade_id":
+        return "this trade was already seen, so it was skipped as a duplicate"
+    if lower == "order in-flight":
+        return "an order for this market was already being placed, so this trade was skipped"
+    if lower == "position already open":
+        return "we already had this side of the market open, so the trade was skipped"
+    if lower == "passed heuristic threshold":
+        return "signal confidence cleared the heuristic threshold"
+    if lower == "passed model edge threshold":
+        return "model edge cleared the required threshold"
+    if lower == "passed all checks":
+        return "signal cleared scoring, sizing, and risk checks"
+    if lower == "signal rejected":
+        return "trade did not pass the signal checks"
+    if lower == "bankroll depleted":
+        return "balance too low, no bankroll was available for a new trade"
+    if lower == "negative kelly - no edge at this price/confidence":
+        return "Kelly sizing found no positive edge at this price, so the trade was skipped"
+    if lower == "shadow simulation rejected the buy because the order book had no asks for a full fill":
+        return "simulated live buy could not fill because there were no asks on the book"
+    if lower == "shadow simulation rejected the buy because there was not enough ask depth to fill the whole order":
+        return "simulated live buy could not fill because the ask book was too thin for the full size"
+    if lower == "shadow simulation rejected the sell because the order book had no bids for a full fill":
+        return "simulated live sell could not fill because there were no bids on the book"
+    if lower == "shadow simulation rejected the sell because there was not enough bid depth to fill the whole order":
+        return "simulated live sell could not fill because the bid book was too thin for the full size"
+
+    for pattern, formatter in (
+        (_HEURISTIC_CONF_RE, lambda m: f"signal confidence was {_format_percent_text(m.group(1))}, below the {_format_percent_text(m.group(2))} minimum"),
+        (_MODEL_EDGE_RE, lambda m: f"model edge was {_format_percent_text(m.group(1))}, below the {_format_percent_text(m.group(2))} threshold"),
+        (_MAX_SIZE_RE, lambda m: f"balance too low, calculated size was ${m.group(1)} but minimum bet size is ${m.group(2)}"),
+        (_BANKROLL_RE, lambda m: f"balance too low, available bankroll was ${m.group(1)} but minimum bet size is ${m.group(2)}"),
+        (_SIZE_ZERO_RE, lambda m: f"calculated trade size was ${m.group(1)}, so no order was placed"),
+        (_CONF_RE, lambda m: f"confidence was {_format_percent_text(m.group(1))}, below the {_format_percent_text(m.group(2))} minimum needed to place a trade"),
+        (_SCORE_RE, lambda m: f"heuristic score was {_format_percent_text(m.group(1))}, below the {_format_percent_text(m.group(2))} minimum needed to place a trade"),
+        (_INVALID_PRICE_RE, lambda m: f"trade was skipped because the market price looked invalid ({m.group(1)})"),
+    ):
+        match = pattern.fullmatch(text)
+        if match:
+            return formatter(match)
+
+    return text
+
+
+def _wait_for_next_poll(loop_started_at: float, state_snapshot: dict) -> None:
+    last_interval = poll_interval()
+
+    while True:
+        current_interval = poll_interval()
+        if current_interval != last_interval:
+            logger.info("Poll interval updated to %ss", current_interval)
+            last_interval = current_interval
+            _write_bot_state(**state_snapshot)
+
+        remaining = loop_started_at + current_interval - time.time()
+        if remaining <= 0:
+            return
+
+        time.sleep(min(remaining, 1.0))
+
+
+def _reject_event(event, confidence: float, amount_usd: float, reason: str) -> None:
+    shares = amount_usd / event.price if event.price > 0 else 0.0
+    _emit_event(
+        {
+            "type": "signal",
+            "trade_id": event.trade_id,
+            "market_id": event.market_id,
+            "question": event.question,
+            "side": event.side,
+            "action": event.action,
+            "price": event.price,
+            "shares": round(shares, 6),
+            "amount_usd": amount_usd,
+            "size_usd": amount_usd,
+            "username": event.trader_name,
+            "trader": event.trader_address,
+            "decision": "REJECT",
+            "confidence": confidence,
+            "reason": reason,
+            "ts": int(time.time()),
+        }
+    )
+
+
+def _skip_event(event, amount_usd: float, reason: str, decision: str = "SKIP") -> None:
+    shares = amount_usd / event.price if event.price > 0 else 0.0
+    _emit_event(
+        {
+            "type": "signal",
+            "trade_id": event.trade_id,
+            "market_id": event.market_id,
+            "question": event.question,
+            "side": event.side,
+            "action": event.action,
+            "price": event.price,
+            "shares": round(shares, 6),
+            "amount_usd": amount_usd,
+            "size_usd": amount_usd,
+            "username": event.trader_name,
+            "trader": event.trader_address,
+            "decision": decision,
+            "confidence": 0.0,
+            "reason": reason,
+            "ts": int(time.time()),
+        }
+    )
+
+
+def process_event(event, engine, executor, dedup, bankroll, entry_block_reason: str | None = None) -> float:
+    _emit_event(
+        {
+            "type": "incoming",
+            "trade_id": event.trade_id,
+            "market_id": event.market_id,
+            "question": event.question,
+            "side": event.side,
+            "action": event.action,
+            "price": event.price,
+            "shares": event.shares,
+            "amount_usd": event.size_usd,
+            "size_usd": event.size_usd,
+            "username": event.trader_name,
+            "trader": event.trader_address,
+            "ts": event.timestamp,
+        }
+    )
+
+    if event.action == "sell":
+        result = executor.execute_exit(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            token_id=event.token_id,
+            side=event.side,
+            event=event,
+            dedup=dedup,
+        )
+        if result.placed:
+            execution_price = (result.dollar_size / result.shares) if result.shares > 0 else event.price
+            _emit_event(
+                {
+                    "type": "signal",
+                    "trade_id": event.trade_id,
+                    "market_id": event.market_id,
+                    "question": event.question,
+                    "side": event.side,
+                    "action": event.action,
+                    "price": round(execution_price, 6),
+                    "shares": round(result.shares, 6),
+                    "amount_usd": result.dollar_size,
+                    "size_usd": result.dollar_size,
+                    "username": event.trader_name,
+                    "trader": event.trader_address,
+                    "decision": "EXIT",
+                    "confidence": 0.0,
+                    "reason": result.reason,
+                    "ts": int(time.time()),
+                }
+            )
+            return result.dollar_size
+        else:
+            executor.log_skip(
+                trade_id=event.trade_id,
+                market_id=event.market_id,
+                question=event.question,
+                trader_address=event.trader_address,
+                side=event.side,
+                price=event.price,
+                size_usd=result.dollar_size,
+                confidence=0.0,
+                kelly_f=0.0,
+                reason=result.reason,
+                event=event,
+            )
+            dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+            _skip_event(event, result.dollar_size, result.reason)
+        return 0.0
+
+    if event.action != "buy":
+        reason = f"observed unsupported trader action, {event.action.upper()}"
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=reason,
+            event=event,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, 0.0, 0.0, reason)
+        return 0.0
+
+    if entry_block_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=entry_block_reason,
+            event=event,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _skip_event(event, 0.0, entry_block_reason)
+        return 0.0
+
+    if not event.snapshot:
+        reason = _humanize_reason("missing market snapshot")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=reason,
+            event=event,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, 0.0, 0.0, reason)
+        return 0.0
+
+    trader_f = get_trader_features(event.trader_address, event.size_usd)
+    rough_market_price = float(event.snapshot.get("best_ask") or event.snapshot.get("mid") or event.price or 0.5)
+    if not (0.01 < rough_market_price < 0.99):
+        rough_market_price = event.price
+    rough = size_signal(0.65, rough_market_price, bankroll, engine.sizing_mode()).get("dollar_size", 0.0)
+    rough_size = rough if rough > 0 else max(min_bet_usd(), 5.0)
+    rough_fill, rough_fill_reason = executor.estimate_entry_fill(getattr(event, "raw_orderbook", None), rough_size)
+    if rough_fill is None:
+        reason = _humanize_reason(rough_fill_reason or "shadow simulation buy failed")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=rough_size,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=reason,
+            trader_f=trader_f,
+            event=event,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, 0.0, rough_size, reason)
+        return 0.0
+
+    market_f = build_market_features(event.snapshot, event.close_time, rough_size, rough_fill.avg_price)
+    if market_f is None:
+        reason = _humanize_reason("failed to build market features")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=reason,
+            trader_f=trader_f,
+            event=event,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, 0.0, 0.0, reason)
+        return 0.0
+
+    signal = engine.evaluate(trader_f, market_f, rough_size)
+    if signal.get("veto"):
+        reason = _humanize_market_veto(signal["veto"])
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, 0.0, 0.0, reason)
+        return 0.0
+
+    if not signal.get("passed", False):
+        reason = _humanize_reason(signal.get("reason") or "signal rejected")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=signal["confidence"],
+            kelly_f=0.0,
+            reason=reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, signal["confidence"], 0.0, reason)
+        return 0.0
+
+    ok, gate_reason = dedup.gate(event.trade_id, event.market_id, event.side, event.token_id)
+    preview_sizing = size_signal(
+        signal["confidence"],
+        rough_fill.avg_price if rough_fill.avg_price > 0 else event.price,
+        bankroll,
+        signal.get("mode", "heuristic"),
+    )
+
+    if not ok:
+        reason = _humanize_reason(gate_reason)
+        if gate_reason != "duplicate trade_id":
+            executor.log_skip(
+                trade_id=event.trade_id,
+                market_id=event.market_id,
+                question=event.question,
+                trader_address=event.trader_address,
+                side=event.side,
+                price=event.price,
+                size_usd=preview_sizing.get("dollar_size", 0.0),
+                confidence=signal["confidence"],
+                kelly_f=preview_sizing.get("kelly_f", 0.0),
+                reason=reason,
+                trader_f=trader_f,
+                market_f=market_f,
+                event=event,
+                signal=signal,
+            )
+            dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+            _reject_event(event, signal["confidence"], preview_sizing.get("dollar_size", 0.0), reason)
+        return 0.0
+
+    sizing = preview_sizing
+    fill_estimate = rough_fill
+    fill_reason = None
+    for _ in range(3):
+        if sizing["dollar_size"] == 0.0:
+            break
+        fill_estimate, fill_reason = executor.estimate_entry_fill(
+            getattr(event, "raw_orderbook", None),
+            sizing["dollar_size"],
+        )
+        if fill_estimate is None:
+            break
+        next_sizing = size_signal(
+            signal["confidence"],
+            fill_estimate.avg_price if fill_estimate.avg_price > 0 else event.price,
+            bankroll,
+            signal.get("mode", "heuristic"),
+        )
+        if (
+            next_sizing["dollar_size"] == sizing["dollar_size"]
+            and abs(next_sizing.get("kelly_f", 0.0) - sizing.get("kelly_f", 0.0)) < 1e-9
+        ):
+            sizing = next_sizing
+            break
+        sizing = next_sizing
+
+    if sizing["dollar_size"] == 0.0:
+        reason = _humanize_reason(sizing["reason"])
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=signal["confidence"],
+            kelly_f=0.0,
+            reason=reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, signal["confidence"], 0.0, reason)
+        return 0.0
+
+    if fill_estimate is None:
+        reason = _humanize_reason(fill_reason or "shadow simulation buy failed")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal["confidence"],
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, signal["confidence"], sizing["dollar_size"], reason)
+        return 0.0
+
+    market_f_final = build_market_features(
+        event.snapshot,
+        event.close_time,
+        sizing["dollar_size"],
+        fill_estimate.avg_price,
+    )
+    result = executor.execute(
+        trade_id=event.trade_id,
+        market_id=event.market_id,
+        token_id=event.token_id,
+        side=event.side,
+        dollar_size=sizing["dollar_size"],
+        kelly_f=sizing["kelly_f"],
+        confidence=signal["confidence"],
+        signal=signal,
+        event=event,
+        trader_f=trader_f,
+        market_f=market_f_final or market_f,
+        dedup=dedup,
+    )
+
+    if result.placed:
+        execution_price = (result.dollar_size / result.shares) if result.shares > 0 else event.price
+        _emit_event(
+            {
+                "type": "signal",
+                "trade_id": event.trade_id,
+                "market_id": event.market_id,
+                "question": event.question,
+                "side": event.side,
+                "action": event.action,
+                "price": round(execution_price, 6),
+                "shares": round(result.shares, 6),
+                "amount_usd": result.dollar_size,
+                "size_usd": result.dollar_size,
+                "username": event.trader_name,
+                "trader": event.trader_address,
+                "decision": "ACCEPT",
+                "confidence": signal["confidence"],
+                "raw_confidence": signal.get("raw_confidence"),
+                "signal_mode": signal.get("mode"),
+                "belief_prior": signal.get("belief_prior"),
+                "belief_blend": signal.get("belief_blend"),
+                "belief_evidence": signal.get("belief_evidence"),
+                "trader_score": signal.get("trader", {}).get("score"),
+                "market_score": signal.get("market", {}).get("score"),
+                "shadow": result.shadow,
+                "order_id": result.order_id,
+                "reason": _humanize_reason("passed all checks"),
+                "ts": int(time.time()),
+            }
+        )
+        return -result.dollar_size
+    else:
+        _reject_event(event, signal["confidence"], 0.0, _humanize_reason(result.reason))
+        return 0.0
+
+
+def _backup_db() -> None:
+    if DB_PATH.exists():
+        shutil.copy(DB_PATH, DB_PATH.with_suffix(".db.bak"))
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    text = (value or "").strip().lower()
+    return (
+        not text
+        or "your_" in text
+        or text.endswith("_here")
+        or text in {"changeme", "replace_me"}
+    )
+
+
+def _resolved_shadow_trade_count() -> int:
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM trade_log
+            WHERE real_money=0 AND skipped=0 AND outcome IS NOT NULL
+            """
+        ).fetchone()
+        return int(row["n"] or 0)
+    finally:
+        conn.close()
+
+
+def _validate_startup() -> None:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not WATCHED_WALLETS:
+        errors.append("WATCHED_WALLETS is empty")
+
+    confidence = min_confidence()
+    if not (0.0 < confidence < 1.0):
+        errors.append(f"MIN_CONFIDENCE must be between 0 and 1, got {confidence}")
+
+    max_fraction = max_bet_fraction()
+    if not (0.0 < max_fraction <= 1.0):
+        errors.append(f"MAX_BET_FRACTION must be between 0 and 1, got {max_fraction}")
+
+    if min_bet_usd() <= 0:
+        errors.append(f"MIN_BET_USD must be positive, got {min_bet_usd()}")
+
+    if use_real_money():
+        our_wallet = wallet_address()
+        if _looks_like_placeholder(private_key()):
+            errors.append("POLYGON_PRIVATE_KEY is missing or still set to a placeholder")
+        if _looks_like_placeholder(our_wallet):
+            errors.append("POLYGON_WALLET_ADDRESS is missing or still set to a placeholder")
+        if our_wallet and our_wallet in WATCHED_WALLETS:
+            errors.append("POLYGON_WALLET_ADDRESS is also in WATCHED_WALLETS, which can create a self-copy loop")
+        if max_fraction > 0.10:
+            warnings.append(
+                f"MAX_BET_FRACTION is {max_fraction:.2f}; consider keeping live single-trade risk at 10% or below"
+            )
+        current_interval = poll_interval()
+        if current_interval < 0.25:
+            warnings.append(
+                f"POLL_INTERVAL_SECONDS is {current_interval:.2f}s; extremely fast live polling can amplify duplicate/latency risk"
+            )
+        if live_require_shadow_history():
+            resolved = _resolved_shadow_trade_count()
+            minimum = live_min_shadow_resolved()
+            if resolved < minimum:
+                errors.append(
+                    f"LIVE mode is blocked until shadow history is available: {resolved} resolved shadow trades < required {minimum}"
+                )
+
+    for warning in warnings:
+        logger.warning("Startup warning: %s", warning)
+
+    if errors:
+        message = "Startup validation failed:\n- " + "\n- ".join(errors)
+        logger.error(message)
+        if use_real_money():
+            send_alert(message)
+        raise RuntimeError(message)
+
+
+def _init_live_entry_guard(executor: PolymarketExecutor) -> LiveEntryGuard | None:
+    if not use_real_money():
+        return None
+
+    start_balance = max(executor.get_usdc_balance(), 0.0)
+    drawdown_limit_pct = max_live_drawdown_pct()
+    stop_balance = max(start_balance * (1.0 - drawdown_limit_pct), 0.0)
+    logger.info(
+        "Live entry guard armed: start=$%.2f stop=$%.2f drawdown_limit=%.1f%%",
+        start_balance,
+        stop_balance,
+        drawdown_limit_pct * 100.0,
+    )
+    return LiveEntryGuard(
+        start_balance=start_balance,
+        drawdown_limit_pct=drawdown_limit_pct,
+        stop_balance=stop_balance,
+    )
+
+
+def main() -> None:
+    logger.info("=" * 60)
+    logger.info("Polymarket copy-trading bot starting")
+    logger.info("Mode: %s", "LIVE (REAL MONEY)" if use_real_money() else "SHADOW (no real money)")
+    logger.info("=" * 60)
+
+    init_db()
+    _validate_startup()
+    EVENT_FILE.touch(exist_ok=True)
+    start_ts = int(time.time())
+    _write_bot_state(started_at=start_ts)
+    sync_belief_priors()
+
+    tracker = PolymarketTracker(WATCHED_WALLETS)
+    tracker.prime_identities()
+    executor = PolymarketExecutor()
+    executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
+    live_entry_guard = _init_live_entry_guard(executor)
+    engine = SignalEngine()
+    dedup = DedupeCache()
+    dedup.load_from_db()
+    tracker.seen_ids.update(dedup.seen_ids)
+    dedup.sync_positions_from_api(tracker, wallet_address())
+    refresh_trader_cache(tracker.wallets, force_refresh=True)
+    resolve_shadow_trades()
+    dedup.load_from_db()
+    tracker.seen_ids.update(dedup.seen_ids)
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        lambda: (resolve_shadow_trades(), dedup.load_from_db()),
+        "interval",
+        minutes=2,
+        id="resolve_trades",
+    )
+    scheduler.add_job(
+        daily_report,
+        "cron",
+        hour=8,
+        minute=0,
+        id="daily_report",
+    )
+    scheduler.add_job(
+        lambda: retrain_cycle(engine),
+        "cron",
+        day_of_week="mon",
+        hour=3,
+        id="weekly_retrain",
+    )
+    scheduler.add_job(
+        lambda: should_retrain_early(engine) and retrain_cycle(engine),
+        "interval",
+        hours=24,
+        id="early_retrain_check",
+    )
+    scheduler.add_job(
+        lambda: dedup.sync_positions_from_api(tracker, wallet_address()),
+        "interval",
+        minutes=5,
+        id="sync_positions",
+    )
+    scheduler.add_job(
+        lambda: refresh_trader_cache(tracker.wallets, force_refresh=True),
+        "interval",
+        minutes=10,
+        id="refresh_trader_cache",
+    )
+    scheduler.add_job(
+        _backup_db,
+        "cron",
+        hour=4,
+        id="db_backup",
+    )
+    scheduler.start()
+
+    mode_str = "LIVE" if use_real_money() else "SHADOW"
+    send_alert(
+        f"Bot started [{mode_str}]\n"
+        f"Watching {len(tracker.wallets)} wallets\n"
+        f"Poll interval: {poll_interval()}s"
+    )
+
+    try:
+        while True:
+            loop_start = time.time()
+            event_count = 0
+            bankroll = 0.0
+            try:
+                bankroll = executor.get_usdc_balance()
+                if bankroll < 1.0:
+                    logger.warning("Low balance: $%.2f - skipping poll", bankroll)
+                else:
+                    events = tracker.poll()
+                    event_count = len(events)
+                    for event in events:
+                        entry_block_reason = None
+                        if live_entry_guard is not None:
+                            entry_block_reason = live_entry_guard.block_reason(bankroll)
+                            if entry_block_reason and not live_entry_guard.alerted:
+                                live_entry_guard.alerted = True
+                                logger.error(entry_block_reason)
+                                send_alert(f"[LIVE GUARD]\n{entry_block_reason}\nNew entries are paused until restart.")
+                        try:
+                            bankroll = max(
+                                bankroll
+                                + process_event(
+                                    event,
+                                    engine,
+                                    executor,
+                                    dedup,
+                                    bankroll,
+                                    entry_block_reason=entry_block_reason,
+                                ),
+                                0.0,
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                "Event processing failed for trade %s: %s",
+                                event.trade_id,
+                                exc,
+                                exc_info=True,
+                            )
+                            send_alert(f"[ERROR] Event {event.trade_id[:12]} failed: {exc}")
+                        finally:
+                            if event.trade_id in dedup.seen_ids:
+                                tracker.seen_ids.add(event.trade_id)
+            except Exception as exc:
+                logger.error("Main loop error: %s", exc, exc_info=True)
+                send_alert(f"[ERROR] Loop error: {exc}")
+
+            elapsed = time.time() - loop_start
+            state_snapshot = {
+                "started_at": start_ts,
+                "last_poll_at": int(time.time()),
+                "last_poll_duration_s": round(elapsed, 3),
+                "bankroll_usd": round(bankroll, 2),
+                "last_event_count": event_count,
+            }
+            _write_bot_state(**state_snapshot)
+            _wait_for_next_poll(loop_start, state_snapshot)
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+        send_alert("Bot stopped")
+    finally:
+        scheduler.shutdown(wait=False)
+        tracker.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,94 @@
+import React, {useMemo} from 'react'
+import {Box as InkBox, Text} from 'ink'
+import {Box} from '../components/Box.js'
+import {TradeRow} from '../components/TradeRow.js'
+import {normalizeReasonText} from '../format.js'
+import {rowsForHeight} from '../responsive.js'
+import {getSignalsLayout, signalsHeader} from '../tableLayout.js'
+import {useTerminalSize} from '../terminal.js'
+import {theme} from '../theme.js'
+import {useEventStream} from '../useEventStream.js'
+import {useTradeIdIndex} from '../useTradeIdIndex.js'
+
+interface SignalsProps {
+  scrollOffset?: number
+  horizontalOffset?: number
+}
+
+export function Signals({scrollOffset = 0, horizontalOffset = 0}: SignalsProps) {
+  const terminal = useTerminalSize()
+  const lineBudget = rowsForHeight(terminal.height, 10, 4)
+  const visibleWidth = Math.max(56, terminal.width - 8)
+  const {lookup: tradeIdLookup} = useTradeIdIndex()
+  const events = useEventStream(1000)
+  const incomingActionByTradeId = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const event of events) {
+      if (event.type === 'incoming' && event.action?.trim()) {
+        lookup.set(event.trade_id, event.action.trim())
+      }
+    }
+    return lookup
+  }, [events])
+  const allSignals = useMemo(
+    () => events.filter((event) => event.type === 'signal').reverse(),
+    [events]
+  )
+  const maxReasonLength = useMemo(
+    () =>
+      allSignals.slice(0, 250).reduce(
+        (max, event) => Math.max(max, normalizeReasonText(event.reason || '-').length),
+        6
+      ),
+    [allSignals]
+  )
+  const layout = useMemo(() => getSignalsLayout(visibleWidth), [visibleWidth])
+  const effectiveOffset = Math.min(scrollOffset, Math.max(0, allSignals.length - 1))
+  const maxHorizontalOffset = Math.max(0, maxReasonLength - layout.reasonWidth)
+  const effectiveHorizontalOffset = Math.min(horizontalOffset, maxHorizontalOffset)
+  const signals = useMemo(
+    () => allSignals.slice(effectiveOffset, effectiveOffset + lineBudget),
+    [allSignals, effectiveOffset, lineBudget]
+  )
+  const headerText = useMemo(() => signalsHeader(visibleWidth), [visibleWidth])
+
+  return (
+    <Box height="100%">
+      <Text color={theme.dim}>{headerText}</Text>
+      <InkBox flexDirection="column" marginTop={1}>
+        {signals.length ? (
+          signals.map((event) => (
+            <TradeRow
+              key={`${event.trade_id}-${event.ts}`}
+              layout="signals"
+              maxWidth={visibleWidth}
+              viewportOffset={effectiveHorizontalOffset}
+              displayId={tradeIdLookup.get(event.trade_id)}
+              ts={event.ts}
+              username={event.username}
+              trader={event.trader}
+              question={event.question}
+              side={event.side}
+              action={event.action ?? incomingActionByTradeId.get(event.trade_id)}
+              price={event.price}
+              shares={event.shares ?? (event.price > 0 ? event.size_usd / event.price : 0)}
+              sizeUsd={event.amount_usd ?? event.size_usd}
+              decision={event.decision}
+              confidence={event.confidence}
+              reason={event.reason}
+            />
+          ))
+        ) : (
+          <Text color={theme.dim}>No scored signals yet.</Text>
+        )}
+      </InkBox>
+      <InkBox marginTop={1}>
+        <Text color={theme.dim}>
+          showing {signals.length} of {allSignals.length} signals
+          {effectiveOffset > 0 ? `  scroll: +${effectiveOffset}` : ''}
+          {effectiveHorizontalOffset > 0 ? `  pan: +${effectiveHorizontalOffset}` : ''}
+        </Text>
+      </InkBox>
+    </Box>
+  )
+}

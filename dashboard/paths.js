@@ -1,0 +1,13 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+export const dashboardDir = __dirname;
+export const projectRoot = path.resolve(dashboardDir, '..');
+export const dataDir = path.resolve(projectRoot, 'data');
+export const dbPath = path.resolve(dataDir, 'trading.db');
+export const eventsPath = path.resolve(dataDir, 'events.jsonl');
+export const identityPath = path.resolve(dataDir, 'identity_cache.json');
+export const botStatePath = path.resolve(dataDir, 'bot_state.json');
+export const envPath = path.resolve(projectRoot, '.env');
+export const envExamplePath = path.resolve(projectRoot, '.env.example');

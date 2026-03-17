@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+import logging
+import os
+
+import numpy as np
+
+from beliefs import adjust_heuristic_confidence
+from config import min_confidence, model_path
+from features import FEATURE_COLS, build_feature_map
+from market_scorer import MarketFeatures, MarketScorer
+from trader_scorer import TraderFeatures, TraderScorer
+
+logger = logging.getLogger(__name__)
+
+TRADER_WEIGHT = 0.60
+MARKET_WEIGHT = 0.40
+
+
+class SignalEngine:
+    def __init__(self):
+        self.trader_scorer = TraderScorer()
+        self.market_scorer = MarketScorer()
+        self._xgb = None
+        self._xgb_cols = FEATURE_COLS
+        self._xgb_policy = {"edge_threshold": 0.0}
+        self._model_backend = "heuristic"
+        self._try_load_xgb()
+
+    def _try_load_xgb(self) -> None:
+        path = model_path()
+        if not os.path.exists(path):
+            logger.info("No XGBoost model found - using heuristic scorer")
+            return
+        try:
+            import joblib
+
+            artifact = joblib.load(path)
+            if isinstance(artifact, dict):
+                self._xgb = artifact.get("model")
+                self._xgb_cols = artifact.get("feature_cols", FEATURE_COLS)
+                self._xgb_policy = artifact.get("policy", {"edge_threshold": 0.0})
+                self._model_backend = artifact.get("model_backend", "ml")
+            else:
+                self._xgb, self._xgb_cols = artifact
+                self._xgb_policy = {"edge_threshold": 0.0}
+                self._model_backend = "xgboost"
+            logger.info("%s model loaded from %s", self._model_backend, path)
+        except Exception as exc:
+            self._xgb = None
+            self._xgb_cols = FEATURE_COLS
+            self._xgb_policy = {"edge_threshold": 0.0}
+            self._model_backend = "heuristic"
+            logger.warning("Failed to load trained model: %s - using heuristic scorer", exc)
+
+    def reload_model(self) -> None:
+        self._xgb = None
+        self._xgb_cols = FEATURE_COLS
+        self._xgb_policy = {"edge_threshold": 0.0}
+        self._model_backend = "heuristic"
+        self._try_load_xgb()
+
+    def sizing_mode(self) -> str:
+        return "xgboost" if self._xgb is not None else "heuristic"
+
+    def evaluate(
+        self,
+        trader_features: TraderFeatures,
+        market_features: MarketFeatures,
+        order_size_usd: float = 10.0,
+    ) -> dict:
+        market_result = self.market_scorer.score(market_features)
+        if market_result["veto"]:
+            return {
+                "confidence": 0.0,
+                "passed": False,
+                "veto": market_result["veto"],
+                "mode": "veto",
+                "trader": {},
+                "market": market_result,
+            }
+
+        if self._xgb is not None:
+            return self._evaluate_xgb(trader_features, market_features, order_size_usd)
+
+        return self._evaluate_heuristic(trader_features, market_features, market_result)
+
+    def _evaluate_heuristic(
+        self,
+        trader_features: TraderFeatures,
+        market_features: MarketFeatures,
+        market_result: dict,
+    ) -> dict:
+        trader_result = self.trader_scorer.score(trader_features)
+        trader_score = trader_result["score"]
+        market_score = market_result["score"]
+
+        if trader_score <= 0 or market_score <= 0:
+            combined = 0.0
+        else:
+            combined = float(
+                np.exp(TRADER_WEIGHT * np.log(trader_score) + MARKET_WEIGHT * np.log(market_score))
+            )
+        belief = adjust_heuristic_confidence(combined, trader_features, market_features)
+        adjusted = belief.adjusted_confidence
+        passed = adjusted >= min_confidence()
+
+        return {
+            "confidence": adjusted,
+            "raw_confidence": round(combined, 4),
+            "belief_prior": belief.prior_confidence,
+            "belief_blend": belief.blend,
+            "belief_evidence": belief.evidence,
+            "passed": passed,
+            "reason": "passed heuristic threshold" if passed else f"heuristic conf {adjusted:.3f} < min {min_confidence():.2f}",
+            "veto": None,
+            "mode": "heuristic",
+            "trader": trader_result,
+            "market": market_result,
+        }
+
+    def _evaluate_xgb(
+        self,
+        trader_features: TraderFeatures,
+        market_features: MarketFeatures,
+        _order_size_usd: float,
+    ) -> dict:
+        trader_result = self.trader_scorer.score(trader_features)
+        market_result = self.market_scorer.score(market_features)
+        feature_map = build_feature_map(trader_features, market_features)
+
+        ordered = np.array([[feature_map.get(column, 0.0) for column in self._xgb_cols]])
+        confidence = float(self._xgb.predict_proba(ordered)[0, 1])
+        execution_price = market_features.execution_price if market_features.execution_price > 0 else market_features.mid
+        edge = confidence - execution_price
+        edge_threshold = float(self._xgb_policy.get("edge_threshold", 0.0))
+        passed = edge >= edge_threshold
+        reason = (
+            "passed model edge threshold"
+            if passed
+            else f"model edge {edge:.3f} < threshold {edge_threshold:.3f}"
+        )
+        return {
+            "confidence": round(confidence, 4),
+            "raw_confidence": round(confidence, 4),
+            "edge": round(edge, 4),
+            "edge_threshold": round(edge_threshold, 4),
+            "passed": passed,
+            "reason": reason,
+            "veto": None,
+            "mode": "xgboost",
+            "trader": trader_result,
+            "market": market_result,
+        }

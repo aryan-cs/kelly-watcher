@@ -1,9 +1,9 @@
-import React, {useMemo} from 'react'
+import React, {useEffect, useMemo, useState} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
 import {StatRow} from '../components/StatRow.js'
 import {editableConfigFields, formatEditableConfigValue, type EditableConfigValues} from '../configEditor.js'
-import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo} from '../format.js'
+import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil} from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
 import {positiveDollarColor, probabilityColor, theme} from '../theme.js'
@@ -203,6 +203,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Update style', text: 'The system rebuilds the model from resolved trades each cycle.'},
       {label: 'Base cadence', text: 'Regular scheduled retrain frequency.'},
       {label: 'Run time', text: 'Local hour when the scheduled retrain is attempted.'},
+      {label: 'Next scheduled', text: 'Next planned scheduled retrain window from the current cadence and local hour.'},
+      {label: 'Scheduled in', text: 'Countdown until that scheduled retrain window.'},
       {label: 'Early check', text: 'How often the bot checks whether it should retrain sooner.'},
       {label: 'Early trigger', text: 'Minimum new labels needed to fire an unscheduled retrain.'},
       {label: 'Last / Avg gap', text: 'Observed time between recent successful training runs.'},
@@ -401,6 +403,49 @@ function formatInterval(seconds: number | null | undefined): string {
   return `${weeks.toFixed(1).replace(/\.0$/, '')}w`
 }
 
+function normalizeCadence(value: string | null | undefined): 'daily' | 'weekly' {
+  return value?.trim().toLowerCase() === 'weekly' ? 'weekly' : 'daily'
+}
+
+function clampHour(value: string | null | undefined): number {
+  const parsed = Number.parseInt(value || '', 10)
+  if (!Number.isFinite(parsed)) return 3
+  return Math.min(Math.max(parsed, 0), 23)
+}
+
+function getNextScheduledRetrainTs(cadence: 'daily' | 'weekly', hour: number, nowTs: number): number {
+  const now = new Date(nowTs * 1000)
+  const next = new Date(nowTs * 1000)
+
+  next.setHours(hour, 0, 0, 0)
+
+  if (cadence === 'weekly') {
+    const daysUntilMonday = (1 - now.getDay() + 7) % 7
+    next.setDate(now.getDate() + daysUntilMonday)
+    if (next.getTime() / 1000 <= nowTs) {
+      next.setDate(next.getDate() + 7)
+    }
+    return Math.floor(next.getTime() / 1000)
+  }
+
+  if (next.getTime() / 1000 <= nowTs) {
+    next.setDate(next.getDate() + 1)
+  }
+
+  return Math.floor(next.getTime() / 1000)
+}
+
+function useNow(intervalMs = 30000): number {
+  const [nowTs, setNowTs] = useState(() => Math.floor(Date.now() / 1000))
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTs(Math.floor(Date.now() / 1000)), intervalMs)
+    return () => clearInterval(id)
+  }, [intervalMs])
+
+  return nowTs
+}
+
 function modeLabel(mode: string): string {
   const normalized = mode.trim().toLowerCase()
   if (normalized === 'model') return 'XGBoost'
@@ -412,6 +457,7 @@ function modeLabel(mode: string): string {
 
 export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues}: ModelsProps) {
   const terminal = useTerminalSize()
+  const nowTs = useNow()
   const stacked = stackPanels(terminal.width)
   const models = useQuery<ModelRow>(MODEL_SQL)
   const trackerRows = useQuery<TrackerRow>(TRACKER_SQL)
@@ -530,10 +576,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     if (!field) return '-'
     return formatEditableConfigValue(field, settingsValues[key] || field.defaultValue)
   }
+  const rawConfigValue = (key: string): string => settingsValues[key] || configFieldByKey.get(key)?.defaultValue || ''
+  const baseCadenceRaw = rawConfigValue('RETRAIN_BASE_CADENCE')
+  const retrainHourRaw = rawConfigValue('RETRAIN_HOUR_LOCAL')
   const baseCadenceValue = formatConfigValue('RETRAIN_BASE_CADENCE')
   const retrainHourValue = formatConfigValue('RETRAIN_HOUR_LOCAL')
   const earlyCheckValue = formatConfigValue('RETRAIN_EARLY_CHECK_INTERVAL')
   const earlyTriggerValue = formatConfigValue('RETRAIN_MIN_NEW_LABELS')
+  const nextScheduledRetrainTs = useMemo(
+    () => getNextScheduledRetrainTs(normalizeCadence(baseCadenceRaw), clampHour(retrainHourRaw), nowTs),
+    [baseCadenceRaw, retrainHourRaw, nowTs]
+  )
 
   return (
     <InkBox flexDirection="column" width="100%">
@@ -744,6 +797,8 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           <StatRow label="Update style" value="Full retrain" />
           <StatRow label="Base cadence" value={baseCadenceValue} />
           <StatRow label="Run time" value={retrainHourValue} />
+          <StatRow label="Next scheduled" value={formatShortDateTime(nextScheduledRetrainTs)} />
+          <StatRow label="Scheduled in" value={timeUntil(nextScheduledRetrainTs)} />
           <StatRow label="Early check" value={earlyCheckValue} />
           <StatRow label="Early trigger" value={earlyTriggerValue} />
           <StatRow label="Total runs" value={formatCount(trainingSummary?.total_runs)} />
@@ -752,6 +807,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           <StatRow label="Runs 7d" value={formatCount(trainingSummary?.runs_7d)} />
           <StatRow label="Runs 30d" value={formatCount(trainingSummary?.runs_30d)} />
           <Text color={theme.dim}>No online fine-tuning. Each update rebuilds the model from resolved trades.</Text>
+          <Text color={theme.dim}>Scheduled next uses the configured cadence and local hour; early retrains can still happen sooner.</Text>
           <Text color={theme.dim}>A retrain only deploys if it beats baseline checks and validation P&L gates.</Text>
           <InkBox width="100%" marginTop={1}>
             <Text color={theme.dim}>{fit('TIME', retrainWidths.timeWidth)}</Text>

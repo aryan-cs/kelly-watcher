@@ -73,11 +73,17 @@ interface FlowRow {
   belief_evidence: number | null
 }
 
+interface TrainingSummaryRow {
+  total_runs: number | null
+  runs_7d: number | null
+  runs_30d: number | null
+}
+
 const MODEL_SQL = `
 SELECT trained_at, n_samples, brier_score, log_loss, feature_cols, deployed
 FROM model_history
 ORDER BY trained_at DESC
-LIMIT 6
+LIMIT 12
 `
 
 const TRACKER_SQL = `
@@ -177,6 +183,14 @@ WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
 `
 
+const TRAINING_SUMMARY_SQL = `
+SELECT
+  COUNT(*) AS total_runs,
+  SUM(CASE WHEN trained_at >= strftime('%s', 'now', '-7 days') THEN 1 ELSE 0 END) AS runs_7d,
+  SUM(CASE WHEN trained_at >= strftime('%s', 'now', '-30 days') THEN 1 ELSE 0 END) AS runs_30d
+FROM model_history
+`
+
 function formatCount(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '0'
   return Math.round(value).toLocaleString()
@@ -230,6 +244,23 @@ function bucketLabel(bucket: number): string {
   return `${lower}-${upper}%`
 }
 
+function formatInterval(seconds: number | null | undefined): string {
+  if (seconds == null || Number.isNaN(seconds) || seconds <= 0) return '-'
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+  }
+  if (seconds < 86400 * 14) {
+    const days = Math.floor(seconds / 86400)
+    const hours = Math.floor((seconds % 86400) / 3600)
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`
+  }
+  const weeks = seconds / (86400 * 7)
+  return `${weeks.toFixed(1).replace(/\.0$/, '')}w`
+}
+
 function modeLabel(mode: string): string {
   const normalized = mode.trim().toLowerCase()
   if (normalized === 'model') return 'XGBoost'
@@ -249,16 +280,34 @@ export function Models() {
   const calibrationSummaryRows = useQuery<CalibrationSummaryRow>(CALIBRATION_SUMMARY_SQL)
   const calibrationRows = useQuery<CalibrationRow>(CALIBRATION_SQL)
   const flowRows = useQuery<FlowRow>(FLOW_SQL)
+  const trainingSummaryRows = useQuery<TrainingSummaryRow>(TRAINING_SUMMARY_SQL)
 
   const latest = models[0]
   const tracker = trackerRows[0]
   const calibration = calibrationSummaryRows[0]
   const flow = flowRows[0]
+  const trainingSummary = trainingSummaryRows[0]
   const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0]
 
   const featureCount = useMemo(() => parseFeatureCount(latest?.feature_cols), [latest?.feature_cols])
   const useRate = ratio(tracker?.taken, tracker?.signals)
   const trackerWinRate = ratio(tracker?.wins, tracker?.resolved)
+  const retrainGaps = useMemo(
+    () =>
+      models
+        .slice(0, 12)
+        .map((row, index, rows) => {
+          const next = rows[index + 1]
+          return next ? row.trained_at - next.trained_at : null
+        })
+        .filter((gap): gap is number => gap != null && gap > 0),
+    [models]
+  )
+  const lastRetrainGap = retrainGaps[0] ?? null
+  const averageRetrainGap =
+    retrainGaps.length > 0
+      ? retrainGaps.reduce((sum, gap) => sum + gap, 0) / retrainGaps.length
+      : null
   const calibrationLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 5
   const historyLimit = terminal.compact ? 3 : 4
 
@@ -436,7 +485,19 @@ export function Models() {
 
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
 
-        <Box title="Retrain History" width={stacked ? '100%' : '50%'}>
+        <Box title="Training Cycle" width={stacked ? '100%' : '50%'}>
+          <StatRow label="Update style" value="Full retrain" />
+          <StatRow label="Base cadence" value="Weekly" />
+          <StatRow label="Weekly slot" value="Mon 3:00 local" />
+          <StatRow label="Early check" value="Every 24h" />
+          <StatRow label="Early trigger" value="100 new labels" />
+          <StatRow label="Last gap" value={formatInterval(lastRetrainGap)} />
+          <StatRow label="Avg gap" value={formatInterval(averageRetrainGap)} />
+          <StatRow label="Runs 7d" value={formatCount(trainingSummary?.runs_7d)} />
+          <StatRow label="Runs 30d" value={formatCount(trainingSummary?.runs_30d)} />
+          <Text color={theme.dim}>No online fine-tuning. Each update rebuilds the model from resolved trades.</Text>
+          <Text color={theme.dim}>A retrain only deploys if it beats baseline checks and validation P&L gates.</Text>
+          <Text color={theme.dim}>Recent runs:</Text>
           {models.length ? (
             models.slice(0, historyLimit).map((row) => (
               <Text key={row.trained_at}>

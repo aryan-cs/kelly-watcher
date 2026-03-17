@@ -571,6 +571,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const helpContentWidth = Math.max(52, helpModalWidth - 4)
   const helpSettingLabelWidth = Math.max(18, Math.min(28, Math.floor(helpContentWidth * 0.48)))
   const helpSettingValueWidth = Math.max(14, helpContentWidth - helpSettingLabelWidth - 1)
+  const helpIndexLabel = `${clampedSelectedPanelIndex + 1}/${MODEL_PANEL_DEFS.length}`
+  const helpTitleWidth = Math.max(1, helpContentWidth - helpIndexLabel.length - 1)
+  const helpSpacerLine = ' '.repeat(helpModalWidth - 2)
   const formatConfigValue = (key: string): string => {
     const field = configFieldByKey.get(key)
     if (!field) return '-'
@@ -848,27 +851,42 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
       {detailOpen ? (
         <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
-          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={helpModalWidth} paddingX={1}>
-            <InkBox justifyContent="space-between">
-              <Text color={theme.accent} bold>{selectedPanel.title}</Text>
-              <Text color={theme.dim}>{`${clampedSelectedPanelIndex + 1}/${MODEL_PANEL_DEFS.length}`}</Text>
+          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={helpModalWidth}>
+            <InkBox width="100%">
+              <Text color={theme.accent} backgroundColor={theme.modalBackground} bold>
+                {` ${fit(selectedPanel.title, helpTitleWidth)}`}
+              </Text>
+              <Text backgroundColor={theme.modalBackground}> </Text>
+              <Text color={theme.dim} backgroundColor={theme.modalBackground}>
+                {`${fitRight(helpIndexLabel, helpIndexLabel.length)} `}
+              </Text>
             </InkBox>
 
             {selectedPanel.summary.map((line) => (
-              <Text key={line} color={theme.dim}>{fit(line, Math.min(line.length, helpContentWidth))}</Text>
+              <Text key={line} color={theme.dim} backgroundColor={theme.modalBackground}>
+                {` ${fit(line, helpContentWidth)} `}
+              </Text>
             ))}
 
-            <InkBox marginTop={1} flexDirection="column">
-              <Text color={theme.accent} bold>Label Guide</Text>
+            <Text backgroundColor={theme.modalBackground}>{helpSpacerLine}</Text>
+
+            <InkBox flexDirection="column">
+              <Text color={theme.accent} backgroundColor={theme.modalBackground} bold>
+                {` ${fit('Label Guide', helpContentWidth)} `}
+              </Text>
               {selectedPanel.rows.map((row) => (
-                <Text key={`${selectedPanel.id}-${row.label}`} color={theme.dim}>
-                  {`${row.label}: ${row.text}`}
+                <Text key={`${selectedPanel.id}-${row.label}`} color={theme.dim} backgroundColor={theme.modalBackground}>
+                  {` ${fit(`${row.label}: ${row.text}`, helpContentWidth)} `}
                 </Text>
               ))}
             </InkBox>
 
-            <InkBox marginTop={1} flexDirection="column">
-              <Text color={theme.accent} bold>Related Settings</Text>
+            <Text backgroundColor={theme.modalBackground}>{helpSpacerLine}</Text>
+
+            <InkBox flexDirection="column">
+              <Text color={theme.accent} backgroundColor={theme.modalBackground} bold>
+                {` ${fit('Related Settings', helpContentWidth)} `}
+              </Text>
               {relatedSettings.length ? (
                 <>
                   {relatedSettings.map((field, index) => {
@@ -876,20 +894,24 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                     const label = `${selected ? '> ' : '  '}${field.label}`
                     return (
                       <InkBox key={`${selectedPanel.id}-${field.key}`} width="100%">
-                        <Text color={selected ? theme.accent : theme.dim} bold={selected}>
-                          {fit(label, helpSettingLabelWidth)}
+                        <Text color={selected ? theme.accent : theme.dim} backgroundColor={theme.modalBackground} bold={selected}>
+                          {` ${fit(label, helpSettingLabelWidth)}`}
                         </Text>
-                        <Text> </Text>
-                        <Text color={theme.white} bold={selected}>
-                          {fitRight(formatEditableConfigValue(field, settingsValues[field.key] || field.defaultValue), helpSettingValueWidth)}
+                        <Text backgroundColor={theme.modalBackground}> </Text>
+                        <Text color={theme.white} backgroundColor={theme.modalBackground} bold={selected}>
+                          {`${fitRight(formatEditableConfigValue(field, settingsValues[field.key] || field.defaultValue), helpSettingValueWidth)} `}
                         </Text>
                       </InkBox>
                     )
                   })}
-                  <Text color={theme.dim}>Up/down selects a setting. Enter opens it in Config. Esc closes.</Text>
+                  <Text color={theme.dim} backgroundColor={theme.modalBackground}>
+                    {` ${fit('Up/down selects a setting. Enter opens it in Config. Esc closes.', helpContentWidth)} `}
+                  </Text>
                 </>
               ) : (
-                <Text color={theme.dim}>No direct settings are tied to this box yet. Esc closes.</Text>
+                <Text color={theme.dim} backgroundColor={theme.modalBackground}>
+                  {` ${fit('No direct settings are tied to this box yet. Esc closes.', helpContentWidth)} `}
+                </Text>
               )}
             </InkBox>
           </InkBox>

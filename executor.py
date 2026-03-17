@@ -108,6 +108,37 @@ class PolymarketExecutor:
             return 0.0
 
     @staticmethod
+    def _live_position_mark_value(row: dict[str, Any] | None) -> float:
+        if not row:
+            return 0.0
+
+        current_value = max(_to_float(row.get("currentValue")), 0.0)
+        if current_value > 0:
+            return current_value
+
+        total_bought = PolymarketExecutor._live_position_cost(row)
+        if total_bought <= 0:
+            return 0.0
+
+        cash_pnl = _to_float(row.get("cashPnl"))
+        if abs(cash_pnl) > 1e-9:
+            return max(total_bought + cash_pnl, 0.0)
+        return total_bought
+
+    def get_account_equity_usd(self) -> float:
+        balance_usd = self.get_usdc_balance()
+        if not use_real_money():
+            return balance_usd
+
+        rows = self._fetch_live_positions()
+        if rows is None:
+            logger.warning("Account equity fell back to free USDC because live positions could not be refreshed")
+            return balance_usd
+
+        open_value_usd = sum(self._live_position_mark_value(row) for row in rows)
+        return round(balance_usd + open_value_usd, 6)
+
+    @staticmethod
     def _parse_usdc_base_units(raw_value: Any) -> float:
         text = str(raw_value or "").strip()
         if not text:

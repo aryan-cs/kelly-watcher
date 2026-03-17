@@ -8,6 +8,7 @@ from dotenv import dotenv_values, load_dotenv
 
 load_dotenv()
 ENV_PATH = Path(__file__).resolve().with_name(".env")
+MIN_POLL_INTERVAL_SECONDS = 2.0
 _DURATION_UNITS = {
     "s": 1.0,
     "m": 60.0,
@@ -17,12 +18,24 @@ _DURATION_UNITS = {
 }
 
 
+class ConfigError(ValueError):
+    pass
+
+
 def _get(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
 def _get_bool(name: str, default: str = "false") -> bool:
     return _get(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+def _get_float(name: str, default: str) -> float:
+    raw = _get(name, default)
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be numeric, got {raw!r}") from exc
 
 
 def _get_env_file_value(name: str) -> str | None:
@@ -44,21 +57,21 @@ def use_real_money() -> bool:
 
 
 def max_bet_fraction() -> float:
-    return float(_get("MAX_BET_FRACTION", "0.05"))
+    return _get_float("MAX_BET_FRACTION", "0.05")
 
 
 def min_confidence() -> float:
-    return float(_get("MIN_CONFIDENCE", "0.60"))
+    return _get_float("MIN_CONFIDENCE", "0.60")
 
 
 def min_bet_usd() -> float:
-    return float(_get("MIN_BET_USD", "1.00"))
+    return _get_float("MIN_BET_USD", "1.00")
 
 
 def poll_interval() -> float:
     raw = _get_env_file_value("POLL_INTERVAL_SECONDS") or _get("POLL_INTERVAL_SECONDS", "45")
     try:
-        return max(0.05, float(raw))
+        return max(MIN_POLL_INTERVAL_SECONDS, float(raw))
     except ValueError:
         return 45.0
 
@@ -99,6 +112,22 @@ def max_market_horizon_label() -> str:
     return "unlimited" if value in {"unlimited", "infinite", "inf", "none"} else (value or "365d")
 
 
+def max_source_trade_age_seconds() -> int:
+    raw = _get_env_file_value("MAX_SOURCE_TRADE_AGE") or _get("MAX_SOURCE_TRADE_AGE", "10m")
+    seconds = _parse_duration(raw, 10 * 60.0)
+    if seconds == float("inf"):
+        return 10 * 60
+    return max(int(seconds), 30)
+
+
+def max_feed_staleness_seconds() -> int:
+    raw = _get_env_file_value("MAX_FEED_STALENESS") or _get("MAX_FEED_STALENESS", "3m")
+    seconds = _parse_duration(raw, 3 * 60.0)
+    if seconds == float("inf"):
+        return 3 * 60
+    return max(int(seconds), 30)
+
+
 def private_key() -> str:
     return _get("POLYGON_PRIVATE_KEY")
 
@@ -112,7 +141,7 @@ def model_path() -> str:
 
 
 def shadow_bankroll_usd() -> float:
-    return float(_get("SHADOW_BANKROLL_USD", "1000"))
+    return _get_float("SHADOW_BANKROLL_USD", "1000")
 
 
 def max_live_drawdown_pct() -> float:
@@ -121,6 +150,54 @@ def max_live_drawdown_pct() -> float:
         return min(max(float(raw), 0.0), 1.0)
     except ValueError:
         return 0.15
+
+
+def max_daily_loss_pct() -> float:
+    raw = _get("MAX_DAILY_LOSS_PCT", "0.08")
+    try:
+        return min(max(float(raw), 0.0), 1.0)
+    except ValueError:
+        return 0.08
+
+
+def max_total_open_exposure_fraction() -> float:
+    raw = _get("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.60")
+    try:
+        return min(max(float(raw), 0.0), 1.0)
+    except ValueError:
+        return 0.60
+
+
+def max_market_exposure_fraction() -> float:
+    raw = _get("MAX_MARKET_EXPOSURE_FRACTION", "0.20")
+    try:
+        return min(max(float(raw), 0.0), 1.0)
+    except ValueError:
+        return 0.20
+
+
+def max_trader_exposure_fraction() -> float:
+    raw = _get("MAX_TRADER_EXPOSURE_FRACTION", "0.30")
+    try:
+        return min(max(float(raw), 0.0), 1.0)
+    except ValueError:
+        return 0.30
+
+
+def max_open_positions() -> int:
+    raw = _get("MAX_OPEN_POSITIONS", "10")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 10
+
+
+def max_live_health_failures() -> int:
+    raw = _get("MAX_LIVE_HEALTH_FAILURES", "3")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 3
 
 
 def live_require_shadow_history() -> bool:

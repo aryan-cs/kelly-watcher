@@ -68,7 +68,9 @@ def should_retrain_early(_signal_engine) -> bool:
         """
         SELECT COUNT(*) AS n
         FROM trade_log
-        WHERE outcome IS NOT NULL AND skipped=0 AND placed_at > ?
+        WHERE outcome IS NOT NULL
+          AND skipped=0
+          AND COALESCE(label_applied_at, resolved_at, placed_at) > ?
         """,
         (last_retrain,),
     ).fetchone()["n"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -40,6 +41,7 @@ class DedupeCache:
     seen_ids: set[str] = field(default_factory=set)
     open_positions: dict[str, dict[str, float | str]] = field(default_factory=dict)
     pending: dict[str, float] = field(default_factory=dict)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
 
     def _rebuild_shadow_positions(self, conn) -> None:
         conn.execute("DELETE FROM positions WHERE real_money=0")
@@ -122,8 +124,8 @@ class DedupeCache:
         ).fetchall()
         conn.close()
 
-        self.seen_ids = {row["trade_id"] for row in seen_rows}
-        self.open_positions = {
+        new_seen_ids = {row["trade_id"] for row in seen_rows}
+        new_open_positions = {
             _position_key(row["market_id"], str(row["token_id"] or ""), row["side"]): {
                 "market_id": row["market_id"],
                 "side": row["side"],
@@ -133,10 +135,13 @@ class DedupeCache:
             }
             for row in position_rows
         }
+        with self._lock:
+            self.seen_ids = new_seen_ids
+            self.open_positions = new_open_positions
         logger.info(
             "Dedup cache loaded: %s seen, %s open positions",
-            len(self.seen_ids),
-            len(self.open_positions),
+            len(new_seen_ids),
+            len(new_open_positions),
         )
 
     def sync_positions_from_api(self, tracker, our_address: str) -> bool:
@@ -159,7 +164,7 @@ class DedupeCache:
 
         conn = get_conn()
         conn.execute("DELETE FROM positions WHERE real_money=1")
-        self.open_positions = {}
+        new_open_positions: dict[str, dict[str, float | str]] = {}
 
         for position in rows:
             shares = _to_float(position.get("size"))
@@ -182,7 +187,7 @@ class DedupeCache:
                 continue
             if not market_id:
                 continue
-            self.open_positions[_position_key(market_id, token_id, side)] = {
+            new_open_positions[_position_key(market_id, token_id, side)] = {
                 "market_id": market_id,
                 "side": side,
                 "size": size_usd,
@@ -196,15 +201,18 @@ class DedupeCache:
 
         conn.commit()
         conn.close()
+        with self._lock:
+            self.open_positions = new_open_positions
 
     def gate(self, trade_id: str, market_id: str, side: str, token_id: str = "") -> tuple[bool, str]:
-        if trade_id in self.seen_ids:
-            return False, "duplicate trade_id"
-        if self._has_pending(market_id, token_id, side):
-            return False, "order in-flight"
-        if self._has_position(market_id, token_id, side):
-            return False, "position already open"
-        return True, "ok"
+        with self._lock:
+            if trade_id in self.seen_ids:
+                return False, "duplicate trade_id"
+            if self._has_pending(market_id, token_id, side):
+                return False, "order in-flight"
+            if self._has_position(market_id, token_id, side):
+                return False, "position already open"
+            return True, "ok"
 
     def _has_pending(self, market_id: str, token_id: str, side: str) -> bool:
         key = self._find_key(market_id, token_id, side, self.pending)
@@ -222,12 +230,14 @@ class DedupeCache:
         return self._find_key(market_id, token_id, side) is not None
 
     def get_position(self, market_id: str, token_id: str = "", side: str = "") -> dict[str, float | str] | None:
-        key = self._find_key(market_id, token_id, side)
-        return self.open_positions.get(key) if key else None
+        with self._lock:
+            key = self._find_key(market_id, token_id, side)
+            return self.open_positions.get(key) if key else None
 
     def mark_seen(self, trade_id: str, market_id: str, trader_id: str) -> None:
         now = int(time.time())
-        self.seen_ids.add(trade_id)
+        with self._lock:
+            self.seen_ids.add(trade_id)
         conn = get_conn()
         conn.execute(
             "INSERT OR IGNORE INTO seen_trades VALUES (?,?,?,?)",
@@ -241,7 +251,8 @@ class DedupeCache:
         conn.close()
 
     def mark_pending(self, market_id: str, token_id: str = "", side: str = "") -> None:
-        self.pending[_position_key(market_id, token_id, side)] = time.time()
+        with self._lock:
+            self.pending[_position_key(market_id, token_id, side)] = time.time()
 
     def confirm(
         self,
@@ -253,14 +264,15 @@ class DedupeCache:
         real_money: bool,
     ) -> None:
         key = _position_key(market_id, token_id, side)
-        self.pending.pop(key, None)
-        self.open_positions[key] = {
-            "market_id": market_id,
-            "side": side,
-            "size": size_usd,
-            "token_id": token_id,
-            "avg_price": avg_price,
-        }
+        with self._lock:
+            self.pending.pop(key, None)
+            self.open_positions[key] = {
+                "market_id": market_id,
+                "side": side,
+                "size": size_usd,
+                "token_id": token_id,
+                "avg_price": avg_price,
+            }
         conn = get_conn()
         conn.execute(
             "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
@@ -270,10 +282,11 @@ class DedupeCache:
         conn.close()
 
     def release(self, market_id: str, token_id: str = "", side: str = "") -> None:
-        key = self._find_key(market_id, token_id, side, self.pending)
-        if key is None:
-            key = _position_key(market_id, token_id, side)
-        self.pending.pop(key, None)
+        with self._lock:
+            key = self._find_key(market_id, token_id, side, self.pending)
+            if key is None:
+                key = _position_key(market_id, token_id, side)
+            self.pending.pop(key, None)
 
     def clear_position(
         self,
@@ -283,10 +296,11 @@ class DedupeCache:
         real_money: bool | None = None,
     ) -> None:
         mode_flag = 1 if (use_real_money() if real_money is None else real_money) else 0
-        key = self._find_key(market_id, token_id, side)
-        if key is not None:
-            self.pending.pop(key, None)
-            self.open_positions.pop(key, None)
+        with self._lock:
+            key = self._find_key(market_id, token_id, side)
+            if key is not None:
+                self.pending.pop(key, None)
+                self.open_positions.pop(key, None)
 
         conn = get_conn()
         normalized_token = str(token_id or "").strip()
@@ -302,14 +316,15 @@ class DedupeCache:
                 (market_id, normalized_side, mode_flag),
             )
         else:
-            keys_to_remove = [
-                cache_key
-                for cache_key, position in self.open_positions.items()
-                if str(position.get("market_id") or "").strip().lower() == str(market_id or "").strip().lower()
-            ]
-            for cache_key in keys_to_remove:
-                self.pending.pop(cache_key, None)
-                self.open_positions.pop(cache_key, None)
+            with self._lock:
+                keys_to_remove = [
+                    cache_key
+                    for cache_key, position in self.open_positions.items()
+                    if str(position.get("market_id") or "").strip().lower() == str(market_id or "").strip().lower()
+                ]
+                for cache_key in keys_to_remove:
+                    self.pending.pop(cache_key, None)
+                    self.open_positions.pop(cache_key, None)
             conn.execute("DELETE FROM positions WHERE market_id=? AND real_money=?", (market_id, mode_flag))
         conn.commit()
         conn.close()

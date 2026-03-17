@@ -17,6 +17,7 @@ from alerter import send_alert
 from auto_retrain import retrain_cycle, should_retrain_early
 from beliefs import sync_belief_priors
 from config import (
+    ConfigError,
     live_min_shadow_resolved,
     live_require_shadow_history,
     max_bet_fraction,
@@ -75,20 +76,20 @@ _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECA
 
 @dataclass
 class LiveEntryGuard:
-    start_balance: float
+    start_equity: float
     drawdown_limit_pct: float
-    stop_balance: float
+    stop_equity: float
     triggered: bool = False
     alerted: bool = False
 
-    def block_reason(self, bankroll: float) -> str | None:
-        if self.drawdown_limit_pct <= 0 or self.start_balance <= 0:
+    def block_reason(self, account_equity: float) -> str | None:
+        if self.drawdown_limit_pct <= 0 or self.start_equity <= 0:
             return None
-        if self.triggered or bankroll <= self.stop_balance + 1e-9:
+        if self.triggered or account_equity <= self.stop_equity + 1e-9:
             self.triggered = True
             return (
                 f"live entry guard tripped after a {self.drawdown_limit_pct * 100:.1f}% drawdown "
-                f"(start ${self.start_balance:.2f}, current ${bankroll:.2f})"
+                f"(start ${self.start_equity:.2f}, current ${account_equity:.2f})"
             )
         return None
 
@@ -685,16 +686,29 @@ def _validate_startup() -> None:
     if not WATCHED_WALLETS:
         errors.append("WATCHED_WALLETS is empty")
 
-    confidence = min_confidence()
-    if not (0.0 < confidence < 1.0):
+    try:
+        confidence = min_confidence()
+    except ConfigError as exc:
+        errors.append(str(exc))
+        confidence = None
+    if confidence is not None and not (0.0 < confidence < 1.0):
         errors.append(f"MIN_CONFIDENCE must be between 0 and 1, got {confidence}")
 
-    max_fraction = max_bet_fraction()
-    if not (0.0 < max_fraction <= 1.0):
+    try:
+        max_fraction = max_bet_fraction()
+    except ConfigError as exc:
+        errors.append(str(exc))
+        max_fraction = None
+    if max_fraction is not None and not (0.0 < max_fraction <= 1.0):
         errors.append(f"MAX_BET_FRACTION must be between 0 and 1, got {max_fraction}")
 
-    if min_bet_usd() <= 0:
-        errors.append(f"MIN_BET_USD must be positive, got {min_bet_usd()}")
+    try:
+        minimum_bet = min_bet_usd()
+    except ConfigError as exc:
+        errors.append(str(exc))
+        minimum_bet = None
+    if minimum_bet is not None and minimum_bet <= 0:
+        errors.append(f"MIN_BET_USD must be positive, got {minimum_bet}")
 
     if use_real_money():
         our_wallet = wallet_address()
@@ -704,7 +718,7 @@ def _validate_startup() -> None:
             errors.append("POLYGON_WALLET_ADDRESS is missing or still set to a placeholder")
         if our_wallet and our_wallet in WATCHED_WALLETS:
             errors.append("POLYGON_WALLET_ADDRESS is also in WATCHED_WALLETS, which can create a self-copy loop")
-        if max_fraction > 0.10:
+        if max_fraction is not None and max_fraction > 0.10:
             warnings.append(
                 f"MAX_BET_FRACTION is {max_fraction:.2f}; consider keeping live single-trade risk at 10% or below"
             )
@@ -736,19 +750,19 @@ def _init_live_entry_guard(executor: PolymarketExecutor) -> LiveEntryGuard | Non
     if not use_real_money():
         return None
 
-    start_balance = max(executor.get_usdc_balance(), 0.0)
+    start_equity = max(executor.get_account_equity_usd(), 0.0)
     drawdown_limit_pct = max_live_drawdown_pct()
-    stop_balance = max(start_balance * (1.0 - drawdown_limit_pct), 0.0)
+    stop_equity = max(start_equity * (1.0 - drawdown_limit_pct), 0.0)
     logger.info(
-        "Live entry guard armed: start=$%.2f stop=$%.2f drawdown_limit=%.1f%%",
-        start_balance,
-        stop_balance,
+        "Live entry guard armed: start_equity=$%.2f stop_equity=$%.2f drawdown_limit=%.1f%%",
+        start_equity,
+        stop_equity,
         drawdown_limit_pct * 100.0,
     )
     return LiveEntryGuard(
-        start_balance=start_balance,
+        start_equity=start_equity,
         drawdown_limit_pct=drawdown_limit_pct,
-        stop_balance=stop_balance,
+        stop_equity=stop_equity,
     )
 
 
@@ -850,8 +864,10 @@ def main() -> None:
             loop_start = time.time()
             event_count = 0
             bankroll = 0.0
+            account_equity = 0.0
             try:
                 bankroll = executor.get_usdc_balance()
+                account_equity = executor.get_account_equity_usd() if live_entry_guard is not None else bankroll
                 if bankroll < 1.0:
                     logger.warning("Low balance: $%.2f - skipping poll", bankroll)
                 else:
@@ -860,7 +876,7 @@ def main() -> None:
                     for event in events:
                         entry_block_reason = None
                         if live_entry_guard is not None:
-                            entry_block_reason = live_entry_guard.block_reason(bankroll)
+                            entry_block_reason = live_entry_guard.block_reason(account_equity)
                             if entry_block_reason and not live_entry_guard.alerted:
                                 live_entry_guard.alerted = True
                                 logger.error(entry_block_reason)

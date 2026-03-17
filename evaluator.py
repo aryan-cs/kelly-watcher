@@ -23,10 +23,9 @@ def resolve_shadow_trades() -> list[dict]:
         """
         SELECT id, market_id, side, price_at_signal, signal_size_usd,
                actual_entry_price, actual_entry_size_usd,
-               real_money, skipped, source_action
+               real_money, skipped, source_action, exited_at
         FROM trade_log
         WHERE outcome IS NULL
-          AND exited_at IS NULL
           AND COALESCE(source_action, 'buy')='buy'
         """
     ).fetchall()
@@ -67,7 +66,17 @@ def resolve_shadow_trades() -> list[dict]:
                     """
                     UPDATE trade_log
                     SET outcome=?, market_resolved_outcome=?, counterfactual_return=?,
-                        shadow_pnl_usd=?, actual_pnl_usd=?, resolved_at=?, resolution_json=?
+                        shadow_pnl_usd=CASE
+                            WHEN exited_at IS NULL THEN ?
+                            ELSE shadow_pnl_usd
+                        END,
+                        actual_pnl_usd=CASE
+                            WHEN exited_at IS NULL THEN ?
+                            ELSE actual_pnl_usd
+                        END,
+                        label_applied_at=?,
+                        resolved_at=COALESCE(resolved_at, ?),
+                        resolution_json=?
                     WHERE id=?
                     """,
                     (
@@ -76,6 +85,7 @@ def resolve_shadow_trades() -> list[dict]:
                         unit_return,
                         pnl if row["real_money"] == 0 and row["skipped"] == 0 else None,
                         pnl if row["real_money"] == 1 and row["skipped"] == 0 else None,
+                        int(time.time()),
                         int(time.time()),
                         json.dumps(market, separators=(",", ":"), default=str),
                         row["id"],

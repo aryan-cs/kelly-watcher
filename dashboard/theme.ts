@@ -1,5 +1,6 @@
 export const theme = {
   accent: 'white',
+  modalBackground: '#05080d',
   green: '#24ff7b',
   red: '#ff0f0f',
   blue: '#17cdff',

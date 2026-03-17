@@ -519,7 +519,7 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
   const shadow = rows.find((row) => row.real_money === 0)
   const live = rows.find((row) => row.real_money === 1)
   const activeSummary = activeMode === 'live' ? live : shadow
-  const activeTitle = activeMode === 'live' ? 'Live' : 'Shadow'
+  const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker'
   const usernames = useMemo(() => {
     const lookup = new Map<string, string>()
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -854,7 +854,7 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
               )
             })
           ) : (
-            <Text color={theme.dim}>{`No resolved ${activeMode} trades yet.`}</Text>
+            <Text color={theme.dim}>{`No resolved ${activeTitle.toLowerCase()} trades yet.`}</Text>
           )}
         </Box>
       </InkBox>

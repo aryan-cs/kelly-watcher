@@ -771,7 +771,9 @@ def main() -> None:
     dedup = DedupeCache()
     dedup.load_from_db()
     tracker.seen_ids.update(dedup.seen_ids)
-    dedup.sync_positions_from_api(tracker, wallet_address())
+    initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
+    if use_real_money() and not initial_live_sync_ok:
+        raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
     refresh_trader_cache(tracker.wallets, force_refresh=True)
     resolve_shadow_trades()
     dedup.load_from_db()

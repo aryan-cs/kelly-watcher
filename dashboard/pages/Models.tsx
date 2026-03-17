@@ -484,17 +484,31 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     }
   }, [panelContentWidth])
   const retrainWidths = useMemo(() => {
-    const timeWidth = 12
     const sampleWidth = 8
     const brierWidth = 7
     const lossWidth = 7
     const gapCount = 4
+    const minTimeWidth = 13
+    let stateWidth = Math.max(8, Math.min(12, Math.floor(panelContentWidth * 0.2)))
+    let timeWidth = panelContentWidth - gapCount - sampleWidth - brierWidth - lossWidth - stateWidth
+
+    if (timeWidth < minTimeWidth) {
+      const reclaimed = Math.min(minTimeWidth - timeWidth, Math.max(0, stateWidth - 8))
+      stateWidth -= reclaimed
+      timeWidth += reclaimed
+    }
+
+    if (timeWidth < minTimeWidth) {
+      timeWidth = minTimeWidth
+      stateWidth = Math.max(8, panelContentWidth - gapCount - sampleWidth - brierWidth - lossWidth - timeWidth)
+    }
+
     return {
       timeWidth,
       sampleWidth,
       brierWidth,
       lossWidth,
-      stateWidth: Math.max(8, panelContentWidth - timeWidth - sampleWidth - brierWidth - lossWidth - gapCount)
+      stateWidth
     }
   }, [panelContentWidth])
   const clampedSelectedPanelIndex = Math.max(0, Math.min(selectedPanelIndex, MODEL_PANEL_DEFS.length - 1))
@@ -748,7 +762,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             <Text> </Text>
             <Text color={theme.dim}>{fitRight('LL', retrainWidths.lossWidth)}</Text>
             <Text> </Text>
-            <Text color={theme.dim}>{fit('STATE', retrainWidths.stateWidth)}</Text>
+            <Text color={theme.dim}>{fitRight('STATE', retrainWidths.stateWidth)}</Text>
           </InkBox>
           {models.length ? (
             models.slice(0, historyLimit).map((row) => (
@@ -766,7 +780,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                 </Text>
                 <Text> </Text>
                 <Text color={row.deployed ? theme.green : theme.dim}>
-                  {fit(row.deployed ? 'active' : 'archived', retrainWidths.stateWidth)}
+                  {fitRight(row.deployed ? 'active' : 'archived', retrainWidths.stateWidth)}
                 </Text>
               </InkBox>
             ))

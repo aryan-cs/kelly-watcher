@@ -75,18 +75,10 @@ interface TopShadowRow {
 interface WalletsLayout {
   usernameWidth: number
   addressWidth: number
-  seenWidth: number
   observedResolvedWidth: number
   observedWinRateWidth: number
-  closedWidth: number
-  winRateWidth: number
-  lifePnlWidth: number
-  volumeWidth: number
-  heldWidth: number
-  openPnlWidth: number
-  openWidth: number
-  avgWidth: number
-  ageWidth: number
+  profileWinRateWidth: number
+  copyPnlWidth: number
   lastSeenWidth: number
 }
 
@@ -293,53 +285,29 @@ function formatAge(days: number | null | undefined): string {
 }
 
 function getWalletsLayout(width: number): WalletsLayout {
-  const seenWidth = 5
   const observedResolvedWidth = 7
   const observedWinRateWidth = 8
-  const closedWidth = 7
-  const winRateWidth = 8
-  const lifePnlWidth = 11
-  const volumeWidth = 11
-  const heldWidth = 11
-  const openPnlWidth = 11
-  const openWidth = 5
-  const avgWidth = 9
-  const ageWidth = 6
+  const profileWinRateWidth = 8
+  const copyPnlWidth = 12
   const lastSeenWidth = 9
   const fixedWidths =
-    seenWidth +
     observedResolvedWidth +
     observedWinRateWidth +
-    closedWidth +
-    winRateWidth +
-    lifePnlWidth +
-    volumeWidth +
-    heldWidth +
-    openPnlWidth +
-    openWidth +
-    avgWidth +
-    ageWidth +
+    profileWinRateWidth +
+    copyPnlWidth +
     lastSeenWidth
-  const gapCount = 14
-  const variableBudget = Math.max(30, width - fixedWidths - gapCount)
-  const usernameWidth = Math.max(12, Math.min(20, Math.floor(variableBudget * 0.44)))
-  const addressWidth = Math.max(14, Math.min(24, variableBudget - usernameWidth))
+  const gapCount = 6
+  const variableBudget = Math.max(36, width - fixedWidths - gapCount)
+  const usernameWidth = Math.max(14, Math.min(22, Math.floor(variableBudget * 0.42)))
+  const addressWidth = Math.max(16, Math.min(30, variableBudget - usernameWidth))
 
   return {
     usernameWidth,
     addressWidth,
-    seenWidth,
     observedResolvedWidth,
     observedWinRateWidth,
-    closedWidth,
-    winRateWidth,
-    lifePnlWidth,
-    volumeWidth,
-    heldWidth,
-    openPnlWidth,
-    openWidth,
-    avgWidth,
-    ageWidth,
+    profileWinRateWidth,
+    copyPnlWidth,
     lastSeenWidth
   }
 }
@@ -523,7 +491,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
           },
           {
             label: 'Copy P&L',
-            value: formatSignedMoney(selectedWallet.local_pnl, 16),
+            value: formatSignedMoney(selectedWallet.local_pnl, 18),
             color:
               selectedWallet.local_pnl == null
                 ? theme.dim
@@ -557,7 +525,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
           },
           {
             label: 'Profile P&L',
-            value: formatSignedMoney(selectedWallet.realized_pnl_usd, 16),
+            value: formatSignedMoney(selectedWallet.realized_pnl_usd, 18),
             color:
               selectedWallet.realized_pnl_usd == null
                 ? theme.dim
@@ -582,12 +550,12 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
         metrics: [
           {
             label: 'Total Volume',
-            value: formatUnsignedMoney(selectedWallet.volume_usd, 16),
+            value: formatUnsignedMoney(selectedWallet.volume_usd, 18),
             color: selectedWallet.volume_usd == null ? theme.dim : positiveDollarColor(selectedWallet.volume_usd, maxVolume || 1)
           },
           {
             label: 'Avg Trade',
-            value: formatUnsignedMoney(selectedWallet.avg_size_usd, 16),
+            value: formatUnsignedMoney(selectedWallet.avg_size_usd, 18),
             color:
               selectedWallet.avg_size_usd == null
                 ? theme.dim
@@ -599,7 +567,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
           },
           {
             label: 'Open Value',
-            value: formatUnsignedMoney(selectedWallet.open_value_usd, 16),
+            value: formatUnsignedMoney(selectedWallet.open_value_usd, 18),
             color:
               selectedWallet.open_value_usd == null
                 ? theme.dim
@@ -607,7 +575,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
           },
           {
             label: 'Open P&L',
-            value: formatSignedMoney(selectedWallet.open_pnl_usd, 16),
+            value: formatSignedMoney(selectedWallet.open_pnl_usd, 18),
             color:
               selectedWallet.open_pnl_usd == null
                 ? theme.dim
@@ -640,14 +608,14 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
     [detailSections, terminal.wide]
   )
   const detailColumnCount = detailColumns.length || 1
-  const detailColumnGap = terminal.wide ? 3 : 2
-  const modalWidth = Math.max(52, Math.min(terminal.width - 8, terminal.wide ? 108 : 78))
+  const detailColumnGap = terminal.wide ? 4 : 2
+  const modalWidth = Math.max(60, Math.min(terminal.width - 6, terminal.wide ? 132 : 90))
   const modalContentWidth = Math.max(36, modalWidth - 4)
   const detailColumnWidth = Math.max(
-    18,
+    20,
     Math.floor((modalContentWidth - detailColumnGap * (detailColumnCount - 1)) / detailColumnCount)
   )
-  const detailLabelWidth = Math.max(7, Math.floor(detailColumnWidth * 0.54))
+  const detailLabelWidth = Math.max(8, Math.floor(detailColumnWidth * 0.46))
   const detailValueWidth = Math.max(7, detailColumnWidth - detailLabelWidth - 1)
   const detailTitle = selectedWallet?.username || (selectedWallet ? shortAddress(selectedWallet.trader_address) : '-')
   const detailAddressLines = selectedWallet
@@ -661,7 +629,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
         <Text color={theme.dim}> </Text>
         <Text color={theme.dim}>{fitRight('PROFILE WR', 10)}</Text>
         <Text color={theme.dim}> </Text>
-        <Text color={theme.dim}>{fitRight('SHDW P&L', 10)}</Text>
+        <Text color={theme.dim}>{fitRight('COPY P&L', 10)}</Text>
       </InkBox>
       <InkBox flexDirection="column">
         {shadowWallets.length ? (
@@ -690,7 +658,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
             )
           })
         ) : (
-          <Text color={theme.dim}>No shadow wallet performance yet.</Text>
+          <Text color={theme.dim}>No wallet performance yet.</Text>
         )}
       </InkBox>
     </Box>
@@ -699,8 +667,8 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
   return (
     <InkBox flexDirection="column" width="100%" height="100%">
       <InkBox flexDirection={shadowPanelsWide ? 'row' : 'column'} columnGap={1} rowGap={1}>
-        {renderShadowWalletBox('Best Shadow Wallets', bestShadowWallets)}
-        {renderShadowWalletBox('Worst Shadow Wallets', worstShadowWallets)}
+        {renderShadowWalletBox('Best Wallets', bestShadowWallets)}
+        {renderShadowWalletBox('Worst Wallets', worstShadowWallets)}
       </InkBox>
 
       <InkBox marginTop={1} flexGrow={1}>
@@ -710,29 +678,13 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
             <Text color={theme.dim}> </Text>
             <Text color={theme.dim}>{fit('ADDRESS', layout.addressWidth)}</Text>
             <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('SEEN', layout.seenWidth)}</Text>
-            <Text color={theme.dim}> </Text>
             <Text color={theme.dim}>{fitRight('OBS', layout.observedResolvedWidth)}</Text>
             <Text color={theme.dim}> </Text>
             <Text color={theme.dim}>{fitRight('OBS WR', layout.observedWinRateWidth)}</Text>
             <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('CLOSED', layout.closedWidth)}</Text>
+            <Text color={theme.dim}>{fitRight('PROF WR', layout.profileWinRateWidth)}</Text>
             <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('PUB WR', layout.winRateWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('LIFE P&L', layout.lifePnlWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('VOLUME', layout.volumeWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('HELD', layout.heldWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('OPEN P&L', layout.openPnlWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('OPEN', layout.openWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('AVG', layout.avgWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('AGE', layout.ageWidth)}</Text>
+            <Text color={theme.dim}>{fitRight('COPY P&L', layout.copyPnlWidth)}</Text>
             <Text color={theme.dim}> </Text>
             <Text color={theme.dim}>{fitRight('LAST', layout.lastSeenWidth)}</Text>
           </InkBox>
@@ -751,34 +703,16 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
                     : probabilityColor(wallet.observed_win_rate)
                 const winRateColor =
                   wallet.win_rate == null ? theme.dim : probabilityColor(wallet.win_rate)
-                const realizedPnlColor =
-                  wallet.realized_pnl_usd == null
+                const localPnlColor =
+                  wallet.local_pnl == null
                     ? theme.dim
-                    : centeredGradientColor(wallet.realized_pnl_usd, maxAbsRealizedPnl)
-                const volumeColor =
-                  wallet.volume_usd == null
-                    ? theme.dim
-                    : positiveDollarColor(wallet.volume_usd, maxVolume || 1)
-                const heldColor =
-                  wallet.open_value_usd == null
-                    ? theme.dim
-                    : positiveDollarColor(wallet.open_value_usd, maxHeld || 1)
-                const openPnlColor =
-                  wallet.open_pnl_usd == null
-                    ? theme.dim
-                    : centeredGradientColor(wallet.open_pnl_usd, maxAbsOpenPnl)
-                const avgSizeColor =
-                  wallet.avg_size_usd == null
-                    ? theme.dim
-                    : positiveDollarColor(wallet.avg_size_usd, maxAvgSize || 1)
+                    : centeredGradientColor(wallet.local_pnl, maxAbsLocalPnl)
 
                 return (
                   <InkBox key={wallet.trader_address} width="100%" height={1}>
                     <Text color={usernameColor} bold={isSelected}>{fit(displayUsername, layout.usernameWidth)}</Text>
                     <Text> </Text>
                     <Text color={addressColor} bold={isSelected}>{formatAddress(wallet.trader_address, layout.addressWidth)}</Text>
-                    <Text> </Text>
-                    <Text>{fitRight(formatCount(wallet.seen_trades, layout.seenWidth), layout.seenWidth)}</Text>
                     <Text> </Text>
                     <Text>
                       {fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth)}
@@ -791,35 +725,13 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
                       )}
                     </Text>
                     <Text> </Text>
-                    <Text>{fitRight(formatCount(wallet.closed_trades, layout.closedWidth), layout.closedWidth)}</Text>
-                    <Text> </Text>
                     <Text color={winRateColor}>
-                      {fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.winRateWidth)}
+                      {fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.profileWinRateWidth)}
                     </Text>
                     <Text> </Text>
-                    <Text color={realizedPnlColor}>
-                      {fitRight(formatSignedMoney(wallet.realized_pnl_usd, layout.lifePnlWidth), layout.lifePnlWidth)}
+                    <Text color={localPnlColor}>
+                      {fitRight(formatSignedMoney(wallet.local_pnl, layout.copyPnlWidth), layout.copyPnlWidth)}
                     </Text>
-                    <Text> </Text>
-                    <Text color={volumeColor}>
-                      {fitRight(formatUnsignedMoney(wallet.volume_usd, layout.volumeWidth), layout.volumeWidth)}
-                    </Text>
-                    <Text> </Text>
-                    <Text color={heldColor}>
-                      {fitRight(formatUnsignedMoney(wallet.open_value_usd, layout.heldWidth), layout.heldWidth)}
-                    </Text>
-                    <Text> </Text>
-                    <Text color={openPnlColor}>
-                      {fitRight(formatSignedMoney(wallet.open_pnl_usd, layout.openPnlWidth), layout.openPnlWidth)}
-                    </Text>
-                    <Text> </Text>
-                    <Text>{fitRight(formatCount(wallet.open_positions, layout.openWidth), layout.openWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={avgSizeColor}>
-                      {fitRight(formatUnsignedMoney(wallet.avg_size_usd, layout.avgWidth), layout.avgWidth)}
-                    </Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight(formatAge(wallet.account_age_d), layout.ageWidth)}</Text>
                     <Text> </Text>
                     <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
                       {fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth)}

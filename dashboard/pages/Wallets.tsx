@@ -765,9 +765,9 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
 
       {detailOpen && selectedWallet ? (
         <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
-          <InkBox borderStyle="round" borderColor={theme.blue} flexDirection="column" width={modalWidth} paddingX={1}>
+          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={modalWidth} paddingX={1}>
             <InkBox justifyContent="space-between">
-              <Text color={theme.blue} bold>Wallet Detail</Text>
+              <Text color={theme.accent} bold>Wallet Detail</Text>
               <Text color={theme.dim}>{`${selectedWallet.watch_index + 1}/${wallets.length}`}</Text>
             </InkBox>
             <Text color={theme.white} bold>{truncate(detailTitle, modalContentWidth)}</Text>
@@ -787,7 +787,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
                       flexDirection="column"
                       marginBottom={sectionIndex === column.length - 1 ? 0 : 1}
                     >
-                      <Text color={theme.blue} bold>{fit(section.title.toUpperCase(), detailColumnWidth)}</Text>
+                      <Text color={theme.accent} bold>{fit(section.title.toUpperCase(), detailColumnWidth)}</Text>
                       {section.metrics.map((metric) => (
                         <InkBox key={`${section.title}-${metric.label}`} width={detailColumnWidth}>
                           <Text color={theme.dim}>{fit(metric.label, detailLabelWidth)}</Text>

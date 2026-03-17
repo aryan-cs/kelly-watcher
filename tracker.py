@@ -62,7 +62,7 @@ class PolymarketTracker:
 
     def prime_identities(self) -> None:
         for wallet in self.wallets:
-            resolve_username_for_wallet(wallet, client=self.client)
+            resolve_username_for_wallet(wallet, client=self.client, force=True)
 
     def get_leaderboard(self, window: str = "1w", limit: int = 50) -> list[dict]:
         try:

@@ -1,5 +1,6 @@
 import fs from 'fs'
 import {useEffect, useState} from 'react'
+import {readIdentityMap} from './identities.js'
 import {eventsPath, identityPath} from './paths.js'
 import {useRefreshToken} from './refresh.js'
 
@@ -22,26 +23,6 @@ export interface LiveEvent {
   shadow?: boolean
   order_id?: string | null
   ts: number
-}
-
-interface IdentityCachePayload {
-  wallets?: Record<string, {username?: string}>
-}
-
-function readIdentityMap(): Map<string, string> {
-  try {
-    const payload = JSON.parse(fs.readFileSync(identityPath, 'utf8')) as IdentityCachePayload
-    const lookup = new Map<string, string>()
-    for (const [wallet, entry] of Object.entries(payload.wallets || {})) {
-      const username = (entry?.username || '').trim()
-      if (wallet && username) {
-        lookup.set(wallet.toLowerCase(), username)
-      }
-    }
-    return lookup
-  } catch {
-    return new Map()
-  }
 }
 
 export function useEventStream(maxEvents = 50): LiveEvent[] {

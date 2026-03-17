@@ -77,6 +77,21 @@ def _write_identity_cache(cache: dict) -> None:
     CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _clear_placeholder_identity(cache: dict, wallet: str) -> None:
+    cache.setdefault("wallets", {})
+    cache.setdefault("usernames", {})
+    entry = cache["wallets"].get(wallet, {})
+    normalized_username = str(entry.get("normalized_username") or "").strip().lower()
+    if normalized_username:
+        cache["usernames"].pop(normalized_username, None)
+    entry.pop("username", None)
+    entry.pop("normalized_username", None)
+    if entry:
+        cache["wallets"][wallet] = entry
+    else:
+        cache["wallets"].pop(wallet, None)
+
+
 def lookup_username(wallet: str | None) -> str | None:
     normalized_wallet = normalize_wallet(wallet)
     if not normalized_wallet:
@@ -84,6 +99,10 @@ def lookup_username(wallet: str | None) -> str | None:
     cache = load_identity_cache()
     entry = cache.get("wallets", {}).get(normalized_wallet, {})
     username = str(entry.get("username") or "").strip()
+    if is_placeholder_username(username, normalized_wallet):
+        _clear_placeholder_identity(cache, normalized_wallet)
+        _write_identity_cache(cache)
+        return None
     return username or None
 
 
@@ -133,6 +152,9 @@ def mark_wallet_checked(wallet: str | None, checked_at: int | None = None) -> No
     cache = load_identity_cache()
     cache.setdefault("wallets", {})
     entry = cache["wallets"].get(normalized_wallet, {})
+    if is_placeholder_username(entry.get("username"), normalized_wallet):
+        _clear_placeholder_identity(cache, normalized_wallet)
+        entry = cache["wallets"].get(normalized_wallet, {})
     entry["checked_at"] = now
     cache["wallets"][normalized_wallet] = entry
     _write_identity_cache(cache)

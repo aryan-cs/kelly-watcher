@@ -4,6 +4,7 @@ import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
 import {envExamplePath, envPath, identityPath} from '../paths.js'
 import {fit, fitRight, formatPct, secondsAgo, shortAddress, truncate, wrapText} from '../format.js'
+import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {rowsForHeight} from '../responsive.js'
 import {useRefreshToken} from '../refresh.js'
 import {useTerminalSize} from '../terminal.js'
@@ -174,25 +175,6 @@ function readWatchedWallets(): string[] {
   return []
 }
 
-function readIdentityUsernames(): Map<string, string> {
-  const lookup = new Map<string, string>()
-  try {
-    const payload = JSON.parse(fs.readFileSync(identityPath, 'utf8')) as {
-      wallets?: Record<string, {username?: string}>
-    }
-    for (const [wallet, entry] of Object.entries(payload.wallets || {})) {
-      const username = entry?.username?.trim()
-      if (!wallet || !username) {
-        continue
-      }
-      lookup.set(wallet.toLowerCase(), username)
-    }
-  } catch {
-    return lookup
-  }
-  return lookup
-}
-
 function formatAddress(value: string, width: number): string {
   if (width <= 0) return ''
   if (!value) return '-'.padEnd(width)
@@ -355,12 +337,12 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
   const refreshToken = useRefreshToken()
 
   const usernames = useMemo(() => {
-    const lookup = readIdentityUsernames()
+    const lookup = readIdentityMap()
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index]
       const wallet = event.trader?.trim().toLowerCase()
       const username = event.username?.trim()
-      if (!wallet || !username || lookup.has(wallet)) {
+      if (!wallet || !username || isPlaceholderUsername(username, wallet) || lookup.has(wallet)) {
         continue
       }
       lookup.set(wallet, username)

@@ -8,7 +8,8 @@ import {
   formatEditableConfigValue,
   type EditableConfigValues
 } from '../configEditor.js'
-import {fit, formatNumber, truncate} from '../format.js'
+import {fit, formatNumber, shortAddress, truncate} from '../format.js'
+import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {envExamplePath, envPath} from '../paths.js'
 import {rowsForHeight, stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
@@ -90,12 +91,12 @@ export function Settings({editor}: SettingsProps) {
   const statusColor =
     editor.statusTone === 'error' ? theme.red : editor.statusTone === 'success' ? theme.green : theme.dim
   const usernames = useMemo(() => {
-    const lookup = new Map<string, string>()
+    const lookup = readIdentityMap()
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index]
       const wallet = event.trader?.trim().toLowerCase()
       const username = event.username?.trim()
-      if (!wallet || !username || lookup.has(wallet)) {
+      if (!wallet || !username || isPlaceholderUsername(username, wallet) || lookup.has(wallet)) {
         continue
       }
       lookup.set(wallet, username)
@@ -198,7 +199,7 @@ export function Settings({editor}: SettingsProps) {
                         <Text color={theme.white}>{fit(`${index + 1}.`, walletIndexWidth)}</Text>
                         <Text> </Text>
                         <Text color={theme.white}>
-                          {fit(usernames.get(wallet.toLowerCase()) || '-', walletUsernameWidth)}
+                          {fit(usernames.get(wallet.toLowerCase()) || shortAddress(wallet), walletUsernameWidth)}
                         </Text>
                         <Text> </Text>
                         <Text color={theme.white}>{fit(wallet, walletAddressWidth)}</Text>

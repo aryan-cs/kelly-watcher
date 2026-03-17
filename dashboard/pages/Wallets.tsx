@@ -695,8 +695,8 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
                 const isSelected = wallet.watch_index === clampedSelectedIndex
                 const usernameLabel = wallet.username || '-'
                 const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`
-                const usernameColor = isSelected ? theme.blue : wallet.username ? theme.white : theme.dim
-                const addressColor = isSelected ? theme.blue : theme.white
+                const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim
+                const addressColor = isSelected ? theme.accent : theme.white
                 const observedWinRateColor =
                   wallet.observed_win_rate == null
                     ? theme.dim

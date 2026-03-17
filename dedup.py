@@ -143,10 +143,17 @@ class DedupeCache:
         if not our_address or not use_real_money():
             return
 
-        self.sync_positions_from_rows(tracker.get_wallet_positions(our_address))
+        rows = tracker.get_wallet_positions(our_address)
+        if rows is None:
+            logger.warning("Live positions refresh failed; keeping last known open positions")
+            return
+        self.sync_positions_from_rows(rows)
 
-    def sync_positions_from_rows(self, rows: list[dict]) -> None:
+    def sync_positions_from_rows(self, rows: list[dict] | None) -> None:
         if not use_real_money():
+            return
+        if rows is None:
+            logger.warning("Live positions sync received no rows; keeping last known open positions")
             return
 
         conn = get_conn()

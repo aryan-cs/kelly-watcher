@@ -97,7 +97,7 @@ class PolymarketTracker:
             logger.error("Trade fetch failed for %s: %s", address[:10], exc)
             return []
 
-    def get_wallet_positions(self, address: str) -> list[dict]:
+    def get_wallet_positions(self, address: str) -> list[dict] | None:
         if not address:
             return []
         try:
@@ -110,7 +110,7 @@ class PolymarketTracker:
             return payload if isinstance(payload, list) else payload.get("positions", [])
         except Exception as exc:
             logger.error("Position fetch failed for %s: %s", address[:10], exc)
-            return []
+            return None
 
     def get_market_metadata(self, condition_id: str) -> tuple[dict[str, Any], int]:
         if not condition_id:

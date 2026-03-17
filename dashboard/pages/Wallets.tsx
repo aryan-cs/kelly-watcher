@@ -149,7 +149,7 @@ SELECT
 FROM trader_cache
 `
 
-const TOP_SHADOW_SQL = `
+const SHADOW_WALLETS_SQL = `
 SELECT
   trader_address,
   COUNT(*) AS n,
@@ -159,8 +159,6 @@ SELECT
 FROM trade_log
 WHERE real_money=0 AND skipped=0
 GROUP BY trader_address
-ORDER BY pnl DESC
-LIMIT 5
 `
 
 function readWatchedWallets(): string[] {
@@ -367,7 +365,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
   const tableWidth = Math.max(122, terminal.width - 12)
   const activityRows = useQuery<WalletActivityRow>(WALLET_ACTIVITY_SQL)
   const traderCacheRows = useQuery<TraderCacheRow>(TRADER_CACHE_SQL)
-  const topShadowWallets = useQuery<TopShadowRow>(TOP_SHADOW_SQL)
+  const shadowWalletRows = useQuery<TopShadowRow>(SHADOW_WALLETS_SQL)
   const events = useEventStream(1000)
   const refreshToken = useRefreshToken()
   const layout = getWalletsLayout(tableWidth)
@@ -453,10 +451,20 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
     [traderCacheRows]
   )
 
-  const topShadowNameWidth = Math.max(18, Math.min(32, tableWidth - 22))
-  const maxAbsTopShadowPnl = useMemo(
-    () => topShadowWallets.reduce((max, wallet) => Math.max(max, Math.abs(wallet.pnl || 0)), 0),
-    [topShadowWallets]
+  const bestShadowWallets = useMemo(
+    () => [...shadowWalletRows].sort((left, right) => (right.pnl || 0) - (left.pnl || 0)).slice(0, 5),
+    [shadowWalletRows]
+  )
+  const worstShadowWallets = useMemo(
+    () => [...shadowWalletRows].sort((left, right) => (left.pnl || 0) - (right.pnl || 0)).slice(0, 5),
+    [shadowWalletRows]
+  )
+  const shadowPanelsWide = terminal.wide
+  const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 2) / 2)) : tableWidth
+  const shadowNameWidth = Math.max(14, Math.min(28, shadowPanelWidth - 22))
+  const maxAbsShadowPnl = useMemo(
+    () => shadowWalletRows.reduce((max, wallet) => Math.max(max, Math.abs(wallet.pnl || 0)), 0),
+    [shadowWalletRows]
   )
   const maxAbsLocalPnl = useMemo(
     () => wallets.reduce((max, wallet) => Math.max(max, Math.abs(wallet.local_pnl || 0)), 0),
@@ -646,47 +654,54 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
     ? wrapText(`Address ${selectedWallet.trader_address}`, Math.max(20, modalContentWidth))
     : []
 
+  const renderShadowWalletBox = (title: string, shadowWallets: TopShadowRow[]) => (
+    <Box title={title} width={shadowPanelsWide ? shadowPanelWidth : '100%'}>
+      <InkBox width="100%">
+        <Text color={theme.dim}>{fit('WALLET', shadowNameWidth)}</Text>
+        <Text color={theme.dim}> </Text>
+        <Text color={theme.dim}>{fitRight('PROFILE WR', 10)}</Text>
+        <Text color={theme.dim}> </Text>
+        <Text color={theme.dim}>{fitRight('SHDW P&L', 10)}</Text>
+      </InkBox>
+      <InkBox flexDirection="column">
+        {shadowWallets.length ? (
+          shadowWallets.map((wallet) => {
+            const username = usernames.get(wallet.trader_address.toLowerCase())
+            const label = username || shortAddress(wallet.trader_address)
+            const profile = traderCacheByWallet.get(wallet.trader_address.toLowerCase())
+            const profileWinRate = profile?.win_rate ?? null
+            const winRateColor =
+              profileWinRate == null ? theme.dim : probabilityColor(profileWinRate)
+            const pnlColor =
+              wallet.pnl == null
+                ? theme.dim
+                : centeredGradientColor(wallet.pnl, maxAbsShadowPnl)
+
+            return (
+              <InkBox key={`${title}-${wallet.trader_address}`} width="100%">
+                <Text color={username ? theme.white : theme.dim}>{fit(label, shadowNameWidth)}</Text>
+                <Text> </Text>
+                <Text color={winRateColor}>
+                  {fitRight(profileWinRate == null ? '-' : formatPct(profileWinRate), 10)}
+                </Text>
+                <Text> </Text>
+                <Text color={pnlColor}>{fitRight(formatSignedMoney(wallet.pnl, 10), 10)}</Text>
+              </InkBox>
+            )
+          })
+        ) : (
+          <Text color={theme.dim}>No shadow wallet performance yet.</Text>
+        )}
+      </InkBox>
+    </Box>
+  )
+
   return (
     <InkBox flexDirection="column" width="100%" height="100%">
-      <Box title="Top Shadow Wallets">
-        <InkBox width="100%">
-          <Text color={theme.dim}>{fit('WALLET', topShadowNameWidth)}</Text>
-          <Text color={theme.dim}> </Text>
-          <Text color={theme.dim}>{fitRight('PROFILE WR', 10)}</Text>
-          <Text color={theme.dim}> </Text>
-          <Text color={theme.dim}>{fitRight('SHDW P&L', 10)}</Text>
-        </InkBox>
-        <InkBox flexDirection="column">
-          {topShadowWallets.length ? (
-            topShadowWallets.map((wallet) => {
-              const username = usernames.get(wallet.trader_address.toLowerCase())
-              const label = username || shortAddress(wallet.trader_address)
-              const profile = traderCacheByWallet.get(wallet.trader_address.toLowerCase())
-              const profileWinRate = profile?.win_rate ?? null
-              const winRateColor =
-                profileWinRate == null ? theme.dim : probabilityColor(profileWinRate)
-              const pnlColor =
-                wallet.pnl == null
-                  ? theme.dim
-                  : centeredGradientColor(wallet.pnl, maxAbsTopShadowPnl)
-
-              return (
-                <InkBox key={wallet.trader_address} width="100%">
-                  <Text color={username ? theme.white : theme.dim}>{fit(label, topShadowNameWidth)}</Text>
-                  <Text> </Text>
-                  <Text color={winRateColor}>
-                    {fitRight(profileWinRate == null ? '-' : formatPct(profileWinRate), 10)}
-                  </Text>
-                  <Text> </Text>
-                  <Text color={pnlColor}>{fitRight(formatSignedMoney(wallet.pnl, 10), 10)}</Text>
-                </InkBox>
-              )
-            })
-          ) : (
-            <Text color={theme.dim}>No shadow wallet performance yet.</Text>
-          )}
-        </InkBox>
-      </Box>
+      <InkBox flexDirection={shadowPanelsWide ? 'row' : 'column'} columnGap={1} rowGap={1}>
+        {renderShadowWalletBox('Best Shadow Wallets', bestShadowWallets)}
+        {renderShadowWalletBox('Worst Shadow Wallets', worstShadowWallets)}
+      </InkBox>
 
       <InkBox marginTop={1} flexGrow={1}>
         <Box title={`Tracked Wallet Profiles: ${wallets.length}`} height="100%">

@@ -1,7 +1,7 @@
 import fs from 'fs'
 import {envExamplePath, envPath} from './paths.js'
 
-export type EditableConfigKind = 'int' | 'float' | 'bool' | 'duration'
+export type EditableConfigKind = 'int' | 'float' | 'bool' | 'duration' | 'choice'
 
 export const maxMarketHorizonPresets = [
   '5m',
@@ -14,6 +14,9 @@ export const maxMarketHorizonPresets = [
   'unlimited'
 ] as const
 
+export const retrainCadencePresets = ['daily', 'weekly'] as const
+export const retrainEarlyCheckPresets = ['6h', '12h', '24h', '48h'] as const
+
 export interface EditableConfigField {
   key: string
   label: string
@@ -21,6 +24,7 @@ export interface EditableConfigField {
   description: string
   defaultValue: string
   liveApplies: boolean
+  options?: readonly string[]
 }
 
 export const editableConfigFields: EditableConfigField[] = [
@@ -38,7 +42,8 @@ export const editableConfigFields: EditableConfigField[] = [
     kind: 'duration',
     description: 'Longest time to resolution the bot will allow. Edit with left/right to toggle 5m, 1h, 24h, 7d, 30d, 180d, 365d, or unlimited.',
     defaultValue: '365d',
-    liveApplies: true
+    liveApplies: true,
+    options: maxMarketHorizonPresets
   },
   {
     key: 'MIN_CONFIDENCE',
@@ -66,9 +71,9 @@ export const editableConfigFields: EditableConfigField[] = [
   },
   {
     key: 'SHADOW_BANKROLL_USD',
-    label: 'Shadow bankroll',
+    label: 'Tracker bankroll',
     kind: 'float',
-    description: 'Paper bankroll used in shadow mode. Restart bot to apply.',
+    description: 'Paper bankroll used in tracker mode. Restart bot to apply.',
     defaultValue: '1000',
     liveApplies: false
   },
@@ -76,8 +81,42 @@ export const editableConfigFields: EditableConfigField[] = [
     key: 'USE_REAL_MONEY',
     label: 'Live trading',
     kind: 'bool',
-    description: 'Toggle between shadow and live mode. Restart bot to apply safely.',
+    description: 'Toggle between tracker and live mode. Restart bot to apply safely.',
     defaultValue: 'false',
+    liveApplies: false
+  },
+  {
+    key: 'RETRAIN_BASE_CADENCE',
+    label: 'Retrain cadence',
+    kind: 'choice',
+    description: 'How often the bot attempts a scheduled full retrain. Use left/right to toggle daily or weekly. Restart bot to apply.',
+    defaultValue: 'daily',
+    liveApplies: false,
+    options: retrainCadencePresets
+  },
+  {
+    key: 'RETRAIN_HOUR_LOCAL',
+    label: 'Retrain hour',
+    kind: 'int',
+    description: 'Local hour for the scheduled retrain window, from 0 through 23. Restart bot to apply.',
+    defaultValue: '3',
+    liveApplies: false
+  },
+  {
+    key: 'RETRAIN_EARLY_CHECK_INTERVAL',
+    label: 'Early check',
+    kind: 'duration',
+    description: 'How often the bot checks whether enough new labels exist to retrain early. Use left/right to toggle 6h, 12h, 24h, or 48h. Restart bot to apply.',
+    defaultValue: '24h',
+    liveApplies: false,
+    options: retrainEarlyCheckPresets
+  },
+  {
+    key: 'RETRAIN_MIN_NEW_LABELS',
+    label: 'Early label gate',
+    kind: 'int',
+    description: 'Minimum new resolved trades required before an unscheduled early retrain can fire. Restart bot to apply.',
+    defaultValue: '100',
     liveApplies: false
   }
 ]
@@ -175,6 +214,15 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
     return {ok: true, value: `${match[1]}${match[3].toLowerCase()}`}
   }
 
+  if (field.kind === 'choice') {
+    const normalized = value.toLowerCase()
+    const options = (field.options || []).map((option) => option.toLowerCase())
+    if (!options.length || !options.includes(normalized)) {
+      return {ok: false, error: `${field.label} must be one of: ${(field.options || []).join(', ')}.`}
+    }
+    return {ok: true, value: normalized}
+  }
+
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) {
     return {ok: false, error: `${field.label} must be a valid number.`}
@@ -194,6 +242,14 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
 
   if ((field.key === 'MIN_BET_USD' || field.key === 'SHADOW_BANKROLL_USD') && numeric <= 0) {
     return {ok: false, error: `${field.label} must be greater than 0.`}
+  }
+
+  if (field.key === 'RETRAIN_HOUR_LOCAL' && (numeric < 0 || numeric > 23)) {
+    return {ok: false, error: 'Retrain hour must be between 0 and 23.'}
+  }
+
+  if (field.key === 'RETRAIN_MIN_NEW_LABELS' && numeric < 1) {
+    return {ok: false, error: 'Early label gate must be at least 1.'}
   }
 
   return {ok: true, value}
@@ -217,6 +273,23 @@ export function formatEditableConfigValue(field: EditableConfigField, value: str
     return normalized.toLowerCase()
   }
 
+  if (field.key === 'RETRAIN_BASE_CADENCE') {
+    return normalized.toLowerCase()
+  }
+
+  if (field.key === 'RETRAIN_HOUR_LOCAL') {
+    const hour = Math.min(Math.max(Number.parseInt(normalized, 10) || 0, 0), 23)
+    return `${String(hour).padStart(2, '0')}:00 local`
+  }
+
+  if (field.key === 'RETRAIN_EARLY_CHECK_INTERVAL') {
+    return normalized.toLowerCase()
+  }
+
+  if (field.key === 'RETRAIN_MIN_NEW_LABELS') {
+    return `${normalized} labels`
+  }
+
   if (field.key === 'SHADOW_BANKROLL_USD' || field.key === 'MIN_BET_USD') {
     return `$${normalized}`
   }
@@ -224,8 +297,30 @@ export function formatEditableConfigValue(field: EditableConfigField, value: str
   return normalized
 }
 
+export function hasCyclableOptions(field: EditableConfigField): boolean {
+  return Array.isArray(field.options) && field.options.length > 0
+}
+
+export function cycleFieldOption(
+  field: EditableConfigField,
+  currentValue: string,
+  direction: 'left' | 'right'
+): string | null {
+  if (!hasCyclableOptions(field)) {
+    return null
+  }
+
+  const values = (field.options || []).map((option) => option.toLowerCase())
+  const normalized = (currentValue || field.defaultValue).trim().toLowerCase()
+  const fallback = field.defaultValue.toLowerCase()
+  const currentIndex = values.indexOf(values.includes(normalized) ? normalized : fallback)
+  const step = direction === 'right' ? 1 : -1
+  const nextIndex = (currentIndex + step + values.length) % values.length
+  return values[nextIndex]
+}
+
 export function isPresetDurationField(field: EditableConfigField): boolean {
-  return field.key === 'MAX_MARKET_HORIZON'
+  return hasCyclableOptions(field)
 }
 
 export function cycleDurationPreset(
@@ -233,18 +328,5 @@ export function cycleDurationPreset(
   currentValue: string,
   direction: 'left' | 'right'
 ): string | null {
-  if (!isPresetDurationField(field)) {
-    return null
-  }
-
-  const normalized = (currentValue || field.defaultValue).trim().toLowerCase()
-  const values = [...maxMarketHorizonPresets]
-  const currentIndex = values.indexOf(
-    values.includes(normalized as (typeof maxMarketHorizonPresets)[number])
-      ? (normalized as (typeof maxMarketHorizonPresets)[number])
-      : (field.defaultValue.toLowerCase() as (typeof maxMarketHorizonPresets)[number])
-  )
-  const step = direction === 'right' ? 1 : -1
-  const nextIndex = (currentIndex + step + values.length) % values.length
-  return values[nextIndex]
+  return cycleFieldOption(field, currentValue, direction)
 }

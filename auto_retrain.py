@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from alerter import send_alert
+from config import retrain_min_new_labels
 from db import get_conn
 from train import MIN_SAMPLES, check_calibration, load_training_data, train
 
@@ -51,6 +52,7 @@ def retrain_cycle(signal_engine) -> bool:
 
 
 def should_retrain_early(_signal_engine) -> bool:
+    threshold = retrain_min_new_labels()
     conn = get_conn()
     row = conn.execute(
         "SELECT trained_at FROM model_history WHERE deployed=1 ORDER BY trained_at DESC LIMIT 1"
@@ -72,8 +74,8 @@ def should_retrain_early(_signal_engine) -> bool:
     ).fetchone()["n"]
     conn.close()
 
-    if new_labeled >= 100:
-        logger.info("Early retrain triggered: %s new labeled samples", new_labeled)
+    if new_labeled >= threshold:
+        logger.info("Early retrain triggered: %s new labeled samples (threshold %s)", new_labeled, threshold)
         return True
 
     return False

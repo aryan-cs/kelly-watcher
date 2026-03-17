@@ -25,6 +25,9 @@ from config import (
     min_confidence,
     poll_interval,
     private_key,
+    retrain_base_cadence,
+    retrain_early_check_seconds,
+    retrain_hour_local,
     use_real_money,
     wallet_address,
     watched_wallets,
@@ -793,17 +796,26 @@ def main() -> None:
         minute=0,
         id="daily_report",
     )
-    scheduler.add_job(
-        lambda: retrain_cycle(engine),
-        "cron",
-        day_of_week="mon",
-        hour=3,
-        id="weekly_retrain",
-    )
+    retrain_cadence = retrain_base_cadence()
+    retrain_hour = retrain_hour_local()
+    retrain_trigger = {"hour": retrain_hour, "minute": 0, "id": "scheduled_retrain"}
+    if retrain_cadence == "weekly":
+        scheduler.add_job(
+            lambda: retrain_cycle(engine),
+            "cron",
+            day_of_week="mon",
+            **retrain_trigger,
+        )
+    else:
+        scheduler.add_job(
+            lambda: retrain_cycle(engine),
+            "cron",
+            **retrain_trigger,
+        )
     scheduler.add_job(
         lambda: should_retrain_early(engine) and retrain_cycle(engine),
         "interval",
-        hours=24,
+        seconds=retrain_early_check_seconds(),
         id="early_retrain_check",
     )
     scheduler.add_job(

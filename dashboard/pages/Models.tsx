@@ -2,6 +2,7 @@ import React, {useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
 import {StatRow} from '../components/StatRow.js'
+import {editableConfigFields, formatEditableConfigValue, type EditableConfigValues} from '../configEditor.js'
 import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo} from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
@@ -77,6 +78,145 @@ interface TrainingSummaryRow {
   total_runs: number | null
   runs_7d: number | null
   runs_30d: number | null
+}
+
+export type ModelPanelId =
+  | 'prediction_quality'
+  | 'tracker_health'
+  | 'confidence_check'
+  | 'signal_modes'
+  | 'how_it_works'
+  | 'training_cycle'
+
+interface ModelPanelHelpRow {
+  label: string
+  text: string
+}
+
+interface ModelPanelDefinition {
+  id: ModelPanelId
+  title: string
+  summary: string[]
+  rows: ModelPanelHelpRow[]
+  settingKeys: string[]
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined
+}
+
+export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
+  {
+    id: 'prediction_quality',
+    title: 'Prediction Quality',
+    summary: [
+      'This box grades the currently active scorer itself, not the bankroll curve.',
+      'Lower loss numbers mean the probabilities are closer to what actually happened.'
+    ],
+    rows: [
+      {label: 'Active path', text: 'Which scorer is currently making decisions: XGBoost or the heuristic score.'},
+      {label: 'Trained', text: 'When the latest deployed model was built.'},
+      {label: 'Model age', text: 'How long the active deployed model has been running without a retrain.'},
+      {label: 'Samples', text: 'How many resolved trades were available to train on.'},
+      {label: 'Features', text: 'How many inputs the deployed model is using.'},
+      {label: 'Brier score', text: 'Average probability error. Lower is better.'},
+      {label: 'Log loss', text: 'Penalizes confident wrong calls much harder. Lower is better.'}
+    ],
+    settingKeys: []
+  },
+  {
+    id: 'tracker_health',
+    title: 'Tracker Health',
+    summary: [
+      'This box measures what happened after the bot actually accepted signals.',
+      'It is the best quick read on how strict filters, edge, and sizing are working together.'
+    ],
+    rows: [
+      {label: 'Signals logged', text: 'Candidate trades the bot observed before filtering.'},
+      {label: 'Bets taken', text: 'Signals that passed checks and became tracker bets.'},
+      {label: 'Use rate', text: 'Accepted bets divided by total signals. Lower means stricter filtering.'},
+      {label: 'Win rate', text: 'Resolved tracker bets that finished as wins.'},
+      {label: 'Avg confidence', text: 'Average predicted win probability on accepted bets.'},
+      {label: 'Avg edge', text: 'Confidence minus price. Positive means the bot saw value.'},
+      {label: 'Tracker P&L', text: 'Cumulative paper profit from accepted bets.'},
+      {label: 'Sharpe ratio', text: 'Return compared to volatility. Higher is smoother.'}
+    ],
+    settingKeys: ['MIN_CONFIDENCE', 'MAX_BET_FRACTION', 'SHADOW_BANKROLL_USD']
+  },
+  {
+    id: 'confidence_check',
+    title: 'Confidence Check',
+    summary: [
+      'This box asks whether the probabilities are calibrated.',
+      'If the bot says 70%, the actual win rate should land close to 70% over time.'
+    ],
+    rows: [
+      {label: 'Resolved bets', text: 'Accepted tracker bets that already settled and can be graded.'},
+      {label: 'Avg confidence', text: 'Mean predicted probability across resolved accepted bets.'},
+      {label: 'Actual win', text: 'Observed win rate for those same bets.'},
+      {label: 'Calib gap', text: 'Average absolute distance between predicted odds and actual outcomes. Lower is better.'},
+      {label: 'Range', text: 'Confidence bucket for grouped calibration checks.'},
+      {label: 'Pred / Act / Gap', text: 'Predicted win rate, actual win rate, and the difference for that bucket.'}
+    ],
+    settingKeys: ['MIN_CONFIDENCE']
+  },
+  {
+    id: 'signal_modes',
+    title: 'Signal Modes',
+    summary: [
+      'This box compares how each decision path is behaving.',
+      'It helps you see whether XGBoost is actually earning its keep versus the heuristic fallback.'
+    ],
+    rows: [
+      {label: 'Mode', text: 'The decision path used for that signal group.'},
+      {label: 'Use', text: 'Acceptance rate for that path.'},
+      {label: 'Win', text: 'Resolved win rate for accepted bets from that path.'},
+      {label: 'Edge', text: 'Average confidence edge over price for that path.'},
+      {label: 'P&L', text: 'Cumulative tracker profit from that path.'}
+    ],
+    settingKeys: ['MIN_CONFIDENCE', 'MAX_MARKET_HORIZON']
+  },
+  {
+    id: 'how_it_works',
+    title: 'How It Works',
+    summary: [
+      'This box explains the base scoring ingredients before the final trade/no-trade decision.',
+      'Higher scores mean the trader, market, or priors are pushing confidence up.'
+    ],
+    rows: [
+      {label: 'Trader score', text: 'Quality signal from trader history and behavior.'},
+      {label: 'Market score', text: 'Quality signal from spread, depth, time, and momentum.'},
+      {label: 'Prior win', text: 'Resolved-history prior for similar trades.'},
+      {label: 'Prior blend', text: 'How much the prior is allowed to move the base score.'},
+      {label: 'Avg evidence', text: 'Average number of prior examples supporting the adjustment.'}
+    ],
+    settingKeys: ['MIN_CONFIDENCE', 'MAX_MARKET_HORIZON', 'MAX_BET_FRACTION']
+  },
+  {
+    id: 'training_cycle',
+    title: 'Training Cycle',
+    summary: [
+      'This box covers how often the model gets rebuilt and what has to happen before a new one goes live.',
+      'These are full retrains on resolved trades, not online fine-tunes.'
+    ],
+    rows: [
+      {label: 'Update style', text: 'The system rebuilds the model from resolved trades each cycle.'},
+      {label: 'Base cadence', text: 'Regular scheduled retrain frequency.'},
+      {label: 'Run time', text: 'Local hour when the scheduled retrain is attempted.'},
+      {label: 'Early check', text: 'How often the bot checks whether it should retrain sooner.'},
+      {label: 'Early trigger', text: 'Minimum new labels needed to fire an unscheduled retrain.'},
+      {label: 'Last / Avg gap', text: 'Observed time between recent successful training runs.'},
+      {label: 'Runs 7d / 30d', text: 'How many training runs landed recently.'}
+    ],
+    settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS']
+  }
+]
+
+interface ModelsProps {
+  selectedPanelIndex: number
+  detailOpen: boolean
+  selectedSettingIndex: number
+  settingsValues: EditableConfigValues
 }
 
 const MODEL_SQL = `
@@ -270,7 +410,7 @@ function modeLabel(mode: string): string {
   return mode || 'Unknown'
 }
 
-export function Models() {
+export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues}: ModelsProps) {
   const terminal = useTerminalSize()
   const stacked = stackPanels(terminal.width)
   const models = useQuery<ModelRow>(MODEL_SQL)
@@ -288,6 +428,10 @@ export function Models() {
   const flow = flowRows[0]
   const trainingSummary = trainingSummaryRows[0]
   const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0]
+  const configFieldByKey = useMemo(
+    () => new Map(editableConfigFields.map((field) => [field.key, field])),
+    []
+  )
 
   const featureCount = useMemo(() => parseFeatureCount(latest?.feature_cols), [latest?.feature_cols])
   const useRate = ratio(tracker?.taken, tracker?.signals)
@@ -353,11 +497,34 @@ export function Models() {
       stateWidth: Math.max(8, panelContentWidth - timeWidth - sampleWidth - brierWidth - lossWidth - gapCount)
     }
   }, [panelContentWidth])
+  const clampedSelectedPanelIndex = Math.max(0, Math.min(selectedPanelIndex, MODEL_PANEL_DEFS.length - 1))
+  const selectedPanel = MODEL_PANEL_DEFS[clampedSelectedPanelIndex]
+  const relatedSettings = useMemo(
+    () => selectedPanel.settingKeys.map((key) => configFieldByKey.get(key)).filter(isDefined),
+    [configFieldByKey, selectedPanel]
+  )
+  const clampedSelectedSettingIndex =
+    relatedSettings.length > 0
+      ? Math.max(0, Math.min(selectedSettingIndex, relatedSettings.length - 1))
+      : 0
+  const helpModalWidth = Math.max(70, Math.min(terminal.width - 8, terminal.wide ? 118 : 94))
+  const helpContentWidth = Math.max(52, helpModalWidth - 4)
+  const helpSettingLabelWidth = Math.max(18, Math.min(28, Math.floor(helpContentWidth * 0.48)))
+  const helpSettingValueWidth = Math.max(14, helpContentWidth - helpSettingLabelWidth - 1)
+  const formatConfigValue = (key: string): string => {
+    const field = configFieldByKey.get(key)
+    if (!field) return '-'
+    return formatEditableConfigValue(field, settingsValues[key] || field.defaultValue)
+  }
+  const baseCadenceValue = formatConfigValue('RETRAIN_BASE_CADENCE')
+  const retrainHourValue = formatConfigValue('RETRAIN_HOUR_LOCAL')
+  const earlyCheckValue = formatConfigValue('RETRAIN_EARLY_CHECK_INTERVAL')
+  const earlyTriggerValue = formatConfigValue('RETRAIN_MIN_NEW_LABELS')
 
   return (
     <InkBox flexDirection="column" width="100%">
       <InkBox flexDirection={stacked ? 'column' : 'row'}>
-        <Box title="Prediction Quality" width={stacked ? '100%' : '50%'}>
+        <Box title="Prediction Quality" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 0}>
           <StatRow
             label="Active path"
             value={latest?.deployed ? 'XGBoost' : 'Heuristic score'}
@@ -383,7 +550,7 @@ export function Models() {
 
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
 
-        <Box title="Tracker Health" width={stacked ? '100%' : '50%'}>
+        <Box title="Tracker Health" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 1}>
           <StatRow label="Signals logged" value={formatCount(tracker?.signals)} />
           <StatRow label="Bets taken" value={formatCount(tracker?.taken)} />
           <StatRow
@@ -424,7 +591,7 @@ export function Models() {
       </InkBox>
 
       <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'}>
-        <Box title="Confidence Check" width={stacked ? '100%' : '50%'}>
+        <Box title="Confidence Check" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 2}>
           <StatRow label="Resolved bets" value={formatCount(calibration?.resolved)} />
           <StatRow
             label="Avg confidence"
@@ -481,7 +648,7 @@ export function Models() {
 
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
 
-        <Box title="Signal Modes" width={stacked ? '100%' : '50%'}>
+        <Box title="Signal Modes" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 3}>
           {signalModes.length ? (
             <>
               <InkBox width="100%">
@@ -529,7 +696,7 @@ export function Models() {
       </InkBox>
 
       <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'}>
-        <Box title="How It Works" width={stacked ? '100%' : '50%'}>
+        <Box title="How It Works" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 4}>
           <StatRow
             label="Trader score"
             value={formatPct(flow?.trader_score, 1)}
@@ -559,12 +726,12 @@ export function Models() {
 
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
 
-        <Box title="Training Cycle" width={stacked ? '100%' : '50%'}>
+        <Box title="Training Cycle" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 5}>
           <StatRow label="Update style" value="Full retrain" />
-          <StatRow label="Base cadence" value="Weekly" />
-          <StatRow label="Weekly slot" value="Mon 3:00 local" />
-          <StatRow label="Early check" value="Every 24h" />
-          <StatRow label="Early trigger" value="100 new labels" />
+          <StatRow label="Base cadence" value={baseCadenceValue} />
+          <StatRow label="Run time" value={retrainHourValue} />
+          <StatRow label="Early check" value={earlyCheckValue} />
+          <StatRow label="Early trigger" value={earlyTriggerValue} />
           <StatRow label="Total runs" value={formatCount(trainingSummary?.total_runs)} />
           <StatRow label="Last gap" value={formatInterval(lastRetrainGap)} />
           <StatRow label="Avg gap" value={formatInterval(averageRetrainGap)} />
@@ -608,6 +775,56 @@ export function Models() {
           )}
         </Box>
       </InkBox>
+
+      {detailOpen ? (
+        <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
+          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={helpModalWidth} paddingX={1}>
+            <InkBox justifyContent="space-between">
+              <Text color={theme.accent} bold>{selectedPanel.title}</Text>
+              <Text color={theme.dim}>{`${clampedSelectedPanelIndex + 1}/${MODEL_PANEL_DEFS.length}`}</Text>
+            </InkBox>
+
+            {selectedPanel.summary.map((line) => (
+              <Text key={line} color={theme.dim}>{fit(line, Math.min(line.length, helpContentWidth))}</Text>
+            ))}
+
+            <InkBox marginTop={1} flexDirection="column">
+              <Text color={theme.accent} bold>Label Guide</Text>
+              {selectedPanel.rows.map((row) => (
+                <Text key={`${selectedPanel.id}-${row.label}`} color={theme.dim}>
+                  {`${row.label}: ${row.text}`}
+                </Text>
+              ))}
+            </InkBox>
+
+            <InkBox marginTop={1} flexDirection="column">
+              <Text color={theme.accent} bold>Related Settings</Text>
+              {relatedSettings.length ? (
+                <>
+                  {relatedSettings.map((field, index) => {
+                    const selected = index === clampedSelectedSettingIndex
+                    const label = `${selected ? '> ' : '  '}${field.label}`
+                    return (
+                      <InkBox key={`${selectedPanel.id}-${field.key}`} width="100%">
+                        <Text color={selected ? theme.accent : theme.dim} bold={selected}>
+                          {fit(label, helpSettingLabelWidth)}
+                        </Text>
+                        <Text> </Text>
+                        <Text color={theme.white} bold={selected}>
+                          {fitRight(formatEditableConfigValue(field, settingsValues[field.key] || field.defaultValue), helpSettingValueWidth)}
+                        </Text>
+                      </InkBox>
+                    )
+                  })}
+                  <Text color={theme.dim}>Up/down selects a setting. Enter opens it in Config. Esc closes.</Text>
+                </>
+              ) : (
+                <Text color={theme.dim}>No direct settings are tied to this box yet. Esc closes.</Text>
+              )}
+            </InkBox>
+          </InkBox>
+        </InkBox>
+      ) : null}
     </InkBox>
   )
 }

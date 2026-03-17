@@ -143,6 +143,35 @@ def telegram_chat_id() -> str:
     return _get("TELEGRAM_CHAT_ID")
 
 
+def retrain_base_cadence() -> str:
+    raw = (_get_env_file_value("RETRAIN_BASE_CADENCE") or _get("RETRAIN_BASE_CADENCE", "daily")).lower()
+    return raw if raw in {"daily", "weekly"} else "daily"
+
+
+def retrain_hour_local() -> int:
+    raw = _get_env_file_value("RETRAIN_HOUR_LOCAL") or _get("RETRAIN_HOUR_LOCAL", "3")
+    try:
+        return min(max(int(raw), 0), 23)
+    except ValueError:
+        return 3
+
+
+def retrain_early_check_seconds() -> int:
+    raw = _get_env_file_value("RETRAIN_EARLY_CHECK_INTERVAL") or _get("RETRAIN_EARLY_CHECK_INTERVAL", "24h")
+    seconds = _parse_duration(raw, 24 * 3600.0)
+    if seconds == float("inf"):
+        return 24 * 3600
+    return max(int(seconds), 3600)
+
+
+def retrain_min_new_labels() -> int:
+    raw = _get_env_file_value("RETRAIN_MIN_NEW_LABELS") or _get("RETRAIN_MIN_NEW_LABELS", "100")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 100
+
+
 @lru_cache(maxsize=1)
 def watched_wallets() -> list[str]:
     raw = _get("WATCHED_WALLETS")

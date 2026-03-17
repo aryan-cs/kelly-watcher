@@ -8,11 +8,12 @@ import {
   validateEditableConfigValue,
   writeEditableConfigValue
 } from './configEditor.js'
+import {MODEL_PANEL_DEFS, Models} from './pages/Models.js'
+import {stackPanels} from './responsive.js'
 import {theme} from './theme.js'
 import {LiveFeed} from './pages/LiveFeed.js'
 import {Signals} from './pages/Signals.js'
 import {Performance} from './pages/Performance.js'
-import {Models} from './pages/Models.js'
 import {Wallets} from './pages/Wallets.js'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
 import {secondsAgo} from './format.js'
@@ -50,6 +51,9 @@ interface AppContentProps {
   perfCurrentScrollOffset: number
   perfPastScrollOffset: number
   perfActivePane: PerfPane
+  modelSelectionIndex: number
+  modelDetailOpen: boolean
+  modelSettingSelectionIndex: number
   walletSelectionIndex: number
   walletDetailOpen: boolean
   onWalletCountChange: (count: number) => void
@@ -64,6 +68,10 @@ function renderPage(
   perfCurrentScrollOffset: number,
   perfPastScrollOffset: number,
   perfActivePane: PerfPane,
+  modelSelectionIndex: number,
+  modelDetailOpen: boolean,
+  modelSettingSelectionIndex: number,
+  settingsValues: SettingsEditorState['values'],
   walletSelectionIndex: number,
   walletDetailOpen: boolean,
   onWalletCountChange: (count: number) => void
@@ -82,7 +90,14 @@ function renderPage(
         />
       )
     case 4:
-      return <Models />
+      return (
+        <Models
+          selectedPanelIndex={modelSelectionIndex}
+          detailOpen={modelDetailOpen}
+          selectedSettingIndex={modelSettingSelectionIndex}
+          settingsValues={settingsValues}
+        />
+      )
     case 5:
       return (
         <Wallets
@@ -106,6 +121,9 @@ function AppContent({
   perfCurrentScrollOffset,
   perfPastScrollOffset,
   perfActivePane,
+  modelSelectionIndex,
+  modelDetailOpen,
+  modelSettingSelectionIndex,
   walletSelectionIndex,
   walletDetailOpen,
   onWalletCountChange
@@ -147,6 +165,14 @@ function AppContent({
         ? terminal.compact
           ? `pane:${perfActivePane === 'current' ? 'current' : 'past'}  ↑↓ scroll  ←→ pane  ↑↑ top  r refresh  q exit`
           : `pane: ${perfActivePane === 'current' ? 'current' : 'past'}  ↑/↓: scroll  ←/→: pane  ↑↑: top  r: refresh  q: exit`
+      : page === 4
+        ? modelDetailOpen
+          ? terminal.compact
+            ? '↑↓ settings  enter edit  esc close  r refresh  q exit'
+            : '↑/↓: settings  Enter: edit in config  Esc: close  r: refresh  q: exit'
+          : terminal.compact
+            ? '↑↓/←→ select  enter help  r refresh  q exit'
+            : '↑/↓/←/→: select  Enter: help  r: refresh  q: exit'
       : page === 5
         ? terminal.compact
           ? '↑↓ select  enter detail  esc close  r refresh  q exit'
@@ -188,6 +214,10 @@ function AppContent({
           perfCurrentScrollOffset,
           perfPastScrollOffset,
           perfActivePane,
+          modelSelectionIndex,
+          modelDetailOpen,
+          modelSettingSelectionIndex,
+          settingsEditor.values,
           walletSelectionIndex,
           walletDetailOpen,
           onWalletCountChange
@@ -226,6 +256,9 @@ function App() {
   const [perfCurrentScrollOffset, setPerfCurrentScrollOffset] = useState(0)
   const [perfPastScrollOffset, setPerfPastScrollOffset] = useState(0)
   const [perfActivePane, setPerfActivePane] = useState<PerfPane>('current')
+  const [modelSelectionIndex, setModelSelectionIndex] = useState(0)
+  const [modelDetailOpen, setModelDetailOpen] = useState(false)
+  const [modelSettingSelectionIndex, setModelSettingSelectionIndex] = useState(0)
   const [walletSelectionIndex, setWalletSelectionIndex] = useState(0)
   const [walletDetailOpen, setWalletDetailOpen] = useState(false)
   const [walletCount, setWalletCount] = useState(0)
@@ -243,6 +276,46 @@ function App() {
   }))
 
   const selectedField = editableConfigFields[settingsEditor.selectedIndex]
+  const selectedModelPanel = MODEL_PANEL_DEFS[Math.max(0, Math.min(modelSelectionIndex, MODEL_PANEL_DEFS.length - 1))]
+  const selectedModelSettingKeys = selectedModelPanel?.settingKeys || []
+
+  const moveModelSelection = (direction: 'up' | 'down' | 'left' | 'right') => {
+    const panelCount = MODEL_PANEL_DEFS.length
+    const width = process.stdout.columns || 120
+    const columns = stackPanels(width) ? 1 : 2
+
+    setModelSelectionIndex((current) => {
+      if (panelCount <= 1) {
+        return 0
+      }
+
+      if (columns === 1) {
+        if (direction === 'up' || direction === 'left') {
+          return (current - 1 + panelCount) % panelCount
+        }
+        return (current + 1) % panelCount
+      }
+
+      const rowCount = Math.ceil(panelCount / columns)
+      const row = Math.floor(current / columns)
+      const column = current % columns
+
+      if (direction === 'left') {
+        const target = row * columns + ((column - 1 + columns) % columns)
+        return target >= panelCount ? current : target
+      }
+
+      if (direction === 'right') {
+        const target = row * columns + ((column + 1) % columns)
+        return target >= panelCount ? current : target
+      }
+
+      const nextRow = direction === 'up' ? (row - 1 + rowCount) % rowCount : (row + 1) % rowCount
+      const target = nextRow * columns + column
+      return target >= panelCount ? panelCount - 1 : target
+    })
+    setModelSettingSelectionIndex(0)
+  }
 
   const saveConfigValue = (rawValue: string) => {
     const validation = validateEditableConfigValue(selectedField, rawValue)
@@ -296,6 +369,34 @@ function App() {
         ? `Editing ${selectedField.label}. Use left/right to toggle presets, Enter to save, or Esc to cancel.`
         : `Editing ${selectedField.label}. Press Enter to save or Esc to cancel.`,
       statusTone: 'info'
+      }))
+  }
+
+  const openConfigField = (fieldKey: string) => {
+    const fieldIndex = editableConfigFields.findIndex((field) => field.key === fieldKey)
+    if (fieldIndex < 0) {
+      return
+    }
+
+    const values = readEditableConfigValues()
+    const field = editableConfigFields[fieldIndex]
+    const currentValue = values[field.key] || field.defaultValue
+
+    setModelDetailOpen(false)
+    setPage(6)
+    setSettingsEditor((current) => ({
+      ...current,
+      values,
+      selectedIndex: fieldIndex,
+      isEditing: field.kind !== 'bool',
+      draft: field.kind === 'bool' ? '' : currentValue,
+      replaceDraftOnInput: field.kind !== 'bool',
+      statusMessage: field.kind === 'bool'
+        ? field.description
+        : isPresetDurationField(field)
+          ? `Editing ${field.label}. Use left/right to toggle presets, Enter to save, or Esc to cancel.`
+          : `Editing ${field.label}. Press Enter to save or Esc to cancel.`,
+      statusTone: 'info'
     }))
   }
 
@@ -327,6 +428,12 @@ function App() {
   }, [page, walletDetailOpen])
 
   useEffect(() => {
+    if (page !== 4 && modelDetailOpen) {
+      setModelDetailOpen(false)
+    }
+  }, [page, modelDetailOpen])
+
+  useEffect(() => {
     if (walletCount <= 0) {
       setWalletSelectionIndex(0)
       if (walletDetailOpen) {
@@ -337,6 +444,18 @@ function App() {
 
     setWalletSelectionIndex((current) => Math.min(current, walletCount - 1))
   }, [walletCount, walletDetailOpen])
+
+  useEffect(() => {
+    setModelSelectionIndex((current) => Math.min(current, MODEL_PANEL_DEFS.length - 1))
+  }, [])
+
+  useEffect(() => {
+    if (selectedModelSettingKeys.length <= 0) {
+      setModelSettingSelectionIndex(0)
+      return
+    }
+    setModelSettingSelectionIndex((current) => Math.min(current, selectedModelSettingKeys.length - 1))
+  }, [selectedModelSettingKeys.length])
 
   const clearPendingTopJump = () => {
     if (pendingTopJumpRef.current !== null) {
@@ -431,6 +550,8 @@ function App() {
         const accepts =
           selectedField.kind === 'int'
             ? /^[0-9]$/
+            : selectedField.kind === 'choice'
+              ? /^[a-z0-9_-]$/i
             : selectedField.kind === 'duration'
               ? /^[0-9a-z.]$/i
               : /^[0-9.]$/
@@ -470,6 +591,62 @@ function App() {
 
       if (normalized === 'e' || key.return) {
         beginConfigEdit()
+        return
+      }
+    }
+
+    if (page === 4) {
+      if (modelDetailOpen) {
+        if (key.escape) {
+          setModelDetailOpen(false)
+          return
+        }
+
+        if ((key.upArrow || normalized === 'k') && selectedModelSettingKeys.length > 0) {
+          setModelSettingSelectionIndex((current) =>
+            current <= 0 ? selectedModelSettingKeys.length - 1 : current - 1
+          )
+          return
+        }
+
+        if ((key.downArrow || normalized === 'j') && selectedModelSettingKeys.length > 0) {
+          setModelSettingSelectionIndex((current) =>
+            current >= selectedModelSettingKeys.length - 1 ? 0 : current + 1
+          )
+          return
+        }
+
+        if ((key.return || normalized === 'e') && selectedModelSettingKeys.length > 0) {
+          openConfigField(selectedModelSettingKeys[modelSettingSelectionIndex] || selectedModelSettingKeys[0])
+          return
+        }
+
+        return
+      }
+
+      if (key.upArrow || normalized === 'k') {
+        moveModelSelection('up')
+        return
+      }
+
+      if (key.downArrow || normalized === 'j') {
+        moveModelSelection('down')
+        return
+      }
+
+      if (key.leftArrow || normalized === 'h') {
+        moveModelSelection('left')
+        return
+      }
+
+      if (key.rightArrow || normalized === 'l') {
+        moveModelSelection('right')
+        return
+      }
+
+      if (key.return) {
+        setModelSettingSelectionIndex(0)
+        setModelDetailOpen(true)
         return
       }
     }
@@ -623,6 +800,9 @@ function App() {
           perfCurrentScrollOffset={perfCurrentScrollOffset}
           perfPastScrollOffset={perfPastScrollOffset}
           perfActivePane={perfActivePane}
+          modelSelectionIndex={modelSelectionIndex}
+          modelDetailOpen={modelDetailOpen}
+          modelSettingSelectionIndex={modelSettingSelectionIndex}
           walletSelectionIndex={walletSelectionIndex}
           walletDetailOpen={walletDetailOpen}
           onWalletCountChange={setWalletCount}

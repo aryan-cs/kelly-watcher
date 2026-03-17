@@ -124,25 +124,73 @@ class PolymarketExecutor:
         if self._clob is None:
             raise RuntimeError("live trading requested, but the CLOB client was not initialized")
 
-        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
-
-        payload = self._clob.get_balance_allowance(
-            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-        )
-        if not isinstance(payload, dict):
-            raise RuntimeError("live balance check returned an unexpected response payload")
-
-        allowances = payload.get("allowances")
-        allowance_values = allowances.values() if isinstance(allowances, dict) else []
-        max_allowance_usd = max(
-            (self._parse_usdc_base_units(value) for value in allowance_values),
-            default=0.0,
-        )
+        payload = self._get_live_allowance_payload(asset_type="COLLATERAL")
         signer_address = str(self._clob.get_address() or "").strip().lower()
         return LiveWalletStatus(
             balance_usd=self._parse_usdc_base_units(payload.get("balance")),
-            max_allowance_usd=max_allowance_usd,
+            max_allowance_usd=self._payload_max_allowance_usd(payload),
             signer_address=signer_address,
+        )
+
+    @staticmethod
+    def _payload_max_allowance_usd(payload: dict[str, Any]) -> float:
+        allowances = payload.get("allowances")
+        allowance_values = allowances.values() if isinstance(allowances, dict) else []
+        return max(
+            (PolymarketExecutor._parse_usdc_base_units(value) for value in allowance_values),
+            default=0.0,
+        )
+
+    def _get_live_allowance_payload(
+        self,
+        *,
+        asset_type: str,
+        token_id: str | None = None,
+    ) -> dict[str, Any]:
+        if self._clob is None:
+            raise RuntimeError("live trading requested, but the CLOB client was not initialized")
+
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+        normalized_asset = str(asset_type or "").strip().upper()
+        if normalized_asset == "CONDITIONAL":
+            if not str(token_id or "").strip():
+                raise RuntimeError("conditional allowance checks require a token_id")
+            params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=str(token_id).strip())
+        else:
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+
+        payload = self._clob.get_balance_allowance(params)
+        if not isinstance(payload, dict):
+            raise RuntimeError("live balance check returned an unexpected response payload")
+        return payload
+
+    def _ensure_live_token_allowance(self, token_id: str) -> None:
+        normalized_token = str(token_id or "").strip()
+        if not normalized_token or self._clob is None or not use_real_money():
+            return
+
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+        payload = self._get_live_allowance_payload(asset_type="CONDITIONAL", token_id=normalized_token)
+        if self._payload_max_allowance_usd(payload) > 0.0:
+            return
+
+        logger.info("Conditional token allowance missing for %s; requesting approval", normalized_token[:16])
+        params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=normalized_token)
+        response = self._clob.update_balance_allowance(params)
+        logger.info("Conditional token allowance update response: %s", response)
+
+        for attempt in range(LIVE_SYNC_ATTEMPTS):
+            payload = self._get_live_allowance_payload(asset_type="CONDITIONAL", token_id=normalized_token)
+            if self._payload_max_allowance_usd(payload) > 0.0:
+                logger.info("Conditional token allowance ready for %s", normalized_token[:16])
+                return
+            if attempt < LIVE_SYNC_ATTEMPTS - 1:
+                time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
+
+        raise RuntimeError(
+            f"conditional token allowance for {normalized_token[:16]} was still zero after requesting approval"
         )
 
     def validate_live_wallet_ready(self, *, min_required_balance_usd: float) -> LiveWalletStatus | None:
@@ -599,6 +647,14 @@ class PolymarketExecutor:
                 f"{event.question[:80]}\n"
                 f"conf={confidence:.3f} | fill={actual_shares:.3f} @ {actual_price:.3f} | order={order_id}"
             )
+            try:
+                self._ensure_live_token_allowance(token_id)
+            except Exception as exc:
+                logger.warning("Live buy succeeded but token allowance arming failed for %s: %s", token_id[:16], exc)
+                send_alert(
+                    f"[LIVE WARNING] Buy filled but exit allowance setup failed\n"
+                    f"{event.question[:80]}\n{exc}"
+                )
             return ExecutionResult(True, False, order_id, actual_spend, "ok", shares=actual_shares, action="entry")
         except Exception as exc:
             dedup.release(market_id, token_id, side)
@@ -966,6 +1022,7 @@ class PolymarketExecutor:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
             from py_clob_client.order_builder.constants import SELL
 
+            self._ensure_live_token_allowance(token_id or str(position.get("token_id") or ""))
             balance_before = self.get_usdc_balance()
             order = MarketOrderArgs(
                 token_id=token_id or str(position.get("token_id") or ""),

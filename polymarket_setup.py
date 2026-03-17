@@ -54,7 +54,8 @@ def main() -> int:
         } if isinstance(allowances, dict) else allowances
         print(f"Current collateral balance: {_format_usdc(balance)}")
         print(f"Current collateral allowances: {formatted_allowances}")
-    print("You only need to run this once per wallet.")
+    print("Collateral approval is usually a one-time step per wallet.")
+    print("Conditional token approvals are now requested automatically by the bot when a live position is opened.")
     return 0
 
 

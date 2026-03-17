@@ -18,7 +18,7 @@ import {Wallets} from './pages/Wallets.js'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
 import {secondsAgo} from './format.js'
 import {ManualRefreshProvider} from './refresh.js'
-import {TerminalSizeProvider, useTerminalSize} from './terminal.js'
+import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} from './terminal.js'
 import {useBotState} from './useBotState.js'
 import {useQuery} from './useDb.js'
 
@@ -247,6 +247,7 @@ function AppContent({
 }
 
 function App() {
+  const [terminalBackgroundColor] = useState<string | undefined>(() => globalThis.__KELLY_WATCHER_TERMINAL_BG__)
   const [page, setPage] = useState<Page>(1)
   const [refreshToken, setRefreshToken] = useState(0)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -788,7 +789,7 @@ function App() {
   })
 
   return (
-    <TerminalSizeProvider>
+    <TerminalSizeProvider backgroundColor={terminalBackgroundColor}>
       <ManualRefreshProvider refreshToken={refreshToken}>
         <AppContent
           page={page}
@@ -823,4 +824,14 @@ function clearTerminal() {
 }
 
 clearTerminal()
-render(<App />)
+
+declare global {
+  var __KELLY_WATCHER_TERMINAL_BG__: string | undefined
+}
+
+async function bootstrap() {
+  globalThis.__KELLY_WATCHER_TERMINAL_BG__ = await detectTerminalBackgroundColor()
+  render(<App />)
+}
+
+void bootstrap()

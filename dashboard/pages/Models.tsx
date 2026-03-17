@@ -468,6 +468,7 @@ function modeLabel(mode: string): string {
 
 export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues}: ModelsProps) {
   const terminal = useTerminalSize()
+  const modalBackground = terminal.backgroundColor || theme.modalBackground
   const nowTs = useNow()
   const stacked = stackPanels(terminal.width)
   const models = useQuery<ModelRow>(MODEL_SQL)
@@ -864,38 +865,38 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={helpModalWidth}>
             <InkBox width="100%">
-              <Text color={theme.accent} backgroundColor={theme.modalBackground} bold>
+              <Text color={theme.accent} backgroundColor={modalBackground} bold>
                 {` ${fit(selectedPanel.title, helpTitleWidth)}`}
               </Text>
-              <Text backgroundColor={theme.modalBackground}> </Text>
-              <Text color={theme.dim} backgroundColor={theme.modalBackground}>
+              <Text backgroundColor={modalBackground}> </Text>
+              <Text color={theme.dim} backgroundColor={modalBackground}>
                 {`${fitRight(helpIndexLabel, helpIndexLabel.length)} `}
               </Text>
             </InkBox>
 
             {selectedPanel.summary.map((line) => (
-              <Text key={line} color={theme.dim} backgroundColor={theme.modalBackground}>
+              <Text key={line} color={theme.dim} backgroundColor={modalBackground}>
                 {` ${fit(line, helpContentWidth)} `}
               </Text>
             ))}
 
-            <Text backgroundColor={theme.modalBackground}>{helpSpacerLine}</Text>
+            <Text backgroundColor={modalBackground}>{helpSpacerLine}</Text>
 
             <InkBox flexDirection="column">
-              <Text color={theme.accent} backgroundColor={theme.modalBackground} bold>
+              <Text color={theme.accent} backgroundColor={modalBackground} bold>
                 {` ${fit('Label Guide', helpContentWidth)} `}
               </Text>
               {selectedPanel.rows.map((row) => (
-                <Text key={`${selectedPanel.id}-${row.label}`} color={theme.dim} backgroundColor={theme.modalBackground}>
+                <Text key={`${selectedPanel.id}-${row.label}`} color={theme.dim} backgroundColor={modalBackground}>
                   {` ${fit(`${row.label}: ${row.text}`, helpContentWidth)} `}
                 </Text>
               ))}
             </InkBox>
 
-            <Text backgroundColor={theme.modalBackground}>{helpSpacerLine}</Text>
+            <Text backgroundColor={modalBackground}>{helpSpacerLine}</Text>
 
             <InkBox flexDirection="column">
-              <Text color={theme.accent} backgroundColor={theme.modalBackground} bold>
+              <Text color={theme.accent} backgroundColor={modalBackground} bold>
                 {` ${fit('Related Settings', helpContentWidth)} `}
               </Text>
               {relatedSettings.length ? (
@@ -905,22 +906,22 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                     const label = `${selected ? '> ' : '  '}${field.label}`
                     return (
                       <InkBox key={`${selectedPanel.id}-${field.key}`} width="100%">
-                        <Text color={selected ? theme.accent : theme.dim} backgroundColor={theme.modalBackground} bold={selected}>
+                        <Text color={selected ? theme.accent : theme.dim} backgroundColor={modalBackground} bold={selected}>
                           {` ${fit(label, helpSettingLabelWidth)}`}
                         </Text>
-                        <Text backgroundColor={theme.modalBackground}> </Text>
-                        <Text color={theme.white} backgroundColor={theme.modalBackground} bold={selected}>
+                        <Text backgroundColor={modalBackground}> </Text>
+                        <Text color={theme.white} backgroundColor={modalBackground} bold={selected}>
                           {`${fitRight(formatEditableConfigValue(field, settingsValues[field.key] || field.defaultValue), helpSettingValueWidth)} `}
                         </Text>
                       </InkBox>
                     )
                   })}
-                  <Text color={theme.dim} backgroundColor={theme.modalBackground}>
+                  <Text color={theme.dim} backgroundColor={modalBackground}>
                     {` ${fit('Up/down selects a setting. Enter opens it in Config. Esc closes.', helpContentWidth)} `}
                   </Text>
                 </>
               ) : (
-                <Text color={theme.dim} backgroundColor={theme.modalBackground}>
+                <Text color={theme.dim} backgroundColor={modalBackground}>
                   {` ${fit('No direct settings are tied to this box yet. Esc closes.', helpContentWidth)} `}
                 </Text>
               )}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 import numpy as np
 
@@ -20,11 +21,11 @@ class MarketFeatures:
     bid_depth_usd: float
     ask_depth_usd: float
     days_to_res: float
-    price_1h_ago: float
+    price_1h_ago: float | None
     volume_24h_usd: float
-    volume_7d_avg_usd: float
+    volume_7d_avg_usd: float | None
     oi_usd: float
-    top_holder_pct: float
+    top_holder_pct: float | None
     order_size_usd: float
 
 
@@ -53,8 +54,7 @@ def build_market_features(
     else:
         days_to_res = 7.0
 
-    history = snapshot.get("price_history_1h", [])
-    price_1h_ago = float(history[0].get("p", mid)) if history else mid
+    price_1h_ago = _extract_price_1h_ago(snapshot.get("price_history_1h"), mid)
 
     return MarketFeatures(
         best_bid=best_bid,
@@ -66,11 +66,60 @@ def build_market_features(
         days_to_res=days_to_res,
         price_1h_ago=price_1h_ago,
         volume_24h_usd=float(snapshot.get("volume_24h_usd", 0.0)),
-        volume_7d_avg_usd=float(snapshot.get("volume_7d_avg_usd", 1.0)),
+        volume_7d_avg_usd=_optional_float(snapshot.get("volume_7d_avg_usd"), min_value=0.0),
         oi_usd=float(snapshot.get("oi_usd", 0.0)),
-        top_holder_pct=float(snapshot.get("top_holder_pct", 0.1)),
+        top_holder_pct=_optional_float(snapshot.get("top_holder_pct"), min_value=0.0, max_value=1.0),
         order_size_usd=order_size_usd,
     )
+
+
+def _optional_float(
+    value: Any,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if min_value is not None and numeric < min_value:
+        return None
+    if max_value is not None and numeric > max_value:
+        return None
+    return numeric
+
+
+def _extract_price_1h_ago(history: Any, fallback: float) -> float | None:
+    rows = history if isinstance(history, list) else []
+    normalized: list[tuple[int, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            price = float(row.get("p") or row.get("price"))
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 < price < 1.0):
+            continue
+        try:
+            ts = int(float(row.get("t") or row.get("timestamp") or 0))
+        except (TypeError, ValueError):
+            ts = 0
+        normalized.append((ts, price))
+
+    if not normalized:
+        return None
+
+    normalized.sort(key=lambda item: item[0])
+    latest_ts = normalized[-1][0]
+    if latest_ts <= 0:
+        return normalized[0][1]
+
+    target_ts = latest_ts - 3600
+    return min(normalized, key=lambda item: abs(item[0] - target_ts))[1]
 
 
 class MarketScorer:
@@ -142,17 +191,17 @@ class MarketScorer:
         return float(np.clip(1 - (days - 14) / 90, 0.4, 1.0))
 
     @staticmethod
-    def _score_momentum(features: MarketFeatures) -> float:
-        if features.price_1h_ago <= 0:
-            return 0.5
+    def _score_momentum(features: MarketFeatures) -> float | None:
+        if features.price_1h_ago is None or features.price_1h_ago <= 0:
+            return None
         move = abs(features.mid - features.price_1h_ago) / features.price_1h_ago
         return float(np.clip(1 - move / 0.05, 0.2, 1.0))
 
     @staticmethod
-    def _score_volume_trend(features: MarketFeatures) -> float:
+    def _score_volume_trend(features: MarketFeatures) -> float | None:
         avg = features.volume_7d_avg_usd
-        if avg <= 0:
-            return 0.3
+        if avg is None or avg <= 0:
+            return None
         ratio = features.volume_24h_usd / avg
         return float(np.clip(np.interp(ratio, [0.3, 1.0, 1.5], [0.0, 0.7, 1.0]), 0, 1))
 
@@ -170,7 +219,9 @@ class MarketScorer:
         return float(np.clip(np.interp(np.log10(volume), [np.log10(low), np.log10(good)], [0.1, 1.0]), 0, 1))
 
     @staticmethod
-    def _score_oi_concentration(features: MarketFeatures) -> float:
+    def _score_oi_concentration(features: MarketFeatures) -> float | None:
+        if features.top_holder_pct is None:
+            return None
         return float(np.clip(1 - features.top_holder_pct / 0.8, 0, 1))
 
     @staticmethod
@@ -189,7 +240,7 @@ class MarketScorer:
         if veto:
             return {"score": 0.0, "veto": veto, "components": {}}
 
-        components = {
+        raw_components = {
             "spread": self._score_spread(features),
             "depth": self._score_depth(features),
             "time": self._score_time(features),
@@ -199,7 +250,17 @@ class MarketScorer:
             "oi_conc": self._score_oi_concentration(features),
             "resolution": self._score_resolution(features),
         }
-        score = sum(self.WEIGHTS[key] * value for key, value in components.items())
+        components = {
+            key: value
+            for key, value in raw_components.items()
+            if value is not None
+        }
+        total_weight = sum(self.WEIGHTS[key] for key in components)
+        score = (
+            sum(self.WEIGHTS[key] * value for key, value in components.items()) / total_weight
+            if total_weight > 0
+            else 0.0
+        )
         return {
             "score": round(score, 4),
             "veto": None,

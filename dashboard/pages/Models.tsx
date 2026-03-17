@@ -221,6 +221,21 @@ interface ModelsProps {
   settingsValues: EditableConfigValues
 }
 
+const EXECUTED_ENTRY_WHERE = `
+skipped=0
+AND COALESCE(source_action, 'buy')='buy'
+AND actual_entry_price IS NOT NULL
+AND actual_entry_shares IS NOT NULL
+AND actual_entry_size_usd IS NOT NULL
+`
+
+const RESOLVED_EXECUTED_ENTRY_WHERE = `
+${EXECUTED_ENTRY_WHERE}
+AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
+`
+
+const PROFITABLE_TRADE_SQL = `CASE WHEN COALESCE(actual_pnl_usd, shadow_pnl_usd) > 0 THEN 1 ELSE 0 END`
+
 const MODEL_SQL = `
 SELECT trained_at, n_samples, brier_score, log_loss, feature_cols, deployed
 FROM model_history
@@ -231,12 +246,12 @@ LIMIT 12
 const TRACKER_SQL = `
 SELECT
   COUNT(*) AS signals,
-  SUM(CASE WHEN skipped=0 THEN 1 ELSE 0 END) AS taken,
-  SUM(CASE WHEN skipped=0 AND outcome IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-  SUM(CASE WHEN skipped=0 AND outcome=1 THEN 1 ELSE 0 END) AS wins,
-  AVG(CASE WHEN skipped=0 THEN confidence END) AS avg_confidence,
-  AVG(CASE WHEN skipped=0 THEN confidence - price_at_signal END) AS avg_edge,
-  SUM(CASE WHEN skipped=0 THEN COALESCE(shadow_pnl_usd, actual_pnl_usd) ELSE 0 END) AS total_pnl
+  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) AS taken,
+  SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) AS resolved,
+  SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} AND shadow_pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN confidence END) AS avg_confidence,
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN confidence - actual_entry_price END) AS avg_edge,
+  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN COALESCE(shadow_pnl_usd, 0) ELSE 0 END) AS total_pnl
 FROM trade_log
 WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
@@ -257,12 +272,12 @@ const SIGNAL_MODE_SQL = `
 SELECT
   COALESCE(NULLIF(signal_mode, ''), 'heuristic') AS mode,
   COUNT(*) AS signals,
-  SUM(CASE WHEN skipped=0 THEN 1 ELSE 0 END) AS taken,
-  SUM(CASE WHEN skipped=0 AND outcome IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-  SUM(CASE WHEN skipped=0 AND outcome=1 THEN 1 ELSE 0 END) AS wins,
-  AVG(CASE WHEN skipped=0 THEN confidence END) AS avg_confidence,
-  AVG(CASE WHEN skipped=0 THEN confidence - price_at_signal END) AS avg_edge,
-  SUM(CASE WHEN skipped=0 THEN COALESCE(shadow_pnl_usd, actual_pnl_usd) ELSE 0 END) AS total_pnl
+  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) AS taken,
+  SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) AS resolved,
+  SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} AND shadow_pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN confidence END) AS avg_confidence,
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN confidence - actual_entry_price END) AS avg_edge,
+  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN COALESCE(shadow_pnl_usd, 0) ELSE 0 END) AS total_pnl
 FROM trade_log
 WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
@@ -274,13 +289,11 @@ const CALIBRATION_SUMMARY_SQL = `
 SELECT
   COUNT(*) AS resolved,
   AVG(confidence) AS avg_confidence,
-  AVG(CAST(outcome AS REAL)) AS actual_win_rate,
-  AVG(ABS(confidence - CAST(outcome AS REAL))) AS avg_gap
+  AVG(CAST(${PROFITABLE_TRADE_SQL} AS REAL)) AS actual_win_rate,
+  AVG(ABS(confidence - CAST(${PROFITABLE_TRADE_SQL} AS REAL))) AS avg_gap
 FROM trade_log
-WHERE COALESCE(source_action, 'buy')='buy'
-  AND real_money=0
-  AND skipped=0
-  AND outcome IS NOT NULL
+WHERE real_money=0
+  AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
   AND confidence IS NOT NULL
 `
 
@@ -293,12 +306,10 @@ WITH bucketed AS (
       ELSE CAST(confidence * 10 AS INTEGER)
     END AS bucket,
     confidence,
-    CAST(outcome AS REAL) AS outcome
+    CAST(${PROFITABLE_TRADE_SQL} AS REAL) AS outcome
   FROM trade_log
-  WHERE COALESCE(source_action, 'buy')='buy'
-    AND real_money=0
-    AND skipped=0
-    AND outcome IS NOT NULL
+  WHERE real_money=0
+    AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
     AND confidence IS NOT NULL
 )
 SELECT
@@ -315,11 +326,11 @@ ORDER BY bucket ASC
 
 const FLOW_SQL = `
 SELECT
-  AVG(CASE WHEN skipped=0 THEN trader_score END) AS trader_score,
-  AVG(CASE WHEN skipped=0 THEN market_score END) AS market_score,
-  AVG(CASE WHEN skipped=0 THEN belief_prior END) AS belief_prior,
-  AVG(CASE WHEN skipped=0 THEN belief_blend END) AS belief_blend,
-  AVG(CASE WHEN skipped=0 THEN belief_evidence END) AS belief_evidence
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN trader_score END) AS trader_score,
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN market_score END) AS market_score,
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN belief_prior END) AS belief_prior,
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN belief_blend END) AS belief_blend,
+  AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN belief_evidence END) AS belief_evidence
 FROM trade_log
 WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0

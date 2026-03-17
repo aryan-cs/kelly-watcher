@@ -21,7 +21,10 @@ from config import (
     live_min_shadow_resolved,
     live_require_shadow_history,
     max_bet_fraction,
+    max_daily_loss_pct,
+    max_feed_staleness_seconds,
     max_live_drawdown_pct,
+    max_live_health_failures,
     min_bet_usd,
     min_confidence,
     poll_interval,
@@ -40,6 +43,7 @@ from executor import PolymarketExecutor
 from kelly import size_signal
 from market_scorer import build_market_features
 from signal_engine import SignalEngine
+from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
 from tracker import PolymarketTracker
 from trader_scorer import get_trader_features, refresh_trader_cache
 
@@ -90,6 +94,32 @@ class LiveEntryGuard:
             return (
                 f"live entry guard tripped after a {self.drawdown_limit_pct * 100:.1f}% drawdown "
                 f"(start ${self.start_equity:.2f}, current ${account_equity:.2f})"
+            )
+        return None
+
+
+@dataclass
+class DailyLossGuard:
+    start_equity: float
+    loss_limit_pct: float
+    day_key: str
+
+    def block_reason(self, account_equity: float, now_ts: int) -> str | None:
+        current_day = time.strftime("%Y-%m-%d", time.localtime(now_ts))
+        if current_day != self.day_key:
+            self.day_key = current_day
+            self.start_equity = max(account_equity, 0.0)
+
+        if self.start_equity <= 0 and account_equity > 0:
+            self.start_equity = account_equity
+        if self.loss_limit_pct <= 0 or self.start_equity <= 0:
+            return None
+
+        stop_equity = max(self.start_equity * (1.0 - self.loss_limit_pct), 0.0)
+        if account_equity <= stop_equity + 1e-9:
+            return (
+                f"daily loss guard tripped after a {self.loss_limit_pct * 100:.1f}% drawdown "
+                f"(today start ${self.start_equity:.2f}, current ${account_equity:.2f})"
             )
         return None
 
@@ -272,7 +302,15 @@ def _skip_event(event, amount_usd: float, reason: str, decision: str = "SKIP") -
     )
 
 
-def process_event(event, engine, executor, dedup, bankroll, entry_block_reason: str | None = None) -> float:
+def process_event(
+    event,
+    engine,
+    executor,
+    dedup,
+    bankroll,
+    account_equity,
+    entry_block_reason: str | None = None,
+) -> float:
     _emit_event(
         {
             "type": "incoming",
@@ -591,6 +629,33 @@ def process_event(event, engine, executor, dedup, bankroll, entry_block_reason: 
         _reject_event(event, signal["confidence"], sizing["dollar_size"], reason)
         return 0.0
 
+    exposure_block_reason = executor.entry_risk_block_reason(
+        market_id=event.market_id,
+        trader_address=event.trader_address,
+        proposed_size_usd=sizing["dollar_size"],
+        account_equity=account_equity,
+    )
+    if exposure_block_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal["confidence"],
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=exposure_block_reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _skip_event(event, sizing["dollar_size"], exposure_block_reason)
+        return 0.0
+
     market_f_final = build_market_features(
         event.snapshot,
         event.close_time,
@@ -668,10 +733,10 @@ def _resolved_shadow_trade_count() -> int:
     conn = get_conn()
     try:
         row = conn.execute(
-            """
+            f"""
             SELECT COUNT(*) AS n
             FROM trade_log
-            WHERE real_money=0 AND skipped=0 AND outcome IS NOT NULL
+            WHERE real_money=0 AND {RESOLVED_EXECUTED_ENTRY_SQL}
             """
         ).fetchone()
         return int(row["n"] or 0)
@@ -766,6 +831,50 @@ def _init_live_entry_guard(executor: PolymarketExecutor) -> LiveEntryGuard | Non
     )
 
 
+def _init_daily_loss_guard(executor: PolymarketExecutor) -> DailyLossGuard:
+    start_equity = max(executor.get_account_equity_usd(), 0.0)
+    return DailyLossGuard(
+        start_equity=start_equity,
+        loss_limit_pct=max_daily_loss_pct(),
+        day_key=time.strftime("%Y-%m-%d", time.localtime()),
+    )
+
+
+def _entry_pause_reason(
+    tracker: PolymarketTracker,
+    executor: PolymarketExecutor,
+    live_entry_guard: LiveEntryGuard | None,
+    daily_loss_guard: DailyLossGuard,
+    account_equity: float,
+) -> str | None:
+    now_ts = int(time.time())
+    if live_entry_guard is not None:
+        reason = live_entry_guard.block_reason(account_equity)
+        if reason:
+            return reason
+
+    reason = daily_loss_guard.block_reason(account_equity, now_ts)
+    if reason:
+        return reason
+
+    last_ok_at, consecutive_failures = tracker.trade_feed_health()
+    if consecutive_failures >= max_live_health_failures():
+        return (
+            f"source trade feed degraded after {consecutive_failures} consecutive trade-feed failures"
+        )
+    if last_ok_at > 0 and (now_ts - last_ok_at) > max_feed_staleness_seconds():
+        return (
+            f"source trade feed is stale; the last successful trade poll was {now_ts - last_ok_at}s ago"
+        )
+
+    if use_real_money():
+        live_reason = executor.live_entry_health_reason()
+        if live_reason:
+            return live_reason
+
+    return None
+
+
 def main() -> None:
     logger.info("=" * 60)
     logger.info("Polymarket copy-trading bot starting")
@@ -784,6 +893,7 @@ def main() -> None:
     executor = PolymarketExecutor()
     executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
     live_entry_guard = _init_live_entry_guard(executor)
+    daily_loss_guard = _init_daily_loss_guard(executor)
     engine = SignalEngine()
     dedup = DedupeCache()
     dedup.load_from_db()
@@ -860,11 +970,13 @@ def main() -> None:
     )
 
     try:
+        last_entry_pause_reason: str | None = None
         while True:
             loop_start = time.time()
             event_count = 0
             bankroll = 0.0
             account_equity = 0.0
+            entry_block_reason = None
             try:
                 bankroll = executor.get_usdc_balance()
                 account_equity = executor.get_account_equity_usd() if live_entry_guard is not None else bankroll
@@ -874,13 +986,23 @@ def main() -> None:
                     events = tracker.poll()
                     event_count = len(events)
                     for event in events:
-                        entry_block_reason = None
-                        if live_entry_guard is not None:
-                            entry_block_reason = live_entry_guard.block_reason(account_equity)
-                            if entry_block_reason and not live_entry_guard.alerted:
-                                live_entry_guard.alerted = True
+                        entry_block_reason = _entry_pause_reason(
+                            tracker,
+                            executor,
+                            live_entry_guard,
+                            daily_loss_guard,
+                            account_equity,
+                        )
+                        if entry_block_reason != last_entry_pause_reason:
+                            if entry_block_reason:
                                 logger.error(entry_block_reason)
-                                send_alert(f"[LIVE GUARD]\n{entry_block_reason}\nNew entries are paused until restart.")
+                                send_alert(
+                                    f"[ENTRY PAUSED]\n{entry_block_reason}\nNew entries are paused until the condition clears."
+                                )
+                            elif last_entry_pause_reason:
+                                logger.info("Entry pause cleared: %s", last_entry_pause_reason)
+                                send_alert("[ENTRY PAUSED] Condition cleared; new entries are enabled again.")
+                            last_entry_pause_reason = entry_block_reason
                         try:
                             bankroll = max(
                                 bankroll
@@ -890,9 +1012,15 @@ def main() -> None:
                                     executor,
                                     dedup,
                                     bankroll,
+                                    account_equity,
                                     entry_block_reason=entry_block_reason,
                                 ),
                                 0.0,
+                            )
+                            account_equity = (
+                                executor.get_account_equity_usd()
+                                if live_entry_guard is not None
+                                else bankroll
                             )
                         except Exception as exc:
                             logger.error(

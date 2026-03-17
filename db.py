@@ -133,6 +133,13 @@ def init_db() -> None:
             exit_size_usd      REAL,
             exit_order_id      TEXT,
             exit_reason        TEXT,
+            remaining_entry_shares REAL,
+            remaining_entry_size_usd REAL,
+            remaining_source_shares REAL,
+            realized_exit_shares REAL NOT NULL DEFAULT 0,
+            realized_exit_size_usd REAL NOT NULL DEFAULT 0,
+            realized_exit_pnl_usd REAL NOT NULL DEFAULT 0,
+            partial_exit_count INTEGER NOT NULL DEFAULT 0,
             outcome             INTEGER,
             market_resolved_outcome TEXT,
             counterfactual_return REAL,
@@ -230,6 +237,13 @@ def init_db() -> None:
             applied_at   INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS wallet_cursors (
+            wallet_address    TEXT PRIMARY KEY,
+            last_source_ts    INTEGER NOT NULL DEFAULT 0,
+            last_trade_ids_json TEXT NOT NULL DEFAULT '[]',
+            updated_at        INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_seen_trades_seen_at ON seen_trades(seen_at);
         CREATE INDEX IF NOT EXISTS idx_trade_log_placed_at ON trade_log(placed_at);
         CREATE INDEX IF NOT EXISTS idx_trade_log_outcome ON trade_log(outcome);
@@ -297,6 +311,13 @@ def init_db() -> None:
             "exit_size_usd": "REAL",
             "exit_order_id": "TEXT",
             "exit_reason": "TEXT",
+            "remaining_entry_shares": "REAL",
+            "remaining_entry_size_usd": "REAL",
+            "remaining_source_shares": "REAL",
+            "realized_exit_shares": "REAL NOT NULL DEFAULT 0",
+            "realized_exit_size_usd": "REAL NOT NULL DEFAULT 0",
+            "realized_exit_pnl_usd": "REAL NOT NULL DEFAULT 0",
+            "partial_exit_count": "INTEGER NOT NULL DEFAULT 0",
             "f_trader_avg_size_usd": "REAL",
             "f_trader_diversity": "INTEGER",
             "f_volume_24h_usd": "REAL",
@@ -307,6 +328,29 @@ def init_db() -> None:
         },
     )
     _ensure_positions_schema(conn)
+    conn.execute(
+        """
+        UPDATE trade_log
+        SET remaining_entry_shares = CASE
+                WHEN exited_at IS NOT NULL THEN 0
+                ELSE COALESCE(remaining_entry_shares, actual_entry_shares, source_shares, 0)
+            END,
+            remaining_entry_size_usd = CASE
+                WHEN exited_at IS NOT NULL THEN 0
+                ELSE COALESCE(remaining_entry_size_usd, actual_entry_size_usd, signal_size_usd, 0)
+            END,
+            remaining_source_shares = CASE
+                WHEN exited_at IS NOT NULL THEN 0
+                ELSE COALESCE(remaining_source_shares, source_shares, 0)
+            END,
+            realized_exit_shares = COALESCE(realized_exit_shares, 0),
+            realized_exit_size_usd = COALESCE(realized_exit_size_usd, 0),
+            realized_exit_pnl_usd = COALESCE(realized_exit_pnl_usd, 0),
+            partial_exit_count = COALESCE(partial_exit_count, 0)
+        WHERE skipped=0
+          AND COALESCE(source_action, 'buy')='buy'
+        """
+    )
     conn.commit()
     conn.close()
 

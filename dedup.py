@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from config import use_real_money
 from db import get_conn
+from trade_contract import OPEN_EXECUTED_ENTRY_SQL, remaining_entry_shares_expr, remaining_entry_size_expr
 
 logger = logging.getLogger(__name__)
 
@@ -46,39 +47,33 @@ class DedupeCache:
     def _rebuild_shadow_positions(self, conn) -> None:
         conn.execute("DELETE FROM positions WHERE real_money=0")
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 market_id,
                 LOWER(side) AS side,
                 COALESCE(token_id, '') AS token_id,
-                SUM(COALESCE(actual_entry_size_usd, signal_size_usd)) AS size_usd,
-                CASE
-                    WHEN SUM(COALESCE(actual_entry_size_usd, signal_size_usd)) > 0
-                        THEN SUM(
-                            COALESCE(actual_entry_size_usd, signal_size_usd)
-                            * COALESCE(actual_entry_price, price_at_signal)
-                        ) / SUM(COALESCE(actual_entry_size_usd, signal_size_usd))
-                    ELSE 0
-                END AS avg_price,
+                SUM({remaining_entry_size_expr()}) AS size_usd,
+                SUM({remaining_entry_shares_expr()}) AS shares,
                 MIN(placed_at) AS entered_at
             FROM trade_log
             WHERE real_money=0
-              AND skipped=0
-              AND outcome IS NULL
-              AND exited_at IS NULL
-              AND COALESCE(source_action, 'buy')='buy'
+              AND {OPEN_EXECUTED_ENTRY_SQL}
             GROUP BY market_id, COALESCE(token_id, ''), LOWER(side)
             """
         ).fetchall()
 
         for row in rows:
+            size_usd = float(row["size_usd"] or 0.0)
+            shares = float(row["shares"] or 0.0)
+            if size_usd <= 0 or shares <= 0:
+                continue
             conn.execute(
                 "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
                 (
                     row["market_id"],
                     row["side"],
-                    float(row["size_usd"] or 0.0),
-                    float(row["avg_price"] or 0.0),
+                    size_usd,
+                    size_usd / shares,
                     str(row["token_id"] or ""),
                     int(row["entered_at"] or time.time()),
                     0,

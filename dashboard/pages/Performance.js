@@ -11,23 +11,36 @@ import { useBotState } from '../useBotState.js';
 import { useQuery } from '../useDb.js';
 import { useEventStream } from '../useEventStream.js';
 import { useTradeIdIndex } from '../useTradeIdIndex.js';
+const EXECUTED_ENTRY_WHERE = `
+skipped=0
+AND COALESCE(source_action, 'buy')='buy'
+AND actual_entry_price IS NOT NULL
+AND actual_entry_shares IS NOT NULL
+AND actual_entry_size_usd IS NOT NULL
+`;
+const OPEN_EXECUTED_ENTRY_WHERE = `
+${EXECUTED_ENTRY_WHERE}
+AND COALESCE(remaining_entry_shares, actual_entry_shares, source_shares, 0) > 1e-9
+AND COALESCE(remaining_entry_size_usd, actual_entry_size_usd, signal_size_usd, 0) > 1e-9
+AND outcome IS NULL
+AND exited_at IS NULL
+`;
 const SUMMARY_SQL = `
 SELECT
   real_money,
-  SUM(CASE WHEN skipped=0 THEN 1 ELSE 0 END) AS acted,
-  SUM(CASE WHEN skipped=0 AND outcome IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-  SUM(CASE WHEN skipped=0 AND outcome=1 THEN 1 ELSE 0 END) AS wins,
-  ROUND(SUM(COALESCE(shadow_pnl_usd, actual_pnl_usd)), 3) AS total_pnl,
-  ROUND(AVG(confidence), 3) AS avg_confidence,
-  ROUND(AVG(COALESCE(actual_entry_size_usd, signal_size_usd)), 3) AS avg_size
+  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) AS acted,
+  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} AND (CASE WHEN real_money=0 THEN shadow_pnl_usd ELSE actual_pnl_usd END) IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
+  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} AND (CASE WHEN real_money=0 THEN shadow_pnl_usd ELSE actual_pnl_usd END) > 0 THEN 1 ELSE 0 END) AS wins,
+  ROUND(SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN COALESCE(shadow_pnl_usd, actual_pnl_usd) ELSE 0 END), 3) AS total_pnl,
+  ROUND(AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN confidence END), 3) AS avg_confidence,
+  ROUND(AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN actual_entry_size_usd END), 3) AS avg_size
 FROM trade_log
-WHERE skipped=0
 GROUP BY real_money
 `;
 const DAILY_SQL = `
 SELECT
   real_money,
-  strftime('%Y-%m-%d', datetime(placed_at, 'unixepoch')) AS day,
+  strftime('%Y-%m-%d', datetime(COALESCE(resolved_at, placed_at), 'unixepoch')) AS day,
   ROUND(
     SUM(
       CASE
@@ -38,7 +51,7 @@ SELECT
     3
   ) AS pnl
 FROM trade_log
-WHERE skipped=0
+WHERE ${EXECUTED_ENTRY_WHERE}
   AND (
     CASE
       WHEN real_money=0 THEN shadow_pnl_usd
@@ -54,8 +67,14 @@ SELECT
   tl.trade_id,
   tl.market_id,
   tl.side,
-  ROUND(COALESCE(tl.actual_entry_size_usd, tl.signal_size_usd), 3) AS size_usd,
-  ROUND(COALESCE(tl.actual_entry_price, tl.price_at_signal), 3) AS entry_price,
+  ROUND(COALESCE(tl.remaining_entry_size_usd, tl.actual_entry_size_usd), 3) AS size_usd,
+  ROUND(
+    CASE
+      WHEN COALESCE(tl.remaining_entry_shares, 0) > 1e-9 THEN tl.remaining_entry_size_usd / tl.remaining_entry_shares
+      ELSE tl.actual_entry_price
+    END,
+    3
+  ) AS entry_price,
   ROUND(tl.confidence, 3) AS confidence,
   tl.placed_at AS entered_at,
   COALESCE(NULLIF(tl.market_close_ts, 0), 0) AS market_close_ts,
@@ -68,11 +87,8 @@ SELECT
   NULL AS exit_size_usd,
   NULL AS pnl_usd
 FROM trade_log tl
-WHERE tl.skipped = 0
-  AND tl.real_money = 0
-  AND tl.outcome IS NULL
-  AND tl.exited_at IS NULL
-  AND COALESCE(tl.source_action, 'buy') = 'buy'
+WHERE tl.real_money = 0
+  AND ${OPEN_EXECUTED_ENTRY_WHERE}
 ORDER BY tl.placed_at DESC, tl.id DESC
 `;
 const LIVE_POSITIONS_SQL = `
@@ -84,7 +100,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -94,7 +110,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
     )
@@ -107,21 +123,21 @@ SELECT
       WHEN p.avg_price > 0 THEN p.avg_price
       ELSE COALESCE(
         (
-          SELECT COALESCE(tl.actual_entry_price, tl.price_at_signal)
+          SELECT tl.actual_entry_price
           FROM trade_log tl
           WHERE tl.market_id = p.market_id
             AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-            AND tl.skipped = 0
+            AND ${EXECUTED_ENTRY_WHERE}
             AND tl.placed_at <= p.entered_at
           ORDER BY tl.placed_at DESC, tl.id DESC
           LIMIT 1
         ),
         (
-          SELECT COALESCE(tl.actual_entry_price, tl.price_at_signal)
+          SELECT tl.actual_entry_price
           FROM trade_log tl
           WHERE tl.market_id = p.market_id
             AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-            AND tl.skipped = 0
+            AND ${EXECUTED_ENTRY_WHERE}
           ORDER BY tl.placed_at DESC, tl.id DESC
           LIMIT 1
         ),
@@ -137,7 +153,7 @@ SELECT
         FROM trade_log tl
         WHERE tl.market_id = p.market_id
           AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-          AND tl.skipped = 0
+          AND ${EXECUTED_ENTRY_WHERE}
           AND tl.placed_at <= p.entered_at
         ORDER BY tl.placed_at DESC, tl.id DESC
         LIMIT 1
@@ -147,7 +163,7 @@ SELECT
         FROM trade_log tl
         WHERE tl.market_id = p.market_id
           AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-          AND tl.skipped = 0
+          AND ${EXECUTED_ENTRY_WHERE}
         ORDER BY tl.placed_at DESC, tl.id DESC
         LIMIT 1
       )
@@ -162,7 +178,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -172,7 +188,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
     ),
@@ -184,7 +200,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -194,7 +210,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
     )
@@ -205,7 +221,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
         AND tl.placed_at <= p.entered_at
@@ -217,7 +233,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -231,7 +247,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
         AND tl.placed_at <= p.entered_at
@@ -243,7 +259,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
-        AND tl.skipped = 0
+        AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -264,8 +280,8 @@ SELECT
   tl.trade_id,
   tl.market_id,
   tl.side,
-  ROUND(COALESCE(tl.actual_entry_size_usd, tl.signal_size_usd), 3) AS size_usd,
-  ROUND(COALESCE(tl.actual_entry_price, tl.price_at_signal), 3) AS entry_price,
+  ROUND(tl.actual_entry_size_usd, 3) AS size_usd,
+  ROUND(tl.actual_entry_price, 3) AS entry_price,
   ROUND(tl.confidence, 3) AS confidence,
   tl.placed_at AS entered_at,
   COALESCE(NULLIF(tl.market_close_ts, 0), tl.resolved_at, tl.placed_at) AS market_close_ts,
@@ -275,26 +291,15 @@ SELECT
   tl.trader_address,
   CASE
     WHEN tl.exited_at IS NOT NULL THEN 'exit'
-    WHEN tl.outcome = 1 THEN 'win'
+    WHEN (CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END) > 0 THEN 'win'
     ELSE 'lose'
   END AS status,
   tl.outcome,
   ROUND(tl.exit_size_usd, 3) AS exit_size_usd,
-  ROUND(
-    COALESCE(
-      CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END,
-      CASE
-        WHEN tl.outcome = 1 AND COALESCE(tl.actual_entry_price, tl.price_at_signal) > 0
-          THEN COALESCE(tl.actual_entry_size_usd, tl.signal_size_usd) *
-               ((1 - COALESCE(tl.actual_entry_price, tl.price_at_signal)) / COALESCE(tl.actual_entry_price, tl.price_at_signal))
-        ELSE -COALESCE(tl.actual_entry_size_usd, tl.signal_size_usd)
-      END
-    ),
-    3
-  ) AS pnl_usd
+  ROUND(CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END, 3) AS pnl_usd
 FROM trade_log tl
-WHERE tl.skipped = 0
-  AND (tl.outcome IS NOT NULL OR tl.exited_at IS NOT NULL)
+WHERE ${EXECUTED_ENTRY_WHERE}
+  AND (CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END) IS NOT NULL
 ORDER BY COALESCE(NULLIF(tl.exited_at, 0), NULLIF(tl.resolved_at, 0), NULLIF(tl.market_close_ts, 0), tl.placed_at) DESC, tl.id DESC
 `;
 const DAILY_PNL_BAR_SCALE = 500;

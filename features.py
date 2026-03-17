@@ -25,10 +25,13 @@ FEATURE_COLS = [
     "f_ask_depth_usd",
 ]
 
-LABEL_COL = "outcome"
+LABEL_COL = "label"
 
 
-def build_feature_map(trader_features: TraderFeatures, market_features: MarketFeatures) -> dict[str, float]:
+def build_feature_map(
+    trader_features: TraderFeatures,
+    market_features: MarketFeatures,
+) -> dict[str, float | None]:
     spread = (
         (market_features.best_ask - market_features.best_bid) / market_features.mid
         if market_features.mid > 0
@@ -36,10 +39,14 @@ def build_feature_map(trader_features: TraderFeatures, market_features: MarketFe
     )
     momentum = (
         abs(market_features.mid - market_features.price_1h_ago) / market_features.price_1h_ago
-        if market_features.price_1h_ago > 0
-        else 0.0
+        if market_features.price_1h_ago is not None and market_features.price_1h_ago > 0
+        else None
     )
-    volume_trend = market_features.volume_24h_usd / (market_features.volume_7d_avg_usd + 1e-6)
+    volume_trend = (
+        market_features.volume_24h_usd / market_features.volume_7d_avg_usd
+        if market_features.volume_7d_avg_usd is not None and market_features.volume_7d_avg_usd > 0
+        else None
+    )
 
     return {
         "f_trader_win_rate": trader_features.win_rate,

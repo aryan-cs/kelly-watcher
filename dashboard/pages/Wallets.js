@@ -10,21 +10,32 @@ import { useTerminalSize } from '../terminal.js';
 import { centeredGradientColor, positiveDollarColor, probabilityColor, theme } from '../theme.js';
 import { useQuery } from '../useDb.js';
 import { useEventStream } from '../useEventStream.js';
+const EXECUTED_ENTRY_WHERE = `
+skipped=0
+AND COALESCE(source_action, 'buy')='buy'
+AND actual_entry_price IS NOT NULL
+AND actual_entry_shares IS NOT NULL
+AND actual_entry_size_usd IS NOT NULL
+`;
+const RESOLVED_EXECUTED_ENTRY_WHERE = `
+${EXECUTED_ENTRY_WHERE}
+AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
+`;
 const WALLET_ACTIVITY_SQL = `
 SELECT
   trader_address,
   COUNT(*) AS seen_trades,
-  ROUND(SUM(COALESCE(shadow_pnl_usd, actual_pnl_usd)), 3) AS local_pnl,
+  ROUND(SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN COALESCE(shadow_pnl_usd, actual_pnl_usd) ELSE 0 END), 3) AS local_pnl,
   MAX(placed_at) AS last_seen,
   SUM(
     CASE
-      WHEN outcome IS NOT NULL AND COALESCE(source_action, 'buy')='buy' THEN 1
+      WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1
       ELSE 0
     END
   ) AS observed_resolved,
   SUM(
     CASE
-      WHEN outcome=1 AND COALESCE(source_action, 'buy')='buy' THEN 1
+      WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} AND COALESCE(shadow_pnl_usd, actual_pnl_usd) > 0 THEN 1
       ELSE 0
     END
   ) AS observed_wins
@@ -54,11 +65,12 @@ const TOP_SHADOW_SQL = `
 SELECT
   trader_address,
   COUNT(*) AS n,
-  SUM(CASE WHEN outcome=1 THEN 1 ELSE 0 END) AS wins,
-  SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
+  SUM(CASE WHEN shadow_pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+  SUM(CASE WHEN shadow_pnl_usd IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
   ROUND(SUM(shadow_pnl_usd), 3) AS pnl
 FROM trade_log
-WHERE real_money=0 AND skipped=0
+WHERE real_money=0
+  AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
 GROUP BY trader_address
 ORDER BY pnl DESC
 LIMIT 5

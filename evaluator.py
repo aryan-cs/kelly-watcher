@@ -11,6 +11,7 @@ import numpy as np
 from alerter import send_alert
 from beliefs import sync_belief_priors
 from db import get_conn
+from trade_contract import EXECUTED_ENTRY_SQL, RESOLVED_EXECUTED_ENTRY_SQL, is_fill_aware_executed_buy
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +22,10 @@ def resolve_shadow_trades() -> list[dict]:
     conn = get_conn()
     unresolved = conn.execute(
         """
-        SELECT id, market_id, side, price_at_signal, signal_size_usd,
-               actual_entry_price, actual_entry_size_usd,
+        SELECT id, market_id, token_id, side, price_at_signal, signal_size_usd,
+               actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+               remaining_entry_shares, remaining_entry_size_usd, realized_exit_pnl_usd,
+               shadow_pnl_usd, actual_pnl_usd,
                real_money, skipped, source_action, exited_at
         FROM trade_log
         WHERE outcome IS NULL
@@ -52,6 +55,7 @@ def resolve_shadow_trades() -> list[dict]:
                     continue
 
                 won = str(row["side"]).strip().lower() == str(result).strip().lower()
+                fill_aware = is_fill_aware_executed_buy(row)
                 price = float(
                     row["actual_entry_price"] if row["actual_entry_price"] is not None else row["price_at_signal"]
                 )
@@ -59,20 +63,44 @@ def resolve_shadow_trades() -> list[dict]:
                     row["actual_entry_size_usd"] if row["actual_entry_size_usd"] is not None else row["signal_size_usd"]
                 )
                 unit_return = round(((1 - price) / price) if won and price > 0 else -1.0, 6)
-                pnl = round(size * unit_return, 2)
+                pnl = None
+                if fill_aware:
+                    existing_pnl = row["actual_pnl_usd"] if row["real_money"] == 1 else row["shadow_pnl_usd"]
+                    if existing_pnl is not None and row["exited_at"] is not None:
+                        pnl = round(float(existing_pnl), 2)
+                    else:
+                        remaining_shares = float(
+                            row["remaining_entry_shares"]
+                            if row["remaining_entry_shares"] is not None
+                            else row["actual_entry_shares"] or 0.0
+                        )
+                        remaining_size = float(
+                            row["remaining_entry_size_usd"]
+                            if row["remaining_entry_size_usd"] is not None
+                            else row["actual_entry_size_usd"] or 0.0
+                        )
+                        realized_exit_pnl = float(row["realized_exit_pnl_usd"] or 0.0)
+                        payout = remaining_shares if won else 0.0
+                        pnl = round(realized_exit_pnl + payout - remaining_size, 2)
 
                 conn = get_conn()
                 conn.execute(
                     """
                     UPDATE trade_log
                     SET outcome=?, market_resolved_outcome=?, counterfactual_return=?,
-                        shadow_pnl_usd=CASE
-                            WHEN exited_at IS NULL THEN ?
-                            ELSE shadow_pnl_usd
+                        shadow_pnl_usd=COALESCE(?, shadow_pnl_usd),
+                        actual_pnl_usd=COALESCE(?, actual_pnl_usd),
+                        remaining_entry_shares=CASE
+                            WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
+                            ELSE remaining_entry_shares
                         END,
-                        actual_pnl_usd=CASE
-                            WHEN exited_at IS NULL THEN ?
-                            ELSE actual_pnl_usd
+                        remaining_entry_size_usd=CASE
+                            WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
+                            ELSE remaining_entry_size_usd
+                        END,
+                        remaining_source_shares=CASE
+                            WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
+                            ELSE remaining_source_shares
                         END,
                         label_applied_at=?,
                         resolved_at=COALESCE(resolved_at, ?),
@@ -83,19 +111,28 @@ def resolve_shadow_trades() -> list[dict]:
                         1 if won else 0,
                         str(result).strip().lower(),
                         unit_return,
-                        pnl if row["real_money"] == 0 and row["skipped"] == 0 else None,
-                        pnl if row["real_money"] == 1 and row["skipped"] == 0 else None,
+                        pnl if row["real_money"] == 0 and fill_aware else None,
+                        pnl if row["real_money"] == 1 and fill_aware else None,
+                        pnl if fill_aware else None,
+                        pnl if fill_aware else None,
+                        pnl if fill_aware else None,
                         int(time.time()),
                         int(time.time()),
                         json.dumps(market, separators=(",", ":"), default=str),
                         row["id"],
                     ),
                 )
-                if row["skipped"] == 0:
-                    conn.execute(
-                        "DELETE FROM positions WHERE market_id=? AND real_money=?",
-                        (row["market_id"], row["real_money"]),
-                    )
+                if fill_aware:
+                    if str(row["token_id"] or "").strip():
+                        conn.execute(
+                            "DELETE FROM positions WHERE market_id=? AND token_id=? AND real_money=?",
+                            (row["market_id"], str(row["token_id"]).strip(), row["real_money"]),
+                        )
+                    else:
+                        conn.execute(
+                            "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
+                            (row["market_id"], str(row["side"] or "").strip().lower(), row["real_money"]),
+                        )
                 conn.commit()
                 conn.close()
 
@@ -104,7 +141,7 @@ def resolve_shadow_trades() -> list[dict]:
                         "market_id": row["market_id"],
                         "real_money": row["real_money"],
                         "won": won,
-                        "pnl": pnl,
+                        "pnl": float(pnl or 0.0),
                     }
                 )
             except Exception as exc:
@@ -124,15 +161,15 @@ def compute_performance_report(mode: str = "shadow") -> dict:
     summary = conn.execute(
         f"""
         SELECT
-            COUNT(*) AS total_signals,
-            SUM(CASE WHEN skipped=0 THEN 1 ELSE 0 END) AS acted,
-            SUM(CASE WHEN outcome IS NOT NULL AND skipped=0 THEN 1 ELSE 0 END) AS resolved,
-            SUM(CASE WHEN outcome=1 AND skipped=0 THEN 1 ELSE 0 END) AS wins,
-            ROUND(SUM({pnl_column}), 2) AS total_pnl,
-            ROUND(AVG(confidence), 3) AS avg_confidence,
-            ROUND(AVG(COALESCE(actual_entry_size_usd, signal_size_usd)), 2) AS avg_size
+            SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' THEN 1 ELSE 0 END) AS total_signals,
+            SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS acted,
+            SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS resolved,
+            SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
+            ROUND(SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN COALESCE({pnl_column}, 0) ELSE 0 END), 2) AS total_pnl,
+            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN confidence END), 3) AS avg_confidence,
+            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN actual_entry_size_usd END), 2) AS avg_size
         FROM trade_log
-        WHERE real_money=? AND skipped=0
+        WHERE real_money=?
         """,
         (real_money,),
     ).fetchone()
@@ -141,10 +178,11 @@ def compute_performance_report(mode: str = "shadow") -> dict:
         f"""
         SELECT trader_address,
                COUNT(*) AS n,
-               SUM(CASE WHEN outcome=1 THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
                ROUND(SUM({pnl_column}), 2) AS pnl
         FROM trade_log
-        WHERE real_money=? AND skipped=0 AND {pnl_column} IS NOT NULL
+        WHERE real_money=?
+          AND {RESOLVED_EXECUTED_ENTRY_SQL}
         GROUP BY trader_address
         ORDER BY pnl DESC
         LIMIT 10
@@ -157,17 +195,20 @@ def compute_performance_report(mode: str = "shadow") -> dict:
         f"""
         SELECT ROUND(SUM({pnl_column}), 2) AS pnl
         FROM trade_log
-        WHERE real_money=? AND skipped=0 AND placed_at > ?
+        WHERE real_money=?
+          AND {RESOLVED_EXECUTED_ENTRY_SQL}
+          AND COALESCE(resolved_at, placed_at) > ?
         """,
         (real_money, week_ago),
     ).fetchone()
 
     daily_rows = conn.execute(
         f"""
-        SELECT strftime('%Y-%m-%d', datetime(placed_at, 'unixepoch')) AS day,
+        SELECT strftime('%Y-%m-%d', datetime(COALESCE(resolved_at, placed_at), 'unixepoch')) AS day,
                SUM({pnl_column}) AS day_pnl
         FROM trade_log
-        WHERE real_money=? AND skipped=0 AND {pnl_column} IS NOT NULL
+        WHERE real_money=?
+          AND {RESOLVED_EXECUTED_ENTRY_SQL}
         GROUP BY day
         ORDER BY day
         """,

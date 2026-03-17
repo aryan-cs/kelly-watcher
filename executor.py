@@ -9,8 +9,23 @@ from typing import Any, Optional
 import httpx
 
 from alerter import send_alert
-from config import shadow_bankroll_usd, use_real_money, wallet_address
+from config import (
+    max_live_health_failures,
+    max_market_exposure_fraction,
+    max_open_positions,
+    max_total_open_exposure_fraction,
+    max_trader_exposure_fraction,
+    shadow_bankroll_usd,
+    use_real_money,
+    wallet_address,
+)
 from db import get_conn
+from trade_contract import (
+    OPEN_EXECUTED_ENTRY_SQL,
+    remaining_entry_shares_expr,
+    remaining_entry_size_expr,
+    remaining_source_shares_expr,
+)
 
 logger = logging.getLogger(__name__)
 DATA_API = "https://data-api.polymarket.com"
@@ -55,6 +70,10 @@ def _to_float(value: Any) -> float:
 class PolymarketExecutor:
     def __init__(self):
         self._clob = None
+        self._last_live_balance_ok_at = 0
+        self._last_live_position_sync_ok_at = 0
+        self._consecutive_live_balance_failures = 0
+        self._consecutive_live_position_sync_failures = 0
         self._init_clob()
 
     def _init_clob(self) -> None:
@@ -83,21 +102,29 @@ class PolymarketExecutor:
         if not use_real_money():
             conn = get_conn()
             row = conn.execute(
-                """
+                f"""
                 SELECT
                     SUM(
                         CASE
-                            WHEN outcome IS NULL AND exited_at IS NULL THEN COALESCE(actual_entry_size_usd, signal_size_usd)
+                            WHEN {OPEN_EXECUTED_ENTRY_SQL} THEN {remaining_entry_size_expr()}
                             ELSE 0
                         END
-                    ) AS spent,
-                    SUM(COALESCE(shadow_pnl_usd, 0)) AS realized_pnl
+                    ) AS remaining_cost,
+                    SUM(
+                        CASE
+                            WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy' AND exited_at IS NULL AND outcome IS NULL
+                                THEN COALESCE(realized_exit_pnl_usd, 0)
+                            WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy'
+                                THEN COALESCE(shadow_pnl_usd, 0)
+                            ELSE 0
+                        END
+                    ) AS realized_pnl
                 FROM trade_log
-                WHERE real_money=0 AND skipped=0
+                WHERE real_money=0
                 """
             ).fetchone()
             conn.close()
-            spent = float(row["spent"] or 0.0)
+            spent = float(row["remaining_cost"] or 0.0)
             realized_pnl = float(row["realized_pnl"] or 0.0)
             return max(shadow_bankroll_usd() + realized_pnl - spent, 0.0)
 
@@ -155,13 +182,33 @@ class PolymarketExecutor:
         if self._clob is None:
             raise RuntimeError("live trading requested, but the CLOB client was not initialized")
 
-        payload = self._get_live_allowance_payload(asset_type="COLLATERAL")
-        signer_address = str(self._clob.get_address() or "").strip().lower()
-        return LiveWalletStatus(
-            balance_usd=self._parse_usdc_base_units(payload.get("balance")),
-            max_allowance_usd=self._payload_max_allowance_usd(payload),
-            signer_address=signer_address,
-        )
+        try:
+            payload = self._get_live_allowance_payload(asset_type="COLLATERAL")
+            signer_address = str(self._clob.get_address() or "").strip().lower()
+            status = LiveWalletStatus(
+                balance_usd=self._parse_usdc_base_units(payload.get("balance")),
+                max_allowance_usd=self._payload_max_allowance_usd(payload),
+                signer_address=signer_address,
+            )
+            self._record_live_balance_result(True)
+            return status
+        except Exception:
+            self._record_live_balance_result(False)
+            raise
+
+    def _record_live_balance_result(self, ok: bool) -> None:
+        if ok:
+            self._last_live_balance_ok_at = int(time.time())
+            self._consecutive_live_balance_failures = 0
+            return
+        self._consecutive_live_balance_failures += 1
+
+    def _record_live_position_sync_result(self, ok: bool) -> None:
+        if ok:
+            self._last_live_position_sync_ok_at = int(time.time())
+            self._consecutive_live_position_sync_failures = 0
+            return
+        self._consecutive_live_position_sync_failures += 1
 
     @staticmethod
     def _payload_max_allowance_usd(payload: dict[str, Any]) -> float:
@@ -352,8 +399,11 @@ class PolymarketExecutor:
                 response.raise_for_status()
                 payload = response.json()
                 rows = payload if isinstance(payload, list) else payload.get("positions", [])
-                return [row for row in rows if isinstance(row, dict)]
+                normalized = [row for row in rows if isinstance(row, dict)]
+                self._record_live_position_sync_result(True)
+                return normalized
         except Exception as exc:
+            self._record_live_position_sync_result(False)
             logger.warning("Live position sync failed: %s", exc)
             return None
 
@@ -444,6 +494,104 @@ class PolymarketExecutor:
             if attempt < LIVE_SYNC_ATTEMPTS - 1:
                 time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
         return best_balance, 0.0
+
+    def live_entry_health_reason(self) -> str | None:
+        threshold = max_live_health_failures()
+        if self._consecutive_live_balance_failures >= threshold:
+            return (
+                f"live balance health degraded after {self._consecutive_live_balance_failures} "
+                "consecutive wallet-balance failures"
+            )
+        if self._consecutive_live_position_sync_failures >= threshold:
+            return (
+                f"live exchange sync degraded after {self._consecutive_live_position_sync_failures} "
+                "consecutive position-sync failures"
+            )
+        return None
+
+    def _open_risk_snapshot(self, *, real_money: bool) -> tuple[float, dict[str, float], dict[str, float], int]:
+        mode_flag = 1 if real_money else 0
+        conn = get_conn()
+        try:
+            position_rows = conn.execute(
+                "SELECT market_id, size_usd FROM positions WHERE real_money=?",
+                (mode_flag,),
+            ).fetchall()
+            trader_rows = conn.execute(
+                f"""
+                SELECT trader_address, SUM({remaining_entry_size_expr()}) AS size_usd
+                FROM trade_log
+                WHERE real_money=?
+                  AND {OPEN_EXECUTED_ENTRY_SQL}
+                GROUP BY trader_address
+                """,
+                (mode_flag,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        total_open = 0.0
+        by_market: dict[str, float] = {}
+        for row in position_rows:
+            size_usd = float(row["size_usd"] or 0.0)
+            if size_usd <= 0:
+                continue
+            market_id = str(row["market_id"] or "").strip()
+            total_open += size_usd
+            by_market[market_id] = by_market.get(market_id, 0.0) + size_usd
+
+        by_trader = {
+            str(row["trader_address"] or "").strip().lower(): float(row["size_usd"] or 0.0)
+            for row in trader_rows
+            if float(row["size_usd"] or 0.0) > 0
+        }
+        return total_open, by_market, by_trader, len(position_rows)
+
+    def entry_risk_block_reason(
+        self,
+        *,
+        market_id: str,
+        trader_address: str,
+        proposed_size_usd: float,
+        account_equity: float,
+    ) -> str | None:
+        if proposed_size_usd <= 0:
+            return None
+        if account_equity <= 0:
+            return "account equity was unavailable for exposure checks, so the trade was blocked"
+
+        total_open, by_market, by_trader, open_count = self._open_risk_snapshot(real_money=use_real_money())
+        if open_count >= max_open_positions():
+            return f"open position limit reached ({open_count}/{max_open_positions()})"
+
+        total_cap = account_equity * max_total_open_exposure_fraction()
+        total_after = total_open + proposed_size_usd
+        if total_after > total_cap + 1e-9:
+            return (
+                f"total open exposure would be ${total_after:.2f} on ${account_equity:.2f} equity, "
+                f"above the {max_total_open_exposure_fraction() * 100:.1f}% cap"
+            )
+
+        market_key = str(market_id or "").strip()
+        market_after = by_market.get(market_key, 0.0) + proposed_size_usd
+        market_cap = account_equity * max_market_exposure_fraction()
+        if market_after > market_cap + 1e-9:
+            return (
+                f"market exposure for {market_key[:12]} would be ${market_after:.2f}, "
+                f"above the {max_market_exposure_fraction() * 100:.1f}% cap"
+            )
+
+        trader_key = str(trader_address or "").strip().lower()
+        trader_after = by_trader.get(trader_key, 0.0) + proposed_size_usd
+        trader_cap = account_equity * max_trader_exposure_fraction()
+        if trader_after > trader_cap + 1e-9:
+            display_trader = trader_key[:10] if trader_key else "unknown trader"
+            return (
+                f"trader exposure for {display_trader} would be ${trader_after:.2f}, "
+                f"above the {max_trader_exposure_fraction() * 100:.1f}% cap"
+            )
+
+        return None
 
     def estimate_entry_fill(
         self,
@@ -734,7 +882,13 @@ class PolymarketExecutor:
                 action="exit",
             )
 
-        shares, exit_notional, pnl = self._exit_trade_math(position, entries, exit_price)
+        observed_source_shares = float(getattr(event, "shares", 0.0) or 0.0)
+        shares, exit_notional, pnl, exit_fraction = self._exit_trade_math(
+            position,
+            entries,
+            exit_price,
+            observed_source_shares,
+        )
         if shares <= 0 or exit_notional <= 0:
             return ExecutionResult(
                 False,
@@ -763,6 +917,7 @@ class PolymarketExecutor:
                 shares=shares,
                 exit_notional=exit_notional,
                 pnl=pnl,
+                exit_fraction=exit_fraction,
             )
 
         return self._execute_live_exit(
@@ -777,6 +932,7 @@ class PolymarketExecutor:
             shares=shares,
             exit_notional=exit_notional,
             pnl=pnl,
+            exit_fraction=exit_fraction,
         )
 
     def _load_open_position_state(
@@ -826,18 +982,18 @@ class PolymarketExecutor:
             position_token = str(position["token_id"] or "").strip()
 
             candidates = conn.execute(
-                """
+                f"""
                 SELECT id, trade_id, market_id, question, trader_address, side, token_id,
                        price_at_signal, signal_size_usd, actual_entry_price,
                        actual_entry_shares, actual_entry_size_usd, source_shares, confidence,
-                       kelly_fraction, market_close_ts
+                       kelly_fraction, market_close_ts, remaining_entry_shares,
+                       remaining_entry_size_usd, remaining_source_shares,
+                       realized_exit_shares, realized_exit_size_usd, realized_exit_pnl_usd,
+                       partial_exit_count
                 FROM trade_log
                 WHERE market_id=?
                   AND real_money=?
-                  AND skipped=0
-                  AND outcome IS NULL
-                  AND exited_at IS NULL
-                  AND COALESCE(source_action, 'buy')='buy'
+                  AND {OPEN_EXECUTED_ENTRY_SQL}
                 ORDER BY placed_at DESC, id DESC
                 """,
                 (market_id, 1 if real_money else 0),
@@ -859,45 +1015,149 @@ class PolymarketExecutor:
             conn.close()
 
     @staticmethod
-    def _exit_trade_math(position: dict, entries: list[dict], exit_price: float) -> tuple[float, float, float]:
-        size_usd = float(position.get("size_usd") or 0.0)
-        if size_usd <= 0:
-            size_usd = sum(
-                float(entry.get("actual_entry_size_usd") or 0.0)
-                or float(entry.get("signal_size_usd") or 0.0)
-                for entry in entries
-            )
+    def _entry_open_shares(entry: dict) -> float:
+        remaining = float(entry.get("remaining_entry_shares") or 0.0)
+        if remaining > 0:
+            return remaining
+        actual = float(entry.get("actual_entry_shares") or 0.0)
+        if actual > 0:
+            return actual
+        size = float(entry.get("remaining_entry_size_usd") or 0.0) or float(entry.get("actual_entry_size_usd") or 0.0) or float(entry.get("signal_size_usd") or 0.0)
+        price = float(entry.get("actual_entry_price") or 0.0) or float(entry.get("price_at_signal") or 0.0)
+        return (size / price) if size > 0 and price > 0 else 0.0
+
+    @staticmethod
+    def _entry_open_size(entry: dict) -> float:
+        remaining = float(entry.get("remaining_entry_size_usd") or 0.0)
+        if remaining > 0:
+            return remaining
+        return float(entry.get("actual_entry_size_usd") or 0.0) or float(entry.get("signal_size_usd") or 0.0)
+
+    @staticmethod
+    def _entry_open_source_shares(entry: dict) -> float:
+        remaining = float(entry.get("remaining_source_shares") or 0.0)
+        if remaining > 0:
+            return remaining
+        return float(entry.get("source_shares") or 0.0)
+
+    def _exit_trade_math(
+        self,
+        position: dict,
+        entries: list[dict],
+        exit_price: float,
+        observed_source_shares: float,
+    ) -> tuple[float, float, float, float]:
+        total_size_usd = float(position.get("size_usd") or 0.0)
+        if total_size_usd <= 0:
+            total_size_usd = sum(self._entry_open_size(entry) for entry in entries)
 
         entry_price = float(position.get("avg_price") or 0.0)
-        shares = 0.0
-        if entry_price > 0 and size_usd > 0:
-            shares = size_usd / entry_price
-        if shares <= 0:
-            shares = sum(
-                float(entry.get("actual_entry_shares") or 0.0)
-                or float(entry.get("source_shares") or 0.0)
-                or (
-                    (
-                        float(entry.get("actual_entry_size_usd") or 0.0)
-                        or float(entry.get("signal_size_usd") or 0.0)
-                    )
-                    / (
-                        float(entry.get("actual_entry_price") or 0.0)
-                        or float(entry.get("price_at_signal") or 0.0)
-                    )
-                    if (
-                        float(entry.get("actual_entry_price") or 0.0)
-                        or float(entry.get("price_at_signal") or 0.0)
-                    ) > 0
-                    else 0.0
-                )
-                for entry in entries
-            )
-        if shares <= 0:
-            return 0.0, 0.0, 0.0
+        total_actual_shares = 0.0
+        if entry_price > 0 and total_size_usd > 0:
+            total_actual_shares = total_size_usd / entry_price
+        if total_actual_shares <= 0:
+            total_actual_shares = sum(self._entry_open_shares(entry) for entry in entries)
+
+        total_source_shares = sum(self._entry_open_source_shares(entry) for entry in entries)
+        if total_actual_shares <= 0 or total_size_usd <= 0:
+            return 0.0, 0.0, 0.0, 0.0
+
+        if observed_source_shares > 0 and total_source_shares > 0:
+            exit_fraction = min(observed_source_shares / total_source_shares, 1.0)
+        else:
+            exit_fraction = 1.0
+
+        shares = round(total_actual_shares * exit_fraction, 6)
         exit_notional = round(shares * exit_price, 6)
-        pnl = round(exit_notional - size_usd, 2)
-        return shares, exit_notional, pnl
+        pnl = round(exit_notional - (total_size_usd * exit_fraction), 2)
+        return shares, exit_notional, pnl, exit_fraction
+
+    @staticmethod
+    def _exit_reason(exit_fraction: float) -> str:
+        if exit_fraction >= 1.0 - 1e-9:
+            return "watched trader exited, so we closed our matching position"
+        return (
+            f"watched trader sold {exit_fraction * 100:.1f}% of the source position, "
+            "so we reduced our matching position"
+        )
+
+    def _refresh_position_from_trade_log(
+        self,
+        conn,
+        *,
+        market_id: str,
+        token_id: str,
+        side: str,
+        real_money: bool,
+    ) -> dict[str, float] | None:
+        mode_flag = 1 if real_money else 0
+        normalized_token = str(token_id or "").strip()
+        normalized_side = str(side or "").strip().lower()
+
+        if normalized_token:
+            row = conn.execute(
+                f"""
+                SELECT
+                    SUM({remaining_entry_size_expr()}) AS size_usd,
+                    SUM({remaining_entry_shares_expr()}) AS shares,
+                    MIN(placed_at) AS entered_at
+                FROM trade_log
+                WHERE market_id=?
+                  AND real_money=?
+                  AND token_id=?
+                  AND {OPEN_EXECUTED_ENTRY_SQL}
+                """,
+                (market_id, mode_flag, normalized_token),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                f"""
+                SELECT
+                    SUM({remaining_entry_size_expr()}) AS size_usd,
+                    SUM({remaining_entry_shares_expr()}) AS shares,
+                    MIN(placed_at) AS entered_at
+                FROM trade_log
+                WHERE market_id=?
+                  AND real_money=?
+                  AND LOWER(side)=?
+                  AND {OPEN_EXECUTED_ENTRY_SQL}
+                """,
+                (market_id, mode_flag, normalized_side),
+            ).fetchone()
+
+        size_usd = float(row["size_usd"] or 0.0)
+        shares = float(row["shares"] or 0.0)
+        if size_usd > 1e-9 and shares > 1e-9:
+            avg_price = size_usd / shares
+            conn.execute(
+                "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
+                (
+                    market_id,
+                    normalized_side,
+                    size_usd,
+                    avg_price,
+                    normalized_token,
+                    int(row["entered_at"] or time.time()),
+                    mode_flag,
+                ),
+            )
+            return {
+                "size_usd": round(size_usd, 6),
+                "shares": round(shares, 6),
+                "avg_price": round(avg_price, 6),
+            }
+
+        if normalized_token:
+            conn.execute(
+                "DELETE FROM positions WHERE market_id=? AND token_id=? AND real_money=?",
+                (market_id, normalized_token, mode_flag),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
+                (market_id, normalized_side, mode_flag),
+            )
+        return None
 
     def _finalize_exit(
         self,
@@ -907,11 +1167,15 @@ class PolymarketExecutor:
         real_money: bool,
         exit_trade_id: str,
         exit_price: float,
+        exit_fraction: float,
+        exit_shares: float,
+        exit_notional: float,
         exit_reason: str,
         exit_order_id: str | None,
         market_id: str,
         trader_address: str,
         dedup,
+        refresh_position_from_trade_log: bool,
     ) -> tuple[float, float, float]:
         pnl_column = "actual_pnl_usd" if real_money else "shadow_pnl_usd"
         conn = get_conn()
@@ -919,58 +1183,149 @@ class PolymarketExecutor:
         total_shares = 0.0
         total_exit_notional = 0.0
         total_pnl = 0.0
-        fallback_price = float(position.get("avg_price") or 0.0)
+        fraction = min(max(exit_fraction, 0.0), 1.0)
+        active_entries = [
+            entry
+            for entry in entries
+            if self._entry_open_shares(entry) > 1e-9 and self._entry_open_size(entry) > 1e-9
+        ]
 
-        for entry in entries:
-            entry_size = float(entry.get("actual_entry_size_usd") or 0.0) or float(entry.get("signal_size_usd") or 0.0)
-            entry_price = float(entry.get("actual_entry_price") or 0.0) or float(entry.get("price_at_signal") or 0.0) or fallback_price
-            entry_shares = float(entry.get("actual_entry_shares") or 0.0) or float(entry.get("source_shares") or 0.0)
-            if entry_shares <= 0 and entry_price > 0 and entry_size > 0:
-                entry_shares = entry_size / entry_price
-            if entry_shares <= 0:
+        remaining_exit_shares = float(exit_shares)
+        remaining_exit_notional = float(exit_notional)
+        for index, entry in enumerate(active_entries):
+            open_shares = self._entry_open_shares(entry)
+            open_size = self._entry_open_size(entry)
+            open_source_shares = self._entry_open_source_shares(entry)
+            if open_shares <= 1e-9 or open_size <= 1e-9:
                 continue
 
-            entry_exit_notional = round(entry_shares * exit_price, 6)
-            entry_pnl = round(entry_exit_notional - entry_size, 2)
-            total_shares += entry_shares
-            total_exit_notional += entry_exit_notional
-            total_pnl += entry_pnl
+            is_last = index == len(active_entries) - 1
+            if is_last:
+                entry_exit_shares = min(open_shares, max(remaining_exit_shares, 0.0))
+                entry_exit_notional = max(round(remaining_exit_notional, 6), 0.0)
+            else:
+                entry_exit_shares = min(open_shares, round(open_shares * fraction, 6))
+                share_ratio = (entry_exit_shares / exit_shares) if exit_shares > 0 else 0.0
+                entry_exit_notional = max(round(exit_notional * share_ratio, 6), 0.0)
+            if entry_exit_shares <= 1e-9:
+                continue
 
-            conn.execute(
-                f"""
-                UPDATE trade_log
-                SET exited_at=?,
-                    exit_trade_id=?,
-                    exit_price=?,
-                    exit_shares=?,
-                    exit_size_usd=?,
-                    exit_order_id=?,
-                    exit_reason=?,
-                    resolved_at=?,
-                    {pnl_column}=?
-                WHERE id=?
-                """,
-                (
-                    now_ts,
-                    exit_trade_id,
-                    exit_price,
-                    entry_shares,
-                    entry_exit_notional,
-                    exit_order_id,
-                    exit_reason,
-                    now_ts,
-                    entry_pnl,
-                    int(entry["id"]),
-                ),
+            close_ratio = min(entry_exit_shares / open_shares, 1.0)
+            closed_cost = round(open_size * close_ratio, 6)
+            closed_source_shares = round(open_source_shares * close_ratio, 6)
+            remaining_shares = max(round(open_shares - entry_exit_shares, 6), 0.0)
+            remaining_size = max(round(open_size - closed_cost, 6), 0.0)
+            remaining_source_shares = max(round(open_source_shares - closed_source_shares, 6), 0.0)
+            realized_exit_shares = round(float(entry.get("realized_exit_shares") or 0.0) + entry_exit_shares, 6)
+            realized_exit_size = round(float(entry.get("realized_exit_size_usd") or 0.0) + entry_exit_notional, 6)
+            realized_exit_pnl = round(
+                float(entry.get("realized_exit_pnl_usd") or 0.0) + entry_exit_notional - closed_cost,
+                6,
+            )
+            prior_partial_count = int(entry.get("partial_exit_count") or 0)
+            partial_count = prior_partial_count + (1 if remaining_shares > 1e-9 else 0)
+            is_fully_closed = remaining_shares <= 1e-9 or remaining_size <= 1e-9
+
+            total_shares += entry_exit_shares
+            total_exit_notional += entry_exit_notional
+            total_pnl += entry_exit_notional - closed_cost
+            remaining_exit_shares = max(round(remaining_exit_shares - entry_exit_shares, 6), 0.0)
+            remaining_exit_notional = max(round(remaining_exit_notional - entry_exit_notional, 6), 0.0)
+
+            if is_fully_closed:
+                conn.execute(
+                    f"""
+                    UPDATE trade_log
+                    SET exited_at=?,
+                        exit_trade_id=?,
+                        exit_price=?,
+                        exit_shares=?,
+                        exit_size_usd=?,
+                        exit_order_id=?,
+                        exit_reason=?,
+                        resolved_at=COALESCE(resolved_at, ?),
+                        remaining_entry_shares=0,
+                        remaining_entry_size_usd=0,
+                        remaining_source_shares=0,
+                        realized_exit_shares=?,
+                        realized_exit_size_usd=?,
+                        realized_exit_pnl_usd=?,
+                        partial_exit_count=?,
+                        {pnl_column}=?
+                    WHERE id=?
+                    """,
+                    (
+                        now_ts,
+                        exit_trade_id,
+                        exit_price,
+                        realized_exit_shares,
+                        realized_exit_size,
+                        exit_order_id,
+                        exit_reason,
+                        now_ts,
+                        realized_exit_shares,
+                        realized_exit_size,
+                        realized_exit_pnl,
+                        partial_count,
+                        round(realized_exit_pnl, 2),
+                        int(entry["id"]),
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE trade_log
+                    SET exit_trade_id=?,
+                        exit_price=?,
+                        exit_shares=?,
+                        exit_size_usd=?,
+                        exit_order_id=?,
+                        exit_reason=?,
+                        remaining_entry_shares=?,
+                        remaining_entry_size_usd=?,
+                        remaining_source_shares=?,
+                        realized_exit_shares=?,
+                        realized_exit_size_usd=?,
+                        realized_exit_pnl_usd=?,
+                        partial_exit_count=?
+                    WHERE id=?
+                    """,
+                    (
+                        exit_trade_id,
+                        exit_price,
+                        entry_exit_shares,
+                        entry_exit_notional,
+                        exit_order_id,
+                        exit_reason,
+                        remaining_shares,
+                        remaining_size,
+                        remaining_source_shares,
+                        realized_exit_shares,
+                        realized_exit_size,
+                        realized_exit_pnl,
+                        partial_count,
+                        int(entry["id"]),
+                    ),
+                )
+
+        if refresh_position_from_trade_log:
+            self._refresh_position_from_trade_log(
+                conn,
+                market_id=market_id,
+                token_id=str(position.get("token_id") or ""),
+                side=str(position.get("side") or ""),
+                real_money=real_money,
             )
         conn.commit()
         conn.close()
-        dedup.clear_position(
-            market_id,
-            str(position.get("token_id") or ""),
-            str(position.get("side") or ""),
-            real_money=real_money,
-        )
+        if refresh_position_from_trade_log:
+            dedup.load_from_db()
+        else:
+            dedup.release(
+                market_id,
+                str(position.get("token_id") or ""),
+                str(position.get("side") or ""),
+            )
         dedup.mark_seen(exit_trade_id, market_id, trader_address)
         return round(total_shares, 6), round(total_exit_notional, 6), round(total_pnl, 2)
 
@@ -988,6 +1343,7 @@ class PolymarketExecutor:
         shares: float,
         exit_notional: float,
         pnl: float,
+        exit_fraction: float,
     ) -> ExecutionResult:
         fill, reject_reason = self._simulate_shadow_sell(getattr(event, "raw_orderbook", None), shares)
         if fill is None:
@@ -998,18 +1354,22 @@ class PolymarketExecutor:
             )
             return ExecutionResult(False, True, None, 0.0, reject_reason or "shadow simulation sell failed", action="exit")
 
-        reason = "watched trader exited, so we closed our matching position"
+        reason = self._exit_reason(exit_fraction)
         shares, exit_notional, pnl = self._finalize_exit(
             entries=entries,
             position=position,
             real_money=False,
             exit_trade_id=trade_id,
             exit_price=fill.avg_price,
+            exit_fraction=exit_fraction,
+            exit_shares=fill.shares,
+            exit_notional=fill.spent_usd,
             exit_reason=reason,
             exit_order_id=None,
             market_id=market_id,
             trader_address=event.trader_address,
             dedup=dedup,
+            refresh_position_from_trade_log=True,
         )
         logger.info(
             "[SHADOW EXIT] %s | %s | sold %.3f shares | est. pnl=%+.2f",
@@ -1048,6 +1408,7 @@ class PolymarketExecutor:
         shares: float,
         exit_notional: float,
         pnl: float,
+        exit_fraction: float,
     ) -> ExecutionResult:
         try:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
@@ -1055,6 +1416,8 @@ class PolymarketExecutor:
 
             self._ensure_live_token_allowance(token_id or str(position.get("token_id") or ""))
             balance_before = self.get_usdc_balance()
+            total_open_shares = sum(self._entry_open_shares(entry) for entry in entries)
+            expected_remaining_shares = max(total_open_shares - shares, 0.0)
             order = MarketOrderArgs(
                 token_id=token_id or str(position.get("token_id") or ""),
                 amount=shares,
@@ -1065,15 +1428,34 @@ class PolymarketExecutor:
             order_id = response.get("orderID") or response.get("id", "unknown")
             expected_fill, _ = self.estimate_exit_fill(getattr(event, "raw_orderbook", None), shares)
             _, balance_gained = self._measure_live_balance_change(balance_before, expect_increase=True)
-            remaining_position = self._sync_live_positions(
-                dedup,
-                market_id=market_id,
-                token_id=token_id or str(position.get("token_id") or ""),
-                side=str(position.get("side") or event.side or ""),
-                expect_present=False,
-            )
-            if self._live_position_shares(remaining_position) > 1e-6:
-                raise RuntimeError("live exit order posted but the position still appeared open after sync")
+            remaining_position = None
+            remaining_shares = 0.0
+            target_token = token_id or str(position.get("token_id") or "")
+            target_side = str(position.get("side") or event.side or "")
+            for attempt in range(LIVE_SYNC_ATTEMPTS):
+                rows = self._fetch_live_positions()
+                if rows is not None:
+                    dedup.sync_positions_from_rows(rows)
+                remaining_position = self._match_live_position(rows or [], market_id, target_token, target_side)
+                remaining_shares = self._live_position_shares(remaining_position)
+
+                if expected_remaining_shares <= 1e-6:
+                    if remaining_shares <= 1e-6:
+                        break
+                else:
+                    tolerance = max(0.02, expected_remaining_shares * 0.2)
+                    if remaining_shares > 1e-6 and abs(remaining_shares - expected_remaining_shares) <= tolerance:
+                        break
+
+                if attempt < LIVE_SYNC_ATTEMPTS - 1:
+                    time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
+            else:
+                if expected_remaining_shares <= 1e-6:
+                    raise RuntimeError("live exit order posted but the position still appeared open after sync")
+                raise RuntimeError(
+                    f"live exit order posted but remaining shares were {remaining_shares:.3f}, "
+                    f"expected about {expected_remaining_shares:.3f}"
+                )
 
             actual_exit_notional = balance_gained or (expected_fill.spent_usd if expected_fill is not None else 0.0) or exit_notional
             actual_exit_price = (
@@ -1081,18 +1463,22 @@ class PolymarketExecutor:
                 if actual_exit_notional > 0 and shares > 0
                 else (expected_fill.avg_price if expected_fill is not None else exit_price)
             )
-            reason = "watched trader exited, so we closed our matching position"
+            reason = self._exit_reason(exit_fraction)
             shares, exit_notional, pnl = self._finalize_exit(
                 entries=entries,
                 position=position,
                 real_money=True,
                 exit_trade_id=trade_id,
                 exit_price=actual_exit_price,
+                exit_fraction=exit_fraction,
+                exit_shares=shares,
+                exit_notional=actual_exit_notional,
                 exit_reason=reason,
                 exit_order_id=order_id,
                 market_id=market_id,
                 trader_address=event.trader_address,
                 dedup=dedup,
+                refresh_position_from_trade_log=False,
             )
             logger.info(
                 "[LIVE EXIT] %s | %s | sold %.3f shares | est. pnl=%+.2f | order=%s",
@@ -1193,20 +1579,30 @@ def log_trade(
     market_f=None,
     event=None,
     signal=None,
-) -> None:
+) -> int:
+    market_price_1h_ago = (
+        float(market_f.price_1h_ago)
+        if market_f and market_f.price_1h_ago is not None
+        else 0.0
+    )
+    market_volume_7d_avg = (
+        float(market_f.volume_7d_avg_usd)
+        if market_f and market_f.volume_7d_avg_usd is not None
+        else None
+    )
     spread = (
         (market_f.best_ask - market_f.best_bid) / market_f.mid
         if market_f and market_f.mid > 0
         else None
     )
     momentum = (
-        abs(market_f.mid - market_f.price_1h_ago) / market_f.price_1h_ago
-        if market_f and market_f.price_1h_ago > 0
+        abs(market_f.mid - market_price_1h_ago) / market_price_1h_ago
+        if market_f and market_price_1h_ago > 0
         else None
     )
     volume_trend = (
-        market_f.volume_24h_usd / (market_f.volume_7d_avg_usd + 1e-6)
-        if market_f
+        market_f.volume_24h_usd / (market_volume_7d_avg + 1e-6)
+        if market_f and market_volume_7d_avg is not None
         else None
     )
     market_components = signal.get("market", {}).get("components", {}) if isinstance(signal, dict) else {}
@@ -1270,6 +1666,14 @@ def log_trade(
         },
         "signal": signal if isinstance(signal, dict) else None,
     }
+    source_action = str(getattr(event, "action", "") or "").strip().lower()
+    is_executed_buy = (
+        not skipped
+        and source_action == "buy"
+        and actual_entry_price is not None
+        and actual_entry_shares is not None
+        and actual_entry_size_usd is not None
+    )
     values = [
         trade_id,
         market_id,
@@ -1323,6 +1727,13 @@ def log_trade(
         1 if skipped else 0,
         skip_reason,
         placed_at,
+        float(actual_entry_shares or 0.0) if is_executed_buy else 0.0,
+        float(actual_entry_size_usd or 0.0) if is_executed_buy else 0.0,
+        float(getattr(event, "shares", 0.0) or 0.0) if is_executed_buy else 0.0,
+        0.0,
+        0.0,
+        0.0,
+        0,
         trader_f.win_rate if trader_f else None,
         trader_f.n_trades if trader_f else None,
         trader_f.conviction_ratio if trader_f else None,
@@ -1360,6 +1771,8 @@ def log_trade(
             actual_entry_size_usd, confidence, raw_confidence, kelly_fraction,
             signal_mode, belief_prior, belief_blend, belief_evidence, trader_score,
             market_score, market_veto, real_money, order_id, skipped, skip_reason, placed_at,
+            remaining_entry_shares, remaining_entry_size_usd, remaining_source_shares,
+            realized_exit_shares, realized_exit_size_usd, realized_exit_pnl_usd, partial_exit_count,
             f_trader_win_rate, f_trader_n_trades, f_conviction_ratio,
             f_trader_volume_usd, f_trader_avg_size_usd, f_account_age_days, f_consistency,
             f_trader_diversity, f_days_to_res, f_price, f_spread_pct, f_momentum_1h,
@@ -1369,5 +1782,7 @@ def log_trade(
         """,
         values,
     )
+    row_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
     conn.commit()
     conn.close()
+    return row_id

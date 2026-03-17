@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from db import get_conn
 from market_scorer import MarketFeatures
+from trade_contract import PROFITABLE_TRADE_SQL, RESOLVED_EXECUTED_ENTRY_SQL
 from trader_scorer import TraderFeatures
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def sync_belief_priors() -> int:
         """
         SELECT
             id,
-            outcome,
+            {PROFITABLE_TRADE_SQL} AS label,
             confidence,
             COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
             f_trader_win_rate,
@@ -63,8 +64,7 @@ def sync_belief_priors() -> int:
             f_bid_depth_usd,
             f_ask_depth_usd
         FROM trade_log
-        WHERE outcome IS NOT NULL
-          AND COALESCE(source_action, 'buy')='buy'
+        WHERE {RESOLVED_EXECUTED_ENTRY_SQL}
           AND id NOT IN (SELECT trade_log_id FROM belief_updates)
         ORDER BY id
         """
@@ -76,7 +76,7 @@ def sync_belief_priors() -> int:
 
     now = int(time.time())
     for row in rows:
-        outcome = int(row["outcome"])
+        outcome = int(row["label"])
         wins = 1.0 if outcome == 1 else 0.0
         losses = 1.0 if outcome == 0 else 0.0
         buckets = _feature_buckets_from_row(row)
@@ -245,12 +245,12 @@ def _feature_buckets_from_live_signal(
         ),
         "momentum_1h": _bucket_momentum(
             abs(market_features.mid - market_features.price_1h_ago) / market_features.price_1h_ago
-            if market_features.price_1h_ago > 0
+            if market_features.price_1h_ago is not None and market_features.price_1h_ago > 0
             else None
         ),
         "volume_trend": _bucket_volume_trend(
-            market_features.volume_24h_usd / (market_features.volume_7d_avg_usd + 1e-6)
-            if market_features.volume_7d_avg_usd >= 0
+            market_features.volume_24h_usd / market_features.volume_7d_avg_usd
+            if market_features.volume_7d_avg_usd is not None and market_features.volume_7d_avg_usd > 0
             else None
         ),
         "oi_usd": _bucket_oi_usd(market_features.oi_usd),

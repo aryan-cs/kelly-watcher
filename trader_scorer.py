@@ -9,6 +9,7 @@ import httpx
 import numpy as np
 
 from db import get_conn
+from trade_contract import PROFITABLE_TRADE_SQL, RESOLVED_EXECUTED_ENTRY_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -326,10 +327,15 @@ def _position_key(row: dict[str, Any]) -> str:
 def _compute_local_trader_features(trader_address: str, observed_size_usd: float) -> TraderFeatures:
     conn = get_conn()
     rows = conn.execute(
-        """
-        SELECT outcome, signal_size_usd, placed_at, market_id
+        f"""
+        SELECT
+            {PROFITABLE_TRADE_SQL} AS label,
+            COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
+            placed_at,
+            market_id
         FROM trade_log
-        WHERE trader_address=? AND outcome IS NOT NULL AND skipped=0
+        WHERE trader_address=?
+          AND {RESOLVED_EXECUTED_ENTRY_SQL}
         ORDER BY placed_at DESC
         LIMIT 500
         """,
@@ -356,11 +362,11 @@ def _compute_local_trader_features(trader_address: str, observed_size_usd: float
             open_pnl_usd=0.0,
         )
 
-    wins = sum(1 for row in rows if row["outcome"] == 1)
-    returns = [1.0 if row["outcome"] == 1 else -1.0 for row in rows]
+    wins = sum(1 for row in rows if row["label"] == 1)
+    returns = [1.0 if row["label"] == 1 else -1.0 for row in rows]
     std_dev = float(np.std(returns)) if len(returns) > 1 else 1.0
     consistency = float(np.mean(returns)) / (std_dev + 1e-6)
-    sizes = [float(row["signal_size_usd"]) for row in rows]
+    sizes = [float(row["effective_size_usd"] or observed_size_usd) for row in rows]
     avg_size = float(np.mean(sizes)) if sizes else observed_size_usd
     first_trade_ts = min(int(row["placed_at"]) for row in rows)
     age_days = int((time.time() - first_trade_ts) / 86400)

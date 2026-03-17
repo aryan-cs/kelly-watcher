@@ -5,6 +5,7 @@ import logging
 from alerter import send_alert
 from config import retrain_min_new_labels
 from db import get_conn
+from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
 from train import MIN_SAMPLES, check_calibration, load_training_data, train
 
 logger = logging.getLogger(__name__)
@@ -65,12 +66,11 @@ def should_retrain_early(_signal_engine) -> bool:
     last_retrain = row["trained_at"]
     conn = get_conn()
     new_labeled = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS n
         FROM trade_log
-        WHERE outcome IS NOT NULL
-          AND skipped=0
-          AND COALESCE(label_applied_at, resolved_at, placed_at) > ?
+        WHERE {RESOLVED_EXECUTED_ENTRY_SQL}
+          AND COALESCE(resolved_at, placed_at) > ?
         """,
         (last_retrain,),
     ).fetchone()["n"]

@@ -8,6 +8,7 @@ from typing import Any
 from config import model_path
 from db import get_conn
 from features import FEATURE_COLS, LABEL_COL
+from trade_contract import DATA_CONTRACT_VERSION, PROFITABLE_TRADE_SQL, RESOLVED_EXECUTED_ENTRY_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +33,10 @@ def load_training_data():
             COALESCE(actual_entry_price, price_at_signal) AS effective_price,
             COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
             counterfactual_return,
+            {PROFITABLE_TRADE_SQL} AS {LABEL_COL},
             {", ".join(FEATURE_COLS)},
-            {LABEL_COL}
         FROM trade_log
-        WHERE outcome IS NOT NULL
-          AND COALESCE(source_action, 'buy')='buy'
+        WHERE {RESOLVED_EXECUTED_ENTRY_SQL}
         ORDER BY placed_at ASC
         """,
         conn,
@@ -138,6 +138,9 @@ def train(df=None) -> dict:
         "edge_threshold": round(strategy["edge_threshold"], 4),
         "top_features": top_features[:8],
         "trained_at": trained_at,
+        "data_contract_version": DATA_CONTRACT_VERSION,
+        "fill_aware_only": True,
+        "label_mode": "economic_pnl_positive",
     }
 
     deployable = (
@@ -155,6 +158,8 @@ def train(df=None) -> dict:
         "model": calibrated,
         "feature_cols": feature_cols,
         "model_backend": model_backend,
+        "data_contract_version": DATA_CONTRACT_VERSION,
+        "fill_aware_only": True,
         "policy": {
             "edge_threshold": float(strategy["edge_threshold"]),
             "selected_trades": int(strategy["selected_trades"]),

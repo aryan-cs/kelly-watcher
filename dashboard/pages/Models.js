@@ -7,6 +7,13 @@ import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
 import { theme } from '../theme.js';
 import { useQuery } from '../useDb.js';
+const EXECUTED_ENTRY_WHERE = `
+skipped=0
+AND COALESCE(source_action, 'buy')='buy'
+AND actual_entry_price IS NOT NULL
+AND actual_entry_shares IS NOT NULL
+AND actual_entry_size_usd IS NOT NULL
+`;
 const MODEL_SQL = `
 SELECT trained_at, n_samples, brier_score, log_loss, deployed
 FROM model_history
@@ -22,7 +29,7 @@ SELECT
   AVG(f_spread_pct) AS spread_pct,
   AVG(f_momentum_1h) AS momentum_1h
 FROM trade_log
-WHERE skipped=0
+WHERE ${EXECUTED_ENTRY_WHERE}
 `;
 export function Models() {
     const terminal = useTerminalSize();

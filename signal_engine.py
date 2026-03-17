@@ -9,6 +9,7 @@ from beliefs import adjust_heuristic_confidence
 from config import min_confidence, model_path
 from features import FEATURE_COLS, build_feature_map
 from market_scorer import MarketFeatures, MarketScorer
+from trade_contract import DATA_CONTRACT_VERSION
 from trader_scorer import TraderFeatures, TraderScorer
 
 logger = logging.getLogger(__name__)
@@ -37,14 +38,24 @@ class SignalEngine:
 
             artifact = joblib.load(path)
             if isinstance(artifact, dict):
+                contract_version = int(artifact.get("data_contract_version") or 0)
+                if (
+                    contract_version < DATA_CONTRACT_VERSION
+                    or not artifact.get("fill_aware_only", False)
+                    or artifact.get("label_mode") != "economic_pnl_positive"
+                ):
+                    logger.warning(
+                        "Ignoring legacy model at %s because it was not trained under the current fill-aware economic label contract",
+                        path,
+                    )
+                    return
                 self._xgb = artifact.get("model")
                 self._xgb_cols = artifact.get("feature_cols", FEATURE_COLS)
                 self._xgb_policy = artifact.get("policy", {"edge_threshold": 0.0})
                 self._model_backend = artifact.get("model_backend", "ml")
             else:
-                self._xgb, self._xgb_cols = artifact
-                self._xgb_policy = {"edge_threshold": 0.0}
-                self._model_backend = "xgboost"
+                logger.warning("Ignoring legacy tuple model artifact at %s", path)
+                return
             logger.info("%s model loaded from %s", self._model_backend, path)
         except Exception as exc:
             self._xgb = None
@@ -129,7 +140,17 @@ class SignalEngine:
         market_result = self.market_scorer.score(market_features)
         feature_map = build_feature_map(trader_features, market_features)
 
-        ordered = np.array([[feature_map.get(column, 0.0) for column in self._xgb_cols]])
+        ordered = np.array(
+            [
+                [
+                    np.nan
+                    if feature_map.get(column) is None
+                    else float(feature_map.get(column))
+                    for column in self._xgb_cols
+                ]
+            ],
+            dtype=float,
+        )
         confidence = float(self._xgb.predict_proba(ordered)[0, 1])
         execution_price = market_features.execution_price if market_features.execution_price > 0 else market_features.mid
         edge = confidence - execution_price

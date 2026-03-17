@@ -284,7 +284,7 @@ function formatAge(days: number | null | undefined): string {
   return `${Math.max(0, Math.round(days))}d`
 }
 
-function getWalletsLayout(width: number): WalletsLayout {
+function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   const observedResolvedWidth = 7
   const observedWinRateWidth = 8
   const profileWinRateWidth = 8
@@ -297,9 +297,26 @@ function getWalletsLayout(width: number): WalletsLayout {
     copyPnlWidth +
     lastSeenWidth
   const gapCount = 6
-  const variableBudget = Math.max(36, width - fixedWidths - gapCount)
-  const usernameWidth = Math.max(14, Math.min(22, Math.floor(variableBudget * 0.42)))
-  const addressWidth = Math.max(16, Math.min(30, variableBudget - usernameWidth))
+  const variableBudget = Math.max(40, width - fixedWidths - gapCount)
+  const desiredUsernameWidth = Math.max(
+    14,
+    wallets.reduce((max, wallet) => Math.max(max, (wallet.username || '-').length + 2), 0)
+  )
+  const desiredAddressWidth = Math.max(
+    18,
+    wallets.reduce((max, wallet) => Math.max(max, wallet.trader_address.length), 0)
+  )
+
+  let usernameWidth = Math.max(
+    14,
+    Math.min(desiredUsernameWidth, variableBudget - Math.min(desiredAddressWidth, Math.max(18, variableBudget - 14)))
+  )
+  let addressWidth = variableBudget - usernameWidth
+
+  if (variableBudget >= desiredUsernameWidth + desiredAddressWidth) {
+    usernameWidth = desiredUsernameWidth
+    addressWidth = variableBudget - usernameWidth
+  }
 
   return {
     usernameWidth,
@@ -330,13 +347,12 @@ function buildDetailColumns(sections: WalletDetailSection[], wide: boolean): Wal
 export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: WalletsProps) {
   const terminal = useTerminalSize()
   const visibleRows = rowsForHeight(terminal.height, 18, 4, 14)
-  const tableWidth = Math.max(122, terminal.width - 12)
+  const tableWidth = Math.max(52, terminal.width - 8)
   const activityRows = useQuery<WalletActivityRow>(WALLET_ACTIVITY_SQL)
   const traderCacheRows = useQuery<TraderCacheRow>(TRADER_CACHE_SQL)
   const shadowWalletRows = useQuery<TopShadowRow>(SHADOW_WALLETS_SQL)
   const events = useEventStream(1000)
   const refreshToken = useRefreshToken()
-  const layout = getWalletsLayout(tableWidth)
 
   const usernames = useMemo(() => {
     const lookup = readIdentityUsernames()
@@ -396,6 +412,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
       }
     })
   }, [activityRows, traderCacheRows, usernames, watchedWallets])
+  const layout = useMemo(() => getWalletsLayout(tableWidth, wallets), [tableWidth, wallets])
 
   useEffect(() => {
     onWalletCountChange?.(wallets.length)
@@ -428,7 +445,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
     [shadowWalletRows]
   )
   const shadowPanelsWide = terminal.wide
-  const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 2) / 2)) : tableWidth
+  const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 1) / 2)) : tableWidth
   const shadowNameWidth = Math.max(14, Math.min(28, shadowPanelWidth - 22))
   const maxAbsShadowPnl = useMemo(
     () => shadowWalletRows.reduce((max, wallet) => Math.max(max, Math.abs(wallet.pnl || 0)), 0),

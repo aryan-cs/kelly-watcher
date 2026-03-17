@@ -271,7 +271,7 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   const observedWinRateWidth = 8
   const profileWinRateWidth = 8
   const copyPnlWidth = 12
-  const lastSeenWidth = 9
+  const lastSeenWidth = 10
   const fixedWidths =
     observedResolvedWidth +
     observedWinRateWidth +
@@ -497,7 +497,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
                 : centeredGradientColor(selectedWallet.local_pnl, maxAbsLocalPnl)
           },
           {
-            label: 'Last Seen',
+            label: 'Last Trade',
             value: secondsAgo(selectedWallet.last_seen || undefined)
           }
         ]
@@ -685,7 +685,7 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
             <Text color={theme.dim}> </Text>
             <Text color={theme.dim}>{fitRight('COPY P&L', layout.copyPnlWidth)}</Text>
             <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('LAST', layout.lastSeenWidth)}</Text>
+            <Text color={theme.dim}>{fitRight('LAST TRADE', layout.lastSeenWidth)}</Text>
           </InkBox>
 
           <InkBox flexDirection="column" width="100%" flexGrow={1} justifyContent="flex-start">

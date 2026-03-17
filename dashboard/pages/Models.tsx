@@ -2,7 +2,7 @@ import React, {useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
 import {StatRow} from '../components/StatRow.js'
-import {formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo} from '../format.js'
+import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo} from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
 import {positiveDollarColor, probabilityColor, theme} from '../theme.js'
@@ -310,6 +310,49 @@ export function Models() {
       : null
   const calibrationLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 5
   const historyLimit = terminal.compact ? 3 : 4
+  const panelContentWidth = stacked
+    ? Math.max(46, terminal.width - 12)
+    : Math.max(34, Math.floor((terminal.width - 18) / 2))
+  const calibrationWidths = useMemo(() => {
+    const rangeWidth = 8
+    const nWidth = 5
+    const gapCount = 4
+    const metricWidth = Math.max(7, Math.floor((panelContentWidth - rangeWidth - nWidth - gapCount) / 3))
+    const used = rangeWidth + nWidth + gapCount + metricWidth * 3
+    return {
+      rangeWidth: rangeWidth + Math.max(0, panelContentWidth - used),
+      metricWidth,
+      nWidth
+    }
+  }, [panelContentWidth])
+  const signalModeWidths = useMemo(() => {
+    const useWidth = 7
+    const winWidth = 7
+    const edgeWidth = 7
+    const pnlWidth = Math.max(12, Math.min(14, Math.floor(panelContentWidth * 0.22)))
+    const gapCount = 4
+    return {
+      modeWidth: Math.max(10, panelContentWidth - useWidth - winWidth - edgeWidth - pnlWidth - gapCount),
+      useWidth,
+      winWidth,
+      edgeWidth,
+      pnlWidth
+    }
+  }, [panelContentWidth])
+  const retrainWidths = useMemo(() => {
+    const timeWidth = 12
+    const sampleWidth = 8
+    const brierWidth = 7
+    const lossWidth = 7
+    const gapCount = 4
+    return {
+      timeWidth,
+      sampleWidth,
+      brierWidth,
+      lossWidth,
+      stateWidth: Math.max(8, panelContentWidth - timeWidth - sampleWidth - brierWidth - lossWidth - gapCount)
+    }
+  }, [panelContentWidth])
 
   return (
     <InkBox flexDirection="column" width="100%">
@@ -399,24 +442,38 @@ export function Models() {
             color={lowerIsBetterColor(calibration?.avg_gap, 0.12, 0.2)}
           />
           {calibrationRows.length ? (
-            calibrationRows.slice(0, calibrationLimit).map((row) => (
-              <Text key={row.bucket}>
-                <Text color={theme.white}>{bucketLabel(row.bucket)}</Text>
-                <Text color={theme.dim}>: pred </Text>
-                <Text color={row.avg_confidence != null ? probabilityColor(row.avg_confidence) : theme.dim}>
-                  {formatPct(row.avg_confidence, 1)}
-                </Text>
-                <Text color={theme.dim}> act </Text>
-                <Text color={row.actual_win_rate != null ? probabilityColor(row.actual_win_rate) : theme.dim}>
-                  {formatPct(row.actual_win_rate, 1)}
-                </Text>
-                <Text color={theme.dim}> gap </Text>
-                <Text color={lowerIsBetterColor(row.avg_gap, 0.12, 0.2)}>
-                  {formatPct(row.avg_gap, 1)}
-                </Text>
-                <Text color={theme.dim}> n={row.n}</Text>
-              </Text>
-            ))
+            <>
+              <InkBox width="100%" marginTop={1}>
+                <Text color={theme.dim}>{fit('RANGE', calibrationWidths.rangeWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.dim}>{fitRight('PRED', calibrationWidths.metricWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.dim}>{fitRight('ACT', calibrationWidths.metricWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.dim}>{fitRight('GAP', calibrationWidths.metricWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.dim}>{fitRight('N', calibrationWidths.nWidth)}</Text>
+              </InkBox>
+              {calibrationRows.slice(0, calibrationLimit).map((row) => (
+                <InkBox key={row.bucket} width="100%">
+                  <Text color={theme.white}>{fit(bucketLabel(row.bucket), calibrationWidths.rangeWidth)}</Text>
+                  <Text> </Text>
+                  <Text color={row.avg_confidence != null ? probabilityColor(row.avg_confidence) : theme.dim}>
+                    {fitRight(formatPct(row.avg_confidence, 1), calibrationWidths.metricWidth)}
+                  </Text>
+                  <Text> </Text>
+                  <Text color={row.actual_win_rate != null ? probabilityColor(row.actual_win_rate) : theme.dim}>
+                    {fitRight(formatPct(row.actual_win_rate, 1), calibrationWidths.metricWidth)}
+                  </Text>
+                  <Text> </Text>
+                  <Text color={lowerIsBetterColor(row.avg_gap, 0.12, 0.2)}>
+                    {fitRight(formatPct(row.avg_gap, 1), calibrationWidths.metricWidth)}
+                  </Text>
+                  <Text> </Text>
+                  <Text color={theme.dim}>{fitRight(String(row.n), calibrationWidths.nWidth)}</Text>
+                </InkBox>
+              ))}
+            </>
           ) : (
             <Text color={theme.dim}>Need a few resolved tracker bets to grade calibration.</Text>
           )}
@@ -426,27 +483,44 @@ export function Models() {
 
         <Box title="Signal Modes" width={stacked ? '100%' : '50%'}>
           {signalModes.length ? (
-            signalModes.map((row) => {
-              const modeWinRate = ratio(row.wins, row.resolved)
-              const modeUseRate = ratio(row.taken, row.signals)
-              return (
-                <Text key={row.mode}>
-                  <Text color={theme.white}>{modeLabel(row.mode)}</Text>
-                  <Text color={theme.dim}>: use </Text>
-                  <Text color={modeUseRate != null ? probabilityColor(Math.max(0.5, modeUseRate)) : theme.dim}>
-                    {formatPct(modeUseRate, 1)}
-                  </Text>
-                  <Text color={theme.dim}> win </Text>
-                  <Text color={modeWinRate != null ? probabilityColor(modeWinRate) : theme.dim}>
-                    {formatPct(modeWinRate, 1)}
-                  </Text>
-                  <Text color={theme.dim}> edge </Text>
-                  <Text color={signedMetricColor(row.avg_edge)}>{formatPct(row.avg_edge, 1)}</Text>
-                  <Text color={theme.dim}> pnl </Text>
-                  <Text color={dollarColor(row.total_pnl)}>{formatDollar(row.total_pnl)}</Text>
-                </Text>
-              )
-            })
+            <>
+              <InkBox width="100%">
+                <Text color={theme.dim}>{fit('MODE', signalModeWidths.modeWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.dim}>{fitRight('USE', signalModeWidths.useWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.dim}>{fitRight('WIN', signalModeWidths.winWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.dim}>{fitRight('EDGE', signalModeWidths.edgeWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.dim}>{fitRight('P&L', signalModeWidths.pnlWidth)}</Text>
+              </InkBox>
+              {signalModes.map((row) => {
+                const modeWinRate = ratio(row.wins, row.resolved)
+                const modeUseRate = ratio(row.taken, row.signals)
+                return (
+                  <InkBox key={row.mode} width="100%">
+                    <Text color={theme.white}>{fit(modeLabel(row.mode), signalModeWidths.modeWidth)}</Text>
+                    <Text> </Text>
+                    <Text color={modeUseRate != null ? probabilityColor(Math.max(0.5, modeUseRate)) : theme.dim}>
+                      {fitRight(formatPct(modeUseRate, 1), signalModeWidths.useWidth)}
+                    </Text>
+                    <Text> </Text>
+                    <Text color={modeWinRate != null ? probabilityColor(modeWinRate) : theme.dim}>
+                      {fitRight(formatPct(modeWinRate, 1), signalModeWidths.winWidth)}
+                    </Text>
+                    <Text> </Text>
+                    <Text color={signedMetricColor(row.avg_edge)}>
+                      {fitRight(formatPct(row.avg_edge, 1), signalModeWidths.edgeWidth)}
+                    </Text>
+                    <Text> </Text>
+                    <Text color={dollarColor(row.total_pnl)}>
+                      {fitRight(formatDollar(row.total_pnl), signalModeWidths.pnlWidth)}
+                    </Text>
+                  </InkBox>
+                )
+              })}
+            </>
           ) : (
             <Text color={theme.dim}>No tracker signals yet.</Text>
           )}
@@ -491,27 +565,43 @@ export function Models() {
           <StatRow label="Weekly slot" value="Mon 3:00 local" />
           <StatRow label="Early check" value="Every 24h" />
           <StatRow label="Early trigger" value="100 new labels" />
+          <StatRow label="Total runs" value={formatCount(trainingSummary?.total_runs)} />
           <StatRow label="Last gap" value={formatInterval(lastRetrainGap)} />
           <StatRow label="Avg gap" value={formatInterval(averageRetrainGap)} />
           <StatRow label="Runs 7d" value={formatCount(trainingSummary?.runs_7d)} />
           <StatRow label="Runs 30d" value={formatCount(trainingSummary?.runs_30d)} />
           <Text color={theme.dim}>No online fine-tuning. Each update rebuilds the model from resolved trades.</Text>
           <Text color={theme.dim}>A retrain only deploys if it beats baseline checks and validation P&L gates.</Text>
-          <Text color={theme.dim}>Recent runs:</Text>
+          <InkBox width="100%" marginTop={1}>
+            <Text color={theme.dim}>{fit('TIME', retrainWidths.timeWidth)}</Text>
+            <Text> </Text>
+            <Text color={theme.dim}>{fitRight('SAMPLES', retrainWidths.sampleWidth)}</Text>
+            <Text> </Text>
+            <Text color={theme.dim}>{fitRight('BRIER', retrainWidths.brierWidth)}</Text>
+            <Text> </Text>
+            <Text color={theme.dim}>{fitRight('LL', retrainWidths.lossWidth)}</Text>
+            <Text> </Text>
+            <Text color={theme.dim}>{fit('STATE', retrainWidths.stateWidth)}</Text>
+          </InkBox>
           {models.length ? (
             models.slice(0, historyLimit).map((row) => (
-              <Text key={row.trained_at}>
-                <Text color={theme.white}>{formatShortDateTime(row.trained_at)}</Text>
-                <Text color={theme.dim}>  n=</Text>
-                <Text>{formatCount(row.n_samples)}</Text>
-                <Text color={theme.dim}>  Brier </Text>
-                <Text color={lowerIsBetterColor(row.brier_score, 0.18, 0.25)}>{formatNumber(row.brier_score, 4)}</Text>
-                <Text color={theme.dim}>  LL </Text>
-                <Text color={lowerIsBetterColor(row.log_loss, 0.55, 0.69)}>{formatNumber(row.log_loss, 4)}</Text>
-                <Text color={row.deployed ? theme.green : theme.dim}>
-                  {row.deployed ? '  active' : '  archived'}
+              <InkBox key={row.trained_at} width="100%">
+                <Text color={theme.white}>{fit(formatShortDateTime(row.trained_at), retrainWidths.timeWidth)}</Text>
+                <Text> </Text>
+                <Text color={theme.white}>{fitRight(formatCount(row.n_samples), retrainWidths.sampleWidth)}</Text>
+                <Text> </Text>
+                <Text color={lowerIsBetterColor(row.brier_score, 0.18, 0.25)}>
+                  {fitRight(formatNumber(row.brier_score, 4), retrainWidths.brierWidth)}
                 </Text>
-              </Text>
+                <Text> </Text>
+                <Text color={lowerIsBetterColor(row.log_loss, 0.55, 0.69)}>
+                  {fitRight(formatNumber(row.log_loss, 4), retrainWidths.lossWidth)}
+                </Text>
+                <Text> </Text>
+                <Text color={row.deployed ? theme.green : theme.dim}>
+                  {fit(row.deployed ? 'active' : 'archived', retrainWidths.stateWidth)}
+                </Text>
+              </InkBox>
             ))
           ) : (
             <Text color={theme.dim}>No trained models yet. The heuristic path is active.</Text>

@@ -15,6 +15,8 @@ import {useEventStream} from '../useEventStream.js'
 interface WalletActivityRow {
   trader_address: string
   seen_trades: number | null
+  seen_resolved: number | null
+  seen_wins: number | null
   local_pnl: number | null
   last_seen: number | null
   observed_resolved: number | null
@@ -70,6 +72,9 @@ interface WalletRow {
   username: string
   watch_tier: WatchTier
   seen_trades: number | null
+  seen_resolved: number | null
+  seen_wins: number | null
+  seen_win_rate: number | null
   local_pnl: number | null
   last_seen: number | null
   observed_resolved: number | null
@@ -110,6 +115,8 @@ interface WalletsLayout {
   usernameWidth: number
   addressWidth: number
   tierWidth: number
+  seenTradesWidth: number
+  seenWinRateWidth: number
   observedResolvedWidth: number
   observedWinRateWidth: number
   profileWinRateWidth: number
@@ -169,6 +176,18 @@ const WALLET_ACTIVITY_SQL = `
 SELECT
   trader_address,
   COUNT(*) AS seen_trades,
+  SUM(
+    CASE
+      WHEN COALESCE(source_action, 'buy')='buy' AND outcome IS NOT NULL THEN 1
+      ELSE 0
+    END
+  ) AS seen_resolved,
+  SUM(
+    CASE
+      WHEN COALESCE(source_action, 'buy')='buy' AND outcome=1 THEN 1
+      ELSE 0
+    END
+  ) AS seen_wins,
   ROUND(SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN COALESCE(shadow_pnl_usd, actual_pnl_usd) ELSE 0 END), 3) AS local_pnl,
   MAX(placed_at) AS last_seen,
   SUM(
@@ -431,19 +450,23 @@ function tierColor(tier: WatchTier): string {
 
 function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   const tierWidth = 5
+  const seenTradesWidth = 6
+  const seenWinRateWidth = 8
   const observedResolvedWidth = 7
   const observedWinRateWidth = 8
   const profileWinRateWidth = 8
-  const copyPnlWidth = 12
+  const copyPnlWidth = 11
   const lastSeenWidth = 10
   const fixedWidths =
     tierWidth +
+    seenTradesWidth +
+    seenWinRateWidth +
     observedResolvedWidth +
     observedWinRateWidth +
     profileWinRateWidth +
     copyPnlWidth +
     lastSeenWidth
-  const gapCount = 6
+  const gapCount = 8
   const variableBudget = Math.max(40, width - fixedWidths - gapCount)
   const desiredUsernameWidth = Math.max(
     14,
@@ -469,6 +492,8 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
     usernameWidth,
     addressWidth,
     tierWidth,
+    seenTradesWidth,
+    seenWinRateWidth,
     observedResolvedWidth,
     observedWinRateWidth,
     profileWinRateWidth,
@@ -638,6 +663,12 @@ export function Wallets({
         username: usernames.get(wallet) || '',
         watch_tier: watchState?.status === 'dropped' ? 'DISC' : (tierByWallet.get(wallet) || 'DISC'),
         seen_trades: activity?.seen_trades ?? 0,
+        seen_resolved: activity?.seen_resolved ?? 0,
+        seen_wins: activity?.seen_wins ?? 0,
+        seen_win_rate:
+          (activity?.seen_resolved ?? 0) > 0
+            ? (activity?.seen_wins ?? 0) / (activity?.seen_resolved ?? 0)
+            : null,
         local_pnl: activity?.local_pnl ?? null,
         last_seen: activity?.last_seen ?? null,
         observed_resolved: activity?.observed_resolved ?? 0,
@@ -834,6 +865,19 @@ export function Wallets({
           {
             label: 'Seen Trades',
             value: formatFullCount(selectedWallet.seen_trades)
+          },
+          {
+            label: 'Seen Resolved',
+            value: formatFullCount(selectedWallet.seen_resolved)
+          },
+          {
+            label: 'Seen Wins',
+            value: formatFullCount(selectedWallet.seen_wins)
+          },
+          {
+            label: 'Seen WR',
+            value: selectedWallet.seen_win_rate == null ? '-' : formatPct(selectedWallet.seen_win_rate, 2),
+            color: selectedWallet.seen_win_rate == null ? theme.dim : probabilityColor(selectedWallet.seen_win_rate)
           },
           {
             label: 'Resolved Copied',
@@ -1086,6 +1130,10 @@ export function Wallets({
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('TRACK', layout.tierWidth)}</Text>
               <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('SEEN', layout.seenTradesWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('SEEN WR', layout.seenWinRateWidth)}</Text>
+              <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fitRight('COPIED', layout.observedResolvedWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fitRight('COPY WR', layout.observedWinRateWidth)}</Text>
@@ -1105,6 +1153,10 @@ export function Wallets({
                   const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`
                   const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim
                   const addressColor = isSelected ? theme.accent : theme.white
+                  const seenWinRateColor =
+                    wallet.seen_win_rate == null
+                      ? theme.dim
+                      : probabilityColor(wallet.seen_win_rate)
                   const observedWinRateColor =
                     wallet.observed_win_rate == null
                       ? theme.dim
@@ -1125,6 +1177,17 @@ export function Wallets({
                       <Text color={addressColor} bold={isSelected}>{formatAddress(wallet.trader_address, layout.addressWidth)}</Text>
                       <Text> </Text>
                       <Text color={tierTextColor} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
+                      <Text> </Text>
+                      <Text>
+                        {fitRight(formatCount(wallet.seen_trades, layout.seenTradesWidth), layout.seenTradesWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={seenWinRateColor}>
+                        {fitRight(
+                          wallet.seen_win_rate == null ? '-' : formatPct(wallet.seen_win_rate),
+                          layout.seenWinRateWidth
+                        )}
+                      </Text>
                       <Text> </Text>
                       <Text>
                         {fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth)}

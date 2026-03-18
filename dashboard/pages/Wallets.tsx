@@ -825,15 +825,15 @@ export function Wallets({
             value: formatFullCount(selectedWallet.seen_trades)
           },
           {
-            label: 'Resolved Obs',
+            label: 'Resolved Copied',
             value: formatFullCount(selectedWallet.observed_resolved)
           },
           {
-            label: 'Observed Wins',
+            label: 'Copied Wins',
             value: formatFullCount(selectedWallet.observed_wins)
           },
           {
-            label: 'Observed WR',
+            label: 'Copy WR',
             value: selectedWallet.observed_win_rate == null ? '-' : formatPct(selectedWallet.observed_win_rate, 2),
             color: selectedWallet.observed_win_rate == null ? theme.dim : probabilityColor(selectedWallet.observed_win_rate)
           },
@@ -1027,9 +1027,9 @@ export function Wallets({
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('TRACK', layout.tierWidth)}</Text>
               <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('OBS', layout.observedResolvedWidth)}</Text>
+              <Text color={theme.dim}>{fitRight('COPIED', layout.observedResolvedWidth)}</Text>
               <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('OBS WR', layout.observedWinRateWidth)}</Text>
+              <Text color={theme.dim}>{fitRight('COPY WR', layout.observedWinRateWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fitRight('PROF WR', layout.profileWinRateWidth)}</Text>
               <Text color={theme.dim}> </Text>

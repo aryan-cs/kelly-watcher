@@ -79,8 +79,9 @@ class PolymarketTracker:
             self.wallets.append(wallet)
             logger.info("Added wallet to watchlist: %s", wallet)
 
-    def prime_identities(self) -> None:
-        for wallet in self.wallets:
+    def prime_identities(self, wallet_addresses: list[str] | None = None) -> None:
+        targets = self.wallets if wallet_addresses is None else wallet_addresses
+        for wallet in targets:
             self._touch_activity()
             resolve_username_for_wallet(wallet, client=self.client, force=True)
 
@@ -319,13 +320,14 @@ class PolymarketTracker:
         history = payload.get("history", []) if isinstance(payload, dict) else []
         return self._normalize_price_history(history)
 
-    def poll(self) -> list[TradeEvent]:
+    def poll(self, wallet_addresses: list[str] | None = None) -> list[TradeEvent]:
         new_events: list[TradeEvent] = []
         poll_started_at = int(time.time())
         poll_seen: set[str] = set()
         self._touch_activity()
 
-        for address in self.wallets:
+        targets = self.wallets if wallet_addresses is None else wallet_addresses
+        for address in targets:
             self._touch_activity()
             for raw in self.get_wallet_trades(address):
                 trade_id = self._raw_trade_id(raw)

@@ -41,6 +41,13 @@ interface CountRow {
   n: number
 }
 
+function formatCurrentPollElapsedSeconds(nowSeconds: number, startedAtSeconds?: number): string | null {
+  if (!startedAtSeconds || startedAtSeconds <= 0) {
+    return null
+  }
+  return `${Math.max(0, Math.floor(nowSeconds - startedAtSeconds))}s`
+}
+
 interface AppContentProps {
   page: Page
   isRefreshing: boolean
@@ -158,6 +165,7 @@ function AppContent({
   const startedAt = botState.started_at ?? 0
   const lastPollAt = botState.last_poll_at ?? 0
   const lastActivityAt = botState.last_activity_at ?? 0
+  const currentLoopStartedAt = botState.last_loop_started_at ?? 0
   const loopInProgress = botState.loop_in_progress ?? false
   const pollIsFresh = lastPollAt > 0 && (now - lastPollAt) <= heartbeatWindow
   const activityIsFresh = lastActivityAt > 0 && (now - lastActivityAt) <= activityWindow
@@ -172,8 +180,9 @@ function AppContent({
       ? {1: 'Track', 2: 'Sig', 3: 'Perf', 4: 'Mod', 5: 'Wall', 6: 'Cfg'}
       : {1: 'Tracker', 2: 'Signals', 3: 'Perf', 4: 'Models', 5: 'Wallets', 6: 'Config'}
   const footerCompact = terminal.compact
+  const currentPollElapsedText = formatCurrentPollElapsedSeconds(now, currentLoopStartedAt)
   const lastPollText = loopInProgress
-    ? `polling... last poll: ${secondsAgo(botState.last_poll_at)}`
+    ? `polling...${currentPollElapsedText ? ` ${currentPollElapsedText}` : ''} | last poll: ${secondsAgo(botState.last_poll_at)}`
     : `last poll: ${secondsAgo(botState.last_poll_at)}`
   const footerControls =
     page === 1

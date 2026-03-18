@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
@@ -18,6 +19,8 @@ from auto_retrain import retrain_cycle, should_retrain_early
 from beliefs import sync_belief_priors
 from config import (
     ConfigError,
+    discovery_poll_interval_multiplier,
+    hot_wallet_count,
     live_min_shadow_resolved,
     live_require_shadow_history,
     max_bet_fraction,
@@ -37,6 +40,8 @@ from config import (
     retrain_hour_local,
     use_real_money,
     wallet_address,
+    warm_poll_interval_multiplier,
+    warm_wallet_count,
     watched_wallets,
 )
 from db import DB_PATH, get_conn, init_db
@@ -49,6 +54,7 @@ from signal_engine import SignalEngine
 from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
 from tracker import PolymarketTracker
 from trader_scorer import get_trader_features, refresh_trader_cache
+from watchlist_manager import WatchlistManager
 
 load_dotenv()
 
@@ -820,6 +826,11 @@ def _validate_startup() -> None:
     if minimum_bet is not None and minimum_bet <= 0:
         errors.append(f"MIN_BET_USD must be positive, got {minimum_bet}")
 
+    _capture_config(hot_wallet_count)
+    _capture_config(warm_wallet_count)
+    _capture_config(warm_poll_interval_multiplier)
+    _capture_config(discovery_poll_interval_multiplier)
+
     if use_real_money():
         our_wallet = wallet_address()
         if _looks_like_placeholder(private_key()):
@@ -962,6 +973,7 @@ def main() -> None:
     _validate_startup()
     EVENT_FILE.touch(exist_ok=True)
     start_ts = int(time.time())
+    watchlist = WatchlistManager(WATCHED_WALLETS)
     bot_state_snapshot: dict[str, object] = {
         "started_at": start_ts,
         "last_loop_started_at": 0,
@@ -969,15 +981,18 @@ def main() -> None:
         "loop_in_progress": False,
         "last_poll_at": 0,
         "last_poll_duration_s": 0.0,
-        "bankroll_usd": 0.0,
+        "bankroll_usd": None,
         "last_event_count": 0,
+        "polled_wallet_count": 0,
     }
     last_activity_write_at = 0.0
     current_loop_started_at = 0
+    bot_state_lock = threading.Lock()
 
     def _persist_bot_state(**updates: object) -> None:
-        bot_state_snapshot.update(updates)
-        _write_bot_state(**bot_state_snapshot)
+        with bot_state_lock:
+            bot_state_snapshot.update(updates)
+            _write_bot_state(**bot_state_snapshot)
 
     def _heartbeat(*, force: bool = False) -> None:
         nonlocal last_activity_write_at
@@ -993,13 +1008,14 @@ def main() -> None:
             updates["last_loop_started_at"] = current_loop_started_at
         _persist_bot_state(**updates)
 
-    _persist_bot_state()
+    _persist_bot_state(**watchlist.state_fields())
     sync_belief_priors()
 
     tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
-    tracker.prime_identities()
     executor = PolymarketExecutor()
     executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
+    _persist_bot_state(bankroll_usd=round(executor.get_usdc_balance(), 2))
+    tracker.prime_identities(watchlist.startup_wallets())
     live_entry_guard = _init_live_entry_guard(executor)
     daily_loss_guard = _init_daily_loss_guard(executor)
     engine = SignalEngine()
@@ -1009,10 +1025,17 @@ def main() -> None:
     initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
     if use_real_money() and not initial_live_sync_ok:
         raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
-    refresh_trader_cache(tracker.wallets)
+    refresh_trader_cache(watchlist.startup_wallets())
+    watchlist.refresh()
+    _persist_bot_state(**watchlist.state_fields())
     resolve_shadow_trades()
     dedup.load_from_db()
     tracker.seen_ids.update(dedup.seen_ids)
+
+    def _refresh_watchlist() -> None:
+        refresh_trader_cache(tracker.wallets)
+        watchlist.refresh()
+        _persist_bot_state(**watchlist.state_fields())
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(
@@ -1057,7 +1080,7 @@ def main() -> None:
         id="sync_positions",
     )
     scheduler.add_job(
-        lambda: refresh_trader_cache(tracker.wallets),
+        _refresh_watchlist,
         "interval",
         minutes=10,
         id="refresh_trader_cache",
@@ -1071,9 +1094,11 @@ def main() -> None:
     scheduler.start()
 
     mode_str = "LIVE" if use_real_money() else "SHADOW"
+    tier_state = watchlist.state_fields()
     send_alert(
         f"Bot started [{mode_str}]\n"
         f"Watching {len(tracker.wallets)} wallets\n"
+        f"Hot/Warm/Discovery: {tier_state['hot_wallet_count']}/{tier_state['warm_wallet_count']}/{tier_state['discovery_wallet_count']}\n"
         f"Poll interval: {poll_interval()}s"
     )
 
@@ -1084,6 +1109,7 @@ def main() -> None:
             current_loop_started_at = int(loop_start)
             _heartbeat(force=True)
             event_count = 0
+            polled_wallet_count = 0
             bankroll = 0.0
             account_equity = 0.0
             entry_block_reason = None
@@ -1094,7 +1120,13 @@ def main() -> None:
                     logger.warning("Low balance: $%.2f - skipping poll", bankroll)
                 else:
                     _heartbeat()
-                    events = tracker.poll()
+                    poll_wallets = watchlist.wallets_for_poll()
+                    polled_wallet_count = len(poll_wallets)
+                    _persist_bot_state(
+                        polled_wallet_count=polled_wallet_count,
+                        **watchlist.state_fields(),
+                    )
+                    events = tracker.poll(poll_wallets)
                     event_count = len(events)
                     for event in events:
                         _heartbeat()
@@ -1158,7 +1190,9 @@ def main() -> None:
                 "last_poll_duration_s": round(elapsed, 3),
                 "bankroll_usd": round(bankroll, 2),
                 "last_event_count": event_count,
+                "polled_wallet_count": polled_wallet_count,
                 "loop_in_progress": False,
+                **watchlist.state_fields(),
             }
             current_loop_started_at = 0
             _persist_bot_state(**state_snapshot)

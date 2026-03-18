@@ -114,6 +114,50 @@ def poll_interval() -> float:
         return 45.0
 
 
+def hot_wallet_count() -> int:
+    raw = _get_env_file_value("HOT_WALLET_COUNT") or _get("HOT_WALLET_COUNT", "12")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"HOT_WALLET_COUNT must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ConfigError(f"HOT_WALLET_COUNT must be >= 1, got {value}")
+    return value
+
+
+def warm_wallet_count() -> int:
+    raw = _get_env_file_value("WARM_WALLET_COUNT") or _get("WARM_WALLET_COUNT", "24")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"WARM_WALLET_COUNT must be an integer, got {raw!r}") from exc
+    if value < 0:
+        raise ConfigError(f"WARM_WALLET_COUNT must be >= 0, got {value}")
+    return value
+
+
+def warm_poll_interval_multiplier() -> int:
+    raw = _get_env_file_value("WARM_POLL_INTERVAL_MULTIPLIER") or _get("WARM_POLL_INTERVAL_MULTIPLIER", "5")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"WARM_POLL_INTERVAL_MULTIPLIER must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ConfigError(f"WARM_POLL_INTERVAL_MULTIPLIER must be >= 1, got {value}")
+    return value
+
+
+def discovery_poll_interval_multiplier() -> int:
+    raw = _get_env_file_value("DISCOVERY_POLL_INTERVAL_MULTIPLIER") or _get("DISCOVERY_POLL_INTERVAL_MULTIPLIER", "20")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"DISCOVERY_POLL_INTERVAL_MULTIPLIER must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ConfigError(f"DISCOVERY_POLL_INTERVAL_MULTIPLIER must be >= 1, got {value}")
+    return value
+
+
 def _parse_duration(raw: str, default_seconds: float) -> float:
     value = (raw or "").strip().lower()
     if not value:

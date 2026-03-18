@@ -536,6 +536,10 @@ The model is only deployed if it clears internal validation checks.
 ### Feed/runtime behavior
 
 - `POLL_INTERVAL_SECONDS`
+- `HOT_WALLET_COUNT`
+- `WARM_WALLET_COUNT`
+- `WARM_POLL_INTERVAL_MULTIPLIER`
+- `DISCOVERY_POLL_INTERVAL_MULTIPLIER`
 - `MAX_SOURCE_TRADE_AGE`
 - `MAX_FEED_STALENESS`
 - `MAX_MARKET_HORIZON`

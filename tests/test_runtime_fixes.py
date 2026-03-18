@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -376,6 +377,33 @@ class RuntimeFixesTest(unittest.TestCase):
         with patch("main.WATCHED_WALLETS", ["0xabc"]), patch("main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")):
             with self.assertRaisesRegex(RuntimeError, "MIN_CONFIDENCE must be numeric, got 'abc'"):
                 main._validate_startup()
+
+    def test_partial_bot_state_heartbeat_preserves_last_completed_poll(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                with patch("main.use_real_money", return_value=False), patch("main.poll_interval", return_value=2.0), patch.object(main, "WATCHED_WALLETS", ["0xabc"]):
+                    main._write_bot_state(
+                        started_at=100,
+                        last_poll_at=120,
+                        last_poll_duration_s=8.5,
+                        loop_in_progress=False,
+                    )
+                    main._write_bot_state(
+                        last_activity_at=130,
+                        last_loop_started_at=125,
+                        loop_in_progress=True,
+                    )
+
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertEqual(payload["last_poll_at"], 120)
+                self.assertEqual(payload["last_poll_duration_s"], 8.5)
+                self.assertEqual(payload["last_activity_at"], 130)
+                self.assertEqual(payload["last_loop_started_at"], 125)
+                self.assertTrue(payload["loop_in_progress"])
+            finally:
+                main.BOT_STATE_FILE = original_state_file
 
     def test_partial_exit_keeps_remaining_shadow_position_and_realized_pnl(self) -> None:
         with TemporaryDirectory() as tmpdir:

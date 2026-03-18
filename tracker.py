@@ -6,7 +6,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -57,9 +57,14 @@ class WalletCursor:
 
 
 class PolymarketTracker:
-    def __init__(self, wallet_addresses: list[str]):
+    def __init__(
+        self,
+        wallet_addresses: list[str],
+        activity_callback: Callable[[], None] | None = None,
+    ):
         self.wallets = [address.lower() for address in wallet_addresses if address]
         self.client = httpx.Client(timeout=15.0, follow_redirects=True)
+        self.activity_callback = activity_callback
         self.seen_ids: set[str] = set()
         self.wallet_cursors = self._load_wallet_cursors()
         self.last_trade_poll_ok_at = 0
@@ -76,10 +81,19 @@ class PolymarketTracker:
 
     def prime_identities(self) -> None:
         for wallet in self.wallets:
+            self._touch_activity()
             resolve_username_for_wallet(wallet, client=self.client, force=True)
 
     def trade_feed_health(self) -> tuple[int, int]:
         return self.last_trade_poll_ok_at, self.consecutive_trade_poll_failures
+
+    def _touch_activity(self) -> None:
+        if self.activity_callback is None:
+            return
+        try:
+            self.activity_callback()
+        except Exception:
+            logger.debug("Tracker activity callback failed", exc_info=True)
 
     def _load_wallet_cursors(self) -> dict[str, WalletCursor]:
         conn = get_conn()
@@ -167,8 +181,10 @@ class PolymarketTracker:
     ) -> tuple[Any | None, bool]:
         for attempt in range(TRADE_FETCH_MAX_ATTEMPTS):
             try:
+                self._touch_activity()
                 response = self.client.get(url, params=params)
                 if response.status_code == 404 and suppress_404:
+                    self._touch_activity()
                     return None, True
                 if response.status_code == 429:
                     raise httpx.HTTPStatusError(
@@ -177,8 +193,10 @@ class PolymarketTracker:
                         response=response,
                     )
                 response.raise_for_status()
+                self._touch_activity()
                 return response.json(), True
             except httpx.HTTPStatusError as exc:
+                self._touch_activity()
                 status_code = exc.response.status_code if exc.response is not None else 0
                 if status_code in {429, 500, 502, 503, 504} and attempt < TRADE_FETCH_MAX_ATTEMPTS - 1:
                     retry_after = 0.0
@@ -192,6 +210,7 @@ class PolymarketTracker:
                 logger.error("%s: %s", failure_log, exc)
                 return None, False
             except Exception as exc:
+                self._touch_activity()
                 if attempt < TRADE_FETCH_MAX_ATTEMPTS - 1:
                     time.sleep((RETRY_BASE_DELAY_S * (attempt + 1)) + random.uniform(0.0, 0.25))
                     continue
@@ -304,8 +323,10 @@ class PolymarketTracker:
         new_events: list[TradeEvent] = []
         poll_started_at = int(time.time())
         poll_seen: set[str] = set()
+        self._touch_activity()
 
         for address in self.wallets:
+            self._touch_activity()
             for raw in self.get_wallet_trades(address):
                 trade_id = self._raw_trade_id(raw)
                 if not trade_id or trade_id in self.seen_ids or trade_id in poll_seen:
@@ -321,6 +342,7 @@ class PolymarketTracker:
                     continue
                 poll_seen.add(trade_id)
 
+                self._touch_activity()
                 snap, raw_book, orderbook_fetched_at = self.get_orderbook_snapshot(event.token_id)
                 snap = snap or {}
                 if event.snapshot:

@@ -5,6 +5,9 @@ import {useRefreshToken} from './refresh.js'
 
 export interface BotState {
   started_at?: number
+  last_loop_started_at?: number
+  last_activity_at?: number
+  loop_in_progress?: boolean
   mode?: 'shadow' | 'live'
   n_wallets?: number
   poll_interval?: number

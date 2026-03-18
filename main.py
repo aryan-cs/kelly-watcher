@@ -173,12 +173,24 @@ def _event_market_payload(event) -> dict[str, str]:
 
 
 def _write_bot_state(**extra) -> None:
-    state = {
-        "started_at": int(extra.pop("started_at", time.time())),
-        "mode": "live" if use_real_money() else "shadow",
-        "n_wallets": len(WATCHED_WALLETS),
-        "poll_interval": poll_interval(),
-    }
+    existing: dict[str, object] = {}
+    if BOT_STATE_FILE.exists():
+        try:
+            payload = json.loads(BOT_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                existing = payload
+        except Exception:
+            existing = {}
+
+    state = dict(existing)
+    state.update(
+        {
+            "started_at": int(extra.pop("started_at", state.get("started_at") or time.time())),
+            "mode": "live" if use_real_money() else "shadow",
+            "n_wallets": len(WATCHED_WALLETS),
+            "poll_interval": poll_interval(),
+        }
+    )
     state.update(extra)
     BOT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
@@ -950,10 +962,41 @@ def main() -> None:
     _validate_startup()
     EVENT_FILE.touch(exist_ok=True)
     start_ts = int(time.time())
-    _write_bot_state(started_at=start_ts)
+    bot_state_snapshot: dict[str, object] = {
+        "started_at": start_ts,
+        "last_loop_started_at": 0,
+        "last_activity_at": start_ts,
+        "loop_in_progress": False,
+        "last_poll_at": 0,
+        "last_poll_duration_s": 0.0,
+        "bankroll_usd": 0.0,
+        "last_event_count": 0,
+    }
+    last_activity_write_at = 0.0
+    current_loop_started_at = 0
+
+    def _persist_bot_state(**updates: object) -> None:
+        bot_state_snapshot.update(updates)
+        _write_bot_state(**bot_state_snapshot)
+
+    def _heartbeat(*, force: bool = False) -> None:
+        nonlocal last_activity_write_at
+        now_ts = time.time()
+        if not force and (now_ts - last_activity_write_at) < 1.0:
+            return
+        last_activity_write_at = now_ts
+        updates: dict[str, object] = {
+            "last_activity_at": int(now_ts),
+            "loop_in_progress": current_loop_started_at > 0,
+        }
+        if current_loop_started_at > 0:
+            updates["last_loop_started_at"] = current_loop_started_at
+        _persist_bot_state(**updates)
+
+    _persist_bot_state()
     sync_belief_priors()
 
-    tracker = PolymarketTracker(WATCHED_WALLETS)
+    tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
     tracker.prime_identities()
     executor = PolymarketExecutor()
     executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
@@ -1038,6 +1081,8 @@ def main() -> None:
         last_entry_pause_reason: str | None = None
         while True:
             loop_start = time.time()
+            current_loop_started_at = int(loop_start)
+            _heartbeat(force=True)
             event_count = 0
             bankroll = 0.0
             account_equity = 0.0
@@ -1048,9 +1093,11 @@ def main() -> None:
                 if bankroll < 1.0:
                     logger.warning("Low balance: $%.2f - skipping poll", bankroll)
                 else:
+                    _heartbeat()
                     events = tracker.poll()
                     event_count = len(events)
                     for event in events:
+                        _heartbeat()
                         entry_block_reason = _entry_pause_reason(
                             tracker,
                             executor,
@@ -1105,12 +1152,16 @@ def main() -> None:
             elapsed = time.time() - loop_start
             state_snapshot = {
                 "started_at": start_ts,
+                "last_loop_started_at": current_loop_started_at,
+                "last_activity_at": int(time.time()),
                 "last_poll_at": int(time.time()),
                 "last_poll_duration_s": round(elapsed, 3),
                 "bankroll_usd": round(bankroll, 2),
                 "last_event_count": event_count,
+                "loop_in_progress": False,
             }
-            _write_bot_state(**state_snapshot)
+            current_loop_started_at = 0
+            _persist_bot_state(**state_snapshot)
             _wait_for_next_poll(loop_start, state_snapshot)
     except KeyboardInterrupt:
         logger.info("Shutting down...")

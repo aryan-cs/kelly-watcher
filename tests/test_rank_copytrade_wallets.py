@@ -38,6 +38,12 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             last_trade_ts=now_ts - 1800,
             recent_trade_count=18,
             recent_buy_count=9,
+            recent_buy_volume_usd=2_160.0,
+            avg_recent_buy_size_usd=240.0,
+            large_buy_count=6,
+            large_buy_ratio=0.667,
+            conviction_buy_count=5,
+            conviction_buy_ratio=0.556,
             lead_sample_count=9,
             median_buy_lead_seconds=8 * 3600,
             p25_buy_lead_seconds=4 * 3600,
@@ -57,6 +63,10 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             min_median_lead_seconds=2 * 3600,
             max_late_buy_ratio=0.25,
             max_days_since_last_trade=7,
+            min_avg_buy_size_usd=75.0,
+            min_large_buy_count=2,
+            min_conviction_buy_ratio=0.25,
+            large_buy_threshold_usd=100.0,
         )
 
         self.assertTrue(ranked.accepted)
@@ -91,6 +101,12 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             last_trade_ts=now_ts - 900,
             recent_trade_count=22,
             recent_buy_count=12,
+            recent_buy_volume_usd=2_400.0,
+            avg_recent_buy_size_usd=200.0,
+            large_buy_count=6,
+            large_buy_ratio=0.5,
+            conviction_buy_count=2,
+            conviction_buy_ratio=0.167,
             lead_sample_count=12,
             median_buy_lead_seconds=15 * 60,
             p25_buy_lead_seconds=5 * 60,
@@ -110,6 +126,10 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             min_median_lead_seconds=2 * 3600,
             max_late_buy_ratio=0.25,
             max_days_since_last_trade=7,
+            min_avg_buy_size_usd=75.0,
+            min_large_buy_count=2,
+            min_conviction_buy_ratio=0.25,
+            large_buy_threshold_usd=100.0,
         )
 
         self.assertFalse(ranked.accepted)
@@ -143,6 +163,12 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             last_trade_ts=now_ts - 900,
             recent_trade_count=24,
             recent_buy_count=12,
+            recent_buy_volume_usd=2_400.0,
+            avg_recent_buy_size_usd=200.0,
+            large_buy_count=6,
+            large_buy_ratio=0.5,
+            conviction_buy_count=5,
+            conviction_buy_ratio=0.417,
             lead_sample_count=10,
             median_buy_lead_seconds=7 * 3600,
             p25_buy_lead_seconds=3 * 3600,
@@ -152,6 +178,12 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             last_trade_ts=now_ts - (36 * 3600),
             recent_trade_count=6,
             recent_buy_count=3,
+            recent_buy_volume_usd=450.0,
+            avg_recent_buy_size_usd=150.0,
+            large_buy_count=2,
+            large_buy_ratio=0.667,
+            conviction_buy_count=2,
+            conviction_buy_ratio=0.667,
             lead_sample_count=10,
             median_buy_lead_seconds=7 * 3600,
             p25_buy_lead_seconds=3 * 3600,
@@ -171,6 +203,10 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             min_median_lead_seconds=2 * 3600,
             max_late_buy_ratio=0.25,
             max_days_since_last_trade=7,
+            min_avg_buy_size_usd=75.0,
+            min_large_buy_count=2,
+            min_conviction_buy_ratio=0.25,
+            large_buy_threshold_usd=100.0,
         )
         sleepy_ranked = build_ranked_wallet(
             entry,
@@ -185,10 +221,110 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             min_median_lead_seconds=2 * 3600,
             max_late_buy_ratio=0.25,
             max_days_since_last_trade=7,
+            min_avg_buy_size_usd=75.0,
+            min_large_buy_count=2,
+            min_conviction_buy_ratio=0.25,
+            large_buy_threshold_usd=100.0,
         )
 
         self.assertGreater(active_ranked.follow_score, sleepy_ranked.follow_score)
         self.assertIn("hyperactive", active_ranked.style)
+
+    def test_build_ranked_wallet_prefers_bigger_more_conviction_buys_when_quality_is_similar(self) -> None:
+        now_ts = 2_000_000_000
+        entry = LeaderboardEntry(
+            address="0xconv",
+            username="conviction_trader",
+            rank=7,
+            pnl_usd=42_000.0,
+            volume_usd=250_000.0,
+            verified=False,
+        )
+        performance = PerformanceMetrics(
+            closed_positions=60,
+            wins=37,
+            ties=3,
+            shrunk_win_rate=0.62,
+            realized_pnl_usd=15_000.0,
+            total_bought_usd=95_000.0,
+            roi=0.158,
+            avg_return=0.09,
+            consistency=0.58,
+            avg_position_size_usd=1_300.0,
+            account_age_days=150,
+        )
+        high_copyability = TradeTimingMetrics(
+            last_trade_ts=now_ts - 1200,
+            recent_trade_count=16,
+            recent_buy_count=8,
+            recent_buy_volume_usd=2_000.0,
+            avg_recent_buy_size_usd=250.0,
+            large_buy_count=5,
+            large_buy_ratio=0.625,
+            conviction_buy_count=5,
+            conviction_buy_ratio=0.625,
+            lead_sample_count=8,
+            median_buy_lead_seconds=6 * 3600,
+            p25_buy_lead_seconds=2 * 3600,
+            late_buy_ratio=0.05,
+        )
+        low_copyability = TradeTimingMetrics(
+            last_trade_ts=now_ts - 1200,
+            recent_trade_count=16,
+            recent_buy_count=8,
+            recent_buy_volume_usd=320.0,
+            avg_recent_buy_size_usd=40.0,
+            large_buy_count=0,
+            large_buy_ratio=0.0,
+            conviction_buy_count=1,
+            conviction_buy_ratio=0.125,
+            lead_sample_count=8,
+            median_buy_lead_seconds=6 * 3600,
+            p25_buy_lead_seconds=2 * 3600,
+            late_buy_ratio=0.05,
+        )
+
+        strong_ranked = build_ranked_wallet(
+            entry,
+            performance,
+            high_copyability,
+            now_ts=now_ts,
+            activity_window_days=3,
+            min_closed_positions=25,
+            min_recent_trades=5,
+            min_recent_buys=2,
+            min_lead_samples=5,
+            min_median_lead_seconds=2 * 3600,
+            max_late_buy_ratio=0.25,
+            max_days_since_last_trade=7,
+            min_avg_buy_size_usd=75.0,
+            min_large_buy_count=2,
+            min_conviction_buy_ratio=0.25,
+            large_buy_threshold_usd=100.0,
+        )
+        weak_ranked = build_ranked_wallet(
+            entry,
+            performance,
+            low_copyability,
+            now_ts=now_ts,
+            activity_window_days=3,
+            min_closed_positions=25,
+            min_recent_trades=5,
+            min_recent_buys=2,
+            min_lead_samples=5,
+            min_median_lead_seconds=2 * 3600,
+            max_late_buy_ratio=0.25,
+            max_days_since_last_trade=7,
+            min_avg_buy_size_usd=75.0,
+            min_large_buy_count=2,
+            min_conviction_buy_ratio=0.25,
+            large_buy_threshold_usd=100.0,
+        )
+
+        self.assertTrue(strong_ranked.accepted)
+        self.assertFalse(weak_ranked.accepted)
+        self.assertGreater(strong_ranked.copyability_score, weak_ranked.copyability_score)
+        self.assertGreater(strong_ranked.follow_score, weak_ranked.follow_score)
 
 
 if __name__ == "__main__":

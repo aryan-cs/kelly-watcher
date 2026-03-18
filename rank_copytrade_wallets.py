@@ -49,6 +49,12 @@ class TradeTimingMetrics:
     last_trade_ts: int
     recent_trade_count: int
     recent_buy_count: int
+    recent_buy_volume_usd: float
+    avg_recent_buy_size_usd: float | None
+    large_buy_count: int
+    large_buy_ratio: float | None
+    conviction_buy_count: int
+    conviction_buy_ratio: float | None
     lead_sample_count: int
     median_buy_lead_seconds: float | None
     p25_buy_lead_seconds: float | None
@@ -72,6 +78,10 @@ class RankedWallet:
     realized_pnl_usd: float
     recent_trades: int
     recent_buys: int
+    avg_recent_buy_size_usd: float | None
+    large_buy_ratio: float | None
+    conviction_buy_ratio: float | None
+    copyability_score: float
     last_trade_age_hours: float | None
     median_buy_lead_hours: float | None
     p25_buy_lead_hours: float | None
@@ -191,6 +201,12 @@ def _format_usd(value: float | None) -> str:
     return f"{sign}${value:,.0f}"
 
 
+def _format_usd_plain(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"${value:,.0f}"
+
+
 def _format_hours(value: float | None) -> str:
     if value is None:
         return "-"
@@ -207,6 +223,23 @@ def _time_period_to_legacy_window(value: str) -> str:
         "ALL": "all",
     }
     return mapping[value]
+
+
+def _trade_size_usd(row: dict[str, Any]) -> float:
+    size_usd = _safe_float(row.get("sizeUsd") or row.get("usdc_size") or row.get("amount"))
+    if size_usd > 0:
+        return size_usd
+
+    shares = _safe_float(row.get("size") or row.get("shares"))
+    price = _trade_price(row)
+    if shares > 0 and price > 0:
+        return shares * price
+    return 0.0
+
+
+def _trade_price(row: dict[str, Any]) -> float:
+    price = _safe_float(row.get("price") or row.get("outcomePrice"))
+    return price if 0.0 < price < 1.0 else 0.0
 
 
 def fetch_leaderboard(
@@ -428,6 +461,8 @@ def compute_trade_timing_metrics(
     now_ts: int,
     activity_window_days: int,
     late_buy_threshold_seconds: int,
+    large_buy_threshold_usd: float,
+    high_conviction_price: float,
     buy_sample_limit: int,
     market_close_cache: dict[str, int],
 ) -> TradeTimingMetrics:
@@ -440,7 +475,16 @@ def compute_trade_timing_metrics(
         row for row in trades
         if str(row.get("side") or row.get("tradeSide") or "").strip().upper() == "BUY"
     ]
-    recent_buy_count = sum(1 for row in buys if _safe_int(row.get("timestamp")) >= recent_cutoff)
+    recent_buys = [row for row in buys if _safe_int(row.get("timestamp")) >= recent_cutoff]
+    recent_buy_count = len(recent_buys)
+    recent_buy_sizes = [_trade_size_usd(row) for row in recent_buys]
+    recent_buy_sizes = [size for size in recent_buy_sizes if size > 0]
+    recent_buy_volume_usd = float(sum(recent_buy_sizes))
+    avg_recent_buy_size_usd = statistics.fmean(recent_buy_sizes) if recent_buy_sizes else None
+    large_buy_count = sum(1 for size in recent_buy_sizes if size >= large_buy_threshold_usd)
+    large_buy_ratio = (large_buy_count / recent_buy_count) if recent_buy_count > 0 else None
+    conviction_buy_count = sum(1 for row in recent_buys if _trade_price(row) >= high_conviction_price)
+    conviction_buy_ratio = (conviction_buy_count / recent_buy_count) if recent_buy_count > 0 else None
 
     lead_seconds: list[float] = []
     for row in buys[:buy_sample_limit]:
@@ -468,6 +512,12 @@ def compute_trade_timing_metrics(
         last_trade_ts=last_trade_ts,
         recent_trade_count=recent_trade_count,
         recent_buy_count=recent_buy_count,
+        recent_buy_volume_usd=recent_buy_volume_usd,
+        avg_recent_buy_size_usd=avg_recent_buy_size_usd,
+        large_buy_count=large_buy_count,
+        large_buy_ratio=large_buy_ratio,
+        conviction_buy_count=conviction_buy_count,
+        conviction_buy_ratio=conviction_buy_ratio,
         lead_sample_count=len(lead_seconds),
         median_buy_lead_seconds=median_lead,
         p25_buy_lead_seconds=p25_lead,
@@ -545,6 +595,19 @@ def _score_lead_time(seconds: float | None) -> float:
     return _clip(math.log1p(seconds) / math.log1p(3 * 86400))
 
 
+def _score_avg_buy_size(avg_buy_size_usd: float | None, large_buy_threshold_usd: float) -> float:
+    if avg_buy_size_usd is None or avg_buy_size_usd <= 0:
+        return 0.0
+    scale = max(large_buy_threshold_usd * 8.0, 1.0)
+    return _clip(math.log1p(avg_buy_size_usd) / math.log1p(scale))
+
+
+def _score_ratio(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    return _clip(value)
+
+
 def _score_leaderboard_signal(pnl_usd: float, volume_usd: float) -> float:
     pnl_score = _clip(math.log1p(max(pnl_usd, 0.0)) / math.log1p(1_000_000))
     volume_score = _clip(math.log1p(max(volume_usd, 0.0)) / math.log1p(10_000_000))
@@ -565,6 +628,10 @@ def build_ranked_wallet(
     min_median_lead_seconds: int,
     max_late_buy_ratio: float,
     max_days_since_last_trade: int,
+    min_avg_buy_size_usd: float,
+    min_large_buy_count: int,
+    min_conviction_buy_ratio: float,
+    large_buy_threshold_usd: float,
 ) -> RankedWallet:
     reasons: list[str] = []
     if performance.closed_positions < min_closed_positions:
@@ -581,6 +648,12 @@ def build_ranked_wallet(
         reasons.append("median_lead_too_short")
     if timing.late_buy_ratio is None or timing.late_buy_ratio > max_late_buy_ratio:
         reasons.append(f"late_buy_ratio>{max_late_buy_ratio:.0%}")
+    if timing.avg_recent_buy_size_usd is None or timing.avg_recent_buy_size_usd < min_avg_buy_size_usd:
+        reasons.append(f"avg_buy_size<${min_avg_buy_size_usd:.0f}")
+    if timing.large_buy_count < min_large_buy_count:
+        reasons.append(f"large_buys<{min_large_buy_count}")
+    if timing.conviction_buy_ratio is None or timing.conviction_buy_ratio < min_conviction_buy_ratio:
+        reasons.append(f"conviction_ratio<{min_conviction_buy_ratio:.0%}")
 
     success_score = (
         0.45 * _score_win_rate(performance.shrunk_win_rate, performance.closed_positions)
@@ -597,11 +670,18 @@ def build_ranked_wallet(
         + 0.20 * _score_lead_time(timing.p25_buy_lead_seconds)
         + 0.35 * (1.0 - min(1.0, timing.late_buy_ratio if timing.late_buy_ratio is not None else 1.0))
     )
+    copyability_score = (
+        0.40 * _score_avg_buy_size(timing.avg_recent_buy_size_usd, large_buy_threshold_usd)
+        + 0.25 * _score_ratio(timing.large_buy_ratio)
+        + 0.25 * _score_ratio(timing.conviction_buy_ratio)
+        + 0.10 * (1.0 - min(1.0, timing.late_buy_ratio if timing.late_buy_ratio is not None else 1.0))
+    )
     follow_score = (
-        0.35 * success_score
-        + 0.30 * activity_score
+        0.30 * success_score
+        + 0.20 * activity_score
         + 0.25 * timing_score
-        + 0.10 * _score_leaderboard_signal(entry.pnl_usd, entry.volume_usd)
+        + 0.20 * copyability_score
+        + 0.05 * _score_leaderboard_signal(entry.pnl_usd, entry.volume_usd)
     )
 
     last_trade_age_hours = ((now_ts - timing.last_trade_ts) / 3600) if timing.last_trade_ts > 0 else None
@@ -621,6 +701,10 @@ def build_ranked_wallet(
         realized_pnl_usd=performance.realized_pnl_usd,
         recent_trades=timing.recent_trade_count,
         recent_buys=timing.recent_buy_count,
+        avg_recent_buy_size_usd=timing.avg_recent_buy_size_usd,
+        large_buy_ratio=timing.large_buy_ratio,
+        conviction_buy_ratio=timing.conviction_buy_ratio,
+        copyability_score=round(copyability_score, 4),
         last_trade_age_hours=last_trade_age_hours,
         median_buy_lead_hours=(timing.median_buy_lead_seconds / 3600) if timing.median_buy_lead_seconds is not None else None,
         p25_buy_lead_hours=(timing.p25_buy_lead_seconds / 3600) if timing.p25_buy_lead_seconds is not None else None,
@@ -644,6 +728,11 @@ def analyze_wallet(
     min_median_lead_seconds: int,
     max_late_buy_ratio: float,
     max_days_since_last_trade: int,
+    min_avg_buy_size_usd: float,
+    min_large_buy_count: int,
+    min_conviction_buy_ratio: float,
+    large_buy_threshold_usd: float,
+    high_conviction_price: float,
     market_close_cache: dict[str, int],
 ) -> RankedWallet:
     now_ts = int(time.time())
@@ -662,6 +751,8 @@ def analyze_wallet(
             now_ts=now_ts,
             activity_window_days=activity_window_days,
             late_buy_threshold_seconds=late_buy_threshold_seconds,
+            large_buy_threshold_usd=large_buy_threshold_usd,
+            high_conviction_price=high_conviction_price,
             buy_sample_limit=buy_sample_limit,
             market_close_cache=market_close_cache,
         )
@@ -678,6 +769,10 @@ def analyze_wallet(
         min_median_lead_seconds=min_median_lead_seconds,
         max_late_buy_ratio=max_late_buy_ratio,
         max_days_since_last_trade=max_days_since_last_trade,
+        min_avg_buy_size_usd=min_avg_buy_size_usd,
+        min_large_buy_count=min_large_buy_count,
+        min_conviction_buy_ratio=min_conviction_buy_ratio,
+        large_buy_threshold_usd=large_buy_threshold_usd,
     )
 
 
@@ -703,6 +798,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--min-median-lead-hours", type=float, default=0.5)
     parser.add_argument("--max-late-buy-ratio", type=float, default=0.25)
     parser.add_argument("--max-days-since-last-trade", type=int, default=2)
+    parser.add_argument("--large-buy-usd", type=float, default=100.0)
+    parser.add_argument("--min-large-buys", type=int, default=2)
+    parser.add_argument("--high-conviction-price", type=float, default=0.75)
+    parser.add_argument("--min-conviction-buy-ratio", type=float, default=0.25)
+    parser.add_argument("--min-avg-buy-size-usd", type=float, default=75.0)
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--show-rejected", action="store_true")
     parser.add_argument("--wallets-only", action="store_true")
@@ -726,6 +826,9 @@ def print_ranked_wallets(rows: list[RankedWallet], *, wallets_only: bool) -> Non
         ("wr", 7),
         ("roi", 7),
         ("buys", 5),
+        ("avg$", 8),
+        ("conv", 7),
+        ("copy", 7),
         ("lead", 7),
         ("late", 7),
         ("pnl", 10),
@@ -742,6 +845,9 @@ def print_ranked_wallets(rows: list[RankedWallet], *, wallets_only: bool) -> Non
             (_format_pct(row.win_rate), 7),
             (_format_pct(row.roi), 7),
             (str(row.recent_buys), 5),
+            (_format_usd_plain(row.avg_recent_buy_size_usd), 8),
+            (_format_pct(row.conviction_buy_ratio), 7),
+            (f"{row.copyability_score:.3f}", 7),
             (_format_hours(row.median_buy_lead_hours), 7),
             (_format_pct(row.late_buy_ratio), 7),
             (_format_usd(row.realized_pnl_usd), 10),
@@ -786,6 +892,11 @@ def main(argv: list[str] | None = None) -> int:
                     min_median_lead_seconds=int(args.min_median_lead_hours * 3600),
                     max_late_buy_ratio=args.max_late_buy_ratio,
                     max_days_since_last_trade=args.max_days_since_last_trade,
+                    min_avg_buy_size_usd=args.min_avg_buy_size_usd,
+                    min_large_buy_count=args.min_large_buys,
+                    min_conviction_buy_ratio=args.min_conviction_buy_ratio,
+                    large_buy_threshold_usd=args.large_buy_usd,
+                    high_conviction_price=args.high_conviction_price,
                     market_close_cache=market_close_cache,
                 )
             )
@@ -807,6 +918,10 @@ def main(argv: list[str] | None = None) -> int:
                     realized_pnl_usd=0.0,
                     recent_trades=0,
                     recent_buys=0,
+                    avg_recent_buy_size_usd=None,
+                    large_buy_ratio=None,
+                    conviction_buy_ratio=None,
+                    copyability_score=0.0,
                     last_trade_age_hours=None,
                     median_buy_lead_hours=None,
                     p25_buy_lead_hours=None,

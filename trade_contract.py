@@ -79,4 +79,8 @@ def is_fill_aware_executed_buy(row: Any) -> bool:
 def _value(row: Any, key: str) -> Any:
     if isinstance(row, dict):
         return row.get(key)
+    try:
+        return row[key]
+    except Exception:
+        pass
     return getattr(row, key, None)

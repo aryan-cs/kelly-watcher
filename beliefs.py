@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from db import get_conn
 from market_scorer import MarketFeatures
-from trade_contract import PROFITABLE_TRADE_SQL, RESOLVED_EXECUTED_ENTRY_SQL
+from trade_contract import is_fill_aware_executed_buy, resolved_pnl_expr
 from trader_scorer import TraderFeatures
 
 logger = logging.getLogger(__name__)
@@ -15,6 +15,7 @@ PRIOR_ALPHA = 2.0
 PRIOR_BETA = 2.0
 BELIEF_CACHE_TTL_SECONDS = 60.0
 MAX_BELIEF_BLEND = 0.30
+COUNTERFACTUAL_SKIP_WEIGHT = 0.35
 
 FEATURE_WEIGHTS = {
     "confidence": 1.0,
@@ -49,7 +50,16 @@ def sync_belief_priors() -> int:
         f"""
         SELECT
             id,
-            {PROFITABLE_TRADE_SQL} AS label,
+            skipped,
+            skip_reason,
+            signal_mode,
+            market_veto,
+            source_action,
+            outcome,
+            {resolved_pnl_expr()} AS resolved_pnl_usd,
+            actual_entry_price,
+            actual_entry_shares,
+            actual_entry_size_usd,
             confidence,
             COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
             f_trader_win_rate,
@@ -64,7 +74,11 @@ def sync_belief_priors() -> int:
             f_bid_depth_usd,
             f_ask_depth_usd
         FROM trade_log
-        WHERE {RESOLVED_EXECUTED_ENTRY_SQL}
+        WHERE COALESCE(source_action, 'buy')='buy'
+          AND (
+              {resolved_pnl_expr()} IS NOT NULL
+              OR outcome IS NOT NULL
+          )
           AND id NOT IN (SELECT trade_log_id FROM belief_updates)
         ORDER BY id
         """
@@ -75,15 +89,22 @@ def sync_belief_priors() -> int:
         return 0
 
     now = int(time.time())
+    applied = 0
+    counterfactual = 0
     for row in rows:
-        outcome = int(row["label"])
-        wins = 1.0 if outcome == 1 else 0.0
-        losses = 1.0 if outcome == 0 else 0.0
-        buckets = _feature_buckets_from_row(row)
+        label_and_weight = _belief_label_and_weight(row)
+        if label_and_weight is not None:
+            outcome, weight = label_and_weight
+            wins = weight if outcome == 1 else 0.0
+            losses = weight if outcome == 0 else 0.0
+            buckets = _feature_buckets_from_row(row)
 
-        _apply_bucket_update(conn, "__global__", "all", wins, losses, now)
-        for feature_name, bucket in buckets.items():
-            _apply_bucket_update(conn, feature_name, bucket, wins, losses, now)
+            _apply_bucket_update(conn, "__global__", "all", wins, losses, now)
+            for feature_name, bucket in buckets.items():
+                _apply_bucket_update(conn, feature_name, bucket, wins, losses, now)
+            applied += 1
+            if weight < 0.999:
+                counterfactual += 1
 
         conn.execute(
             "INSERT OR IGNORE INTO belief_updates (trade_log_id, applied_at) VALUES (?, ?)",
@@ -93,8 +114,12 @@ def sync_belief_priors() -> int:
     conn.commit()
     conn.close()
     invalidate_belief_cache()
-    logger.info("Applied belief updates for %s resolved trades", len(rows))
-    return len(rows)
+    logger.info(
+        "Applied belief updates for %s resolved trades (%s counterfactual)",
+        applied,
+        counterfactual,
+    )
+    return applied
 
 
 def adjust_heuristic_confidence(
@@ -204,6 +229,40 @@ def _posterior_and_evidence(entry: tuple[float, float] | None) -> tuple[float, i
     evidence = int(wins + losses)
     posterior = (wins + PRIOR_ALPHA) / (wins + losses + PRIOR_ALPHA + PRIOR_BETA)
     return posterior, evidence
+
+
+def _belief_label_and_weight(row) -> tuple[int, float] | None:
+    if is_fill_aware_executed_buy(row):
+        resolved_pnl = row["resolved_pnl_usd"]
+        if resolved_pnl is None:
+            return None
+        return (1 if float(resolved_pnl) > 0 else 0, 1.0)
+
+    if _is_counterfactual_signal_reject(row):
+        outcome = row["outcome"]
+        if outcome is None:
+            return None
+        return (1 if int(outcome) == 1 else 0, COUNTERFACTUAL_SKIP_WEIGHT)
+
+    return None
+
+
+def _is_counterfactual_signal_reject(row) -> bool:
+    if not bool(row["skipped"]):
+        return False
+    if str(row["signal_mode"] or "").strip().lower() != "heuristic":
+        return False
+    if row["market_veto"] is not None:
+        return False
+
+    reason = str(row["skip_reason"] or "").strip().lower()
+    if not reason:
+        return False
+
+    return (
+        ("confidence was" in reason and "below the" in reason and "minimum" in reason)
+        or ("heuristic score was" in reason and "below the" in reason and "minimum" in reason)
+    )
 
 
 def _feature_buckets_from_row(row) -> dict[str, str]:

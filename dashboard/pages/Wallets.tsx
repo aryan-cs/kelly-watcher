@@ -144,6 +144,14 @@ interface WalletDetailSection {
   metrics: WalletDetailMetric[]
 }
 
+interface WalletDetailLine {
+  kind: 'blank' | 'heading' | 'metric'
+  text?: string
+  label?: string
+  value?: string
+  valueColor?: string
+}
+
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
 AND COALESCE(source_action, 'buy')='buy'
@@ -953,6 +961,7 @@ export function Wallets({
   )
   const detailColumnCount = detailColumns.length || 1
   const detailColumnGap = terminal.wide ? 4 : 2
+  const modalBackground = terminal.backgroundColor || theme.modalBackground
   const modalWidth = Math.max(60, Math.min(terminal.width - 6, terminal.wide ? 132 : 90))
   const modalContentWidth = Math.max(36, modalWidth - 4)
   const detailColumnWidth = Math.max(
@@ -961,10 +970,41 @@ export function Wallets({
   )
   const detailLabelWidth = Math.max(8, Math.floor(detailColumnWidth * 0.46))
   const detailValueWidth = Math.max(7, detailColumnWidth - detailLabelWidth - 1)
+  const detailIndexLabel = activePane === 'dropped'
+    ? `${clampedDroppedSelectedIndex + 1}/${Math.max(droppedWallets.length, 1)}`
+    : `${clampedTrackedSelectedIndex + 1}/${Math.max(trackedWallets.length, 1)}`
+  const detailHeaderWidth = Math.max(1, modalContentWidth - detailIndexLabel.length - 1)
+  const modalSpacerLine = ' '.repeat(modalWidth - 2)
   const detailTitle = selectedWallet?.username || (selectedWallet ? shortAddress(selectedWallet.trader_address) : '-')
   const detailAddressLines = selectedWallet
     ? wrapText(`Address ${selectedWallet.trader_address}`, Math.max(20, modalContentWidth))
     : []
+  const detailColumnLines = useMemo<WalletDetailLine[][]>(
+    () =>
+      detailColumns.map((column) => {
+        const lines: WalletDetailLine[] = []
+        column.forEach((section, sectionIndex) => {
+          lines.push({kind: 'heading', text: fit(section.title.toUpperCase(), detailColumnWidth)})
+          section.metrics.forEach((metric) => {
+            lines.push({
+              kind: 'metric',
+              label: fit(metric.label, detailLabelWidth),
+              value: fitRight(metric.value, detailValueWidth),
+              valueColor: metric.color ?? theme.white
+            })
+          })
+          if (sectionIndex < column.length - 1) {
+            lines.push({kind: 'blank'})
+          }
+        })
+        return lines
+      }),
+    [detailColumns, detailColumnWidth, detailLabelWidth, detailValueWidth]
+  )
+  const detailLineCount = useMemo(
+    () => detailColumnLines.reduce((max, column) => Math.max(max, column.length), 0),
+    [detailColumnLines]
+  )
   const selectedTrackedWalletAddress = trackedWallets[clampedTrackedSelectedIndex]?.trader_address || ''
   const selectedDroppedWalletAddress = droppedWallets[clampedDroppedSelectedIndex]?.trader_address || ''
 
@@ -1154,53 +1194,78 @@ export function Wallets({
 
       {detailOpen && selectedWallet ? (
         <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
-          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={modalWidth} paddingX={1}>
-            <InkBox justifyContent="space-between">
-              <Text color={theme.accent} bold>Wallet Detail</Text>
-              <Text color={theme.dim}>
-                {activePane === 'dropped'
-                  ? `${clampedDroppedSelectedIndex + 1}/${Math.max(droppedWallets.length, 1)}`
-                  : `${clampedTrackedSelectedIndex + 1}/${Math.max(trackedWallets.length, 1)}`}
+          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={modalWidth}>
+            <InkBox width="100%">
+              <Text color={theme.accent} backgroundColor={modalBackground} bold>
+                {` ${fit('Wallet Detail', detailHeaderWidth)}`}
+              </Text>
+              <Text backgroundColor={modalBackground}> </Text>
+              <Text color={theme.dim} backgroundColor={modalBackground}>
+                {`${fitRight(detailIndexLabel, detailIndexLabel.length)} `}
               </Text>
             </InkBox>
-            <Text color={theme.white} bold>{truncate(detailTitle, modalContentWidth)}</Text>
-            {detailAddressLines.map((line) => (
-              <Text key={line} color={theme.dim}>{truncate(line, modalContentWidth)}</Text>
-            ))}
-            <Text color={theme.dim}>
-              {truncate('Watch = live poll state   Local = trade log   Profile = cached history', modalContentWidth)}
+            <Text color={theme.white} backgroundColor={modalBackground} bold>
+              {` ${fit(truncate(detailTitle, modalContentWidth), modalContentWidth)} `}
             </Text>
+            {detailAddressLines.map((line) => (
+              <Text key={line} color={theme.dim} backgroundColor={modalBackground}>
+                {` ${fit(truncate(line, modalContentWidth), modalContentWidth)} `}
+              </Text>
+            ))}
+            <Text color={theme.dim} backgroundColor={modalBackground}>
+              {` ${fit(truncate('Watch = live poll state   Local = trade log   Profile = cached history', modalContentWidth), modalContentWidth)} `}
+            </Text>
+            <Text backgroundColor={modalBackground}>{modalSpacerLine}</Text>
 
-            <InkBox marginTop={1} flexDirection="row" columnGap={detailColumnGap}>
-              {detailColumns.map((column, columnIndex) => (
-                <InkBox key={`detail-col-${columnIndex}`} flexDirection="column" width={detailColumnWidth}>
-                  {column.map((section, sectionIndex) => (
-                    <InkBox
-                      key={`${section.title}-${sectionIndex}`}
-                      flexDirection="column"
-                      marginBottom={sectionIndex === column.length - 1 ? 0 : 1}
-                    >
-                      <Text color={theme.accent} bold>{fit(section.title.toUpperCase(), detailColumnWidth)}</Text>
-                      {section.metrics.map((metric) => (
-                        <InkBox key={`${section.title}-${metric.label}`} width={detailColumnWidth}>
-                          <Text color={theme.dim}>{fit(metric.label, detailLabelWidth)}</Text>
-                          <Text> </Text>
-                          <Text color={metric.color ?? theme.white}>{fitRight(metric.value, detailValueWidth)}</Text>
-                        </InkBox>
-                      ))}
-                    </InkBox>
-                  ))}
-                </InkBox>
-              ))}
+            <InkBox flexDirection="column" width="100%">
+              {Array.from({length: detailLineCount}, (_, rowIndex) => {
+                const left = detailColumnLines[0]?.[rowIndex] || {kind: 'blank'}
+                const right = detailColumnLines[1]?.[rowIndex] || {kind: 'blank'}
+
+                return (
+                  <InkBox key={`detail-row-${rowIndex}`} width="100%">
+                    {left.kind === 'heading' ? (
+                      <Text color={theme.accent} backgroundColor={modalBackground} bold>{left.text}</Text>
+                    ) : left.kind === 'metric' ? (
+                      <>
+                        <Text color={theme.dim} backgroundColor={modalBackground}>{left.label}</Text>
+                        <Text backgroundColor={modalBackground}> </Text>
+                        <Text color={left.valueColor} backgroundColor={modalBackground}>{left.value}</Text>
+                      </>
+                    ) : (
+                      <Text backgroundColor={modalBackground}>{' '.repeat(detailColumnWidth)}</Text>
+                    )}
+                    {detailColumnCount > 1 ? (
+                      <>
+                        <Text backgroundColor={modalBackground}>{' '.repeat(detailColumnGap)}</Text>
+                        {right.kind === 'heading' ? (
+                          <Text color={theme.accent} backgroundColor={modalBackground} bold>{right.text}</Text>
+                        ) : right.kind === 'metric' ? (
+                          <>
+                            <Text color={theme.dim} backgroundColor={modalBackground}>{right.label}</Text>
+                            <Text backgroundColor={modalBackground}> </Text>
+                            <Text color={right.valueColor} backgroundColor={modalBackground}>{right.value}</Text>
+                          </>
+                        ) : (
+                          <Text backgroundColor={modalBackground}>{' '.repeat(detailColumnWidth)}</Text>
+                        )}
+                      </>
+                    ) : null}
+                  </InkBox>
+                )
+              })}
             </InkBox>
-
-            <Text color={theme.dim}>
-              {truncate(
-                activePane === 'dropped'
-                  ? 'Up/down switches dropped wallets. a reactivates. Esc closes.'
-                  : 'Up/down switches tracked wallets. Left/right switches panes. Esc closes.',
+            <Text backgroundColor={modalBackground}>{modalSpacerLine}</Text>
+            <Text color={theme.dim} backgroundColor={modalBackground}>
+              {` ${fit(
+                truncate(
+                  activePane === 'dropped'
+                    ? 'Up/down switches dropped wallets. a reactivates. esc closes.'
+                    : 'Up/down switches tracked wallets. left/right switches panes. esc closes.',
+                  modalContentWidth
+                ),
                 modalContentWidth
-              )}
+              )} `}
             </Text>
           </InkBox>
         </InkBox>

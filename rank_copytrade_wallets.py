@@ -487,7 +487,14 @@ def describe_style(timing: TradeTimingMetrics) -> str:
         horizon = "fast-copyable"
     else:
         horizon = "last-minute"
-    activity = "active" if timing.recent_buy_count >= 10 else "selective"
+    if timing.recent_buy_count >= 15 or timing.recent_trade_count >= 24:
+        activity = "hyperactive"
+    elif timing.recent_buy_count >= 8 or timing.recent_trade_count >= 14:
+        activity = "active"
+    elif timing.recent_buy_count >= 4 or timing.recent_trade_count >= 8:
+        activity = "steady"
+    else:
+        activity = "selective"
     return f"{activity} {horizon}"
 
 
@@ -523,8 +530,13 @@ def _score_recency(now_ts: int, last_trade_ts: int, max_days_since_last_trade: i
     return _clip(1.0 - (age_seconds / max_age_seconds))
 
 
-def _score_activity(recent_buys: int) -> float:
-    return _clip(recent_buys / 12.0)
+def _score_activity(recent_trades: int, recent_buys: int, activity_window_days: int) -> float:
+    window_days = max(activity_window_days, 1)
+    trades_per_day = recent_trades / window_days
+    buys_per_day = recent_buys / window_days
+    trade_flow_score = _clip(trades_per_day / 6.0)
+    buy_flow_score = _clip(buys_per_day / 3.0)
+    return (0.45 * trade_flow_score) + (0.55 * buy_flow_score)
 
 
 def _score_lead_time(seconds: float | None) -> float:
@@ -545,7 +557,9 @@ def build_ranked_wallet(
     timing: TradeTimingMetrics,
     *,
     now_ts: int,
+    activity_window_days: int,
     min_closed_positions: int,
+    min_recent_trades: int,
     min_recent_buys: int,
     min_lead_samples: int,
     min_median_lead_seconds: int,
@@ -555,6 +569,8 @@ def build_ranked_wallet(
     reasons: list[str] = []
     if performance.closed_positions < min_closed_positions:
         reasons.append(f"closed<{min_closed_positions}")
+    if timing.recent_trade_count < min_recent_trades:
+        reasons.append(f"recent_trades<{min_recent_trades}")
     if timing.recent_buy_count < min_recent_buys:
         reasons.append(f"recent_buys<{min_recent_buys}")
     if timing.lead_sample_count < min_lead_samples:
@@ -573,8 +589,8 @@ def build_ranked_wallet(
         + 0.15 * _score_sample(performance.closed_positions)
     )
     activity_score = (
-        0.55 * _score_activity(timing.recent_buy_count)
-        + 0.45 * _score_recency(now_ts, timing.last_trade_ts, max_days_since_last_trade)
+        0.70 * _score_activity(timing.recent_trade_count, timing.recent_buy_count, activity_window_days)
+        + 0.30 * _score_recency(now_ts, timing.last_trade_ts, max_days_since_last_trade)
     )
     timing_score = (
         0.45 * _score_lead_time(timing.median_buy_lead_seconds)
@@ -582,8 +598,8 @@ def build_ranked_wallet(
         + 0.35 * (1.0 - min(1.0, timing.late_buy_ratio if timing.late_buy_ratio is not None else 1.0))
     )
     follow_score = (
-        0.45 * success_score
-        + 0.20 * activity_score
+        0.35 * success_score
+        + 0.30 * activity_score
         + 0.25 * timing_score
         + 0.10 * _score_leaderboard_signal(entry.pnl_usd, entry.volume_usd)
     )
@@ -622,6 +638,7 @@ def analyze_wallet(
     late_buy_threshold_seconds: int,
     buy_sample_limit: int,
     min_closed_positions: int,
+    min_recent_trades: int,
     min_recent_buys: int,
     min_lead_samples: int,
     min_median_lead_seconds: int,
@@ -653,7 +670,9 @@ def analyze_wallet(
         performance,
         timing,
         now_ts=now_ts,
+        activity_window_days=activity_window_days,
         min_closed_positions=min_closed_positions,
+        min_recent_trades=min_recent_trades,
         min_recent_buys=min_recent_buys,
         min_lead_samples=min_lead_samples,
         min_median_lead_seconds=min_median_lead_seconds,
@@ -674,15 +693,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--trade-limit", type=int, default=40)
     parser.add_argument("--closed-page-limit", type=int, default=50)
     parser.add_argument("--closed-pages", type=int, default=4)
-    parser.add_argument("--activity-window-days", type=int, default=7)
+    parser.add_argument("--activity-window-days", type=int, default=3)
     parser.add_argument("--late-buy-threshold-minutes", type=int, default=10)
     parser.add_argument("--buy-sample-limit", type=int, default=12)
     parser.add_argument("--min-closed-positions", type=int, default=10)
-    parser.add_argument("--min-recent-buys", type=int, default=2)
+    parser.add_argument("--min-recent-trades", type=int, default=10)
+    parser.add_argument("--min-recent-buys", type=int, default=4)
     parser.add_argument("--min-lead-samples", type=int, default=2)
     parser.add_argument("--min-median-lead-hours", type=float, default=0.5)
     parser.add_argument("--max-late-buy-ratio", type=float, default=0.25)
-    parser.add_argument("--max-days-since-last-trade", type=int, default=7)
+    parser.add_argument("--max-days-since-last-trade", type=int, default=2)
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--show-rejected", action="store_true")
     parser.add_argument("--wallets-only", action="store_true")
@@ -760,6 +780,7 @@ def main(argv: list[str] | None = None) -> int:
                     late_buy_threshold_seconds=args.late_buy_threshold_minutes * 60,
                     buy_sample_limit=args.buy_sample_limit,
                     min_closed_positions=args.min_closed_positions,
+                    min_recent_trades=args.min_recent_trades,
                     min_recent_buys=args.min_recent_buys,
                     min_lead_samples=args.min_lead_samples,
                     min_median_lead_seconds=int(args.min_median_lead_hours * 3600),

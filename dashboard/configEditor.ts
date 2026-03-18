@@ -16,7 +16,7 @@ export const maxMarketHorizonPresets = [
 
 export const retrainCadencePresets = ['daily', 'weekly'] as const
 export const retrainEarlyCheckPresets = ['6h', '12h', '24h', '48h'] as const
-export const walletInactivityPresets = ['1h', '24h', '7d', 'unlimited'] as const
+export const walletInactivityPresets = ['1h', '3h', '5h', '8h', '24h', '7d', 'unlimited'] as const
 
 export interface EditableConfigField {
   key: string
@@ -31,101 +31,101 @@ export interface EditableConfigField {
 export const editableConfigFields: EditableConfigField[] = [
   {
     key: 'POLL_INTERVAL_SECONDS',
-    label: 'Poll interval',
+    label: 'Poll Interval',
     kind: 'float',
-    description: 'How many seconds between wallet polls. Applies live on the next loop.',
+    description: 'How Many Seconds Between Wallet Polls. Applies Live On The Next Loop.',
     defaultValue: '45',
     liveApplies: true
   },
   {
     key: 'MAX_MARKET_HORIZON',
-    label: 'Max market horizon',
+    label: 'Max Market Horizon',
     kind: 'duration',
-    description: 'Longest time to resolution the bot will allow. Edit with left/right to toggle 5m, 1h, 24h, 7d, 30d, 180d, 365d, or unlimited.',
+    description: 'Longest Time To Resolution The Bot Will Allow. Edit With Left/Right To Toggle 5m, 1h, 24h, 7d, 30d, 180d, 365d, Or Unlimited.',
     defaultValue: '365d',
     liveApplies: true,
     options: maxMarketHorizonPresets
   },
   {
     key: 'WALLET_INACTIVITY_LIMIT',
-    label: 'Wallet inactivity',
+    label: 'Wallet Inactivity',
     kind: 'duration',
-    description: 'Auto-drop a wallet after this much time without a new source trade. Edit with left/right to toggle 1h, 24h, 7d, or unlimited. Applies live on the next loop.',
+    description: 'Auto-Drop A Wallet After This Much Time Without A New Source Trade. Edit With Left/Right To Toggle 1h, 3h, 5h, 8h, 24h, 7d, Or Unlimited. Applies Live On The Next Loop.',
     defaultValue: 'unlimited',
     liveApplies: true,
     options: walletInactivityPresets
   },
   {
     key: 'MIN_CONFIDENCE',
-    label: 'Min confidence',
+    label: 'Min Confidence',
     kind: 'float',
-    description: 'Minimum confidence needed to accept a copied trade. Restart bot to apply.',
+    description: 'Minimum Confidence Needed To Accept A Copied Trade. Restart Bot To Apply.',
     defaultValue: '0.60',
     liveApplies: false
   },
   {
     key: 'MIN_BET_USD',
-    label: 'Min bet USD',
+    label: 'Min Bet USD',
     kind: 'float',
-    description: 'Lowest order size the bot will place. Restart bot to apply.',
+    description: 'Lowest Order Size The Bot Will Place. Restart Bot To Apply.',
     defaultValue: '1.00',
     liveApplies: false
   },
   {
     key: 'MAX_BET_FRACTION',
-    label: 'Max bet fraction',
+    label: 'Max Bet Fraction',
     kind: 'float',
-    description: 'Kelly sizing cap as a fraction of bankroll. Restart bot to apply.',
+    description: 'Kelly Sizing Cap As A Fraction Of Bankroll. Restart Bot To Apply.',
     defaultValue: '0.05',
     liveApplies: false
   },
   {
     key: 'SHADOW_BANKROLL_USD',
-    label: 'Tracker bankroll',
+    label: 'Tracker Bankroll',
     kind: 'float',
-    description: 'Paper bankroll used in tracker mode. Restart bot to apply.',
+    description: 'Paper Bankroll Used In Tracker Mode. Restart Bot To Apply.',
     defaultValue: '1000',
     liveApplies: false
   },
   {
     key: 'USE_REAL_MONEY',
-    label: 'Live trading',
+    label: 'Live Trading',
     kind: 'bool',
-    description: 'Toggle between tracker and live mode. Restart bot to apply safely.',
+    description: 'Toggle Between Tracker And Live Mode. Restart Bot To Apply Safely.',
     defaultValue: 'false',
     liveApplies: false
   },
   {
     key: 'RETRAIN_BASE_CADENCE',
-    label: 'Retrain cadence',
+    label: 'Retrain Cadence',
     kind: 'choice',
-    description: 'How often the bot attempts a scheduled full retrain. Use left/right to toggle daily or weekly. Restart bot to apply.',
+    description: 'How Often The Bot Attempts A Scheduled Full Retrain. Use Left/Right To Toggle Daily Or Weekly. Restart Bot To Apply.',
     defaultValue: 'daily',
     liveApplies: false,
     options: retrainCadencePresets
   },
   {
     key: 'RETRAIN_HOUR_LOCAL',
-    label: 'Retrain hour',
+    label: 'Retrain Hour',
     kind: 'int',
-    description: 'Local hour for the scheduled retrain window, from 0 through 23. Restart bot to apply.',
+    description: 'Local Hour For The Scheduled Retrain Window, From 0 Through 23. Restart Bot To Apply.',
     defaultValue: '3',
     liveApplies: false
   },
   {
     key: 'RETRAIN_EARLY_CHECK_INTERVAL',
-    label: 'Early check',
+    label: 'Early Check',
     kind: 'duration',
-    description: 'How often the bot checks whether enough new labels exist to retrain early. Use left/right to toggle 6h, 12h, 24h, or 48h. Restart bot to apply.',
+    description: 'How Often The Bot Checks Whether Enough New Labels Exist To Retrain Early. Use Left/Right To Toggle 6h, 12h, 24h, Or 48h. Restart Bot To Apply.',
     defaultValue: '24h',
     liveApplies: false,
     options: retrainEarlyCheckPresets
   },
   {
     key: 'RETRAIN_MIN_NEW_LABELS',
-    label: 'Early label gate',
+    label: 'Early Label Gate',
     kind: 'int',
-    description: 'Minimum new resolved trades required before an unscheduled early retrain can fire. Restart bot to apply.',
+    description: 'Minimum New Resolved Trades Required Before An Unscheduled Early Retrain Can Fire. Restart Bot To Apply.',
     defaultValue: '100',
     liveApplies: false
   }

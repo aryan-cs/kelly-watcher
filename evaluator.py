@@ -11,7 +11,12 @@ import numpy as np
 from alerter import send_alert
 from beliefs import sync_belief_priors
 from db import get_conn
-from trade_contract import EXECUTED_ENTRY_SQL, RESOLVED_EXECUTED_ENTRY_SQL, is_fill_aware_executed_buy
+from trade_contract import (
+    EXECUTED_ENTRY_SQL,
+    REALIZED_CLOSE_TS_SQL,
+    RESOLVED_EXECUTED_ENTRY_SQL,
+    is_fill_aware_executed_buy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,14 +202,14 @@ def compute_performance_report(mode: str = "shadow") -> dict:
         FROM trade_log
         WHERE real_money=?
           AND {RESOLVED_EXECUTED_ENTRY_SQL}
-          AND COALESCE(resolved_at, placed_at) > ?
+          AND {REALIZED_CLOSE_TS_SQL} > ?
         """,
         (real_money, week_ago),
     ).fetchone()
 
     daily_rows = conn.execute(
         f"""
-        SELECT strftime('%Y-%m-%d', datetime(COALESCE(resolved_at, placed_at), 'unixepoch')) AS day,
+        SELECT strftime('%Y-%m-%d', datetime({REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
                SUM({pnl_column}) AS day_pnl
         FROM trade_log
         WHERE real_money=?

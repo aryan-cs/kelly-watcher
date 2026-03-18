@@ -13,7 +13,7 @@ import {stackPanels} from './responsive.js'
 import {theme} from './theme.js'
 import {LiveFeed} from './pages/LiveFeed.js'
 import {Signals} from './pages/Signals.js'
-import {Performance} from './pages/Performance.js'
+import {Performance, type PerfBox} from './pages/Performance.js'
 import {Wallets} from './pages/Wallets.js'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
 import {secondsAgo} from './format.js'
@@ -51,6 +51,9 @@ interface AppContentProps {
   perfCurrentScrollOffset: number
   perfPastScrollOffset: number
   perfActivePane: PerfPane
+  perfSelectedBox: PerfBox
+  perfDailyDetailOpen: boolean
+  perfDailyDetailScrollOffset: number
   modelSelectionIndex: number
   modelDetailOpen: boolean
   modelSettingSelectionIndex: number
@@ -68,6 +71,9 @@ function renderPage(
   perfCurrentScrollOffset: number,
   perfPastScrollOffset: number,
   perfActivePane: PerfPane,
+  perfSelectedBox: PerfBox,
+  perfDailyDetailOpen: boolean,
+  perfDailyDetailScrollOffset: number,
   modelSelectionIndex: number,
   modelDetailOpen: boolean,
   modelSettingSelectionIndex: number,
@@ -87,6 +93,9 @@ function renderPage(
           currentScrollOffset={perfCurrentScrollOffset}
           pastScrollOffset={perfPastScrollOffset}
           activePane={perfActivePane}
+          selectedBox={perfSelectedBox}
+          dailyDetailOpen={perfDailyDetailOpen}
+          dailyDetailScrollOffset={perfDailyDetailScrollOffset}
         />
       )
     case 4:
@@ -121,6 +130,9 @@ function AppContent({
   perfCurrentScrollOffset,
   perfPastScrollOffset,
   perfActivePane,
+  perfSelectedBox,
+  perfDailyDetailOpen,
+  perfDailyDetailScrollOffset,
   modelSelectionIndex,
   modelDetailOpen,
   modelSettingSelectionIndex,
@@ -162,9 +174,13 @@ function AppContent({
           ? '↑↓ scroll  ←→ pan  ↑↑ latest  r refresh  q exit'
           : '↑/↓: scroll  ←/→: pan  ↑↑: latest  r: refresh  q: exit'
       : page === 3
-        ? terminal.compact
-          ? `pane:${perfActivePane === 'current' ? 'current' : 'past'}  ↑↓ scroll  ←→ pane  ↑↑ top  r refresh  q exit`
-          : `pane: ${perfActivePane === 'current' ? 'current' : 'past'}  ↑/↓: scroll  ←/→: pane  ↑↑: top  r: refresh  q: exit`
+        ? perfDailyDetailOpen
+          ? terminal.compact
+            ? '↑↓ list  esc close  r refresh  q exit'
+            : '↑/↓: list  Esc: close  r: refresh  q: exit'
+          : terminal.compact
+            ? `sel:${perfSelectedBox}  arrows box  j/k scroll  enter detail  r refresh  q exit`
+            : `selected: ${perfSelectedBox}  arrows: select box  j/k: scroll positions  Enter: daily detail  r: refresh  q: exit`
       : page === 4
         ? modelDetailOpen
           ? terminal.compact
@@ -214,6 +230,9 @@ function AppContent({
           perfCurrentScrollOffset,
           perfPastScrollOffset,
           perfActivePane,
+          perfSelectedBox,
+          perfDailyDetailOpen,
+          perfDailyDetailScrollOffset,
           modelSelectionIndex,
           modelDetailOpen,
           modelSettingSelectionIndex,
@@ -257,6 +276,9 @@ function App() {
   const [perfCurrentScrollOffset, setPerfCurrentScrollOffset] = useState(0)
   const [perfPastScrollOffset, setPerfPastScrollOffset] = useState(0)
   const [perfActivePane, setPerfActivePane] = useState<PerfPane>('current')
+  const [perfSelectedBox, setPerfSelectedBox] = useState<PerfBox>('current')
+  const [perfDailyDetailOpen, setPerfDailyDetailOpen] = useState(false)
+  const [perfDailyDetailScrollOffset, setPerfDailyDetailScrollOffset] = useState(0)
   const [modelSelectionIndex, setModelSelectionIndex] = useState(0)
   const [modelDetailOpen, setModelDetailOpen] = useState(false)
   const [modelSettingSelectionIndex, setModelSettingSelectionIndex] = useState(0)
@@ -316,6 +338,40 @@ function App() {
       return target >= panelCount ? panelCount - 1 : target
     })
     setModelSettingSelectionIndex(0)
+  }
+
+  const movePerfSelection = (direction: 'up' | 'down' | 'left' | 'right') => {
+    const grid: PerfBox[][] = [
+      ['summary', 'daily'],
+      ['current', 'past']
+    ]
+    const locations: Record<PerfBox, [number, number]> = {
+      summary: [0, 0],
+      daily: [0, 1],
+      current: [1, 0],
+      past: [1, 1]
+    }
+
+    setPerfSelectedBox((current) => {
+      const [row, column] = locations[current]
+      const nextRow =
+        direction === 'up'
+          ? Math.max(0, row - 1)
+          : direction === 'down'
+            ? Math.min(grid.length - 1, row + 1)
+            : row
+      const nextColumn =
+        direction === 'left'
+          ? Math.max(0, column - 1)
+          : direction === 'right'
+            ? Math.min(grid[0].length - 1, column + 1)
+            : column
+      const next = grid[nextRow][nextColumn]
+      if (next === 'current' || next === 'past') {
+        setPerfActivePane(next)
+      }
+      return next
+    })
   }
 
   const saveConfigValue = (rawValue: string) => {
@@ -435,6 +491,12 @@ function App() {
   }, [page, modelDetailOpen])
 
   useEffect(() => {
+    if (page !== 3 && perfDailyDetailOpen) {
+      setPerfDailyDetailOpen(false)
+    }
+  }, [page, perfDailyDetailOpen])
+
+  useEffect(() => {
     if (walletCount <= 0) {
       setWalletSelectionIndex(0)
       if (walletDetailOpen) {
@@ -492,6 +554,25 @@ function App() {
       setPerfCurrentScrollOffset(0)
     } else {
       setPerfPastScrollOffset(0)
+    }
+  }
+
+  const scrollSelectedPerformancePane = (delta: number) => {
+    if (perfSelectedBox === 'current') {
+      if (delta < 0) {
+        setPerfCurrentScrollOffset((current) => Math.max(0, current - 1))
+      } else {
+        setPerfCurrentScrollOffset((current) => current + 1)
+      }
+      return
+    }
+
+    if (perfSelectedBox === 'past') {
+      if (delta < 0) {
+        setPerfPastScrollOffset((current) => Math.max(0, current - 1))
+      } else {
+        setPerfPastScrollOffset((current) => current + 1)
+      }
     }
   }
 
@@ -674,10 +755,67 @@ function App() {
       }
     }
 
-    if (page === 1 || page === 2 || page === 3) {
+    if (page === 3) {
+      if (perfDailyDetailOpen) {
+        if (key.escape) {
+          setPerfDailyDetailOpen(false)
+          return
+        }
+
+        if (key.upArrow || normalized === 'k') {
+          setPerfDailyDetailScrollOffset((current) => Math.max(0, current - 1))
+          return
+        }
+
+        if (key.downArrow || normalized === 'j') {
+          setPerfDailyDetailScrollOffset((current) => current + 1)
+          return
+        }
+
+        return
+      }
+
+      if (key.upArrow) {
+        movePerfSelection('up')
+        return
+      }
+
+      if (key.downArrow) {
+        movePerfSelection('down')
+        return
+      }
+
+      if (key.leftArrow || normalized === 'h') {
+        movePerfSelection('left')
+        return
+      }
+
+      if (key.rightArrow || normalized === 'l') {
+        movePerfSelection('right')
+        return
+      }
+
+      if (normalized === 'k') {
+        scrollSelectedPerformancePane(-1)
+        return
+      }
+
+      if (normalized === 'j') {
+        scrollSelectedPerformancePane(1)
+        return
+      }
+
+      if (key.return && perfSelectedBox === 'daily') {
+        setPerfDailyDetailScrollOffset(0)
+        setPerfDailyDetailOpen(true)
+        return
+      }
+    }
+
+    if (page === 1 || page === 2) {
       if (key.upArrow) {
         const now = Date.now()
-        const pane = page === 3 ? perfActivePane : null
+        const pane = null
         const gap = now - lastUpArrowRef.current.at
 
         if (upArrowHoldActiveRef.current) {
@@ -751,16 +889,6 @@ function App() {
         })
         return
       }
-
-      if (page === 3 && key.leftArrow) {
-        setPerfActivePane('current')
-        return
-      }
-
-      if (page === 3 && key.rightArrow) {
-        setPerfActivePane('past')
-        return
-      }
     }
 
     if (normalized === 'q') process.exit(0)
@@ -801,6 +929,9 @@ function App() {
           perfCurrentScrollOffset={perfCurrentScrollOffset}
           perfPastScrollOffset={perfPastScrollOffset}
           perfActivePane={perfActivePane}
+          perfSelectedBox={perfSelectedBox}
+          perfDailyDetailOpen={perfDailyDetailOpen}
+          perfDailyDetailScrollOffset={perfDailyDetailScrollOffset}
           modelSelectionIndex={modelSelectionIndex}
           modelDetailOpen={modelDetailOpen}
           modelSettingSelectionIndex={modelSettingSelectionIndex}

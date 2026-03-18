@@ -4,6 +4,7 @@ from typing import Any
 
 DATA_CONTRACT_VERSION = 2
 RESOLVED_PNL_SQL = "COALESCE(actual_pnl_usd, shadow_pnl_usd)"
+REALIZED_CLOSE_TS_SQL = "COALESCE(exited_at, resolved_at, placed_at)"
 PROFITABLE_TRADE_SQL = f"CASE WHEN {RESOLVED_PNL_SQL} > 0 THEN 1 ELSE 0 END"
 
 EXECUTED_ENTRY_SQL = """

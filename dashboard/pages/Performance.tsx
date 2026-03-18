@@ -69,6 +69,8 @@ AND actual_entry_shares IS NOT NULL
 AND actual_entry_size_usd IS NOT NULL
 `
 
+const REALIZED_CLOSE_TS_SQL = `COALESCE(exited_at, resolved_at, placed_at)`
+
 const OPEN_EXECUTED_ENTRY_WHERE = `
 ${EXECUTED_ENTRY_WHERE}
 AND COALESCE(remaining_entry_shares, actual_entry_shares, source_shares, 0) > 1e-9
@@ -93,7 +95,7 @@ GROUP BY real_money
 const DAILY_SQL = `
 SELECT
   real_money,
-  strftime('%Y-%m-%d', datetime(COALESCE(resolved_at, placed_at), 'unixepoch')) AS day,
+  strftime('%Y-%m-%d', datetime(${REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
   ROUND(
     SUM(
       CASE
@@ -388,10 +390,15 @@ interface RenderPositionsOptions {
   showTtr?: boolean
 }
 
+export type PerfBox = 'summary' | 'daily' | 'current' | 'past'
+
 interface PerformanceProps {
   currentScrollOffset: number
   pastScrollOffset: number
   activePane: 'current' | 'past'
+  selectedBox: PerfBox
+  dailyDetailOpen: boolean
+  dailyDetailScrollOffset: number
 }
 
 interface DailyPnlEntry {
@@ -406,8 +413,6 @@ interface DailyPnlLayout {
   valueWidth: number
   barWidth: number
 }
-
-const DAILY_PNL_BAR_SCALE = 500
 
 function getPositionsLayout(width: number): PositionsLayout {
   const showId = width >= 132
@@ -471,10 +476,10 @@ function getPositionsLayout(width: number): PositionsLayout {
   }
 }
 
-function getPositionPaneMetrics(terminalHeight: number, stacked: boolean, dailyCount: number) {
+function getPositionPaneMetrics(terminalHeight: number, stacked: boolean) {
   const outerReserve = 10
   const statsHeight = 9
-  const dailyHeight = 3 + Math.max(1, dailyCount)
+  const dailyHeight = 9
   const topRowHeight = stacked ? statsHeight + 1 + dailyHeight : Math.max(statsHeight, dailyHeight)
   const sectionGaps = stacked ? 3 : 2
   const availableHeight = Math.max(
@@ -487,17 +492,17 @@ function getPositionPaneMetrics(terminalHeight: number, stacked: boolean, dailyC
   return {paneHeight, visibleRows}
 }
 
-function getDailyPnlLayout(
-  terminalWidth: number,
-  stacked: boolean,
-  valueWidth: number
-): DailyPnlLayout {
+function getDailyPanelContentWidth(terminalWidth: number, stacked: boolean): number {
+  const minContentWidth = 24
+  return stacked
+    ? Math.max(minContentWidth, terminalWidth - 10)
+    : Math.max(minContentWidth, Math.floor((terminalWidth - 15) / 2))
+}
+
+function getDailyPnlLayout(contentWidth: number, valueWidth: number): DailyPnlLayout {
   const dateWidth = 10
   const minBarWidth = 9
-  const minTotalWidth = dateWidth + valueWidth + minBarWidth + 2
-  const panelContentWidth = stacked
-    ? Math.max(minTotalWidth, terminalWidth - 10)
-    : Math.max(minTotalWidth, Math.floor((terminalWidth - 15) / 2))
+  const panelContentWidth = Math.max(dateWidth + valueWidth + minBarWidth + 2, contentWidth)
 
   return {
     dateWidth,
@@ -506,7 +511,73 @@ function getDailyPnlLayout(
   }
 }
 
-export function Performance({currentScrollOffset, pastScrollOffset, activePane}: PerformanceProps) {
+function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
+  const levelCount = 3
+  const gapWidth = entries.length <= 5 ? 2 : 1
+  const totalGapWidth = Math.max(0, entries.length - 1) * gapWidth
+  const columnWidth = Math.max(2, Math.floor((Math.max(width, entries.length * 3) - totalGapWidth) / Math.max(entries.length, 1)))
+  const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)))
+  const heights = entries.map((entry) => Math.round((Math.abs(entry.pnl) / maxAbsPnl) * levelCount))
+
+  const renderRow = (rowIndex: number, negative: boolean) => (
+    <InkBox width="100%">
+      {entries.map((entry, index) => {
+        const filled =
+          negative
+            ? entry.pnl < 0 && heights[index] >= rowIndex
+            : entry.pnl > 0 && heights[index] >= rowIndex
+        const color = negative ? theme.red : theme.green
+        return (
+          <React.Fragment key={`${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}`}>
+            <InkBox width={columnWidth}>
+              <Text color={filled ? color : undefined}>{filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth)}</Text>
+            </InkBox>
+            {index < entries.length - 1 ? <Text>{' '.repeat(gapWidth)}</Text> : null}
+          </React.Fragment>
+        )
+      })}
+    </InkBox>
+  )
+
+  return (
+    <InkBox flexDirection="column">
+      {Array.from({length: levelCount}, (_, index) => renderRow(levelCount - index, false))}
+      <InkBox width="100%">
+        {entries.map((entry, index) => (
+          <React.Fragment key={`${entry.day}-axis`}>
+            <InkBox width={columnWidth}>
+              <Text color={theme.dim}>{'─'.repeat(columnWidth)}</Text>
+            </InkBox>
+            {index < entries.length - 1 ? <Text>{' '.repeat(gapWidth)}</Text> : null}
+          </React.Fragment>
+        ))}
+      </InkBox>
+      {Array.from({length: levelCount}, (_, index) => renderRow(index + 1, true))}
+      <InkBox width="100%">
+        {entries.map((entry, index) => {
+          const label = columnWidth >= 5 ? entry.day.slice(5) : entry.day.slice(8)
+          return (
+            <React.Fragment key={`${entry.day}-label`}>
+              <InkBox width={columnWidth}>
+                <Text color={theme.dim}>{fit(label, columnWidth)}</Text>
+              </InkBox>
+              {index < entries.length - 1 ? <Text>{' '.repeat(gapWidth)}</Text> : null}
+            </React.Fragment>
+          )
+        })}
+      </InkBox>
+    </InkBox>
+  )
+}
+
+export function Performance({
+  currentScrollOffset,
+  pastScrollOffset,
+  activePane,
+  selectedBox,
+  dailyDetailOpen,
+  dailyDetailScrollOffset
+}: PerformanceProps) {
   const terminal = useTerminalSize()
   const stacked = stackPanels(terminal.width)
   const rows = useQuery<SummaryRow>(SUMMARY_SQL)
@@ -582,32 +653,40 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
       ),
     [activeResolvedPositions, waitingPositions]
   )
-  const activeDaily = useMemo(
-    () => daily.filter((row) => row.real_money === activeRealMoney).slice(0, 7),
+  const activeDailyRows = useMemo(
+    () => daily.filter((row) => row.real_money === activeRealMoney),
     [activeRealMoney, daily]
   )
   const dailyEntries = useMemo<DailyPnlEntry[]>(
     () =>
-      activeDaily.slice().reverse().map((row) => {
+      activeDailyRows.map((row) => {
         const pnl = Number(row.pnl || 0)
         return {
           day: row.day,
           pnl,
           label: formatDollar(pnl),
-          normalized: Math.min(1, Math.abs(pnl) / DAILY_PNL_BAR_SCALE)
+          normalized: Math.abs(pnl)
         }
       }),
-    [activeDaily]
+    [activeDailyRows]
+  )
+  const dailyPreviewEntries = useMemo(
+    () => dailyEntries.slice(0, 7).reverse(),
+    [dailyEntries]
   )
   const dailyValueWidth = useMemo(
     () => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10),
     [dailyEntries]
   )
-  const dailyLayout = useMemo(
-    () => getDailyPnlLayout(terminal.width, stacked, dailyValueWidth),
-    [dailyValueWidth, stacked, terminal.width]
+  const dailyPanelContentWidth = useMemo(
+    () => getDailyPanelContentWidth(terminal.width, stacked),
+    [stacked, terminal.width]
   )
-  const paneMetrics = getPositionPaneMetrics(terminal.height, stacked, activeDaily.length)
+  const dailyLayout = useMemo(
+    () => getDailyPnlLayout(dailyPanelContentWidth, dailyValueWidth),
+    [dailyPanelContentWidth, dailyValueWidth]
+  )
+  const paneMetrics = getPositionPaneMetrics(terminal.height, stacked)
   const currentMaxOffset = Math.max(0, currentPositions.length - paneMetrics.visibleRows)
   const pastMaxOffset = Math.max(0, pastPositions.length - paneMetrics.visibleRows)
   const effectiveCurrentScrollOffset = Math.min(currentScrollOffset, currentMaxOffset)
@@ -625,6 +704,24 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
   const liveBalance =
     botState.mode === 'live' && botState.bankroll_usd != null ? botState.bankroll_usd : null
   const activeBalance = activeMode === 'live' ? liveBalance : shadowBalance
+  const modalBackground = terminal.backgroundColor || theme.modalBackground
+  const detailModalWidth = Math.max(60, Math.min(terminal.width - 8, terminal.wide ? 110 : 88))
+  const detailModalContentWidth = Math.max(40, detailModalWidth - 4)
+  const detailVisibleRows = Math.max(1, terminal.height - 14)
+  const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows)
+  const detailOffset = Math.min(dailyDetailScrollOffset, detailMaxOffset)
+  const visibleDetailEntries = dailyEntries.slice(detailOffset, detailOffset + detailVisibleRows)
+  const detailBarScale = useMemo(
+    () => Math.max(1, ...dailyEntries.map((row) => Math.abs(row.pnl))),
+    [dailyEntries]
+  )
+  const detailRangeLabel = dailyEntries.length
+    ? `${detailOffset + 1}-${Math.min(detailOffset + visibleDetailEntries.length, dailyEntries.length)}/${dailyEntries.length}`
+    : '0/0'
+  const detailLayout = useMemo(
+    () => getDailyPnlLayout(detailModalContentWidth, dailyValueWidth),
+    [detailModalContentWidth, dailyValueWidth]
+  )
 
   const renderPositionsTable = (
     rowsToRender: PositionRow[],
@@ -821,7 +918,7 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
   return (
     <InkBox flexDirection="column" width="100%">
       <InkBox flexDirection={stacked ? 'column' : 'row'}>
-        <Box title={activeTitle} width={stacked ? '100%' : '50%'}>
+        <Box title={activeTitle} width={stacked ? '100%' : '50%'} accent={selectedBox === 'summary'}>
           <StatRow label="Total P&L" value={formatDollar(activeSummary?.total_pnl)} color={(activeSummary?.total_pnl || 0) >= 0 ? theme.green : theme.red} />
           <StatRow
             label="Current balance"
@@ -834,32 +931,9 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
           <StatRow label="Avg total" value={formatDollar(activeSummary?.avg_size)} />
         </Box>
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
-        <Box title={`Daily ${activeTitle} P&L`} width={stacked ? '100%' : '50%'}>
-          {dailyEntries.length ? (
-            dailyEntries.map((row) => {
-              return (
-                <InkBox key={row.day} width="100%">
-                  <InkBox width={dailyLayout.dateWidth}>
-                    <Text>{fit(row.day, dailyLayout.dateWidth)}</Text>
-                  </InkBox>
-                  <Text> </Text>
-                  <InkBox width={dailyLayout.barWidth}>
-                    <BarSparkline
-                      value={row.normalized}
-                      width={dailyLayout.barWidth}
-                      positive={row.pnl >= 0}
-                      centered
-                    />
-                  </InkBox>
-                  <Text> </Text>
-                  <InkBox width={dailyLayout.valueWidth} justifyContent="flex-end">
-                    <Text color={theme.dim}>
-                      {fitRight(row.label, dailyLayout.valueWidth)}
-                    </Text>
-                  </InkBox>
-                </InkBox>
-              )
-            })
+        <Box title={`Daily ${activeTitle} P&L`} width={stacked ? '100%' : '50%'} accent={selectedBox === 'daily'}>
+          {dailyPreviewEntries.length ? (
+            <DailyPnlPreviewChart entries={dailyPreviewEntries} width={dailyPanelContentWidth} />
           ) : (
             <Text color={theme.dim}>{`No resolved ${activeTitle.toLowerCase()} trades yet.`}</Text>
           )}
@@ -871,7 +945,7 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
           <Box
             title={`Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`}
             height="100%"
-            accent={activePane === 'current'}
+            accent={selectedBox === 'current'}
           >
             {visibleCurrentPositions.length ? (
               renderPositionsTable(visibleCurrentPositions)
@@ -887,7 +961,7 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
           <Box
             title={`Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`}
             height="100%"
-            accent={activePane === 'past'}
+            accent={selectedBox === 'past'}
           >
             {visiblePastPositions.length ? (
               renderPositionsTable(visiblePastPositions, {showStatus: true, showTtr: false})
@@ -897,6 +971,51 @@ export function Performance({currentScrollOffset, pastScrollOffset, activePane}:
           </Box>
         </InkBox>
       </InkBox>
+
+      {dailyDetailOpen ? (
+        <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
+          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={detailModalWidth}>
+            <InkBox width="100%">
+              <Text color={theme.accent} backgroundColor={modalBackground} bold>
+                {` ${fit(`Daily ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`}
+              </Text>
+              <Text backgroundColor={modalBackground}> </Text>
+              <Text color={theme.dim} backgroundColor={modalBackground}>
+                {`${fitRight(detailRangeLabel, detailRangeLabel.length)} `}
+              </Text>
+            </InkBox>
+            <Text color={theme.dim} backgroundColor={modalBackground}>
+              {` ${fit('Realized P&L is bucketed by close time: exit when sold, resolution when held.', detailModalContentWidth)} `}
+            </Text>
+            <Text color={theme.dim} backgroundColor={modalBackground}>
+              {` ${fit('Up/down scroll. Esc closes.', detailModalContentWidth)} `}
+            </Text>
+            <Text backgroundColor={modalBackground}>{' '.repeat(detailModalWidth - 2)}</Text>
+            {visibleDetailEntries.length ? (
+              visibleDetailEntries.map((row) => (
+                <InkBox key={`detail-${row.day}`} width="100%">
+                  <Text backgroundColor={modalBackground}>{` ${fit(row.day, detailLayout.dateWidth)}`}</Text>
+                  <Text backgroundColor={modalBackground}> </Text>
+                  <BarSparkline
+                    value={row.normalized / detailBarScale}
+                    width={detailLayout.barWidth}
+                    positive={row.pnl >= 0}
+                    centered
+                  />
+                  <Text backgroundColor={modalBackground}> </Text>
+                  <Text color={row.pnl >= 0 ? theme.green : theme.red} backgroundColor={modalBackground}>
+                    {`${fitRight(row.label, detailLayout.valueWidth)} `}
+                  </Text>
+                </InkBox>
+              ))
+            ) : (
+              <Text color={theme.dim} backgroundColor={modalBackground}>
+                {` ${fit('No resolved daily P&L rows yet.', detailModalContentWidth)} `}
+              </Text>
+            )}
+          </InkBox>
+        </InkBox>
+      ) : null}
     </InkBox>
   )
 }

@@ -332,7 +332,7 @@ function getPositionsLayout(width) {
     const idWidth = showId ? 6 : 0;
     const userWidth = showUser ? (width >= 120 ? 14 : 10) : 0;
     const actionWidth = 4;
-    const sideWidth = 4;
+    const sideWidth = 6;
     const entryWidth = 5;
     const sharesWidth = 7;
     const sizeWidth = 8;

@@ -55,7 +55,7 @@ export function getFeedLayout(width: number): FeedLayout {
   const timeWidth = 11
   const usernameWidth = showUsername ? 14 : 0
   const actionWidth = 4
-  const sideWidth = 8
+  const sideWidth = 16
   const priceWidth = showPrice ? 5 : 0
   const sharesWidth = showShares ? 7 : 0
   const paidWidth = showPaid ? 8 : 0
@@ -113,7 +113,7 @@ export function getSignalsLayout(width: number): SignalsLayout {
   const questionMaxWidth = Math.min(34, Math.floor(width * 0.26))
   const reasonMinWidth = 12
   const actionWidth = 4
-  const sideWidth = 8
+  const sideWidth = 16
   const priceWidth = showPrice ? 5 : 0
   const sharesWidth = showShares ? 7 : 0
   const sizeWidth = showSize ? 8 : 0

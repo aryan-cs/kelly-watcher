@@ -60,6 +60,14 @@ class LiveWalletStatus:
     signer_address: str
 
 
+@dataclass
+class LiveExchangeFill:
+    shares: float
+    notional_usd: float
+    avg_price: float
+    source: str
+
+
 def _to_float(value: Any) -> float:
     try:
         return float(value or 0.0)
@@ -519,6 +527,139 @@ class PolymarketExecutor:
                 time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
         return best_balance, 0.0
 
+    @staticmethod
+    def _extract_order_id(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return "unknown"
+        return str(payload.get("orderID") or payload.get("id") or "unknown")
+
+    @staticmethod
+    def _extract_associated_trade_ids(payload: Any) -> list[str]:
+        if not isinstance(payload, dict):
+            return []
+        trade_ids = payload.get("associate_trades") or payload.get("associateTrades") or payload.get("tradeIDs") or payload.get("tradeIds") or []
+        if isinstance(trade_ids, (str, int)):
+            trade_ids = [trade_ids]
+        return [str(value).strip() for value in trade_ids if str(value).strip()]
+
+    @staticmethod
+    def _live_trade_status_ok(status: Any) -> bool:
+        normalized = str(status or "").strip().upper()
+        return normalized in {"MATCHED", "MINED", "CONFIRMED"}
+
+    @staticmethod
+    def _parse_live_order_response_fill(
+        payload: Any,
+        *,
+        action: str,
+    ) -> LiveExchangeFill | None:
+        if not isinstance(payload, dict):
+            return None
+
+        success = payload.get("success")
+        status = str(payload.get("status") or "").strip().lower()
+        if success is False or status in {"failed", "rejected", "cancelled", "canceled"}:
+            error_text = str(payload.get("errorMsg") or payload.get("error") or status or "order rejected").strip()
+            raise RuntimeError(f"live {action} order was rejected by the exchange: {error_text}")
+
+        taking_amount = _to_float(payload.get("takingAmount") or payload.get("taking_amount"))
+        making_amount = _to_float(payload.get("makingAmount") or payload.get("making_amount"))
+        if taking_amount <= 0 or making_amount <= 0:
+            return None
+
+        if action == "buy":
+            shares = taking_amount
+            notional_usd = making_amount
+        else:
+            shares = making_amount
+            notional_usd = taking_amount
+
+        if shares <= 0 or notional_usd <= 0:
+            return None
+
+        return LiveExchangeFill(
+            shares=shares,
+            notional_usd=notional_usd,
+            avg_price=(notional_usd / shares) if shares > 0 else 0.0,
+            source="post_order_response",
+        )
+
+    @staticmethod
+    def _parse_live_trade_fill(
+        rows: list[dict[str, Any]],
+    ) -> LiveExchangeFill | None:
+        total_shares = 0.0
+        total_notional = 0.0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if not PolymarketExecutor._live_trade_status_ok(row.get("status")):
+                continue
+            shares = _to_float(row.get("size") or row.get("filledSize") or row.get("sizeMatched"))
+            price = _to_float(row.get("price"))
+            if shares <= 0 or price <= 0:
+                continue
+            total_shares += shares
+            total_notional += shares * price
+
+        if total_shares <= 0 or total_notional <= 0:
+            return None
+
+        return LiveExchangeFill(
+            shares=round(total_shares, 6),
+            notional_usd=round(total_notional, 6),
+            avg_price=round(total_notional / total_shares, 6),
+            source="trade_reconciliation",
+        )
+
+    def _fetch_trade_rows_by_ids(self, trade_ids: list[str]) -> list[dict[str, Any]]:
+        if self._clob is None or not trade_ids:
+            return []
+
+        from py_clob_client.clob_types import TradeParams
+
+        rows: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for trade_id in trade_ids:
+            normalized = str(trade_id or "").strip()
+            if not normalized or normalized in seen_ids:
+                continue
+            seen_ids.add(normalized)
+            payload = self._clob.get_trades(TradeParams(id=normalized))
+            for row in payload if isinstance(payload, list) else []:
+                if isinstance(row, dict):
+                    rows.append(row)
+        return rows
+
+    def _reconcile_live_order_fill(
+        self,
+        *,
+        order_id: str,
+        response: Any,
+        action: str,
+    ) -> LiveExchangeFill | None:
+        direct_fill = self._parse_live_order_response_fill(response, action=action)
+        if direct_fill is not None:
+            return direct_fill
+
+        known_trade_ids = set(self._extract_associated_trade_ids(response))
+        for attempt in range(LIVE_SYNC_ATTEMPTS):
+            order_payload = None
+            if self._clob is not None and order_id and order_id != "unknown":
+                try:
+                    order_payload = self._clob.get_order(order_id)
+                except Exception as exc:
+                    logger.warning("Live order lookup failed for %s: %s", order_id, exc)
+                known_trade_ids.update(self._extract_associated_trade_ids(order_payload))
+
+            reconciled = self._parse_live_trade_fill(self._fetch_trade_rows_by_ids(sorted(known_trade_ids)))
+            if reconciled is not None:
+                return reconciled
+
+            if attempt < LIVE_SYNC_ATTEMPTS - 1:
+                time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
+        return None
+
     def live_entry_health_reason(self) -> str | None:
         threshold = max_live_health_failures()
         if self._consecutive_live_balance_failures >= threshold:
@@ -768,20 +909,11 @@ class PolymarketExecutor:
             )
             signed = self._clob.create_market_order(order)
             response = self._clob.post_order(signed, OrderType.FOK)
-            order_id = response.get("orderID") or response.get("id", "unknown")
-            expected_fill, _ = self.estimate_entry_fill(getattr(event, "raw_orderbook", None), dollar_size)
-            expected_price = (
-                (expected_fill.avg_price if expected_fill is not None else 0.0)
-                or _to_float(getattr(market_f, "execution_price", 0.0))
-                or event.price
-            )
-            expected_shares = (
-                (expected_fill.shares if expected_fill is not None else 0.0)
-                or ((dollar_size / expected_price) if expected_price > 0 else 0.0)
-            )
-            expected_spend = (
-                (expected_fill.spent_usd if expected_fill is not None else 0.0)
-                or dollar_size
+            order_id = self._extract_order_id(response)
+            reconciled_fill = self._reconcile_live_order_fill(
+                order_id=order_id,
+                response=response,
+                action="buy",
             )
             _, balance_spent = self._measure_live_balance_change(balance_before, expect_increase=False)
             live_position = self._sync_live_positions(
@@ -791,17 +923,28 @@ class PolymarketExecutor:
                 side=side,
                 expect_present=True,
             )
-            actual_shares = self._live_position_shares(live_position) or expected_shares
-            actual_spend = balance_spent or self._live_position_cost(live_position) or expected_spend
+            position_shares = self._live_position_shares(live_position)
+            position_spend = self._live_position_cost(live_position)
+            actual_shares = reconciled_fill.shares if reconciled_fill is not None else position_shares
+            actual_spend = (
+                reconciled_fill.notional_usd
+                if reconciled_fill is not None
+                else (position_spend or balance_spent)
+            )
             avg_price_from_position = _to_float((live_position or {}).get("avgPrice") or (live_position or {}).get("averagePrice"))
-            if actual_shares <= 0 and actual_spend > 0 and (avg_price_from_position or expected_price) > 0:
-                actual_shares = actual_spend / (avg_price_from_position or expected_price)
-            if actual_spend <= 0 and actual_shares > 0 and (avg_price_from_position or expected_price) > 0:
-                actual_spend = actual_shares * (avg_price_from_position or expected_price)
+            fallback_price = avg_price_from_position or (reconciled_fill.avg_price if reconciled_fill is not None else 0.0)
+            if actual_shares <= 0 and actual_spend > 0 and fallback_price > 0:
+                actual_shares = actual_spend / fallback_price
+            if actual_spend <= 0 and actual_shares > 0 and fallback_price > 0:
+                actual_spend = actual_shares * fallback_price
+            if actual_shares <= 0 or actual_spend <= 0:
+                raise RuntimeError(
+                    "live buy order posted but the fill could not be confirmed from exchange order, trade, balance, or position data"
+                )
             actual_price = (
                 (actual_spend / actual_shares)
                 if actual_spend > 0 and actual_shares > 0
-                else avg_price_from_position or expected_price
+                else fallback_price
             )
 
             log_trade(
@@ -1441,7 +1584,6 @@ class PolymarketExecutor:
             self._ensure_live_token_allowance(token_id or str(position.get("token_id") or ""))
             balance_before = self.get_usdc_balance()
             total_open_shares = sum(self._entry_open_shares(entry) for entry in entries)
-            expected_remaining_shares = max(total_open_shares - shares, 0.0)
             order = MarketOrderArgs(
                 token_id=token_id or str(position.get("token_id") or ""),
                 amount=shares,
@@ -1449,13 +1591,19 @@ class PolymarketExecutor:
             )
             signed = self._clob.create_market_order(order)
             response = self._clob.post_order(signed, OrderType.FOK)
-            order_id = response.get("orderID") or response.get("id", "unknown")
-            expected_fill, _ = self.estimate_exit_fill(getattr(event, "raw_orderbook", None), shares)
+            order_id = self._extract_order_id(response)
+            reconciled_fill = self._reconcile_live_order_fill(
+                order_id=order_id,
+                response=response,
+                action="sell",
+            )
+            actual_exit_shares = reconciled_fill.shares if reconciled_fill is not None else shares
             _, balance_gained = self._measure_live_balance_change(balance_before, expect_increase=True)
             remaining_position = None
             remaining_shares = 0.0
             target_token = token_id or str(position.get("token_id") or "")
             target_side = str(position.get("side") or event.side or "")
+            expected_remaining_shares = max(total_open_shares - actual_exit_shares, 0.0)
             for attempt in range(LIVE_SYNC_ATTEMPTS):
                 rows = self._fetch_live_positions()
                 if rows is not None:
@@ -1481,11 +1629,24 @@ class PolymarketExecutor:
                     f"expected about {expected_remaining_shares:.3f}"
                 )
 
-            actual_exit_notional = balance_gained or (expected_fill.spent_usd if expected_fill is not None else 0.0) or exit_notional
+            actual_exit_shares = (
+                reconciled_fill.shares
+                if reconciled_fill is not None
+                else max(total_open_shares - remaining_shares, 0.0)
+            )
+            actual_exit_notional = (
+                reconciled_fill.notional_usd
+                if reconciled_fill is not None
+                else balance_gained
+            )
+            if actual_exit_shares <= 0 or actual_exit_notional <= 0:
+                raise RuntimeError(
+                    "live exit order posted but the realized fill could not be confirmed from exchange order, trade, balance, or position data"
+                )
             actual_exit_price = (
-                (actual_exit_notional / shares)
-                if actual_exit_notional > 0 and shares > 0
-                else (expected_fill.avg_price if expected_fill is not None else exit_price)
+                (actual_exit_notional / actual_exit_shares)
+                if actual_exit_notional > 0 and actual_exit_shares > 0
+                else (reconciled_fill.avg_price if reconciled_fill is not None else exit_price)
             )
             reason = self._exit_reason(exit_fraction)
             shares, exit_notional, pnl = self._finalize_exit(
@@ -1495,7 +1656,7 @@ class PolymarketExecutor:
                 exit_trade_id=trade_id,
                 exit_price=actual_exit_price,
                 exit_fraction=exit_fraction,
-                exit_shares=shares,
+                exit_shares=actual_exit_shares,
                 exit_notional=actual_exit_notional,
                 exit_reason=reason,
                 exit_order_id=order_id,

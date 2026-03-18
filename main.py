@@ -25,6 +25,10 @@ from config import (
     max_feed_staleness_seconds,
     max_live_drawdown_pct,
     max_live_health_failures,
+    max_market_exposure_fraction,
+    max_open_positions,
+    max_total_open_exposure_fraction,
+    max_trader_exposure_fraction,
     min_bet_usd,
     min_confidence,
     poll_interval,
@@ -783,30 +787,25 @@ def _validate_startup() -> None:
     errors: list[str] = []
     warnings: list[str] = []
 
+    def _capture_config(getter):
+        try:
+            return getter()
+        except ConfigError as exc:
+            errors.append(str(exc))
+            return None
+
     if not WATCHED_WALLETS:
         errors.append("WATCHED_WALLETS is empty")
 
-    try:
-        confidence = min_confidence()
-    except ConfigError as exc:
-        errors.append(str(exc))
-        confidence = None
+    confidence = _capture_config(min_confidence)
     if confidence is not None and not (0.0 < confidence < 1.0):
         errors.append(f"MIN_CONFIDENCE must be between 0 and 1, got {confidence}")
 
-    try:
-        max_fraction = max_bet_fraction()
-    except ConfigError as exc:
-        errors.append(str(exc))
-        max_fraction = None
+    max_fraction = _capture_config(max_bet_fraction)
     if max_fraction is not None and not (0.0 < max_fraction <= 1.0):
         errors.append(f"MAX_BET_FRACTION must be between 0 and 1, got {max_fraction}")
 
-    try:
-        minimum_bet = min_bet_usd()
-    except ConfigError as exc:
-        errors.append(str(exc))
-        minimum_bet = None
+    minimum_bet = _capture_config(min_bet_usd)
     if minimum_bet is not None and minimum_bet <= 0:
         errors.append(f"MIN_BET_USD must be positive, got {minimum_bet}")
 
@@ -827,9 +826,44 @@ def _validate_startup() -> None:
             warnings.append(
                 f"POLL_INTERVAL_SECONDS is {current_interval:.2f}s; extremely fast live polling can amplify duplicate/latency risk"
             )
+        live_drawdown_limit = _capture_config(max_live_drawdown_pct)
+        if live_drawdown_limit is not None and not (0.0 <= live_drawdown_limit <= 1.0):
+            errors.append(f"MAX_LIVE_DRAWDOWN_PCT must be between 0 and 1, got {live_drawdown_limit}")
+        daily_loss_limit = _capture_config(max_daily_loss_pct)
+        if daily_loss_limit is not None and not (0.0 <= daily_loss_limit <= 1.0):
+            errors.append(f"MAX_DAILY_LOSS_PCT must be between 0 and 1, got {daily_loss_limit}")
+        total_exposure_limit = _capture_config(max_total_open_exposure_fraction)
+        if total_exposure_limit is not None and not (0.0 <= total_exposure_limit <= 1.0):
+            errors.append(
+                "MAX_TOTAL_OPEN_EXPOSURE_FRACTION must be between 0 and 1, "
+                f"got {total_exposure_limit}"
+            )
+        market_exposure_limit = _capture_config(max_market_exposure_fraction)
+        if market_exposure_limit is not None and not (0.0 <= market_exposure_limit <= 1.0):
+            errors.append(
+                "MAX_MARKET_EXPOSURE_FRACTION must be between 0 and 1, "
+                f"got {market_exposure_limit}"
+            )
+        trader_exposure_limit = _capture_config(max_trader_exposure_fraction)
+        if trader_exposure_limit is not None and not (0.0 <= trader_exposure_limit <= 1.0):
+            errors.append(
+                "MAX_TRADER_EXPOSURE_FRACTION must be between 0 and 1, "
+                f"got {trader_exposure_limit}"
+            )
+        open_positions_limit = _capture_config(max_open_positions)
+        if open_positions_limit is not None and open_positions_limit < 1:
+            errors.append(f"MAX_OPEN_POSITIONS must be at least 1, got {open_positions_limit}")
+        live_health_failure_limit = _capture_config(max_live_health_failures)
+        if live_health_failure_limit is not None and live_health_failure_limit < 1:
+            errors.append(
+                "MAX_LIVE_HEALTH_FAILURES must be at least 1, "
+                f"got {live_health_failure_limit}"
+            )
         if live_require_shadow_history():
             resolved = _resolved_shadow_trade_count()
-            minimum = live_min_shadow_resolved()
+            minimum = _capture_config(live_min_shadow_resolved)
+            if minimum is None:
+                minimum = 0
             if resolved < minimum:
                 errors.append(
                     f"LIVE mode is blocked until shadow history is available: {resolved} resolved shadow trades < required {minimum}"

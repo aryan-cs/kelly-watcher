@@ -144,7 +144,7 @@ class RuntimeFixesTest(unittest.TestCase):
                         26.666667,
                         12.0,
                         2.5,
-                        3_000,
+                        1_500,
                         3_000,
                     ),
                 )
@@ -155,6 +155,105 @@ class RuntimeFixesTest(unittest.TestCase):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
             finally:
                 db.DB_PATH = original_db_path
+
+    def test_live_order_response_fill_overrides_book_estimate_for_entries(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._clob = SimpleNamespace(
+            create_market_order=lambda order: order,
+            post_order=lambda signed, order_type: {
+                "success": True,
+                "status": "matched",
+                "orderID": "order-1",
+                "makingAmount": "10.0",
+                "takingAmount": "20.0",
+            },
+        )
+        executor.get_usdc_balance = lambda: 100.0
+        executor._measure_live_balance_change = lambda before, expect_increase=False: (before, 0.0)
+        executor._sync_live_positions = lambda *args, **kwargs: None
+        executor.estimate_entry_fill = lambda raw_book, amount: (SimpleNamespace(spent_usd=7.0, shares=7.0, avg_price=1.0), None)
+        executor._reconcile_live_order_fill = PolymarketExecutor._reconcile_live_order_fill.__get__(executor, PolymarketExecutor)
+        dedup_cache = SimpleNamespace(
+            confirm=lambda *args, **kwargs: None,
+            mark_seen=lambda *args, **kwargs: None,
+            release=lambda *args, **kwargs: None,
+        )
+        event = SimpleNamespace(
+            question="Will it happen?",
+            trader_address="0xabc",
+            price=0.5,
+            raw_orderbook=None,
+            token_id="token-1",
+            trader_name="Trader",
+            raw_trade=None,
+            raw_market_metadata=None,
+            snapshot=None,
+            action="buy",
+            timestamp=1_700_000_000,
+            observed_at=1_700_000_001,
+            poll_started_at=1_700_000_000,
+            market_close_ts=1_700_010_000,
+            metadata_fetched_at=1_700_000_000,
+            orderbook_fetched_at=1_700_000_000,
+            source_ts_raw="1700000000",
+            shares=5.0,
+            size_usd=2.5,
+        )
+        market_f = SimpleNamespace(
+            execution_price=0.75,
+            price_1h_ago=None,
+            volume_7d_avg_usd=None,
+            best_ask=0.5,
+            best_bid=0.49,
+            mid=0.495,
+            volume_24h_usd=None,
+            oi_usd=None,
+            top_holder_pct=None,
+            bid_depth_usd=None,
+            ask_depth_usd=None,
+            days_to_res=None,
+        )
+        captured: dict[str, float] = {}
+
+        with patch("executor.log_trade", side_effect=lambda **kwargs: captured.update(kwargs) or 1), patch("executor.send_alert"):
+            result = executor._execute_live(
+                "trade-1",
+                "market-1",
+                "token-1",
+                "yes",
+                10.0,
+                0.1,
+                0.7,
+                {"mode": "heuristic"},
+                event,
+                None,
+                market_f,
+                dedup_cache,
+            )
+
+        self.assertTrue(result.placed)
+        self.assertAlmostEqual(result.dollar_size, 10.0, places=6)
+        self.assertAlmostEqual(result.shares, 20.0, places=6)
+        self.assertAlmostEqual(float(captured["actual_entry_price"]), 0.5, places=6)
+        self.assertAlmostEqual(float(captured["actual_entry_shares"]), 20.0, places=6)
+        self.assertAlmostEqual(float(captured["actual_entry_size_usd"]), 10.0, places=6)
+
+    def test_validate_startup_fails_closed_on_invalid_live_risk_limit(self) -> None:
+        valid_wallet = "0x1111111111111111111111111111111111111111"
+        watched_wallet = "0x2222222222222222222222222222222222222222"
+        with patch.dict(
+            "os.environ",
+            {
+                "USE_REAL_MONEY": "true",
+                "POLYGON_PRIVATE_KEY": "0xabc123",
+                "POLYGON_WALLET_ADDRESS": valid_wallet,
+                "MAX_OPEN_POSITIONS": "abc",
+            },
+            clear=False,
+        ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch("main._resolved_shadow_trade_count", return_value=999), patch("main.send_alert"):
+            with self.assertRaises(RuntimeError) as ctx:
+                main._validate_startup()
+        self.assertIn("MAX_OPEN_POSITIONS must be an integer", str(ctx.exception))
 
     def test_sync_belief_priors_expands_sql_contract_macros(self) -> None:
         with TemporaryDirectory() as tmpdir:

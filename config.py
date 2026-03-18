@@ -38,6 +38,44 @@ def _get_float(name: str, default: str) -> float:
         raise ConfigError(f"{name} must be numeric, got {raw!r}") from exc
 
 
+def _get_bounded_float(
+    name: str,
+    default: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    value = _get_float(name, default)
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{name} must be >= {minimum}, got {value}")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{name} must be <= {maximum}, got {value}")
+    return value
+
+
+def _get_int(name: str, default: str) -> int:
+    raw = _get(name, default)
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def _get_bounded_int(
+    name: str,
+    default: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    value = _get_int(name, default)
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{name} must be >= {minimum}, got {value}")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{name} must be <= {maximum}, got {value}")
+    return value
+
+
 def _get_env_file_value(name: str) -> str | None:
     if not ENV_PATH.exists():
         return None
@@ -145,59 +183,31 @@ def shadow_bankroll_usd() -> float:
 
 
 def max_live_drawdown_pct() -> float:
-    raw = _get("MAX_LIVE_DRAWDOWN_PCT", "0.15")
-    try:
-        return min(max(float(raw), 0.0), 1.0)
-    except ValueError:
-        return 0.15
+    return _get_bounded_float("MAX_LIVE_DRAWDOWN_PCT", "0.15", minimum=0.0, maximum=1.0)
 
 
 def max_daily_loss_pct() -> float:
-    raw = _get("MAX_DAILY_LOSS_PCT", "0.08")
-    try:
-        return min(max(float(raw), 0.0), 1.0)
-    except ValueError:
-        return 0.08
+    return _get_bounded_float("MAX_DAILY_LOSS_PCT", "0.08", minimum=0.0, maximum=1.0)
 
 
 def max_total_open_exposure_fraction() -> float:
-    raw = _get("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.60")
-    try:
-        return min(max(float(raw), 0.0), 1.0)
-    except ValueError:
-        return 0.60
+    return _get_bounded_float("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.60", minimum=0.0, maximum=1.0)
 
 
 def max_market_exposure_fraction() -> float:
-    raw = _get("MAX_MARKET_EXPOSURE_FRACTION", "0.20")
-    try:
-        return min(max(float(raw), 0.0), 1.0)
-    except ValueError:
-        return 0.20
+    return _get_bounded_float("MAX_MARKET_EXPOSURE_FRACTION", "0.20", minimum=0.0, maximum=1.0)
 
 
 def max_trader_exposure_fraction() -> float:
-    raw = _get("MAX_TRADER_EXPOSURE_FRACTION", "0.30")
-    try:
-        return min(max(float(raw), 0.0), 1.0)
-    except ValueError:
-        return 0.30
+    return _get_bounded_float("MAX_TRADER_EXPOSURE_FRACTION", "0.30", minimum=0.0, maximum=1.0)
 
 
 def max_open_positions() -> int:
-    raw = _get("MAX_OPEN_POSITIONS", "10")
-    try:
-        return max(int(raw), 1)
-    except ValueError:
-        return 10
+    return _get_bounded_int("MAX_OPEN_POSITIONS", "10", minimum=1)
 
 
 def max_live_health_failures() -> int:
-    raw = _get("MAX_LIVE_HEALTH_FAILURES", "3")
-    try:
-        return max(int(raw), 1)
-    except ValueError:
-        return 3
+    return _get_bounded_int("MAX_LIVE_HEALTH_FAILURES", "3", minimum=1)
 
 
 def live_require_shadow_history() -> bool:
@@ -205,11 +215,7 @@ def live_require_shadow_history() -> bool:
 
 
 def live_min_shadow_resolved() -> int:
-    raw = _get("LIVE_MIN_SHADOW_RESOLVED", "50")
-    try:
-        return max(int(raw), 0)
-    except ValueError:
-        return 50
+    return _get_bounded_int("LIVE_MIN_SHADOW_RESOLVED", "50", minimum=0)
 
 
 def telegram_bot_token() -> str:

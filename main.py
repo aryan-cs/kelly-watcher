@@ -26,7 +26,6 @@ from config import (
     max_live_drawdown_pct,
     max_live_health_failures,
     max_market_exposure_fraction,
-    max_open_positions,
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
     min_bet_usd,
@@ -850,9 +849,6 @@ def _validate_startup() -> None:
                 "MAX_TRADER_EXPOSURE_FRACTION must be between 0 and 1, "
                 f"got {trader_exposure_limit}"
             )
-        open_positions_limit = _capture_config(max_open_positions)
-        if open_positions_limit is not None and open_positions_limit < 1:
-            errors.append(f"MAX_OPEN_POSITIONS must be at least 1, got {open_positions_limit}")
         live_health_failure_limit = _capture_config(max_live_health_failures)
         if live_health_failure_limit is not None and live_health_failure_limit < 1:
             errors.append(

@@ -12,7 +12,6 @@ from alerter import send_alert
 from config import (
     max_live_health_failures,
     max_market_exposure_fraction,
-    max_open_positions,
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
     shadow_bankroll_usd,
@@ -674,7 +673,7 @@ class PolymarketExecutor:
             )
         return None
 
-    def _open_risk_snapshot(self, *, real_money: bool) -> tuple[float, dict[str, float], dict[str, float], int]:
+    def _open_risk_snapshot(self, *, real_money: bool) -> tuple[float, dict[str, float], dict[str, float]]:
         mode_flag = 1 if real_money else 0
         conn = get_conn()
         try:
@@ -710,7 +709,7 @@ class PolymarketExecutor:
             for row in trader_rows
             if float(row["size_usd"] or 0.0) > 0
         }
-        return total_open, by_market, by_trader, len(position_rows)
+        return total_open, by_market, by_trader
 
     def entry_risk_block_reason(
         self,
@@ -725,10 +724,7 @@ class PolymarketExecutor:
         if account_equity <= 0:
             return "account equity was unavailable for exposure checks, so the trade was blocked"
 
-        total_open, by_market, by_trader, open_count = self._open_risk_snapshot(real_money=use_real_money())
-        if open_count >= max_open_positions():
-            return f"open position limit reached ({open_count}/{max_open_positions()})"
-
+        total_open, by_market, by_trader = self._open_risk_snapshot(real_money=use_real_money())
         total_cap = account_equity * max_total_open_exposure_fraction()
         total_after = total_open + proposed_size_usd
         if total_after > total_cap + 1e-9:

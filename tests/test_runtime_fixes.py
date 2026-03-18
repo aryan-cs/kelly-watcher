@@ -247,13 +247,27 @@ class RuntimeFixesTest(unittest.TestCase):
                 "USE_REAL_MONEY": "true",
                 "POLYGON_PRIVATE_KEY": "0xabc123",
                 "POLYGON_WALLET_ADDRESS": valid_wallet,
-                "MAX_OPEN_POSITIONS": "abc",
+                "MAX_MARKET_EXPOSURE_FRACTION": "abc",
             },
             clear=False,
         ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch("main._resolved_shadow_trade_count", return_value=999), patch("main.send_alert"):
             with self.assertRaises(RuntimeError) as ctx:
                 main._validate_startup()
-        self.assertIn("MAX_OPEN_POSITIONS must be an integer", str(ctx.exception))
+        self.assertIn("MAX_MARKET_EXPOSURE_FRACTION must be numeric", str(ctx.exception))
+
+    def test_entry_risk_does_not_block_only_because_many_positions_are_open(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._open_risk_snapshot = lambda **kwargs: (20.0, {"other-market": 5.0}, {"0xother": 5.0})
+
+        with patch("executor.use_real_money", return_value=True), patch("executor.max_total_open_exposure_fraction", return_value=0.60), patch("executor.max_market_exposure_fraction", return_value=0.20), patch("executor.max_trader_exposure_fraction", return_value=0.30):
+            reason = executor.entry_risk_block_reason(
+                market_id="market-1",
+                trader_address="0xabc",
+                proposed_size_usd=5.0,
+                account_equity=100.0,
+            )
+
+        self.assertIsNone(reason)
 
     def test_sync_belief_priors_expands_sql_contract_macros(self) -> None:
         with TemporaryDirectory() as tmpdir:

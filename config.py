@@ -202,10 +202,6 @@ def max_trader_exposure_fraction() -> float:
     return _get_bounded_float("MAX_TRADER_EXPOSURE_FRACTION", "0.30", minimum=0.0, maximum=1.0)
 
 
-def max_open_positions() -> int:
-    return _get_bounded_int("MAX_OPEN_POSITIONS", "10", minimum=1)
-
-
 def max_live_health_failures() -> int:
     return _get_bounded_int("MAX_LIVE_HEALTH_FAILURES", "3", minimum=1)
 

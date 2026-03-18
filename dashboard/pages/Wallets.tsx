@@ -548,7 +548,7 @@ export function Wallets({
   const shadowLeaderboardRows = 5
   const shadowPanelHeight = shadowLeaderboardRows + 4
   const totalVisibleRows = Math.max(8, rowsForHeight(terminal.height, terminal.wide ? 18 : 24, 4) - footerRows)
-  const profileVisibleRows = Math.max(4, Math.floor(totalVisibleRows / 2))
+  const profileVisibleRows = Math.max(3, Math.floor(totalVisibleRows / 2) - 2)
   const trackedVisibleRows = profileVisibleRows
   const droppedVisibleRows = profileVisibleRows
   const tableWidth = Math.max(52, terminal.width - 8)

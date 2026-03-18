@@ -12,7 +12,6 @@ import { secondsAgo } from './format.js';
 import { ManualRefreshProvider } from './refresh.js';
 import { TerminalSizeProvider, useTerminalSize } from './terminal.js';
 import { useBotState } from './useBotState.js';
-import { useQuery } from './useDb.js';
 const DOUBLE_UP_JUMP_MS = 350;
 const DOUBLE_UP_CONFIRM_MS = 140;
 const HORIZONTAL_SCROLL_STEP = 8;
@@ -43,15 +42,8 @@ function renderPage(page, settingsEditor, feedScrollOffset, signalsScrollOffset,
 function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, signalsScrollOffset, signalsHorizontalOffset, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, walletSelectionIndex, walletDetailOpen, onWalletCountChange }) {
     const terminal = useTerminalSize();
     const botState = useBotState();
-    const counts = useQuery('SELECT COUNT(*) AS n FROM trade_log');
     const mode = botState.mode === 'live' ? '[LIVE]' : '[SHADOW]';
     const modeColor = botState.mode === 'live' ? theme.green : theme.dim;
-    const configuredPollInterval = settingsEditor.values.POLL_INTERVAL_SECONDS?.trim();
-    const pollIntervalText = configuredPollInterval && configuredPollInterval.length > 0
-        ? `${configuredPollInterval}s`
-        : botState.poll_interval
-            ? `${botState.poll_interval}s`
-            : '-';
     const now = Date.now() / 1000;
     const heartbeatWindow = Math.max((botState.poll_interval || 1) * 3, 3);
     const activityWindow = Math.max(heartbeatWindow, 30);
@@ -89,12 +81,16 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, sign
                 : '↑/↓: scroll  ←/→: pan  ↑↑: latest  r: refresh  q: exit'
             : page === 3
                 ? terminal.compact
-                    ? `pane:${perfActivePane === 'current' ? 'current' : 'past'}  ↑↓ scroll  ←→ pane  ↑↑ top  r refresh  q exit`
-                    : `pane: ${perfActivePane === 'current' ? 'current' : 'past'}  ↑/↓: scroll  ←/→: pane  ↑↑: top  r: refresh  q: exit`
+                    ? '↑↓ scroll  ←→ pane  ↑↑ top  r refresh  q exit'
+                    : '↑/↓: scroll  ←/→: pane  ↑↑: top  r: refresh  q: exit'
+                : page === 4
+                    ? terminal.compact
+                        ? '↑↓/←→ select  enter help  r refresh  q exit'
+                        : '↑/↓/←/→: select  enter: help  r: refresh  q: exit'
                 : page === 5
                     ? terminal.compact
                         ? '↑↓ select  enter detail  esc close  r refresh  q exit'
-                        : '↑/↓: select  Enter: detail  Esc: close  r: refresh  q: exit'
+                        : '↑/↓: select  enter: detail  esc: close  r: refresh  q: exit'
                     : terminal.compact
                         ? 'r refresh  q exit'
                         : 'r: refresh  q: exit';
@@ -115,27 +111,9 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, sign
             React.createElement(Text, { color: modeColor, bold: true }, mode)),
         React.createElement(Box, { padding: 1, flexGrow: 1 }, renderPage(page, settingsEditor, feedScrollOffset, signalsScrollOffset, signalsHorizontalOffset, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, walletSelectionIndex, walletDetailOpen, onWalletCountChange)),
         React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1 }, footerCompact ? (React.createElement(React.Fragment, null,
-            React.createElement(Text, { color: theme.dim },
-                "w:",
-                botState.n_wallets || 0,
-                "  int:",
-                pollIntervalText,
-                "  ",
-                footerControls),
+            React.createElement(Text, { color: theme.dim }, footerControls),
             React.createElement(Spacer, null),
             React.createElement(Text, { color: isRefreshing ? theme.accent : theme.dim }, isRefreshing ? 'refreshing...' : lastPollText))) : (React.createElement(React.Fragment, null,
-            React.createElement(Text, { color: theme.dim },
-                "wallets: ",
-                botState.n_wallets || 0,
-                "  "),
-            React.createElement(Text, { color: theme.dim },
-                "poll interval: ",
-                pollIntervalText,
-                "  "),
-            React.createElement(Text, { color: theme.dim },
-                "db rows: ",
-                counts[0]?.n || 0,
-                "  "),
             React.createElement(Text, { color: theme.dim }, footerControls),
             React.createElement(Spacer, null),
             React.createElement(Text, { color: isRefreshing ? theme.accent : theme.dim }, isRefreshing ? 'refreshing...' : lastPollText))))));

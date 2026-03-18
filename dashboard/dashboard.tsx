@@ -20,7 +20,6 @@ import {secondsAgo} from './format.js'
 import {ManualRefreshProvider} from './refresh.js'
 import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} from './terminal.js'
 import {useBotState} from './useBotState.js'
-import {useQuery} from './useDb.js'
 
 type Page = 1 | 2 | 3 | 4 | 5 | 6
 type PerfPane = 'current' | 'past'
@@ -35,10 +34,6 @@ const PAGES: Record<Page, {label: string}> = {
   4: {label: 'Models'},
   5: {label: 'Wallets'},
   6: {label: 'Config'}
-}
-
-interface CountRow {
-  n: number
 }
 
 function formatCurrentPollElapsedSeconds(nowSeconds: number, startedAtSeconds?: number): string | null {
@@ -149,16 +144,8 @@ function AppContent({
 }: AppContentProps) {
   const terminal = useTerminalSize()
   const botState = useBotState()
-  const counts = useQuery<CountRow>('SELECT COUNT(*) AS n FROM trade_log')
   const mode = botState.mode === 'live' ? '[LIVE]' : '[SHADOW]'
   const modeColor = botState.mode === 'live' ? theme.green : theme.dim
-  const configuredPollInterval = settingsEditor.values.POLL_INTERVAL_SECONDS?.trim()
-  const pollIntervalText =
-    configuredPollInterval && configuredPollInterval.length > 0
-      ? `${configuredPollInterval}s`
-      : botState.poll_interval
-        ? `${botState.poll_interval}s`
-        : '-'
   const now = Date.now() / 1000
   const heartbeatWindow = Math.max((botState.poll_interval || 1) * 3, 3)
   const activityWindow = Math.max(heartbeatWindow, 30)
@@ -197,22 +184,22 @@ function AppContent({
         ? perfDailyDetailOpen
           ? terminal.compact
             ? '↑↓ list  esc close  r refresh  q exit'
-            : '↑/↓: list  Esc: close  r: refresh  q: exit'
+            : '↑/↓: list  esc: close  r: refresh  q: exit'
           : terminal.compact
-            ? `sel:${perfSelectedBox}  arrows box  j/k scroll  enter detail  r refresh  q exit`
-            : `selected: ${perfSelectedBox}  arrows: select box  j/k: scroll positions  Enter: daily detail  r: refresh  q: exit`
+            ? 'arrows box  j/k scroll  enter detail  r refresh  q exit'
+            : 'arrows: select box  j/k: scroll positions  enter: daily detail  r: refresh  q: exit'
       : page === 4
         ? modelDetailOpen
           ? terminal.compact
             ? '↑↓ settings  enter edit  esc close  r refresh  q exit'
-            : '↑/↓: settings  Enter: edit in config  Esc: close  r: refresh  q: exit'
+            : '↑/↓: settings  enter: edit in config  esc: close  r: refresh  q: exit'
           : terminal.compact
             ? '↑↓/←→ select  enter help  r refresh  q exit'
-            : '↑/↓/←/→: select  Enter: help  r: refresh  q: exit'
+            : '↑/↓/←/→: select  enter: help  r: refresh  q: exit'
       : page === 5
         ? terminal.compact
           ? '↑↓ select  enter detail  esc close  r refresh  q exit'
-          : '↑/↓: select  Enter: detail  Esc: close  r: refresh  q: exit'
+          : '↑/↓: select  enter: detail  esc: close  r: refresh  q: exit'
       : terminal.compact
         ? 'r refresh  q exit'
         : 'r: refresh  q: exit'
@@ -266,15 +253,12 @@ function AppContent({
       <Box borderStyle="round" borderColor={theme.border} paddingX={1}>
         {footerCompact ? (
           <>
-            <Text color={theme.dim}>w:{botState.n_wallets || 0}  int:{pollIntervalText}  {footerControls}</Text>
+            <Text color={theme.dim}>{footerControls}</Text>
             <Spacer />
             <Text color={isRefreshing ? theme.accent : theme.dim}>{isRefreshing ? 'refreshing...' : lastPollText}</Text>
           </>
         ) : (
           <>
-            <Text color={theme.dim}>wallets: {botState.n_wallets || 0}  </Text>
-            <Text color={theme.dim}>poll interval: {pollIntervalText}  </Text>
-            <Text color={theme.dim}>db rows: {counts[0]?.n || 0}  </Text>
             <Text color={theme.dim}>{footerControls}</Text>
             <Spacer />
             <Text color={isRefreshing ? theme.accent : theme.dim}>{isRefreshing ? 'refreshing...' : lastPollText}</Text>

@@ -180,15 +180,18 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     id: 'how_it_works',
     title: 'How It Works',
     summary: [
-      'This box explains the base scoring ingredients before the final trade/no-trade decision.',
-      'Higher scores mean the trader, market, or priors are pushing confidence up.'
+      'This box shows historical averages of the heuristic inputs, not parts that should add to 100%.',
+      'For one signal, base = trader^0.60 * market^0.40.',
+      'Then final = (1 - blend) * base + blend * prior.'
     ],
     rows: [
-      {label: 'Trader score', text: 'Quality signal from trader history and behavior.'},
-      {label: 'Market score', text: 'Quality signal from spread, depth, time, and momentum.'},
-      {label: 'Prior win', text: 'Resolved-history prior for similar trades.'},
-      {label: 'Prior blend', text: 'How much the prior is allowed to move the base score.'},
-      {label: 'Avg evidence', text: 'Average number of prior examples supporting the adjustment.'}
+      {label: 'Avg trader qual', text: 'Average trader quality score from history and behavior.'},
+      {label: 'Avg market qual', text: 'Average market quality score from spread, depth, time, and momentum.'},
+      {label: 'Avg prior win', text: 'Average resolved-history prior for similar trades.'},
+      {label: 'Avg prior blend', text: 'Average fraction of the prior allowed to move the base score.'},
+      {label: 'Avg evidence', text: 'Average number of prior examples supporting the adjustment.'},
+      {label: 'Base formula', text: 'trader^0.60 * market^0.40 weighted geometric mean.'},
+      {label: 'Final formula', text: '(1 - blend) * base + blend * prior.'}
     ],
     settingKeys: ['MIN_CONFIDENCE', 'MAX_MARKET_HORIZON', 'MAX_BET_FRACTION']
   },
@@ -780,29 +783,29 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'}>
         <Box title="How It Works" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 4}>
           <StatRow
-            label="Trader score"
+            label="Avg trader qual"
             value={formatPct(flow?.trader_score, 1)}
             color={flow?.trader_score != null ? probabilityColor(flow.trader_score) : theme.dim}
           />
           <StatRow
-            label="Market score"
+            label="Avg market qual"
             value={formatPct(flow?.market_score, 1)}
             color={flow?.market_score != null ? probabilityColor(flow.market_score) : theme.dim}
           />
           <StatRow
-            label="Prior win"
+            label="Avg prior win"
             value={formatPct(flow?.belief_prior, 1)}
             color={flow?.belief_prior != null ? probabilityColor(flow.belief_prior) : theme.dim}
           />
           <StatRow
-            label="Prior blend"
+            label="Avg prior blend"
             value={formatPct(flow?.belief_blend, 1)}
             color={flow?.belief_blend != null ? probabilityColor(flow.belief_blend) : theme.dim}
           />
           <StatRow label="Avg evidence" value={formatNumber(flow?.belief_evidence, 0)} />
-          <Text color={theme.dim}>Trader history drives most of the base score.</Text>
-          <Text color={theme.dim}>Market context adds spread, depth, time, and momentum.</Text>
-          <Text color={theme.dim}>Belief priors nudge the score using similar past trades.</Text>
+          <Text color={theme.dim}>Shown values are averages, not pieces that add to 100%.</Text>
+          <Text color={theme.dim}>Base = trader^0.60 * market^0.40</Text>
+          <Text color={theme.dim}>Final = (1 - blend) * base + blend * prior</Text>
           <Text color={theme.dim}>Signals still need edge, and bad books get vetoed.</Text>
         </Box>
 

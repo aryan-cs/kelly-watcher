@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import auto_retrain
+import beliefs
 import dedup
 import db
 import evaluator
@@ -152,6 +153,61 @@ class RuntimeFixesTest(unittest.TestCase):
 
                 with patch("auto_retrain.retrain_min_new_labels", return_value=1):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_sync_belief_priors_expands_sql_contract_macros(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
+                        actual_entry_size_usd, shadow_pnl_usd, resolved_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "belief-1",
+                        "market-1",
+                        "Will it happen?",
+                        "0xabc",
+                        "yes",
+                        "buy",
+                        0.4,
+                        10.0,
+                        0.7,
+                        0.1,
+                        0,
+                        0,
+                        1_700_000_000,
+                        0.4,
+                        25.0,
+                        10.0,
+                        1.5,
+                        1_700_000_100,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                beliefs.invalidate_belief_cache()
+                applied = beliefs.sync_belief_priors()
+
+                self.assertEqual(applied, 1)
+
+                conn = db.get_conn()
+                update_count = conn.execute("SELECT COUNT(*) AS n FROM belief_updates").fetchone()["n"]
+                prior_count = conn.execute("SELECT COUNT(*) AS n FROM belief_priors").fetchone()["n"]
+                conn.close()
+
+                self.assertEqual(update_count, 1)
+                self.assertGreater(prior_count, 0)
             finally:
                 db.DB_PATH = original_db_path
 

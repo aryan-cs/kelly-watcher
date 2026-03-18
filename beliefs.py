@@ -46,7 +46,7 @@ class BeliefAdjustment:
 def sync_belief_priors() -> int:
     conn = get_conn()
     rows = conn.execute(
-        """
+        f"""
         SELECT
             id,
             {PROFITABLE_TRADE_SQL} AS label,

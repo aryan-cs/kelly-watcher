@@ -8,12 +8,12 @@ import {
   formatEditableConfigValue,
   type EditableConfigValues
 } from '../configEditor.js'
-import {fit, formatNumber, shortAddress, truncate} from '../format.js'
+import {fit, fitRight, formatNumber, shortAddress, truncate} from '../format.js'
 import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {envExamplePath, envPath} from '../paths.js'
 import {rowsForHeight, stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
-import {theme} from '../theme.js'
+import {selectionBackgroundColor, theme} from '../theme.js'
 import {useBotState} from '../useBotState.js'
 import {useQuery} from '../useDb.js'
 import {useEventStream} from '../useEventStream.js'
@@ -107,6 +107,10 @@ export function Settings({editor}: SettingsProps) {
   const walletIndexWidth = Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1)
   const walletAddressWidth = Math.max(18, Math.min(42, Math.floor(walletTableWidth * 0.62)))
   const walletUsernameWidth = Math.max(8, walletTableWidth - walletIndexWidth - walletAddressWidth - 2)
+  const configRowWidth = Math.max(30, helperWidth - 2)
+  const configValueWidth = Math.max(12, Math.min(30, Math.floor(configRowWidth * 0.42)))
+  const configLabelWidth = Math.max(10, configRowWidth - configValueWidth - 1)
+  const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
 
   return (
     <InkBox flexDirection="column" width="100%">
@@ -143,14 +147,16 @@ export function Settings({editor}: SettingsProps) {
                 : field.kind === 'bool' && currentValue.toLowerCase() === 'true'
                   ? theme.green
                   : theme.white
+            const rowBackground = selected ? selectedRowBackground : undefined
 
             return (
-              <InkBox key={field.key} justifyContent="space-between">
-                <Text color={labelColor} bold={selected}>
-                  {truncate(label, terminal.compact ? 18 : 24)}
+              <InkBox key={field.key} width="100%">
+                <Text color={labelColor} backgroundColor={rowBackground} bold={selected}>
+                  {fit(label, configLabelWidth)}
                 </Text>
-                <Text color={valueColor} bold={selected}>
-                  {truncate(shownValue, terminal.compact ? 18 : 28)}
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={valueColor} backgroundColor={rowBackground} bold={selected}>
+                  {fitRight(truncate(shownValue, configValueWidth), configValueWidth)}
                 </Text>
               </InkBox>
             )

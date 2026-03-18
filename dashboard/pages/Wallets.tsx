@@ -8,7 +8,7 @@ import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {rowsForHeight} from '../responsive.js'
 import {useRefreshToken} from '../refresh.js'
 import {useTerminalSize} from '../terminal.js'
-import {centeredGradientColor, positiveDollarColor, probabilityColor, theme} from '../theme.js'
+import {centeredGradientColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
 import {useQuery} from '../useDb.js'
 import {useEventStream} from '../useEventStream.js'
 
@@ -544,6 +544,7 @@ export function Wallets({
   onWalletMetaChange
 }: WalletsProps) {
   const terminal = useTerminalSize()
+  const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
   const footerRows = 1
   const shadowLeaderboardRows = 5
   const shadowPanelHeight = shadowLeaderboardRows + 4
@@ -1152,6 +1153,7 @@ export function Wallets({
                   const isSelected = wallet.trader_address === selectedTrackedWalletAddress
                   const usernameLabel = wallet.username || '-'
                   const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`
+                  const rowBackground = isSelected ? selectedRowBackground : undefined
                   const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim
                   const addressColor = isSelected ? theme.accent : theme.white
                   const seenWinRateColor =
@@ -1173,43 +1175,43 @@ export function Wallets({
 
                   return (
                     <InkBox key={wallet.trader_address} width="100%" height={1}>
-                      <Text color={usernameColor} bold={isSelected}>{fit(displayUsername, layout.usernameWidth)}</Text>
-                      <Text> </Text>
-                      <Text color={addressColor} bold={isSelected}>{formatAddress(wallet.trader_address, layout.addressWidth)}</Text>
-                      <Text> </Text>
-                      <Text color={tierTextColor} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
-                      <Text> </Text>
-                      <Text>
+                      <Text color={usernameColor} backgroundColor={rowBackground} bold={isSelected}>{fit(displayUsername, layout.usernameWidth)}</Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={addressColor} backgroundColor={rowBackground} bold={isSelected}>{formatAddress(wallet.trader_address, layout.addressWidth)}</Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={tierTextColor} backgroundColor={rowBackground} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text backgroundColor={rowBackground}>
                         {fitRight(formatCount(wallet.seen_trades, layout.seenTradesWidth), layout.seenTradesWidth)}
                       </Text>
-                      <Text> </Text>
-                      <Text color={seenWinRateColor}>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={seenWinRateColor} backgroundColor={rowBackground}>
                         {fitRight(
                           wallet.seen_win_rate == null ? '-' : formatPct(wallet.seen_win_rate),
                           layout.seenWinRateWidth
                         )}
                       </Text>
-                      <Text> </Text>
-                      <Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text backgroundColor={rowBackground}>
                         {fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth)}
                       </Text>
-                      <Text> </Text>
-                      <Text color={observedWinRateColor}>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={observedWinRateColor} backgroundColor={rowBackground}>
                         {fitRight(
                           wallet.observed_win_rate == null ? '-' : formatPct(wallet.observed_win_rate),
                           layout.observedWinRateWidth
                         )}
                       </Text>
-                      <Text> </Text>
-                      <Text color={winRateColor}>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={winRateColor} backgroundColor={rowBackground}>
                         {fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.profileWinRateWidth)}
                       </Text>
-                      <Text> </Text>
-                      <Text color={localPnlColor}>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={localPnlColor} backgroundColor={rowBackground}>
                         {fitRight(formatSignedMoney(wallet.local_pnl, layout.copyPnlWidth), layout.copyPnlWidth)}
                       </Text>
-                      <Text> </Text>
-                      <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
                         {fitRight(secondsAgo(wallet.last_source_ts || wallet.last_seen || undefined), layout.lastSeenWidth)}
                       </Text>
                     </InkBox>
@@ -1245,24 +1247,25 @@ export function Wallets({
                   const isSelected = wallet.trader_address === selectedDroppedWalletAddress
                   const usernameLabel = wallet.username || '-'
                   const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`
+                  const rowBackground = isSelected ? selectedRowBackground : undefined
                   const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim
                   const addressColor = isSelected ? theme.accent : theme.white
 
                   return (
                     <InkBox key={wallet.trader_address} width="100%" height={1}>
-                      <Text color={usernameColor} bold={isSelected}>{fit(displayUsername, droppedLayout.usernameWidth)}</Text>
-                      <Text> </Text>
-                      <Text color={addressColor} bold={isSelected}>{formatAddress(wallet.trader_address, droppedLayout.addressWidth)}</Text>
-                      <Text> </Text>
-                      <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
+                      <Text color={usernameColor} backgroundColor={rowBackground} bold={isSelected}>{fit(displayUsername, droppedLayout.usernameWidth)}</Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={addressColor} backgroundColor={rowBackground} bold={isSelected}>{formatAddress(wallet.trader_address, droppedLayout.addressWidth)}</Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
                         {fit(wallet.status_reason || '-', droppedLayout.reasonWidth)}
                       </Text>
-                      <Text> </Text>
-                      <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
                         {fitRight(secondsAgo(wallet.last_source_ts || wallet.last_source_ts_at_status || undefined), droppedLayout.lastSeenWidth)}
                       </Text>
-                      <Text> </Text>
-                      <Text color={isSelected ? theme.accent : theme.red} bold={isSelected}>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={isSelected ? theme.accent : theme.red} backgroundColor={rowBackground} bold={isSelected}>
                         {fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth)}
                       </Text>
                     </InkBox>

@@ -1,5 +1,6 @@
 export const theme = {
     accent: 'white',
+    modalBackground: '#05080d',
     green: '#24ff7b',
     red: '#ff0f0f',
     blue: '#17cdff',
@@ -32,6 +33,24 @@ function blendHex(left, right, t) {
     const [rr, rg, rb] = hexToRgb(right);
     const mix = clamp(t, 0, 1);
     return rgbToHex(lr + (rr - lr) * mix, lg + (rg - lg) * mix, lb + (rb - lb) * mix);
+}
+function normalizeHexColor(raw) {
+    if (!raw)
+        return undefined;
+    const normalized = raw.trim().toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(normalized))
+        return normalized;
+    if (/^#[0-9a-f]{3}$/.test(normalized)) {
+        return `#${normalized
+            .slice(1)
+            .split('')
+            .map((part) => part + part)
+            .join('')}`;
+    }
+    return undefined;
+}
+export function selectionBackgroundColor(backgroundColor) {
+    return blendHex(normalizeHexColor(backgroundColor) || theme.modalBackground, '#ffffff', 0.07);
 }
 export function probabilityColor(value) {
     const normalized = clamp(value, 0, 1);

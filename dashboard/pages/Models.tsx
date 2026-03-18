@@ -6,7 +6,7 @@ import {editableConfigFields, formatEditableConfigValue, type EditableConfigValu
 import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil} from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
-import {positiveDollarColor, probabilityColor, theme} from '../theme.js'
+import {positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
 import {useQuery} from '../useDb.js'
 
 interface ModelRow {
@@ -472,6 +472,7 @@ function modeLabel(mode: string): string {
 export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues}: ModelsProps) {
   const terminal = useTerminalSize()
   const modalBackground = terminal.backgroundColor || theme.modalBackground
+  const selectedRowBackground = selectionBackgroundColor(modalBackground)
   const nowTs = useNow()
   const stacked = stackPanels(terminal.width)
   const models = useQuery<ModelRow>(MODEL_SQL)
@@ -907,13 +908,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                   {relatedSettings.map((field, index) => {
                     const selected = index === clampedSelectedSettingIndex
                     const label = `${selected ? '> ' : '  '}${field.label}`
+                    const rowBackground = selected ? selectedRowBackground : modalBackground
                     return (
                       <InkBox key={`${selectedPanel.id}-${field.key}`} width="100%">
-                        <Text color={selected ? theme.accent : theme.dim} backgroundColor={modalBackground} bold={selected}>
+                        <Text color={selected ? theme.accent : theme.dim} backgroundColor={rowBackground} bold={selected}>
                           {` ${fit(label, helpSettingLabelWidth)}`}
                         </Text>
-                        <Text backgroundColor={modalBackground}> </Text>
-                        <Text color={theme.white} backgroundColor={modalBackground} bold={selected}>
+                        <Text backgroundColor={rowBackground}> </Text>
+                        <Text color={theme.white} backgroundColor={rowBackground} bold={selected}>
                           {`${fitRight(formatEditableConfigValue(field, settingsValues[field.key] || field.defaultValue), helpSettingValueWidth)} `}
                         </Text>
                       </InkBox>

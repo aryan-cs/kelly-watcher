@@ -4,11 +4,11 @@ import { Box as InkBox, Text } from 'ink';
 import { Box } from '../components/Box.js';
 import { StatRow } from '../components/StatRow.js';
 import { editableConfigFields, formatEditableConfigValue } from '../configEditor.js';
-import { fit, formatNumber, truncate } from '../format.js';
+import { fit, fitRight, formatNumber, truncate } from '../format.js';
 import { envExamplePath, envPath } from '../paths.js';
 import { rowsForHeight, stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
-import { theme } from '../theme.js';
+import { selectionBackgroundColor, theme } from '../theme.js';
 import { useBotState } from '../useBotState.js';
 import { useQuery } from '../useDb.js';
 import { useEventStream } from '../useEventStream.js';
@@ -76,6 +76,10 @@ export function Settings({ editor }) {
     const walletIndexWidth = Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1);
     const walletAddressWidth = Math.max(18, Math.min(42, Math.floor(walletTableWidth * 0.62)));
     const walletUsernameWidth = Math.max(8, walletTableWidth - walletIndexWidth - walletAddressWidth - 2);
+    const configRowWidth = Math.max(30, helperWidth - 2);
+    const configValueWidth = Math.max(12, Math.min(30, Math.floor(configRowWidth * 0.42)));
+    const configLabelWidth = Math.max(10, configRowWidth - configValueWidth - 1);
+    const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
             React.createElement(Box, { title: "Bot State", width: stacked ? '100%' : '50%' },
@@ -104,9 +108,11 @@ export function Settings({ editor }) {
                         : field.kind === 'bool' && currentValue.toLowerCase() === 'true'
                             ? theme.green
                             : theme.white;
-                    return (React.createElement(InkBox, { key: field.key, justifyContent: "space-between" },
-                        React.createElement(Text, { color: labelColor, bold: selected }, truncate(label, terminal.compact ? 18 : 24)),
-                        React.createElement(Text, { color: valueColor, bold: selected }, truncate(shownValue, terminal.compact ? 18 : 28))));
+                    const rowBackground = selected ? selectedRowBackground : undefined;
+                    return (React.createElement(InkBox, { key: field.key, width: "100%" },
+                        React.createElement(Text, { color: labelColor, backgroundColor: rowBackground, bold: selected }, fit(label, configLabelWidth)),
+                        React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                        React.createElement(Text, { color: valueColor, backgroundColor: rowBackground, bold: selected }, fitRight(truncate(shownValue, configValueWidth), configValueWidth))));
                 }),
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
                     React.createElement(Text, { color: theme.dim }, truncate(`${selectedField.key} - ${selectedField.description}`, helperWidth)),

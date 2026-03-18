@@ -45,6 +45,24 @@ function blendHex(left: string, right: string, t: number): string {
   )
 }
 
+function normalizeHexColor(raw?: string): string | undefined {
+  if (!raw) return undefined
+  const normalized = raw.trim().toLowerCase()
+  if (/^#[0-9a-f]{6}$/.test(normalized)) return normalized
+  if (/^#[0-9a-f]{3}$/.test(normalized)) {
+    return `#${normalized
+      .slice(1)
+      .split('')
+      .map((part) => part + part)
+      .join('')}`
+  }
+  return undefined
+}
+
+export function selectionBackgroundColor(backgroundColor?: string): string {
+  return blendHex(normalizeHexColor(backgroundColor) || theme.modalBackground, '#ffffff', 0.07)
+}
+
 export function probabilityColor(value: number): string {
   const normalized = clamp(value, 0, 1)
   if (normalized <= 0.5) {

@@ -521,8 +521,10 @@ export function Wallets({
   const terminal = useTerminalSize()
   const footerRows = 1
   const totalVisibleRows = Math.max(8, rowsForHeight(terminal.height, terminal.wide ? 18 : 24, 4) - footerRows)
-  const droppedVisibleRows = Math.max(3, Math.min(6, Math.floor(totalVisibleRows * 0.35)))
-  const trackedVisibleRows = Math.max(4, totalVisibleRows - droppedVisibleRows)
+  // Previous layout effectively gave tracked wallets ~65% of the available list rows.
+  // Shrink that by roughly one-third and hand the reclaimed space to dropped wallets.
+  const trackedVisibleRows = Math.max(4, Math.floor(totalVisibleRows * 0.43))
+  const droppedVisibleRows = Math.max(4, totalVisibleRows - trackedVisibleRows)
   const tableWidth = Math.max(52, terminal.width - 8)
   const activityRows = useQuery<WalletActivityRow>(WALLET_ACTIVITY_SQL)
   const traderCacheRows = useQuery<TraderCacheRow>(TRADER_CACHE_SQL)
@@ -1058,7 +1060,7 @@ export function Wallets({
       </InkBox>
 
       <InkBox marginTop={1} flexGrow={1} flexDirection="column">
-        <InkBox flexGrow={1}>
+        <InkBox flexGrow={trackedVisibleRows}>
           <Box title={`Tracked Wallet Profiles: ${trackedWallets.length}`} height="100%" accent={activePane === 'tracked'}>
             <InkBox width="100%" height={1}>
               <Text color={theme.dim}>{fit('USERNAME', layout.usernameWidth)}</Text>
@@ -1140,8 +1142,10 @@ export function Wallets({
           </Box>
         </InkBox>
 
-        <InkBox marginTop={1}>
-          <Box title={`Dropped Wallet Profiles: ${droppedWallets.length}`} accent={activePane === 'dropped'}>
+        <InkBox height={1} />
+
+        <InkBox flexGrow={droppedVisibleRows}>
+          <Box title={`Dropped Wallet Profiles: ${droppedWallets.length}`} height="100%" accent={activePane === 'dropped'}>
             <InkBox width="100%" height={1}>
               <Text color={theme.dim}>{fit('USERNAME', droppedLayout.usernameWidth)}</Text>
               <Text color={theme.dim}> </Text>

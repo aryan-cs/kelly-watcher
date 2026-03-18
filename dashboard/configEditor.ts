@@ -16,6 +16,7 @@ export const maxMarketHorizonPresets = [
 
 export const retrainCadencePresets = ['daily', 'weekly'] as const
 export const retrainEarlyCheckPresets = ['6h', '12h', '24h', '48h'] as const
+export const walletInactivityPresets = ['1h', '24h', '7d', 'unlimited'] as const
 
 export interface EditableConfigField {
   key: string
@@ -44,6 +45,15 @@ export const editableConfigFields: EditableConfigField[] = [
     defaultValue: '365d',
     liveApplies: true,
     options: maxMarketHorizonPresets
+  },
+  {
+    key: 'WALLET_INACTIVITY_LIMIT',
+    label: 'Wallet inactivity',
+    kind: 'duration',
+    description: 'Auto-drop a wallet after this much time without a new source trade. Edit with left/right to toggle 1h, 24h, 7d, or unlimited. Applies live on the next loop.',
+    defaultValue: 'unlimited',
+    liveApplies: true,
+    options: walletInactivityPresets
   },
   {
     key: 'MIN_CONFIDENCE',
@@ -269,7 +279,7 @@ export function formatEditableConfigValue(field: EditableConfigField, value: str
     return `${normalized}s`
   }
 
-  if (field.key === 'MAX_MARKET_HORIZON') {
+  if (field.kind === 'duration') {
     return normalized.toLowerCase()
   }
 

@@ -2,7 +2,7 @@ import fs from 'fs'
 import React, {useEffect, useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
-import {envExamplePath, envPath, identityPath} from '../paths.js'
+import {envExamplePath, envPath} from '../paths.js'
 import {fit, fitRight, formatPct, secondsAgo, shortAddress, truncate, wrapText} from '../format.js'
 import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {rowsForHeight} from '../responsive.js'
@@ -25,6 +25,7 @@ interface TraderCacheRow {
   trader_address: string
   win_rate: number | null
   n_trades: number | null
+  avg_return: number | null
   consistency: number | null
   volume_usd: number | null
   avg_size_usd: number | null
@@ -39,9 +40,35 @@ interface TraderCacheRow {
   updated_at: number | null
 }
 
+interface WalletCursorRow {
+  wallet_address: string
+  last_source_ts: number | null
+}
+
+interface WalletWatchStateRow {
+  wallet_address: string
+  status: string | null
+  status_reason: string | null
+  dropped_at: number | null
+  reactivated_at: number | null
+  last_source_ts_at_status: number | null
+  updated_at: number | null
+}
+
+type WatchTier = 'HOT' | 'WARM' | 'DISC'
+export type WalletPane = 'tracked' | 'dropped'
+
+export interface WalletMeta {
+  trackedCount: number
+  droppedCount: number
+  trackedWalletAddresses: string[]
+  droppedWalletAddresses: string[]
+}
+
 interface WalletRow {
   trader_address: string
   username: string
+  watch_tier: WatchTier
   seen_trades: number | null
   local_pnl: number | null
   last_seen: number | null
@@ -62,6 +89,12 @@ interface WalletRow {
   open_value_usd: number | null
   open_pnl_usd: number | null
   updated_at: number | null
+  last_source_ts: number | null
+  status: 'active' | 'dropped'
+  status_reason: string | null
+  dropped_at: number | null
+  reactivated_at: number | null
+  last_source_ts_at_status: number | null
   watch_index: number
 }
 
@@ -76,6 +109,7 @@ interface TopShadowRow {
 interface WalletsLayout {
   usernameWidth: number
   addressWidth: number
+  tierWidth: number
   observedResolvedWidth: number
   observedWinRateWidth: number
   profileWinRateWidth: number
@@ -83,10 +117,20 @@ interface WalletsLayout {
   lastSeenWidth: number
 }
 
+interface DroppedWalletsLayout {
+  usernameWidth: number
+  addressWidth: number
+  reasonWidth: number
+  lastSeenWidth: number
+  droppedWidth: number
+}
+
 interface WalletsProps {
-  selectedIndex: number
+  activePane: WalletPane
+  trackedSelectedIndex: number
+  droppedSelectedIndex: number
   detailOpen: boolean
-  onWalletCountChange?: (count: number) => void
+  onWalletMetaChange?: (meta: WalletMeta) => void
 }
 
 interface WalletDetailMetric {
@@ -140,6 +184,7 @@ SELECT
   trader_address,
   win_rate,
   n_trades,
+  avg_return,
   consistency,
   volume_usd,
   avg_size_usd,
@@ -155,6 +200,23 @@ SELECT
 FROM trader_cache
 `
 
+const WALLET_CURSOR_SQL = `
+SELECT wallet_address, last_source_ts
+FROM wallet_cursors
+`
+
+const WALLET_WATCH_STATE_SQL = `
+SELECT
+  wallet_address,
+  status,
+  status_reason,
+  dropped_at,
+  reactivated_at,
+  last_source_ts_at_status,
+  updated_at
+FROM wallet_watch_state
+`
+
 const SHADOW_WALLETS_SQL = `
 SELECT
   trader_address,
@@ -168,25 +230,41 @@ WHERE real_money=0
 GROUP BY trader_address
 `
 
-function readWatchedWallets(): string[] {
+function readWatchConfig(): {wallets: string[]; hotCount: number; warmCount: number} {
   const path = fs.existsSync(envPath) ? envPath : envExamplePath
+  let wallets: string[] = []
+  let hotCount = 12
+  let warmCount = 24
   try {
     const lines = fs.readFileSync(path, 'utf8').split('\n')
     for (const rawLine of lines) {
       const line = rawLine.trim()
-      if (!line || line.startsWith('#') || !line.startsWith('WATCHED_WALLETS=')) {
+      if (!line || line.startsWith('#') || !line.includes('=')) {
         continue
       }
-      return line
-        .slice('WATCHED_WALLETS='.length)
-        .split(',')
-        .map((wallet) => wallet.trim().toLowerCase())
-        .filter(Boolean)
+      const [key, ...valueParts] = line.split('=')
+      const value = valueParts.join('=').trim()
+      if (key === 'WATCHED_WALLETS') {
+        wallets = value
+          .split(',')
+          .map((wallet) => wallet.trim().toLowerCase())
+          .filter(Boolean)
+      } else if (key === 'HOT_WALLET_COUNT') {
+        const parsed = Number.parseInt(value, 10)
+        if (Number.isFinite(parsed) && parsed > 0) {
+          hotCount = parsed
+        }
+      } else if (key === 'WARM_WALLET_COUNT') {
+        const parsed = Number.parseInt(value, 10)
+        if (Number.isFinite(parsed) && parsed >= 0) {
+          warmCount = parsed
+        }
+      }
     }
   } catch {
-    return []
+    return {wallets: [], hotCount, warmCount}
   }
-  return []
+  return {wallets, hotCount, warmCount}
 }
 
 function formatAddress(value: string, width: number): string {
@@ -280,13 +358,78 @@ function formatAge(days: number | null | undefined): string {
   return `${Math.max(0, Math.round(days))}d`
 }
 
+function clip(value: number, low = 0, high = 1): number {
+  return Math.max(low, Math.min(high, value))
+}
+
+function scoreWalletForTier(params: {
+  winRate: number | null | undefined
+  nTrades: number | null | undefined
+  avgReturn: number | null | undefined
+  realizedPnlUsd: number | null | undefined
+  openPositions: number | null | undefined
+  lastSourceTs: number | null | undefined
+  cacheUpdatedAt: number | null | undefined
+  nowTs: number
+}): number {
+  const winRate = params.winRate ?? 0.5
+  const nTrades = Math.max(0, params.nTrades ?? 0)
+  const avgReturn = params.avgReturn ?? 0
+  const realizedPnlUsd = params.realizedPnlUsd ?? 0
+  const openPositions = params.openPositions ?? 0
+  const lastSourceTs = params.lastSourceTs ?? 0
+  const cacheUpdatedAt = params.cacheUpdatedAt ?? 0
+
+  const shrunkWinRate = ((nTrades * winRate) + (20 * 0.5)) / (nTrades + 20)
+  const winScore = clip((shrunkWinRate - 0.45) / 0.25)
+  const sampleScore = clip(Math.log1p(nTrades) / Math.log1p(80))
+  const returnScore = clip((avgReturn + 0.05) / 0.2)
+  const pnlScore = clip(Math.log1p(Math.max(realizedPnlUsd, 0)) / Math.log1p(5000))
+
+  let activityScore = 0
+  if (lastSourceTs > 0) {
+    const activityAgeHours = Math.max(params.nowTs - lastSourceTs, 0) / 3600
+    activityScore = clip(1 - (activityAgeHours / 72))
+  } else if (cacheUpdatedAt > 0) {
+    const cacheAgeHours = Math.max(params.nowTs - cacheUpdatedAt, 0) / 3600
+    activityScore = cacheAgeHours <= 24 ? 0.35 : cacheAgeHours <= 72 ? 0.15 : 0
+  }
+
+  const openScore = clip(openPositions / 3)
+  const freshnessPenalty = cacheUpdatedAt > 0 && (params.nowTs - cacheUpdatedAt) > 86400 ? 0.1 : 0
+  const qualityScore =
+    (0.45 * winScore) +
+    (0.2 * returnScore) +
+    (0.2 * sampleScore) +
+    (0.15 * pnlScore)
+  return Number(((
+    (0.7 * qualityScore) +
+    (0.25 * activityScore) +
+    (0.05 * openScore)
+  ) - freshnessPenalty).toFixed(4))
+}
+
+function tierLabel(tier: WatchTier): string {
+  if (tier === 'HOT') return 'HOT'
+  if (tier === 'WARM') return 'WARM'
+  return 'SLOW'
+}
+
+function tierColor(tier: WatchTier): string {
+  if (tier === 'HOT') return theme.green
+  if (tier === 'WARM') return theme.yellow
+  return theme.dim
+}
+
 function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
+  const tierWidth = 5
   const observedResolvedWidth = 7
   const observedWinRateWidth = 8
   const profileWinRateWidth = 8
   const copyPnlWidth = 12
   const lastSeenWidth = 10
   const fixedWidths =
+    tierWidth +
     observedResolvedWidth +
     observedWinRateWidth +
     profileWinRateWidth +
@@ -317,6 +460,7 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   return {
     usernameWidth,
     addressWidth,
+    tierWidth,
     observedResolvedWidth,
     observedWinRateWidth,
     profileWinRateWidth,
@@ -331,21 +475,51 @@ function buildDetailColumns(sections: WalletDetailSection[], wide: boolean): Wal
   }
 
   if (wide) {
-    return sections.map((section) => [section])
+    const midpoint = Math.ceil(sections.length / 2)
+    return [sections.slice(0, midpoint), sections.slice(midpoint)].filter((column) => column.length > 0)
   }
 
-  return [
-    [sections[0], sections[2]].filter(Boolean),
-    [sections[1]].filter(Boolean)
-  ]
+  const columns: WalletDetailSection[][] = [[], []]
+  sections.forEach((section, index) => {
+    columns[index % 2].push(section)
+  })
+  return columns.filter((column) => column.length > 0)
 }
 
-export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: WalletsProps) {
+function getDroppedWalletsLayout(width: number): DroppedWalletsLayout {
+  const lastSeenWidth = 10
+  const droppedWidth = 10
+  const gapCount = 4
+  const variableBudget = Math.max(44, width - lastSeenWidth - droppedWidth - gapCount)
+  const usernameWidth = Math.max(14, Math.min(22, Math.floor(variableBudget * 0.22)))
+  const addressWidth = Math.max(18, Math.min(34, Math.floor(variableBudget * 0.42)))
+  const reasonWidth = Math.max(14, variableBudget - usernameWidth - addressWidth)
+  return {
+    usernameWidth,
+    addressWidth,
+    reasonWidth,
+    lastSeenWidth,
+    droppedWidth
+  }
+}
+
+export function Wallets({
+  activePane,
+  trackedSelectedIndex,
+  droppedSelectedIndex,
+  detailOpen,
+  onWalletMetaChange
+}: WalletsProps) {
   const terminal = useTerminalSize()
-  const visibleRows = rowsForHeight(terminal.height, 18, 4, 14)
+  const footerRows = 1
+  const totalVisibleRows = Math.max(8, rowsForHeight(terminal.height, terminal.wide ? 18 : 24, 4) - footerRows)
+  const droppedVisibleRows = Math.max(3, Math.min(6, Math.floor(totalVisibleRows * 0.35)))
+  const trackedVisibleRows = Math.max(4, totalVisibleRows - droppedVisibleRows)
   const tableWidth = Math.max(52, terminal.width - 8)
   const activityRows = useQuery<WalletActivityRow>(WALLET_ACTIVITY_SQL)
   const traderCacheRows = useQuery<TraderCacheRow>(TRADER_CACHE_SQL)
+  const walletCursorRows = useQuery<WalletCursorRow>(WALLET_CURSOR_SQL)
+  const watchStateRows = useQuery<WalletWatchStateRow>(WALLET_WATCH_STATE_SQL)
   const shadowWalletRows = useQuery<TopShadowRow>(SHADOW_WALLETS_SQL)
   const events = useEventStream(1000)
   const refreshToken = useRefreshToken()
@@ -364,23 +538,94 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
     return lookup
   }, [events, refreshToken])
 
-  const watchedWallets = useMemo(() => readWatchedWallets(), [refreshToken])
+  const watchConfig = useMemo(() => readWatchConfig(), [refreshToken])
+  const watchedWallets = watchConfig.wallets
+  const sourceWallets = useMemo(() => {
+    const fallbackWallets = Array.from(new Set([
+      ...activityRows.map((row) => row.trader_address.toLowerCase()),
+      ...traderCacheRows.map((row) => row.trader_address.toLowerCase()),
+      ...walletCursorRows.map((row) => row.wallet_address.toLowerCase()),
+      ...watchStateRows.map((row) => row.wallet_address.toLowerCase())
+    ]))
+    return watchedWallets.length ? watchedWallets : fallbackWallets
+  }, [activityRows, traderCacheRows, walletCursorRows, watchStateRows, watchedWallets])
+  const watchStateByWallet = useMemo(
+    () =>
+      new Map(
+        watchStateRows.map((row) => [
+          row.wallet_address.toLowerCase(),
+          {
+            status: row.status?.trim().toLowerCase() === 'dropped' ? 'dropped' : 'active',
+            status_reason: row.status_reason ?? null,
+            dropped_at: row.dropped_at ?? null,
+            reactivated_at: row.reactivated_at ?? null,
+            last_source_ts_at_status: row.last_source_ts_at_status ?? null,
+            updated_at: row.updated_at ?? null
+          }
+        ])
+      ),
+    [watchStateRows]
+  )
+  const cursorByWallet = useMemo(
+    () => new Map(walletCursorRows.map((row) => [row.wallet_address.toLowerCase(), row])),
+    [walletCursorRows]
+  )
+
+  const tierByWallet = useMemo(() => {
+    const cacheByWallet = new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row]))
+    const activeWallets = sourceWallets.filter((wallet) => watchStateByWallet.get(wallet)?.status !== 'dropped')
+    const nowTs = Math.floor(Date.now() / 1000)
+    const ranked = activeWallets.map((wallet, index) => {
+      const cached = cacheByWallet.get(wallet)
+      const cursor = cursorByWallet.get(wallet)
+      return {
+        wallet,
+        index,
+        followScore: scoreWalletForTier({
+          winRate: cached?.win_rate,
+          nTrades: cached?.n_trades,
+          avgReturn: cached?.avg_return,
+          realizedPnlUsd: cached?.realized_pnl_usd,
+          openPositions: cached?.open_positions,
+          lastSourceTs: cursor?.last_source_ts,
+          cacheUpdatedAt: cached?.updated_at,
+          nowTs
+        }),
+        lastSourceTs: cursor?.last_source_ts ?? 0,
+        cacheUpdatedAt: cached?.updated_at ?? 0
+      }
+    })
+
+    ranked.sort((left, right) => (
+      right.followScore - left.followScore ||
+      right.lastSourceTs - left.lastSourceTs ||
+      right.cacheUpdatedAt - left.cacheUpdatedAt ||
+      left.index - right.index
+    ))
+
+    const hotCount = Math.min(ranked.length, watchConfig.hotCount)
+    const warmCount = Math.min(Math.max(ranked.length - hotCount, 0), watchConfig.warmCount)
+    const lookup = new Map<string, WatchTier>()
+    ranked.forEach((row, index) => {
+      const tier: WatchTier = index < hotCount ? 'HOT' : index < hotCount + warmCount ? 'WARM' : 'DISC'
+      lookup.set(row.wallet, tier)
+    })
+    return lookup
+  }, [cursorByWallet, sourceWallets, traderCacheRows, watchConfig.hotCount, watchConfig.warmCount, watchStateByWallet])
 
   const wallets = useMemo(() => {
     const activityByWallet = new Map(activityRows.map((row) => [row.trader_address.toLowerCase(), row]))
     const cacheByWallet = new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row]))
-    const fallbackWallets = Array.from(new Set([
-      ...activityRows.map((row) => row.trader_address.toLowerCase()),
-      ...traderCacheRows.map((row) => row.trader_address.toLowerCase())
-    ]))
-    const sourceWallets = watchedWallets.length ? watchedWallets : fallbackWallets
 
     return sourceWallets.map<WalletRow>((wallet, index) => {
       const activity = activityByWallet.get(wallet)
       const cached = cacheByWallet.get(wallet)
+      const cursor = cursorByWallet.get(wallet)
+      const watchState = watchStateByWallet.get(wallet)
       return {
         trader_address: wallet,
         username: usernames.get(wallet) || '',
+        watch_tier: watchState?.status === 'dropped' ? 'DISC' : (tierByWallet.get(wallet) || 'DISC'),
         seen_trades: activity?.seen_trades ?? 0,
         local_pnl: activity?.local_pnl ?? null,
         last_seen: activity?.last_seen ?? null,
@@ -404,28 +649,87 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
         open_value_usd: cached?.open_value_usd ?? null,
         open_pnl_usd: cached?.open_pnl_usd ?? null,
         updated_at: cached?.updated_at ?? null,
+        last_source_ts: cursor?.last_source_ts ?? null,
+        status: watchState?.status === 'dropped' ? 'dropped' : 'active',
+        status_reason: watchState?.status_reason ?? null,
+        dropped_at: watchState?.dropped_at ?? null,
+        reactivated_at: watchState?.reactivated_at ?? null,
+        last_source_ts_at_status: watchState?.last_source_ts_at_status ?? null,
         watch_index: index
       }
     })
-  }, [activityRows, traderCacheRows, usernames, watchedWallets])
-  const layout = useMemo(() => getWalletsLayout(tableWidth, wallets), [tableWidth, wallets])
+  }, [activityRows, cursorByWallet, sourceWallets, tierByWallet, traderCacheRows, usernames, watchStateByWallet])
+  const trackedWallets = useMemo(
+    () => wallets.filter((wallet) => wallet.status !== 'dropped'),
+    [wallets]
+  )
+  const droppedWallets = useMemo(
+    () => wallets.filter((wallet) => wallet.status === 'dropped'),
+    [wallets]
+  )
+  const layout = useMemo(
+    () => getWalletsLayout(tableWidth, trackedWallets.length ? trackedWallets : wallets),
+    [tableWidth, trackedWallets, wallets]
+  )
+  const droppedLayout = useMemo(() => getDroppedWalletsLayout(tableWidth), [tableWidth])
 
   useEffect(() => {
-    onWalletCountChange?.(wallets.length)
-  }, [onWalletCountChange, wallets.length])
+    onWalletMetaChange?.({
+      trackedCount: trackedWallets.length,
+      droppedCount: droppedWallets.length,
+      trackedWalletAddresses: trackedWallets.map((wallet) => wallet.trader_address),
+      droppedWalletAddresses: droppedWallets.map((wallet) => wallet.trader_address)
+    })
+  }, [droppedWallets, onWalletMetaChange, trackedWallets])
 
-  const clampedSelectedIndex = wallets.length
-    ? Math.max(0, Math.min(selectedIndex, wallets.length - 1))
+  const clampedTrackedSelectedIndex = trackedWallets.length
+    ? Math.max(0, Math.min(trackedSelectedIndex, trackedWallets.length - 1))
     : 0
-  const selectedWallet = wallets[clampedSelectedIndex] || null
-  const windowStart =
-    wallets.length > visibleRows
+  const clampedDroppedSelectedIndex = droppedWallets.length
+    ? Math.max(0, Math.min(droppedSelectedIndex, droppedWallets.length - 1))
+    : 0
+  const selectedWallet =
+    activePane === 'dropped'
+      ? droppedWallets[clampedDroppedSelectedIndex] || null
+      : trackedWallets[clampedTrackedSelectedIndex] || null
+
+  const trackedWindowStart =
+    trackedWallets.length > trackedVisibleRows
       ? Math.min(
-          Math.max(clampedSelectedIndex - Math.floor(visibleRows / 2), 0),
-          Math.max(0, wallets.length - visibleRows)
+          Math.max(clampedTrackedSelectedIndex - Math.floor(trackedVisibleRows / 2), 0),
+          Math.max(0, trackedWallets.length - trackedVisibleRows)
         )
       : 0
-  const visibleWallets = wallets.slice(windowStart, windowStart + visibleRows)
+  const droppedWindowStart =
+    droppedWallets.length > droppedVisibleRows
+      ? Math.min(
+          Math.max(clampedDroppedSelectedIndex - Math.floor(droppedVisibleRows / 2), 0),
+          Math.max(0, droppedWallets.length - droppedVisibleRows)
+        )
+      : 0
+  const visibleTrackedWallets = trackedWallets.slice(trackedWindowStart, trackedWindowStart + trackedVisibleRows)
+  const visibleDroppedWallets = droppedWallets.slice(droppedWindowStart, droppedWindowStart + droppedVisibleRows)
+  const trackedVisibleStart = trackedWallets.length ? trackedWindowStart + 1 : 0
+  const trackedVisibleEnd = trackedWindowStart + visibleTrackedWallets.length
+  const droppedVisibleStart = droppedWallets.length ? droppedWindowStart + 1 : 0
+  const droppedVisibleEnd = droppedWindowStart + visibleDroppedWallets.length
+  const tierCounts = useMemo(
+    () =>
+      trackedWallets.reduce(
+        (counts, wallet) => {
+          counts[wallet.watch_tier] += 1
+          return counts
+        },
+        {HOT: 0, WARM: 0, DISC: 0} as Record<WatchTier, number>
+      ),
+    [trackedWallets]
+  )
+  const trackedFooterText = trackedWallets.length
+    ? `showing ${trackedVisibleStart}-${trackedVisibleEnd} of ${trackedWallets.length}  selected ${clampedTrackedSelectedIndex + 1}/${trackedWallets.length}  hot/warm/slow ${tierCounts.HOT}/${tierCounts.WARM}/${tierCounts.DISC}`
+    : 'showing 0 of 0'
+  const droppedFooterText = droppedWallets.length
+    ? `showing ${droppedVisibleStart}-${droppedVisibleEnd} of ${droppedWallets.length}  selected ${clampedDroppedSelectedIndex + 1}/${droppedWallets.length}  auto-dropped until reactivated`
+    : 'no dropped wallets'
 
   const traderCacheByWallet = useMemo(
     () => new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row])),
@@ -483,6 +787,37 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
 
     return [
       {
+        title: 'Watch',
+        metrics: [
+          {
+            label: 'Status',
+            value: selectedWallet.status === 'dropped' ? 'Dropped' : 'Active',
+            color: selectedWallet.status === 'dropped' ? theme.red : theme.green
+          },
+          {
+            label: 'Reason',
+            value: selectedWallet.status_reason || '-'
+          },
+          {
+            label: 'Watch Tier',
+            value: selectedWallet.status === 'dropped' ? '-' : tierLabel(selectedWallet.watch_tier),
+            color: selectedWallet.status === 'dropped' ? theme.dim : tierColor(selectedWallet.watch_tier)
+          },
+          {
+            label: 'Source Last',
+            value: secondsAgo(selectedWallet.last_source_ts || undefined)
+          },
+          {
+            label: 'Dropped',
+            value: secondsAgo(selectedWallet.dropped_at || undefined)
+          },
+          {
+            label: 'Reactivated',
+            value: secondsAgo(selectedWallet.reactivated_at || undefined)
+          }
+        ]
+      },
+      {
         title: 'Local',
         metrics: [
           {
@@ -509,10 +844,6 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
               selectedWallet.local_pnl == null
                 ? theme.dim
                 : centeredGradientColor(selectedWallet.local_pnl, maxAbsLocalPnl)
-          },
-          {
-            label: 'Last Trade',
-            value: secondsAgo(selectedWallet.last_seen || undefined)
           }
         ]
       },
@@ -634,6 +965,8 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
   const detailAddressLines = selectedWallet
     ? wrapText(`Address ${selectedWallet.trader_address}`, Math.max(20, modalContentWidth))
     : []
+  const selectedTrackedWalletAddress = trackedWallets[clampedTrackedSelectedIndex]?.trader_address || ''
+  const selectedDroppedWalletAddress = droppedWallets[clampedDroppedSelectedIndex]?.trader_address || ''
 
   const renderShadowWalletBox = (title: string, shadowWallets: TopShadowRow[]) => (
     <Box title={title} width={shadowPanelsWide ? shadowPanelWidth : '100%'}>
@@ -684,79 +1017,139 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
         {renderShadowWalletBox('Worst Wallets', worstShadowWallets)}
       </InkBox>
 
-      <InkBox marginTop={1} flexGrow={1}>
-        <Box title={`Tracked Wallet Profiles: ${wallets.length}`} height="100%">
-          <InkBox width="100%" height={1}>
-            <Text color={theme.dim}>{fit('USERNAME', layout.usernameWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fit('ADDRESS', layout.addressWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('OBS', layout.observedResolvedWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('OBS WR', layout.observedWinRateWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('PROF WR', layout.profileWinRateWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('COPY P&L', layout.copyPnlWidth)}</Text>
-            <Text color={theme.dim}> </Text>
-            <Text color={theme.dim}>{fitRight('LAST TRADE', layout.lastSeenWidth)}</Text>
-          </InkBox>
+      <InkBox marginTop={1} flexGrow={1} flexDirection="column">
+        <InkBox flexGrow={1}>
+          <Box title={`Tracked Wallet Profiles: ${trackedWallets.length}`} height="100%" accent={activePane === 'tracked'}>
+            <InkBox width="100%" height={1}>
+              <Text color={theme.dim}>{fit('USERNAME', layout.usernameWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fit('ADDRESS', layout.addressWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fit('TRACK', layout.tierWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('OBS', layout.observedResolvedWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('OBS WR', layout.observedWinRateWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('PROF WR', layout.profileWinRateWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('COPY P&L', layout.copyPnlWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('LAST TRADE', layout.lastSeenWidth)}</Text>
+            </InkBox>
 
-          <InkBox flexDirection="column" width="100%" flexGrow={1} justifyContent="flex-start">
-            {visibleWallets.length ? (
-              visibleWallets.map((wallet) => {
-                const isSelected = wallet.watch_index === clampedSelectedIndex
-                const usernameLabel = wallet.username || '-'
-                const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`
-                const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim
-                const addressColor = isSelected ? theme.accent : theme.white
-                const observedWinRateColor =
-                  wallet.observed_win_rate == null
-                    ? theme.dim
-                    : probabilityColor(wallet.observed_win_rate)
-                const winRateColor =
-                  wallet.win_rate == null ? theme.dim : probabilityColor(wallet.win_rate)
-                const localPnlColor =
-                  wallet.local_pnl == null
-                    ? theme.dim
-                    : centeredGradientColor(wallet.local_pnl, maxAbsLocalPnl)
+            <InkBox flexDirection="column" width="100%" flexGrow={1} justifyContent="flex-start">
+              {visibleTrackedWallets.length ? (
+                visibleTrackedWallets.map((wallet) => {
+                  const isSelected = wallet.trader_address === selectedTrackedWalletAddress
+                  const usernameLabel = wallet.username || '-'
+                  const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`
+                  const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim
+                  const addressColor = isSelected ? theme.accent : theme.white
+                  const observedWinRateColor =
+                    wallet.observed_win_rate == null
+                      ? theme.dim
+                      : probabilityColor(wallet.observed_win_rate)
+                  const tierText = tierLabel(wallet.watch_tier)
+                  const tierTextColor = isSelected ? theme.accent : tierColor(wallet.watch_tier)
+                  const winRateColor =
+                    wallet.win_rate == null ? theme.dim : probabilityColor(wallet.win_rate)
+                  const localPnlColor =
+                    wallet.local_pnl == null
+                      ? theme.dim
+                      : centeredGradientColor(wallet.local_pnl, maxAbsLocalPnl)
 
-                return (
-                  <InkBox key={wallet.trader_address} width="100%" height={1}>
-                    <Text color={usernameColor} bold={isSelected}>{fit(displayUsername, layout.usernameWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={addressColor} bold={isSelected}>{formatAddress(wallet.trader_address, layout.addressWidth)}</Text>
-                    <Text> </Text>
-                    <Text>
-                      {fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth)}
-                    </Text>
-                    <Text> </Text>
-                    <Text color={observedWinRateColor}>
-                      {fitRight(
-                        wallet.observed_win_rate == null ? '-' : formatPct(wallet.observed_win_rate),
-                        layout.observedWinRateWidth
-                      )}
-                    </Text>
-                    <Text> </Text>
-                    <Text color={winRateColor}>
-                      {fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.profileWinRateWidth)}
-                    </Text>
-                    <Text> </Text>
-                    <Text color={localPnlColor}>
-                      {fitRight(formatSignedMoney(wallet.local_pnl, layout.copyPnlWidth), layout.copyPnlWidth)}
-                    </Text>
-                    <Text> </Text>
-                    <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
-                      {fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth)}
-                    </Text>
-                  </InkBox>
-                )
-              })
-            ) : (
-              <Text color={theme.dim}>No watched wallets configured yet.</Text>
-            )}
-          </InkBox>
-        </Box>
+                  return (
+                    <InkBox key={wallet.trader_address} width="100%" height={1}>
+                      <Text color={usernameColor} bold={isSelected}>{fit(displayUsername, layout.usernameWidth)}</Text>
+                      <Text> </Text>
+                      <Text color={addressColor} bold={isSelected}>{formatAddress(wallet.trader_address, layout.addressWidth)}</Text>
+                      <Text> </Text>
+                      <Text color={tierTextColor} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
+                      <Text> </Text>
+                      <Text>
+                        {fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={observedWinRateColor}>
+                        {fitRight(
+                          wallet.observed_win_rate == null ? '-' : formatPct(wallet.observed_win_rate),
+                          layout.observedWinRateWidth
+                        )}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={winRateColor}>
+                        {fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.profileWinRateWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={localPnlColor}>
+                        {fitRight(formatSignedMoney(wallet.local_pnl, layout.copyPnlWidth), layout.copyPnlWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
+                        {fitRight(secondsAgo(wallet.last_source_ts || wallet.last_seen || undefined), layout.lastSeenWidth)}
+                      </Text>
+                    </InkBox>
+                  )
+                })
+              ) : (
+                <Text color={theme.dim}>No watched wallets configured yet.</Text>
+              )}
+            </InkBox>
+            <Text color={theme.dim}>{trackedFooterText}</Text>
+          </Box>
+        </InkBox>
+
+        <InkBox marginTop={1}>
+          <Box title={`Dropped Wallet Profiles: ${droppedWallets.length}`} accent={activePane === 'dropped'}>
+            <InkBox width="100%" height={1}>
+              <Text color={theme.dim}>{fit('USERNAME', droppedLayout.usernameWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fit('ADDRESS', droppedLayout.addressWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fit('REASON', droppedLayout.reasonWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('LAST TRADE', droppedLayout.lastSeenWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('DROPPED', droppedLayout.droppedWidth)}</Text>
+            </InkBox>
+
+            <InkBox flexDirection="column" width="100%">
+              {visibleDroppedWallets.length ? (
+                visibleDroppedWallets.map((wallet) => {
+                  const isSelected = wallet.trader_address === selectedDroppedWalletAddress
+                  const usernameLabel = wallet.username || '-'
+                  const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`
+                  const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim
+                  const addressColor = isSelected ? theme.accent : theme.white
+
+                  return (
+                    <InkBox key={wallet.trader_address} width="100%" height={1}>
+                      <Text color={usernameColor} bold={isSelected}>{fit(displayUsername, droppedLayout.usernameWidth)}</Text>
+                      <Text> </Text>
+                      <Text color={addressColor} bold={isSelected}>{formatAddress(wallet.trader_address, droppedLayout.addressWidth)}</Text>
+                      <Text> </Text>
+                      <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
+                        {fit(wallet.status_reason || '-', droppedLayout.reasonWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
+                        {fitRight(secondsAgo(wallet.last_source_ts || wallet.last_source_ts_at_status || undefined), droppedLayout.lastSeenWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={isSelected ? theme.accent : theme.red} bold={isSelected}>
+                        {fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth)}
+                      </Text>
+                    </InkBox>
+                  )
+                })
+              ) : (
+                <Text color={theme.dim}>No dropped wallets.</Text>
+              )}
+            </InkBox>
+            <Text color={theme.dim}>{droppedFooterText}</Text>
+          </Box>
+        </InkBox>
       </InkBox>
 
       {detailOpen && selectedWallet ? (
@@ -764,14 +1157,18 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={modalWidth} paddingX={1}>
             <InkBox justifyContent="space-between">
               <Text color={theme.accent} bold>Wallet Detail</Text>
-              <Text color={theme.dim}>{`${selectedWallet.watch_index + 1}/${wallets.length}`}</Text>
+              <Text color={theme.dim}>
+                {activePane === 'dropped'
+                  ? `${clampedDroppedSelectedIndex + 1}/${Math.max(droppedWallets.length, 1)}`
+                  : `${clampedTrackedSelectedIndex + 1}/${Math.max(trackedWallets.length, 1)}`}
+              </Text>
             </InkBox>
             <Text color={theme.white} bold>{truncate(detailTitle, modalContentWidth)}</Text>
             {detailAddressLines.map((line) => (
               <Text key={line} color={theme.dim}>{truncate(line, modalContentWidth)}</Text>
             ))}
             <Text color={theme.dim}>
-              {truncate('Local = trade log   Profile = cached history', modalContentWidth)}
+              {truncate('Watch = live poll state   Local = trade log   Profile = cached history', modalContentWidth)}
             </Text>
 
             <InkBox marginTop={1} flexDirection="row" columnGap={detailColumnGap}>
@@ -797,7 +1194,14 @@ export function Wallets({selectedIndex, detailOpen, onWalletCountChange}: Wallet
               ))}
             </InkBox>
 
-            <Text color={theme.dim}>{truncate('Up/down switches wallets. Esc closes.', modalContentWidth)}</Text>
+            <Text color={theme.dim}>
+              {truncate(
+                activePane === 'dropped'
+                  ? 'Up/down switches dropped wallets. a reactivates. Esc closes.'
+                  : 'Up/down switches tracked wallets. Left/right switches panes. Esc closes.',
+                modalContentWidth
+              )}
+            </Text>
           </InkBox>
         </InkBox>
       ) : null}

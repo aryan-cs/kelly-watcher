@@ -10,6 +10,7 @@ export const maxMarketHorizonPresets = [
     '365d',
     'unlimited'
 ];
+export const walletInactivityPresets = ['1h', '24h', '7d', 'unlimited'];
 export const editableConfigFields = [
     {
         key: 'POLL_INTERVAL_SECONDS',
@@ -26,6 +27,15 @@ export const editableConfigFields = [
         description: 'Longest time to resolution the bot will allow. Edit with left/right to toggle 5m, 1h, 24h, 7d, 30d, 180d, 365d, or unlimited.',
         defaultValue: '365d',
         liveApplies: true
+    },
+    {
+        key: 'WALLET_INACTIVITY_LIMIT',
+        label: 'Wallet inactivity',
+        kind: 'duration',
+        description: 'Auto-drop a wallet after this much time without a new source trade. Edit with left/right to toggle 1h, 24h, 7d, or unlimited. Applies live on the next loop.',
+        defaultValue: 'unlimited',
+        liveApplies: true,
+        options: walletInactivityPresets
     },
     {
         key: 'MIN_CONFIDENCE',
@@ -175,7 +185,7 @@ export function formatEditableConfigValue(field, value) {
     if (field.key === 'POLL_INTERVAL_SECONDS') {
         return `${normalized}s`;
     }
-    if (field.key === 'MAX_MARKET_HORIZON') {
+    if (field.kind === 'duration') {
         return normalized.toLowerCase();
     }
     if (field.key === 'SHADOW_BANKROLL_USD' || field.key === 'MIN_BET_USD') {
@@ -184,14 +194,14 @@ export function formatEditableConfigValue(field, value) {
     return normalized;
 }
 export function isPresetDurationField(field) {
-    return field.key === 'MAX_MARKET_HORIZON';
+    return Array.isArray(field.options) && field.options.length > 0;
 }
 export function cycleDurationPreset(field, currentValue, direction) {
     if (!isPresetDurationField(field)) {
         return null;
     }
     const normalized = (currentValue || field.defaultValue).trim().toLowerCase();
-    const values = [...maxMarketHorizonPresets];
+    const values = (field.options || []).map((option) => option.toLowerCase());
     const currentIndex = values.indexOf(values.includes(normalized)
         ? normalized
         : field.defaultValue.toLowerCase());

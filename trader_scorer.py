@@ -15,9 +15,17 @@ logger = logging.getLogger(__name__)
 
 DATA_API = "https://data-api.polymarket.com"
 TRADER_CACHE_TTL_SECONDS = 600
+TRADER_CACHE_REFRESH_BATCH_SIZE = 12
 REMOTE_PAGE_LIMIT = 50
-REMOTE_MAX_PAGES = 40
+REMOTE_MAX_PAGES = 8
 REMOTE_CLOSED_POSITIONS_CAP = REMOTE_PAGE_LIMIT * REMOTE_MAX_PAGES
+REMOTE_REQUEST_TIMEOUT_S = 10.0
+REMOTE_RETRY_MAX_ATTEMPTS = 3
+REMOTE_RETRY_BASE_DELAY_S = 1.0
+REMOTE_PAGE_DELAY_S = 0.05
+REMOTE_BACKOFF_DEFAULT_S = 120.0
+_remote_backoff_until = 0.0
+_refresh_cursor = 0
 
 
 @dataclass
@@ -72,7 +80,13 @@ def get_trader_features(
 
 
 def refresh_trader_cache(wallet_addresses: list[str], force_refresh: bool = False) -> None:
-    for wallet in wallet_addresses:
+    for wallet in _wallets_due_for_refresh(wallet_addresses, force_refresh=force_refresh):
+        if _remote_backoff_active():
+            logger.warning(
+                "Trader cache refresh paused for %.1fs after data-api rate limiting",
+                _remote_backoff_remaining_seconds(),
+            )
+            break
         wallet_address = wallet.strip().lower()
         if not wallet_address:
             continue
@@ -127,8 +141,17 @@ def _fetch_remote_trader_features(
     trader_address: str,
     observed_size_usd: float,
 ) -> TraderFeatures | None:
-    positions = _fetch_closed_positions(trader_address)
-    open_positions = _fetch_open_positions(trader_address)
+    if _remote_backoff_active():
+        logger.info(
+            "Skipping remote trader refresh for %s during %.1fs data-api backoff",
+            trader_address[:10],
+            _remote_backoff_remaining_seconds(),
+        )
+        return None
+
+    with httpx.Client(timeout=REMOTE_REQUEST_TIMEOUT_S, follow_redirects=True) as client:
+        positions = _fetch_closed_positions(client, trader_address)
+        open_positions = _fetch_open_positions(client, trader_address)
     if not positions and not open_positions:
         return None
 
@@ -253,46 +276,52 @@ def _remote_win_rate_is_suspicious(features: TraderFeatures) -> bool:
     return features.wins == features.n_trades
 
 
-def _fetch_closed_positions(trader_address: str) -> list[dict[str, Any]]:
+def _fetch_closed_positions(client: httpx.Client, trader_address: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_first_keys: set[str] = set()
 
     try:
-        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
-            for page in range(REMOTE_MAX_PAGES):
-                response = client.get(
-                    f"{DATA_API}/closed-positions",
-                    params={
-                        "user": trader_address.lower(),
-                        "limit": REMOTE_PAGE_LIMIT,
-                        "offset": page * REMOTE_PAGE_LIMIT,
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-                batch = payload if isinstance(payload, list) else payload.get("positions", [])
-                if not batch:
-                    break
+        for page in range(REMOTE_MAX_PAGES):
+            if _remote_backoff_active():
+                break
 
-                first_key = _position_key(batch[0])
-                if first_key in seen_first_keys:
-                    break
-                seen_first_keys.add(first_key)
+            payload, ok = _request_data_api_json(
+                client,
+                f"{DATA_API}/closed-positions",
+                params={
+                    "user": trader_address.lower(),
+                    "limit": REMOTE_PAGE_LIMIT,
+                    "offset": page * REMOTE_PAGE_LIMIT,
+                },
+                failure_log=f"Remote trader history fetch failed for {trader_address[:10]}",
+            )
+            if not ok:
+                break
+            batch = payload if isinstance(payload, list) else payload.get("positions", [])
+            if not batch:
+                break
 
-                added = 0
-                for item in batch:
-                    if not isinstance(item, dict):
-                        continue
-                    key = _position_key(item)
-                    if key in seen_ids:
-                        continue
-                    seen_ids.add(key)
-                    rows.append(item)
-                    added += 1
+            first_key = _position_key(batch[0])
+            if first_key in seen_first_keys:
+                break
+            seen_first_keys.add(first_key)
 
-                if len(batch) < REMOTE_PAGE_LIMIT or added == 0:
-                    break
+            added = 0
+            for item in batch:
+                if not isinstance(item, dict):
+                    continue
+                key = _position_key(item)
+                if key in seen_ids:
+                    continue
+                seen_ids.add(key)
+                rows.append(item)
+                added += 1
+
+            if len(batch) < REMOTE_PAGE_LIMIT or added == 0:
+                break
+            if page < REMOTE_MAX_PAGES - 1:
+                time.sleep(REMOTE_PAGE_DELAY_S)
     except Exception as exc:
         logger.warning("Remote trader history fetch failed for %s: %s", trader_address[:10], exc)
         return []
@@ -300,20 +329,145 @@ def _fetch_closed_positions(trader_address: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _fetch_open_positions(trader_address: str) -> list[dict[str, Any]]:
+def _fetch_open_positions(client: httpx.Client, trader_address: str) -> list[dict[str, Any]]:
+    if _remote_backoff_active():
+        return []
     try:
-        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
-            response = client.get(
-                f"{DATA_API}/positions",
-                params={"user": trader_address.lower()},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            rows = payload if isinstance(payload, list) else payload.get("positions", [])
-            return [item for item in rows if isinstance(item, dict)]
+        payload, ok = _request_data_api_json(
+            client,
+            f"{DATA_API}/positions",
+            params={"user": trader_address.lower()},
+            failure_log=f"Remote trader positions fetch failed for {trader_address[:10]}",
+        )
+        if not ok:
+            return []
+        rows = payload if isinstance(payload, list) else payload.get("positions", [])
+        return [item for item in rows if isinstance(item, dict)]
     except Exception as exc:
         logger.warning("Remote trader positions fetch failed for %s: %s", trader_address[:10], exc)
         return []
+
+
+def _request_data_api_json(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: dict[str, Any] | None,
+    failure_log: str,
+) -> tuple[Any | None, bool]:
+    for attempt in range(REMOTE_RETRY_MAX_ATTEMPTS):
+        if _remote_backoff_active():
+            return None, False
+        try:
+            response = client.get(url, params=params)
+            if response.status_code == 429:
+                raise httpx.HTTPStatusError(
+                    "429 Too Many Requests",
+                    request=response.request,
+                    response=response,
+                )
+            response.raise_for_status()
+            return response.json(), True
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code if exc.response is not None else 0
+            if status_code == 429:
+                _arm_remote_backoff(_retry_after_seconds(exc.response))
+                logger.warning("%s: %s", failure_log, exc)
+                return None, False
+            if status_code in {500, 502, 503, 504} and attempt < REMOTE_RETRY_MAX_ATTEMPTS - 1:
+                time.sleep(REMOTE_RETRY_BASE_DELAY_S * (attempt + 1))
+                continue
+            logger.warning("%s: %s", failure_log, exc)
+            return None, False
+        except Exception as exc:
+            if attempt < REMOTE_RETRY_MAX_ATTEMPTS - 1:
+                time.sleep(REMOTE_RETRY_BASE_DELAY_S * (attempt + 1))
+                continue
+            logger.warning("%s: %s", failure_log, exc)
+            return None, False
+    return None, False
+
+
+def _retry_after_seconds(response: httpx.Response | None) -> float:
+    if response is None:
+        return 0.0
+    try:
+        return max(float((response.headers or {}).get("Retry-After") or 0.0), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _arm_remote_backoff(duration_seconds: float) -> None:
+    global _remote_backoff_until
+    backoff_seconds = max(duration_seconds, REMOTE_BACKOFF_DEFAULT_S)
+    _remote_backoff_until = max(_remote_backoff_until, time.time() + backoff_seconds)
+
+
+def _remote_backoff_active(now_ts: float | None = None) -> bool:
+    return _remote_backoff_until > (time.time() if now_ts is None else now_ts)
+
+
+def _remote_backoff_remaining_seconds(now_ts: float | None = None) -> float:
+    return max(_remote_backoff_until - (time.time() if now_ts is None else now_ts), 0.0)
+
+
+def _wallets_due_for_refresh(wallet_addresses: list[str], force_refresh: bool = False) -> list[str]:
+    global _refresh_cursor
+
+    normalized_wallets: list[str] = []
+    seen_wallets: set[str] = set()
+    for wallet in wallet_addresses:
+        wallet_address = wallet.strip().lower()
+        if not wallet_address or wallet_address in seen_wallets:
+            continue
+        seen_wallets.add(wallet_address)
+        normalized_wallets.append(wallet_address)
+
+    if not normalized_wallets:
+        return []
+
+    updated_at_map = _trader_cache_updated_at_map(normalized_wallets)
+    freshness_cutoff = int(time.time()) - TRADER_CACHE_TTL_SECONDS
+    candidates = [
+        wallet
+        for wallet in normalized_wallets
+        if force_refresh or updated_at_map.get(wallet, 0) <= freshness_cutoff
+    ]
+    if not candidates:
+        return []
+
+    batch_size = min(TRADER_CACHE_REFRESH_BATCH_SIZE, len(candidates))
+    if batch_size >= len(candidates):
+        return candidates
+
+    start = _refresh_cursor % len(candidates)
+    rotated = candidates[start:] + candidates[:start]
+    _refresh_cursor = (start + batch_size) % len(candidates)
+    return rotated[:batch_size]
+
+
+def _trader_cache_updated_at_map(wallet_addresses: list[str]) -> dict[str, int]:
+    if not wallet_addresses:
+        return {}
+
+    conn = get_conn()
+    try:
+        placeholders = ",".join("?" for _ in wallet_addresses)
+        rows = conn.execute(
+            f"""
+            SELECT trader_address, updated_at
+            FROM trader_cache
+            WHERE trader_address IN ({placeholders})
+            """,
+            tuple(wallet_addresses),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        str(row["trader_address"] or "").strip().lower(): int(row["updated_at"] or 0)
+        for row in rows
+    }
 
 
 def _position_key(row: dict[str, Any]) -> str:

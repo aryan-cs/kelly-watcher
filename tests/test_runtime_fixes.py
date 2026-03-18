@@ -11,8 +11,10 @@ import beliefs
 import dedup
 import db
 import evaluator
+import httpx
 import main
 import tracker
+import trader_scorer
 from executor import PolymarketExecutor, log_trade
 from market_scorer import MarketScorer, build_market_features
 from trader_scorer import TraderScorer
@@ -268,6 +270,52 @@ class RuntimeFixesTest(unittest.TestCase):
             )
 
         self.assertIsNone(reason)
+
+    def test_trader_cache_refresh_rotates_batched_wallets(self) -> None:
+        wallets = ["0x1", "0x2", "0x3"]
+        calls: list[str] = []
+        original_cursor = trader_scorer._refresh_cursor
+        try:
+            trader_scorer._refresh_cursor = 0
+            with patch.object(trader_scorer, "TRADER_CACHE_REFRESH_BATCH_SIZE", 2), patch("trader_scorer._trader_cache_updated_at_map", return_value={}), patch("trader_scorer.get_trader_features", side_effect=lambda wallet, observed_size_usd, force_refresh=False: calls.append(wallet) or SimpleNamespace()):
+                trader_scorer.refresh_trader_cache(wallets)
+                trader_scorer.refresh_trader_cache(wallets)
+        finally:
+            trader_scorer._refresh_cursor = original_cursor
+
+        self.assertEqual(calls[:2], ["0x1", "0x2"])
+        self.assertEqual(calls[2:], ["0x3", "0x1"])
+
+    def test_trader_remote_429_arms_backoff(self) -> None:
+        response = httpx.Response(
+            429,
+            headers={"Retry-After": "30"},
+            request=httpx.Request("GET", "https://data-api.polymarket.com/closed-positions"),
+        )
+
+        class FakeClient:
+            def get(self, url, params=None):
+                return response
+
+        original_backoff = trader_scorer._remote_backoff_until
+        try:
+            trader_scorer._remote_backoff_until = 0.0
+            with patch("time.time", return_value=1_000.0):
+                payload, ok = trader_scorer._request_data_api_json(
+                    FakeClient(),
+                    "https://data-api.polymarket.com/closed-positions",
+                    params={"user": "0xabc"},
+                    failure_log="test failure",
+                )
+                active = trader_scorer._remote_backoff_active(1_000.0)
+                remaining = trader_scorer._remote_backoff_remaining_seconds(1_000.0)
+        finally:
+            trader_scorer._remote_backoff_until = original_backoff
+
+        self.assertIsNone(payload)
+        self.assertFalse(ok)
+        self.assertTrue(active)
+        self.assertGreaterEqual(remaining, trader_scorer.REMOTE_BACKOFF_DEFAULT_S)
 
     def test_sync_belief_priors_expands_sql_contract_macros(self) -> None:
         with TemporaryDirectory() as tmpdir:

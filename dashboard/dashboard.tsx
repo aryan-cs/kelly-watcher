@@ -153,10 +153,17 @@ function AppContent({
         ? `${botState.poll_interval}s`
         : '-'
   const now = Date.now() / 1000
-  const heartbeatTs = botState.last_poll_at ?? botState.started_at ?? 0
   const heartbeatWindow = Math.max((botState.poll_interval || 1) * 3, 3)
-  const backendConnected = heartbeatTs > 0 && now - heartbeatTs <= heartbeatWindow
-  const backendDotColor = backendConnected ? theme.green : theme.red
+  const startedAt = botState.started_at ?? 0
+  const lastPollAt = botState.last_poll_at ?? 0
+  const backendDotColor =
+    lastPollAt > 0
+      ? now - lastPollAt <= heartbeatWindow
+        ? theme.green
+        : theme.red
+      : startedAt > 0
+        ? theme.yellow
+        : theme.red
   const navLabels = terminal.compact
     ? {1: 'F', 2: 'S', 3: 'P', 4: 'M', 5: 'W', 6: 'C'}
     : terminal.narrow

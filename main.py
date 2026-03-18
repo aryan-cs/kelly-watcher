@@ -28,9 +28,12 @@ from config import (
     max_feed_staleness_seconds,
     max_live_drawdown_pct,
     max_live_health_failures,
+    max_market_horizon_seconds,
+    max_source_trade_age_seconds,
     max_market_exposure_fraction,
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
+    min_execution_window_seconds,
     min_bet_usd,
     min_confidence,
     poll_interval,
@@ -41,11 +44,13 @@ from config import (
     use_real_money,
     wallet_inactivity_limit_seconds,
     wallet_slow_drop_max_tracking_age_seconds,
+    wallet_cold_start_min_observed_buys,
     wallet_performance_drop_max_avg_return,
     wallet_performance_drop_max_win_rate,
     wallet_performance_drop_min_trades,
     wallet_discovery_min_observed_buys,
     wallet_discovery_min_resolved_buys,
+    wallet_discovery_size_multiplier,
     wallet_probation_size_multiplier,
     wallet_trusted_min_resolved_copied_buys,
     wallet_address,
@@ -365,6 +370,18 @@ def _skip_event(event, amount_usd: float, reason: str, decision: str = "SKIP") -
     )
 
 
+def _ignore_event(event, amount_usd: float, reason: str) -> None:
+    _skip_event(event, amount_usd, reason, decision="IGNORE")
+
+
+def _pause_event(event, amount_usd: float, reason: str) -> None:
+    _skip_event(event, amount_usd, reason, decision="PAUSE")
+
+
+def _is_non_actionable_exit_reason(reason: str) -> bool:
+    return (reason or "").strip().lower() == "watched trader exited, but we had no matching position open to close"
+
+
 def process_event(
     event,
     engine,
@@ -427,58 +444,35 @@ def process_event(
             )
             return result.dollar_size
         else:
-            executor.log_skip(
-                trade_id=event.trade_id,
-                market_id=event.market_id,
-                question=event.question,
-                trader_address=event.trader_address,
-                side=event.side,
-                price=event.price,
-                size_usd=result.dollar_size,
-                confidence=0.0,
-                kelly_f=0.0,
-                reason=result.reason,
-                event=event,
-            )
             dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
-            _skip_event(event, result.dollar_size, result.reason)
+            if _is_non_actionable_exit_reason(result.reason):
+                _ignore_event(event, result.dollar_size, result.reason)
+            else:
+                executor.log_skip(
+                    trade_id=event.trade_id,
+                    market_id=event.market_id,
+                    question=event.question,
+                    trader_address=event.trader_address,
+                    side=event.side,
+                    price=event.price,
+                    size_usd=result.dollar_size,
+                    confidence=0.0,
+                    kelly_f=0.0,
+                    reason=result.reason,
+                    event=event,
+                )
+                _skip_event(event, result.dollar_size, result.reason)
         return 0.0
 
     if event.action != "buy":
         reason = f"observed unsupported trader action, {event.action.upper()}"
-        executor.log_skip(
-            trade_id=event.trade_id,
-            market_id=event.market_id,
-            question=event.question,
-            trader_address=event.trader_address,
-            side=event.side,
-            price=event.price,
-            size_usd=0.0,
-            confidence=0.0,
-            kelly_f=0.0,
-            reason=reason,
-            event=event,
-        )
         dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
-        _reject_event(event, 0.0, 0.0, reason)
+        _ignore_event(event, 0.0, reason)
         return 0.0
 
     if entry_block_reason:
-        executor.log_skip(
-            trade_id=event.trade_id,
-            market_id=event.market_id,
-            question=event.question,
-            trader_address=event.trader_address,
-            side=event.side,
-            price=event.price,
-            size_usd=0.0,
-            confidence=0.0,
-            kelly_f=0.0,
-            reason=entry_block_reason,
-            event=event,
-        )
         dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
-        _skip_event(event, 0.0, entry_block_reason)
+        _pause_event(event, 0.0, entry_block_reason)
         return 0.0
 
     if not event.snapshot:
@@ -872,10 +866,47 @@ def _validate_startup() -> None:
     _capture_config(wallet_performance_drop_min_trades)
     _capture_config(wallet_performance_drop_max_win_rate)
     _capture_config(wallet_performance_drop_max_avg_return)
-    _capture_config(wallet_discovery_min_observed_buys)
-    _capture_config(wallet_discovery_min_resolved_buys)
-    _capture_config(wallet_probation_size_multiplier)
-    _capture_config(wallet_trusted_min_resolved_copied_buys)
+    cold_start_min_observed = _capture_config(wallet_cold_start_min_observed_buys)
+    discovery_min_observed = _capture_config(wallet_discovery_min_observed_buys)
+    discovery_min_resolved = _capture_config(wallet_discovery_min_resolved_buys)
+    discovery_multiplier = _capture_config(wallet_discovery_size_multiplier)
+    probation_multiplier = _capture_config(wallet_probation_size_multiplier)
+    trusted_min_resolved = _capture_config(wallet_trusted_min_resolved_copied_buys)
+    min_window_seconds = _capture_config(min_execution_window_seconds)
+    max_horizon_seconds = _capture_config(max_market_horizon_seconds)
+    _capture_config(max_source_trade_age_seconds)
+
+    if (
+        cold_start_min_observed is not None
+        and discovery_min_observed is not None
+        and cold_start_min_observed > discovery_min_observed
+    ):
+        errors.append(
+            "WALLET_COLD_START_MIN_OBSERVED_BUYS must be <= WALLET_DISCOVERY_MIN_OBSERVED_BUYS"
+        )
+    if (
+        discovery_multiplier is not None
+        and probation_multiplier is not None
+        and discovery_multiplier > probation_multiplier
+    ):
+        warnings.append(
+            "WALLET_DISCOVERY_SIZE_MULTIPLIER is greater than WALLET_PROBATION_SIZE_MULTIPLIER; discovery trades will size larger than probation trades"
+        )
+    if (
+        min_window_seconds is not None
+        and max_horizon_seconds is not None
+        and max_horizon_seconds != float("inf")
+        and min_window_seconds >= max_horizon_seconds
+    ):
+        errors.append("MIN_EXECUTION_WINDOW must be smaller than MAX_MARKET_HORIZON")
+    if (
+        discovery_min_resolved is not None
+        and trusted_min_resolved is not None
+        and discovery_min_resolved > trusted_min_resolved
+    ):
+        errors.append(
+            "WALLET_DISCOVERY_MIN_RESOLVED_BUYS must be <= WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS"
+        )
 
     if use_real_money():
         our_wallet = wallet_address()

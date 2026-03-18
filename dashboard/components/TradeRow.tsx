@@ -97,8 +97,10 @@ export const TradeRow = memo(function TradeRow({
         ? theme.green
         : decision === 'REJECT'
           ? theme.red
-          : decision === 'SKIP'
+          : decision === 'SKIP' || decision === 'PAUSE'
             ? theme.yellow
+            : decision === 'IGNORE'
+              ? theme.dim
             : theme.white,
     [decision]
   )

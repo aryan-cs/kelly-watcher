@@ -53,20 +53,20 @@ def _insert_trade(
 
 
 class WalletTrustTest(unittest.TestCase):
-    def test_wallet_stays_in_discovery_until_it_has_enough_observed_and_resolved_buys(self) -> None:
+    def test_wallet_stays_in_cold_start_until_it_has_minimum_observed_buys(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
                 db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
                 db.init_db()
                 conn = db.get_conn()
-                for idx in range(11):
+                for idx in range(2):
                     _insert_trade(
                         conn,
                         trade_id=f"obs-{idx}",
                         trader_address="0xabc",
                         skipped=True,
-                        resolved_pnl_usd=1.0 if idx < 7 else None,
+                        resolved_pnl_usd=1.0,
                     )
                 conn.commit()
                 conn.close()
@@ -74,39 +74,71 @@ class WalletTrustTest(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "12",
-                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "8",
-                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "20",
-                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.25",
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
                     },
                     clear=False,
                 ):
                     state = get_wallet_trust_state("0xabc")
 
-                self.assertEqual(state.tier, "discovery")
-                self.assertEqual(state.observed_buy_count, 11)
-                self.assertEqual(state.resolved_observed_buy_count, 7)
+                self.assertEqual(state.tier, "cold_start")
+                self.assertEqual(state.observed_buy_count, 2)
+                self.assertEqual(state.resolved_observed_buy_count, 2)
                 self.assertEqual(
                     state.skip_reason,
-                    "wallet is still in discovery probation, observed 11/12 buy opportunities and 7/8 resolved outcomes",
+                    "wallet is still in cold start, observed 2/3 buy opportunities",
                 )
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_wallet_moves_from_probation_to_trusted_after_enough_local_copied_history(self) -> None:
+    def test_wallet_moves_from_discovery_to_probation_to_trusted(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
                 db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
                 db.init_db()
                 conn = db.get_conn()
-                for idx in range(12):
+                for idx in range(5):
                     _insert_trade(
                         conn,
-                        trade_id=f"seed-{idx}",
+                        trade_id=f"discovery-{idx}",
                         trader_address="0xabc",
                         skipped=True,
-                        resolved_pnl_usd=1.0 if idx < 8 else None,
+                        resolved_pnl_usd=1.0 if idx < 2 else None,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
+                    },
+                    clear=False,
+                ):
+                    discovery_state = get_wallet_trust_state("0xabc")
+
+                self.assertEqual(discovery_state.tier, "discovery")
+                self.assertEqual(discovery_state.size_multiplier, 0.05)
+                self.assertIn("wallet is in discovery", discovery_state.tier_note or "")
+
+                conn = db.get_conn()
+                for idx in range(3):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"resolved-seed-{idx}",
+                        trader_address="0xabc",
+                        skipped=True,
+                        resolved_pnl_usd=1.0,
                     )
                 for idx in range(5):
                     _insert_trade(
@@ -122,10 +154,12 @@ class WalletTrustTest(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "12",
-                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "8",
-                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "20",
-                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.25",
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
                     },
                     clear=False,
                 ):
@@ -150,10 +184,12 @@ class WalletTrustTest(unittest.TestCase):
                 with patch.dict(
                     os.environ,
                     {
-                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "12",
-                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "8",
-                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "20",
-                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.25",
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
                     },
                     clear=False,
                 ):
@@ -169,28 +205,55 @@ class WalletTrustTest(unittest.TestCase):
         trust_state = WalletTrustState(
             wallet_address="0xabc",
             tier="probation",
-            size_multiplier=0.25,
+            size_multiplier=0.20,
             observed_buy_count=20,
             resolved_observed_buy_count=12,
             resolved_copied_buy_count=5,
             resolved_copied_win_rate=0.6,
             resolved_copied_avg_return=0.04,
-            min_observed_buy_count=12,
-            min_resolved_observed_buy_count=8,
-            min_resolved_copied_buy_count=20,
+            min_cold_start_observed_buy_count=3,
+            min_observed_buy_count=8,
+            min_resolved_observed_buy_count=3,
+            min_resolved_copied_buy_count=15,
         )
 
         with patch.dict(os.environ, {"MIN_BET_USD": "1.00"}, clear=False):
             adjusted = apply_wallet_trust_sizing(
-                {"dollar_size": 4.0, "kelly_f": 0.10, "full_kelly_f": 0.20},
+                {"dollar_size": 5.0, "kelly_f": 0.10, "full_kelly_f": 0.20},
                 trust_state,
             )
 
         self.assertEqual(adjusted["dollar_size"], 1.0)
-        self.assertAlmostEqual(adjusted["kelly_f"], 0.025, places=6)
-        self.assertAlmostEqual(adjusted["full_kelly_f"], 0.05, places=6)
-        self.assertAlmostEqual(adjusted["wallet_trust_effective_multiplier"], 0.25, places=6)
-        self.assertIn("size scaled to 25%", adjusted["wallet_trust_note"])
+        self.assertAlmostEqual(adjusted["kelly_f"], 0.02, places=6)
+        self.assertAlmostEqual(adjusted["full_kelly_f"], 0.04, places=6)
+        self.assertAlmostEqual(adjusted["wallet_trust_effective_multiplier"], 0.20, places=6)
+        self.assertIn("size scaled to 20%", adjusted["wallet_trust_note"])
+
+    def test_discovery_sizing_scales_down_before_probation(self) -> None:
+        trust_state = WalletTrustState(
+            wallet_address="0xabc",
+            tier="discovery",
+            size_multiplier=0.05,
+            observed_buy_count=4,
+            resolved_observed_buy_count=1,
+            resolved_copied_buy_count=0,
+            resolved_copied_win_rate=None,
+            resolved_copied_avg_return=None,
+            min_cold_start_observed_buy_count=3,
+            min_observed_buy_count=8,
+            min_resolved_observed_buy_count=3,
+            min_resolved_copied_buy_count=15,
+        )
+
+        with patch.dict(os.environ, {"MIN_BET_USD": "1.00"}, clear=False):
+            adjusted = apply_wallet_trust_sizing(
+                {"dollar_size": 20.0, "kelly_f": 0.10, "full_kelly_f": 0.20},
+                trust_state,
+            )
+
+        self.assertEqual(adjusted["dollar_size"], 1.0)
+        self.assertAlmostEqual(adjusted["wallet_trust_effective_multiplier"], 0.05, places=6)
+        self.assertIn("wallet is in discovery", adjusted["wallet_trust_note"])
 
 
 if __name__ == "__main__":

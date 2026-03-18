@@ -38,9 +38,11 @@ export const TradeRow = memo(function TradeRow({ displayId, ts, username, trader
         ? theme.green
         : decision === 'REJECT'
             ? theme.red
-            : decision === 'SKIP'
+            : decision === 'SKIP' || decision === 'PAUSE'
                 ? theme.yellow
-                : theme.white, [decision]);
+                : decision === 'IGNORE'
+                    ? theme.dim
+                    : theme.white, [decision]);
     const displayShares = useMemo(() => shares ?? (price > 0 ? sizeUsd / price : 0), [shares, price, sizeUsd]);
     const isBuyLike = !action || action.toLowerCase() === 'buy';
     const toWinUsd = useMemo(() => (isBuyLike && displayShares > 0 ? displayShares : null), [isBuyLike, displayShares]);

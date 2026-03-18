@@ -6,9 +6,8 @@ from typing import Any
 
 import numpy as np
 
-from config import max_market_horizon_label, max_market_horizon_seconds, poll_interval
+from config import max_market_horizon_label, max_market_horizon_seconds, min_execution_window_seconds, poll_interval
 
-MIN_EXECUTION_WINDOW_SECONDS = 10.0
 EXECUTION_BUFFER_SECONDS = 5.0
 
 
@@ -142,7 +141,7 @@ class MarketScorer:
     def _min_execution_window_seconds() -> float:
         # Only veto when our polling cadence plus order submission time makes
         # the remaining window effectively impossible to trade.
-        return float(max(MIN_EXECUTION_WINDOW_SECONDS, poll_interval() + EXECUTION_BUFFER_SECONDS))
+        return float(max(min_execution_window_seconds(), poll_interval() + EXECUTION_BUFFER_SECONDS))
 
     def _veto(self, features: MarketFeatures) -> str | None:
         if features.mid <= 0 or features.mid >= 1:
@@ -177,7 +176,7 @@ class MarketScorer:
     @staticmethod
     def _score_time(features: MarketFeatures) -> float:
         days = features.days_to_res
-        min_window_days = max(MIN_EXECUTION_WINDOW_SECONDS, poll_interval() + EXECUTION_BUFFER_SECONDS) / 86400
+        min_window_days = max(min_execution_window_seconds(), poll_interval() + EXECUTION_BUFFER_SECONDS) / 86400
         if days <= min_window_days:
             return 0.0
         if days < (1 / 24):

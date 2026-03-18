@@ -221,19 +221,27 @@ def wallet_performance_drop_max_avg_return() -> float:
 
 
 def wallet_discovery_min_observed_buys() -> int:
-    return _get_bounded_int("WALLET_DISCOVERY_MIN_OBSERVED_BUYS", "12", minimum=0)
+    return _get_bounded_int("WALLET_DISCOVERY_MIN_OBSERVED_BUYS", "8", minimum=0)
+
+
+def wallet_cold_start_min_observed_buys() -> int:
+    return _get_bounded_int("WALLET_COLD_START_MIN_OBSERVED_BUYS", "3", minimum=0)
 
 
 def wallet_discovery_min_resolved_buys() -> int:
-    return _get_bounded_int("WALLET_DISCOVERY_MIN_RESOLVED_BUYS", "8", minimum=0)
+    return _get_bounded_int("WALLET_DISCOVERY_MIN_RESOLVED_BUYS", "3", minimum=0)
+
+
+def wallet_discovery_size_multiplier() -> float:
+    return _get_bounded_float("WALLET_DISCOVERY_SIZE_MULTIPLIER", "0.05", minimum=0.01, maximum=1.0)
 
 
 def wallet_trusted_min_resolved_copied_buys() -> int:
-    return _get_bounded_int("WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS", "20", minimum=0)
+    return _get_bounded_int("WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS", "15", minimum=0)
 
 
 def wallet_probation_size_multiplier() -> float:
-    return _get_bounded_float("WALLET_PROBATION_SIZE_MULTIPLIER", "0.25", minimum=0.01, maximum=1.0)
+    return _get_bounded_float("WALLET_PROBATION_SIZE_MULTIPLIER", "0.20", minimum=0.01, maximum=1.0)
 
 
 def _parse_duration(raw: str, default_seconds: float) -> float:
@@ -261,15 +269,15 @@ def _parse_duration(raw: str, default_seconds: float) -> float:
 
 
 def max_market_horizon_seconds() -> float:
-    raw = _get_env_file_value("MAX_MARKET_HORIZON") or _get("MAX_MARKET_HORIZON", "365d")
-    seconds = _parse_duration(raw, 365 * 86400.0)
+    raw = _get_env_file_value("MAX_MARKET_HORIZON") or _get("MAX_MARKET_HORIZON", "6h")
+    seconds = _parse_duration(raw, 6 * 3600.0)
     return seconds if seconds == float("inf") else max(60.0, seconds)
 
 
 def max_market_horizon_label() -> str:
-    raw = _get_env_file_value("MAX_MARKET_HORIZON") or _get("MAX_MARKET_HORIZON", "365d")
+    raw = _get_env_file_value("MAX_MARKET_HORIZON") or _get("MAX_MARKET_HORIZON", "6h")
     value = (raw or "").strip().lower()
-    return "unlimited" if value in {"unlimited", "infinite", "inf", "none"} else (value or "365d")
+    return "unlimited" if value in {"unlimited", "infinite", "inf", "none"} else (value or "6h")
 
 
 def max_source_trade_age_seconds() -> int:
@@ -286,6 +294,14 @@ def max_feed_staleness_seconds() -> int:
     if seconds == float("inf"):
         return 3 * 60
     return max(int(seconds), 30)
+
+
+def min_execution_window_seconds() -> int:
+    raw = _get_env_file_value("MIN_EXECUTION_WINDOW") or _get("MIN_EXECUTION_WINDOW", "45s")
+    seconds = _parse_duration(raw, 45.0)
+    if seconds == float("inf"):
+        return 45
+    return max(int(seconds), 10)
 
 
 def private_key() -> str:

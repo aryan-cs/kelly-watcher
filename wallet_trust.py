@@ -4,8 +4,10 @@ from dataclasses import dataclass
 
 from config import (
     min_bet_usd,
+    wallet_cold_start_min_observed_buys,
     wallet_discovery_min_observed_buys,
     wallet_discovery_min_resolved_buys,
+    wallet_discovery_size_multiplier,
     wallet_probation_size_multiplier,
     wallet_trusted_min_resolved_copied_buys,
 )
@@ -23,9 +25,14 @@ class WalletTrustState:
     resolved_copied_buy_count: int
     resolved_copied_win_rate: float | None
     resolved_copied_avg_return: float | None
+    min_cold_start_observed_buy_count: int
     min_observed_buy_count: int
     min_resolved_observed_buy_count: int
     min_resolved_copied_buy_count: int
+
+    @property
+    def cold_start_ready(self) -> bool:
+        return self.observed_buy_count >= self.min_cold_start_observed_buy_count
 
     @property
     def discovery_ready(self) -> bool:
@@ -40,16 +47,21 @@ class WalletTrustState:
 
     @property
     def skip_reason(self) -> str | None:
-        if self.tier != "discovery":
+        if self.tier != "cold_start":
             return None
         return (
-            "wallet is still in discovery probation, "
-            f"observed {self.observed_buy_count}/{self.min_observed_buy_count} buy opportunities "
-            f"and {self.resolved_observed_buy_count}/{self.min_resolved_observed_buy_count} resolved outcomes"
+            "wallet is still in cold start, "
+            f"observed {self.observed_buy_count}/{self.min_cold_start_observed_buy_count} buy opportunities"
         )
 
     @property
-    def probation_note(self) -> str | None:
+    def tier_note(self) -> str | None:
+        if self.tier == "discovery":
+            return (
+                "wallet is in discovery, "
+                f"observed {self.observed_buy_count}/{self.min_observed_buy_count} buy opportunities "
+                f"and {self.resolved_observed_buy_count}/{self.min_resolved_observed_buy_count} resolved outcomes"
+            )
         if self.tier != "probation":
             return None
         return (
@@ -67,6 +79,7 @@ class WalletTrustState:
             "resolved_copied_buy_count": self.resolved_copied_buy_count,
             "resolved_copied_win_rate": self.resolved_copied_win_rate,
             "resolved_copied_avg_return": self.resolved_copied_avg_return,
+            "min_cold_start_observed_buy_count": self.min_cold_start_observed_buy_count,
             "min_observed_buy_count": self.min_observed_buy_count,
             "min_resolved_observed_buy_count": self.min_resolved_observed_buy_count,
             "min_resolved_copied_buy_count": self.min_resolved_copied_buy_count,
@@ -75,21 +88,24 @@ class WalletTrustState:
 
 def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
     wallet_key = str(wallet_address or "").strip().lower()
+    cold_start_min_observed = wallet_cold_start_min_observed_buys()
     discovery_min_observed = wallet_discovery_min_observed_buys()
     discovery_min_resolved = wallet_discovery_min_resolved_buys()
+    discovery_multiplier = wallet_discovery_size_multiplier()
     trusted_min_resolved_copied = wallet_trusted_min_resolved_copied_buys()
     probation_multiplier = wallet_probation_size_multiplier()
 
     if not wallet_key:
         return WalletTrustState(
             wallet_address=wallet_key,
-            tier="discovery",
+            tier="cold_start",
             size_multiplier=0.0,
             observed_buy_count=0,
             resolved_observed_buy_count=0,
             resolved_copied_buy_count=0,
             resolved_copied_win_rate=None,
             resolved_copied_avg_return=None,
+            min_cold_start_observed_buy_count=cold_start_min_observed,
             min_observed_buy_count=discovery_min_observed,
             min_resolved_observed_buy_count=discovery_min_resolved,
             min_resolved_copied_buy_count=trusted_min_resolved_copied,
@@ -140,12 +156,15 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
         else None
     )
 
-    if (
+    if observed_buy_count < cold_start_min_observed:
+        tier = "cold_start"
+        size_multiplier = 0.0
+    elif (
         observed_buy_count < discovery_min_observed
         or resolved_observed_buy_count < discovery_min_resolved
     ):
         tier = "discovery"
-        size_multiplier = 0.0
+        size_multiplier = discovery_multiplier
     elif resolved_copied_buy_count < trusted_min_resolved_copied:
         tier = "probation"
         size_multiplier = probation_multiplier
@@ -162,6 +181,7 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
         resolved_copied_buy_count=resolved_copied_buy_count,
         resolved_copied_win_rate=resolved_copied_win_rate,
         resolved_copied_avg_return=resolved_copied_avg_return,
+        min_cold_start_observed_buy_count=cold_start_min_observed,
         min_observed_buy_count=discovery_min_observed,
         min_resolved_observed_buy_count=discovery_min_resolved,
         min_resolved_copied_buy_count=trusted_min_resolved_copied,
@@ -173,10 +193,12 @@ def apply_wallet_trust_sizing(sizing: dict, trust_state: WalletTrustState) -> di
     adjusted["wallet_trust"] = trust_state.as_dict()
 
     base_size = float(adjusted.get("dollar_size", 0.0) or 0.0)
-    if trust_state.tier != "probation" or base_size <= 0:
-        adjusted["wallet_trust_note"] = trust_state.probation_note
+    if base_size <= 0 or trust_state.size_multiplier >= 0.999 or trust_state.size_multiplier <= 0:
+        adjusted["wallet_trust_note"] = trust_state.tier_note
         adjusted["wallet_trust_multiplier"] = trust_state.size_multiplier
-        adjusted["wallet_trust_effective_multiplier"] = 1.0 if base_size > 0 else 0.0
+        adjusted["wallet_trust_effective_multiplier"] = (
+            1.0 if base_size > 0 and trust_state.size_multiplier >= 0.999 else 0.0
+        )
         return adjusted
 
     scaled_size = round(base_size * trust_state.size_multiplier, 2)
@@ -192,8 +214,8 @@ def apply_wallet_trust_sizing(sizing: dict, trust_state: WalletTrustState) -> di
     adjusted["wallet_trust_multiplier"] = trust_state.size_multiplier
     adjusted["wallet_trust_effective_multiplier"] = round(effective_multiplier, 5)
     adjusted["wallet_trust_note"] = (
-        f"{trust_state.probation_note}, size scaled to {effective_multiplier * 100:.0f}%"
+        f"{trust_state.tier_note}, size scaled to {effective_multiplier * 100:.0f}%"
         if effective_multiplier < 0.999
-        else f"{trust_state.probation_note}, minimum bet floor kept size unchanged"
+        else f"{trust_state.tier_note}, minimum bet floor kept size unchanged"
     )
     return adjusted

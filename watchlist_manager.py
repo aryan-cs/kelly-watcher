@@ -74,6 +74,8 @@ def _score_wallet(
     n_trades: int,
     avg_return: float,
     realized_pnl_usd: float,
+    volume_usd: float,
+    avg_size_usd: float,
     open_positions: int,
     last_source_ts: int,
     cache_updated_at: int,
@@ -84,6 +86,8 @@ def _score_wallet(
     sample_score = _clip(math.log1p(max(n_trades, 0)) / math.log1p(80))
     return_score = _clip((avg_return + 0.05) / 0.20)
     pnl_score = _clip(math.log1p(max(realized_pnl_usd, 0.0)) / math.log1p(5_000.0))
+    volume_score = _clip(math.log1p(max(volume_usd, 0.0)) / math.log1p(50_000.0))
+    size_score = _clip(math.log1p(max(avg_size_usd, 0.0)) / math.log1p(250.0))
 
     if last_source_ts > 0:
         activity_age_hours = max(now_ts - last_source_ts, 0) / 3600.0
@@ -100,10 +104,12 @@ def _score_wallet(
         freshness_penalty = 0.10
 
     quality_score = (
-        0.45 * win_score
-        + 0.20 * return_score
-        + 0.20 * sample_score
-        + 0.15 * pnl_score
+        0.35 * win_score
+        + 0.17 * return_score
+        + 0.18 * sample_score
+        + 0.10 * pnl_score
+        + 0.10 * volume_score
+        + 0.10 * size_score
     )
     composite = (
         0.70 * quality_score
@@ -464,6 +470,8 @@ def _load_watch_metrics(wallet_addresses: list[str]) -> list[RankedWallet]:
                 n_trades,
                 avg_return,
                 realized_pnl_usd,
+                volume_usd,
+                avg_size_usd,
                 open_positions,
                 updated_at
             FROM trader_cache
@@ -500,6 +508,8 @@ def _load_watch_metrics(wallet_addresses: list[str]) -> list[RankedWallet]:
         n_trades = int(row["n_trades"] or 0) if row else 0
         avg_return = float(row["avg_return"] or 0.0) if row else 0.0
         realized_pnl_usd = float(row["realized_pnl_usd"] or 0.0) if row else 0.0
+        volume_usd = float(row["volume_usd"] or 0.0) if row else 0.0
+        avg_size_usd = float(row["avg_size_usd"] or 0.0) if row else 0.0
         open_positions = int(row["open_positions"] or 0) if row else 0
         cache_updated_at = int(row["updated_at"] or 0) if row else 0
         last_source_ts = int(cursor_map.get(wallet, 0))
@@ -508,6 +518,8 @@ def _load_watch_metrics(wallet_addresses: list[str]) -> list[RankedWallet]:
             n_trades=n_trades,
             avg_return=avg_return,
             realized_pnl_usd=realized_pnl_usd,
+            volume_usd=volume_usd,
+            avg_size_usd=avg_size_usd,
             open_positions=open_positions,
             last_source_ts=last_source_ts,
             cache_updated_at=cache_updated_at,

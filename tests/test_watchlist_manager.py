@@ -99,7 +99,9 @@ class WatchlistManagerTest(unittest.TestCase):
 
                 with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
                     "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.time.time", return_value=1_700_000_200
+                ):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xdisc"])
                     snapshot = manager.refresh()
 
@@ -137,7 +139,9 @@ class WatchlistManagerTest(unittest.TestCase):
                     "watchlist_manager.warm_wallet_count", return_value=1
                 ), patch("watchlist_manager.warm_poll_interval_multiplier", return_value=2), patch(
                     "watchlist_manager.discovery_poll_interval_multiplier", return_value=3
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.time.time", return_value=1_700_000_200
+                ):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xdisc"])
                     self.assertEqual(manager.wallets_for_poll(), ["0xhot"])
                     self.assertEqual(manager.wallets_for_poll(), ["0xhot", "0xwarm"])
@@ -223,6 +227,97 @@ class WatchlistManagerTest(unittest.TestCase):
 
                 self.assertEqual(snapshot.dropped, ())
                 self.assertEqual(snapshot.hot, ("0xactive", "0xstale"))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_underperforming_wallets_are_auto_dropped_after_minimum_sample(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xgood", 0.61, 55, 0.2, 0.0, 20.0, 10, 10, 34, 0, 300.0, 0.03, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xbad", 0.34, 60, -0.2, 0.0, 20.0, 10, 10, 20, 0, -250.0, -0.08, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO wallet_cursors (wallet_address, last_source_ts, last_trade_ids_json, updated_at)
+                    VALUES (?,?,?,?)
+                    """,
+                    (
+                        ("0xgood", 1_700_000_000, "[]", 1_700_000_000),
+                        ("0xbad", 1_700_000_050, "[]", 1_700_000_050),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.wallet_performance_drop_min_trades", return_value=40
+                ), patch("watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
+                    "watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
+                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                    manager = WatchlistManager(["0xgood", "0xbad"])
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.hot, ("0xgood",))
+                self.assertEqual(snapshot.dropped, ("0xbad",))
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    "SELECT status, status_reason FROM wallet_watch_state WHERE wallet_address=?",
+                    ("0xbad",),
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row["status"], "dropped")
+                self.assertIn("poor_perf", row["status_reason"])
+
+                with patch("watchlist_manager.time.time", return_value=1_700_000_300):
+                    self.assertTrue(reactivate_wallet("0xbad"))
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.wallet_performance_drop_min_trades", return_value=40
+                ), patch("watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
+                    "watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
+                ), patch("watchlist_manager.time.time", return_value=1_700_000_320):
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.dropped, ())
+                self.assertEqual(snapshot.hot, ("0xgood", "0xbad"))
+
+                conn = db.get_conn()
+                conn.execute(
+                    "UPDATE wallet_cursors SET last_source_ts=? WHERE wallet_address=?",
+                    (1_700_000_450, "0xbad"),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.wallet_performance_drop_min_trades", return_value=40
+                ), patch("watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
+                    "watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
+                ), patch("watchlist_manager.time.time", return_value=1_700_000_500):
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.dropped, ("0xbad",))
             finally:
                 db.DB_PATH = original_db_path
 

@@ -199,6 +199,18 @@ def wallet_inactivity_limit_seconds() -> float:
     )
 
 
+def wallet_performance_drop_min_trades() -> int:
+    return _get_bounded_int("WALLET_PERFORMANCE_DROP_MIN_TRADES", "40", minimum=0)
+
+
+def wallet_performance_drop_max_win_rate() -> float:
+    return _get_bounded_float("WALLET_PERFORMANCE_DROP_MAX_WIN_RATE", "0.40", minimum=0.0, maximum=1.0)
+
+
+def wallet_performance_drop_max_avg_return() -> float:
+    return _get_bounded_float("WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN", "-0.03", minimum=-1.0, maximum=1.0)
+
+
 def _parse_duration(raw: str, default_seconds: float) -> float:
     value = (raw or "").strip().lower()
     if not value:

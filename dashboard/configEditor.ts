@@ -56,6 +56,30 @@ export const editableConfigFields: EditableConfigField[] = [
     options: walletInactivityPresets
   },
   {
+    key: 'WALLET_PERFORMANCE_DROP_MIN_TRADES',
+    label: 'Wallet Drop Min Trades',
+    kind: 'int',
+    description: 'Minimum Closed Profile Trades Required Before Poor Performance Can Auto-Drop A Wallet. Set To 0 To Disable. Applies Live On The Next Loop.',
+    defaultValue: '40',
+    liveApplies: true
+  },
+  {
+    key: 'WALLET_PERFORMANCE_DROP_MAX_WIN_RATE',
+    label: 'Wallet Drop Max Win Rate',
+    kind: 'float',
+    description: 'Auto-Drop A Wallet If Its Profile Win Rate Is At Or Below This Level After The Minimum Trade Count Is Reached. Applies Live On The Next Loop.',
+    defaultValue: '0.40',
+    liveApplies: true
+  },
+  {
+    key: 'WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN',
+    label: 'Wallet Drop Max Avg Return',
+    kind: 'float',
+    description: 'Auto-Drop A Wallet If Its Profile Average Return Is At Or Below This Level After The Minimum Trade Count Is Reached. Applies Live On The Next Loop.',
+    defaultValue: '-0.03',
+    liveApplies: true
+  },
+  {
     key: 'MIN_CONFIDENCE',
     label: 'Min Confidence',
     kind: 'float',
@@ -248,6 +272,18 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
 
   if ((field.key === 'MIN_CONFIDENCE' || field.key === 'MAX_BET_FRACTION') && (numeric <= 0 || numeric > 1)) {
     return {ok: false, error: `${field.label} must be between 0 and 1.`}
+  }
+
+  if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_WIN_RATE' && (numeric < 0 || numeric > 1)) {
+    return {ok: false, error: `${field.label} must be between 0 and 1.`}
+  }
+
+  if (field.key === 'WALLET_PERFORMANCE_DROP_MIN_TRADES' && numeric < 0) {
+    return {ok: false, error: `${field.label} must be 0 or greater.`}
+  }
+
+  if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN' && (numeric < -1 || numeric > 1)) {
+    return {ok: false, error: `${field.label} must be between -1 and 1.`}
   }
 
   if ((field.key === 'MIN_BET_USD' || field.key === 'SHADOW_BANKROLL_USD') && numeric <= 0) {

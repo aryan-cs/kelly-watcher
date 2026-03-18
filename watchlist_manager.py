@@ -9,6 +9,9 @@ from config import (
     discovery_poll_interval_multiplier,
     hot_wallet_count,
     wallet_inactivity_limit_seconds,
+    wallet_performance_drop_max_avg_return,
+    wallet_performance_drop_max_win_rate,
+    wallet_performance_drop_min_trades,
     warm_poll_interval_multiplier,
     warm_wallet_count,
 )
@@ -207,6 +210,68 @@ def _drop_wallets(wallet_updates: list[tuple[str, str, int, int]]) -> None:
         conn.close()
 
 
+def _auto_drop_underperforming_wallets(wallet_addresses: list[str]) -> None:
+    minimum_trades = wallet_performance_drop_min_trades()
+    if minimum_trades <= 0:
+        return
+
+    max_win_rate = wallet_performance_drop_max_win_rate()
+    max_avg_return = wallet_performance_drop_max_avg_return()
+    wallets = _normalize_wallets(wallet_addresses)
+    if not wallets:
+        return
+
+    status_rows = _wallet_status_rows(wallets)
+    cursor_map = _wallet_cursor_map(wallets)
+    placeholders = ",".join("?" for _ in wallets)
+    conn = get_conn()
+    try:
+        trader_rows = conn.execute(
+            f"""
+            SELECT trader_address, win_rate, n_trades, avg_return
+            FROM trader_cache
+            WHERE trader_address IN ({placeholders})
+            """,
+            tuple(wallets),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    trader_map = {
+        str(row["trader_address"] or "").strip().lower(): row
+        for row in trader_rows
+    }
+    now_ts = int(time.time())
+    to_drop: list[tuple[str, str, int, int]] = []
+
+    for wallet in wallets:
+        status_row = status_rows.get(wallet, {})
+        if status_row.get("status") == "dropped":
+            continue
+
+        row = trader_map.get(wallet)
+        if row is None:
+            continue
+
+        n_trades = int(row["n_trades"] or 0)
+        win_rate = float(row["win_rate"] or 0.0)
+        avg_return = float(row["avg_return"] or 0.0)
+        if n_trades < minimum_trades or win_rate > max_win_rate or avg_return > max_avg_return:
+            continue
+
+        reactivated_at = int(status_row.get("reactivated_at") or 0)
+        last_source_ts = int(cursor_map.get(wallet, 0))
+        if reactivated_at > 0 and last_source_ts <= reactivated_at:
+            continue
+
+        reason = (
+            f"poor_perf {n_trades}t {win_rate * 100.0:.1f}%wr {avg_return * 100.0:.1f}%ret"
+        )
+        to_drop.append((wallet, reason, now_ts, last_source_ts))
+
+    _drop_wallets(to_drop)
+
+
 def reactivate_wallet(wallet_address: str) -> bool:
     wallet = str(wallet_address or "").strip().lower()
     if not wallet:
@@ -366,6 +431,7 @@ class WatchlistManager:
 
     def _build_snapshot(self) -> WatchTierSnapshot:
         _auto_drop_inactive_wallets(self.wallets)
+        _auto_drop_underperforming_wallets(self.wallets)
         status_rows = _wallet_status_rows(self.wallets)
         dropped_wallets = tuple(
             wallet for wallet in self.wallets if status_rows.get(wallet, {}).get("status") == "dropped"

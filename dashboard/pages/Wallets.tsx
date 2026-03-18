@@ -520,11 +520,12 @@ export function Wallets({
 }: WalletsProps) {
   const terminal = useTerminalSize()
   const footerRows = 1
+  const shadowLeaderboardRows = 5
+  const shadowPanelHeight = shadowLeaderboardRows + 4
   const totalVisibleRows = Math.max(8, rowsForHeight(terminal.height, terminal.wide ? 18 : 24, 4) - footerRows)
-  // Previous layout effectively gave tracked wallets ~65% of the available list rows.
-  // Shrink that by roughly one-third and hand the reclaimed space to dropped wallets.
-  const trackedVisibleRows = Math.max(4, Math.floor(totalVisibleRows * 0.43))
-  const droppedVisibleRows = Math.max(4, totalVisibleRows - trackedVisibleRows)
+  const profileVisibleRows = Math.max(4, Math.floor(totalVisibleRows / 2))
+  const trackedVisibleRows = profileVisibleRows
+  const droppedVisibleRows = profileVisibleRows
   const tableWidth = Math.max(52, terminal.width - 8)
   const activityRows = useQuery<WalletActivityRow>(WALLET_ACTIVITY_SQL)
   const traderCacheRows = useQuery<TraderCacheRow>(TRADER_CACHE_SQL)
@@ -1010,8 +1011,11 @@ export function Wallets({
   const selectedTrackedWalletAddress = trackedWallets[clampedTrackedSelectedIndex]?.trader_address || ''
   const selectedDroppedWalletAddress = droppedWallets[clampedDroppedSelectedIndex]?.trader_address || ''
 
-  const renderShadowWalletBox = (title: string, shadowWallets: TopShadowRow[]) => (
-    <Box title={title} width={shadowPanelsWide ? shadowPanelWidth : '100%'}>
+  const renderShadowWalletBox = (title: string, shadowWallets: TopShadowRow[]) => {
+    const paddedRows = Array.from({length: shadowLeaderboardRows}, (_, index) => shadowWallets[index] ?? null)
+
+    return (
+    <Box title={title} width={shadowPanelsWide ? shadowPanelWidth : '100%'} height={shadowPanelHeight}>
       <InkBox width="100%">
         <Text color={theme.dim}>{fit('WALLET', shadowNameWidth)}</Text>
         <Text color={theme.dim}> </Text>
@@ -1021,7 +1025,19 @@ export function Wallets({
       </InkBox>
       <InkBox flexDirection="column">
         {shadowWallets.length ? (
-          shadowWallets.map((wallet) => {
+          paddedRows.map((wallet, index) => {
+            if (!wallet) {
+              return (
+                <InkBox key={`${title}-empty-${index}`} width="100%">
+                  <Text color={theme.dim}>{fit('', shadowNameWidth)}</Text>
+                  <Text> </Text>
+                  <Text color={theme.dim}>{fitRight('', 10)}</Text>
+                  <Text> </Text>
+                  <Text color={theme.dim}>{fitRight('', 10)}</Text>
+                </InkBox>
+              )
+            }
+
             const username = usernames.get(wallet.trader_address.toLowerCase())
             const label = username || shortAddress(wallet.trader_address)
             const profile = traderCacheByWallet.get(wallet.trader_address.toLowerCase())
@@ -1050,17 +1066,18 @@ export function Wallets({
         )}
       </InkBox>
     </Box>
-  )
+    )
+  }
 
   return (
     <InkBox flexDirection="column" width="100%" height="100%">
-      <InkBox flexDirection={shadowPanelsWide ? 'row' : 'column'} columnGap={1} rowGap={1}>
+      <InkBox flexDirection={shadowPanelsWide ? 'row' : 'column'} columnGap={1} rowGap={1} flexShrink={0}>
         {renderShadowWalletBox('Best Wallets', bestShadowWallets)}
         {renderShadowWalletBox('Worst Wallets', worstShadowWallets)}
       </InkBox>
 
       <InkBox marginTop={1} flexGrow={1} flexDirection="column">
-        <InkBox flexGrow={trackedVisibleRows}>
+        <InkBox flexGrow={1}>
           <Box title={`Tracked Wallet Profiles: ${trackedWallets.length}`} height="100%" accent={activePane === 'tracked'}>
             <InkBox width="100%" height={1}>
               <Text color={theme.dim}>{fit('USERNAME', layout.usernameWidth)}</Text>
@@ -1144,7 +1161,7 @@ export function Wallets({
 
         <InkBox height={1} />
 
-        <InkBox flexGrow={droppedVisibleRows}>
+        <InkBox flexGrow={1}>
           <Box title={`Dropped Wallet Profiles: ${droppedWallets.length}`} height="100%" accent={activePane === 'dropped'}>
             <InkBox width="100%" height={1}>
               <Text color={theme.dim}>{fit('USERNAME', droppedLayout.usernameWidth)}</Text>

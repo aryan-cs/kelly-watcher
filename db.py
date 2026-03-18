@@ -251,6 +251,7 @@ def init_db() -> None:
             status_reason            TEXT,
             dropped_at               INTEGER,
             reactivated_at           INTEGER,
+            tracking_started_at      INTEGER NOT NULL DEFAULT 0,
             last_source_ts_at_status INTEGER NOT NULL DEFAULT 0,
             updated_at               INTEGER NOT NULL
         );
@@ -348,6 +349,7 @@ def init_db() -> None:
             "status_reason": "TEXT",
             "dropped_at": "INTEGER",
             "reactivated_at": "INTEGER",
+            "tracking_started_at": "INTEGER NOT NULL DEFAULT 0",
             "last_source_ts_at_status": "INTEGER NOT NULL DEFAULT 0",
             "updated_at": "INTEGER NOT NULL DEFAULT 0",
         },

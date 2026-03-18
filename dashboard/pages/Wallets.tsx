@@ -1,8 +1,9 @@
 import fs from 'fs'
+import Database from 'better-sqlite3'
 import React, {useEffect, useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
-import {envExamplePath, envPath} from '../paths.js'
+import {dbPath, envExamplePath, envPath} from '../paths.js'
 import {fit, fitRight, formatPct, secondsAgo, shortAddress, truncate, wrapText} from '../format.js'
 import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {rowsForHeight} from '../responsive.js'
@@ -53,6 +54,7 @@ interface WalletWatchStateRow {
   status_reason: string | null
   dropped_at: number | null
   reactivated_at: number | null
+  tracking_started_at: number | null
   last_source_ts_at_status: number | null
   updated_at: number | null
 }
@@ -99,6 +101,7 @@ interface WalletRow {
   status_reason: string | null
   dropped_at: number | null
   reactivated_at: number | null
+  tracking_started_at: number | null
   last_source_ts_at_status: number | null
   watch_index: number
 }
@@ -114,6 +117,7 @@ interface TopShadowRow {
 interface WalletsLayout {
   usernameWidth: number
   addressWidth: number
+  trackingSinceWidth: number
   tierWidth: number
   seenTradesWidth: number
   seenWinRateWidth: number
@@ -239,10 +243,45 @@ SELECT
   status_reason,
   dropped_at,
   reactivated_at,
+  tracking_started_at,
   last_source_ts_at_status,
   updated_at
 FROM wallet_watch_state
 `
+
+let walletWatchStateSchemaReady = false
+
+function ensureWalletWatchStateSchema(): void {
+  if (walletWatchStateSchemaReady) {
+    return
+  }
+
+  const db = new Database(dbPath)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS wallet_watch_state (
+        wallet_address           TEXT PRIMARY KEY,
+        status                   TEXT NOT NULL DEFAULT 'active',
+        status_reason            TEXT,
+        dropped_at               INTEGER,
+        reactivated_at           INTEGER,
+        tracking_started_at      INTEGER NOT NULL DEFAULT 0,
+        last_source_ts_at_status INTEGER NOT NULL DEFAULT 0,
+        updated_at               INTEGER NOT NULL
+      )
+    `)
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(wallet_watch_state)').all() as Array<{name: string}>)
+        .map((row) => String(row.name))
+    )
+    if (!columns.has('tracking_started_at')) {
+      db.exec("ALTER TABLE wallet_watch_state ADD COLUMN tracking_started_at INTEGER NOT NULL DEFAULT 0")
+    }
+    walletWatchStateSchemaReady = true
+  } finally {
+    db.close()
+  }
+}
 
 const SHADOW_WALLETS_SQL = `
 SELECT
@@ -449,6 +488,7 @@ function tierColor(tier: WatchTier): string {
 }
 
 function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
+  const trackingSinceWidth = 10
   const tierWidth = 5
   const seenTradesWidth = 6
   const seenWinRateWidth = 8
@@ -458,6 +498,7 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   const copyPnlWidth = 11
   const lastSeenWidth = 10
   const fixedWidths =
+    trackingSinceWidth +
     tierWidth +
     seenTradesWidth +
     seenWinRateWidth +
@@ -466,7 +507,7 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
     profileWinRateWidth +
     copyPnlWidth +
     lastSeenWidth
-  const gapCount = 8
+  const gapCount = 9
   const variableBudget = Math.max(40, width - fixedWidths - gapCount)
   const desiredUsernameWidth = Math.max(
     14,
@@ -491,6 +532,7 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   return {
     usernameWidth,
     addressWidth,
+    trackingSinceWidth,
     tierWidth,
     seenTradesWidth,
     seenWinRateWidth,
@@ -543,6 +585,7 @@ export function Wallets({
   detailOpen,
   onWalletMetaChange
 }: WalletsProps) {
+  ensureWalletWatchStateSchema()
   const terminal = useTerminalSize()
   const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
   const footerRows = 1
@@ -597,6 +640,7 @@ export function Wallets({
             status_reason: row.status_reason ?? null,
             dropped_at: row.dropped_at ?? null,
             reactivated_at: row.reactivated_at ?? null,
+            tracking_started_at: row.tracking_started_at ?? null,
             last_source_ts_at_status: row.last_source_ts_at_status ?? null,
             updated_at: row.updated_at ?? null
           }
@@ -698,6 +742,7 @@ export function Wallets({
         status_reason: watchState?.status_reason ?? null,
         dropped_at: watchState?.dropped_at ?? null,
         reactivated_at: watchState?.reactivated_at ?? null,
+        tracking_started_at: watchState?.tracking_started_at ?? watchState?.reactivated_at ?? watchState?.updated_at ?? null,
         last_source_ts_at_status: watchState?.last_source_ts_at_status ?? null,
         watch_index: index
       }
@@ -846,6 +891,10 @@ export function Wallets({
             label: 'Watch Tier',
             value: selectedWallet.status === 'dropped' ? '-' : tierLabel(selectedWallet.watch_tier),
             color: selectedWallet.status === 'dropped' ? theme.dim : tierColor(selectedWallet.watch_tier)
+          },
+          {
+            label: 'Tracking Since',
+            value: secondsAgo(selectedWallet.tracking_started_at || undefined)
           },
           {
             label: 'Source Last',
@@ -1130,6 +1179,8 @@ export function Wallets({
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('ADDRESS', layout.addressWidth)}</Text>
               <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('SINCE', layout.trackingSinceWidth)}</Text>
+              <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('TRACK', layout.tierWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fitRight('SEEN', layout.seenTradesWidth)}</Text>
@@ -1178,6 +1229,10 @@ export function Wallets({
                       <Text color={usernameColor} backgroundColor={rowBackground} bold={isSelected}>{fit(displayUsername, layout.usernameWidth)}</Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={addressColor} backgroundColor={rowBackground} bold={isSelected}>{formatAddress(wallet.trader_address, layout.addressWidth)}</Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
+                        {fitRight(secondsAgo(wallet.tracking_started_at || undefined), layout.trackingSinceWidth)}
+                      </Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={tierTextColor} backgroundColor={rowBackground} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
                       <Text backgroundColor={rowBackground}> </Text>

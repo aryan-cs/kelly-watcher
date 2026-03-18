@@ -9,6 +9,7 @@ from config import (
     discovery_poll_interval_multiplier,
     hot_wallet_count,
     wallet_inactivity_limit_seconds,
+    wallet_slow_drop_max_tracking_age_seconds,
     wallet_performance_drop_max_avg_return,
     wallet_performance_drop_max_win_rate,
     wallet_performance_drop_min_trades,
@@ -128,6 +129,7 @@ def _wallet_status_rows(wallet_addresses: list[str]) -> dict[str, dict[str, int 
                 status_reason,
                 dropped_at,
                 reactivated_at,
+                tracking_started_at,
                 last_source_ts_at_status,
                 updated_at
             FROM wallet_watch_state
@@ -144,6 +146,7 @@ def _wallet_status_rows(wallet_addresses: list[str]) -> dict[str, dict[str, int 
             "status_reason": row["status_reason"],
             "dropped_at": int(row["dropped_at"] or 0),
             "reactivated_at": int(row["reactivated_at"] or 0),
+            "tracking_started_at": int(row["tracking_started_at"] or 0),
             "last_source_ts_at_status": int(row["last_source_ts_at_status"] or 0),
             "updated_at": int(row["updated_at"] or 0),
         }
@@ -206,6 +209,84 @@ def _drop_wallets(wallet_updates: list[tuple[str, str, int, int]]) -> None:
             ],
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _ensure_tracking_started(wallet_addresses: list[str]) -> None:
+    wallets = _normalize_wallets(wallet_addresses)
+    if not wallets:
+        return
+
+    now_ts = int(time.time())
+    placeholders = ",".join("?" for _ in wallets)
+    cursor_map = _wallet_cursor_map(wallets)
+    conn = get_conn()
+    try:
+        existing_rows = conn.execute(
+            f"""
+            SELECT
+                wallet_address,
+                tracking_started_at,
+                reactivated_at,
+                updated_at
+            FROM wallet_watch_state
+            WHERE wallet_address IN ({placeholders})
+            """,
+            tuple(wallets),
+        ).fetchall()
+        existing = {
+            str(row["wallet_address"] or "").strip().lower(): row
+            for row in existing_rows
+        }
+
+        to_insert = [
+            (
+                wallet,
+                int(cursor_map.get(wallet, 0)) or now_ts,
+                now_ts,
+            )
+            for wallet in wallets
+            if wallet not in existing
+        ]
+        to_update: list[tuple[int, int, str]] = []
+        for wallet in wallets:
+            row = existing.get(wallet)
+            if row is None:
+                continue
+            tracking_started_at = int(row["tracking_started_at"] or 0)
+            if tracking_started_at > 0:
+                continue
+            anchor = int(cursor_map.get(wallet, 0)) or int(row["reactivated_at"] or 0) or int(row["updated_at"] or 0) or now_ts
+            updated_at = int(row["updated_at"] or 0) or anchor
+            to_update.append((anchor, updated_at, wallet))
+
+        if to_insert:
+            conn.executemany(
+                """
+                INSERT INTO wallet_watch_state (
+                    wallet_address,
+                    status,
+                    tracking_started_at,
+                    updated_at
+                ) VALUES (?, 'active', ?, ?)
+                ON CONFLICT(wallet_address) DO NOTHING
+                """,
+                to_insert,
+            )
+        if to_update:
+            conn.executemany(
+                """
+                UPDATE wallet_watch_state
+                SET tracking_started_at=?,
+                    updated_at=?
+                WHERE wallet_address=?
+                  AND COALESCE(tracking_started_at, 0)=0
+                """,
+                to_update,
+            )
+        if to_insert or to_update:
+            conn.commit()
     finally:
         conn.close()
 
@@ -288,16 +369,18 @@ def reactivate_wallet(wallet_address: str) -> bool:
                 status_reason,
                 dropped_at,
                 reactivated_at,
+                tracking_started_at,
                 updated_at
-            ) VALUES (?, 'active', NULL, NULL, ?, ?)
+            ) VALUES (?, 'active', NULL, NULL, ?, ?, ?)
             ON CONFLICT(wallet_address) DO UPDATE SET
                 status='active',
                 status_reason=NULL,
                 dropped_at=NULL,
                 reactivated_at=excluded.reactivated_at,
+                tracking_started_at=excluded.tracking_started_at,
                 updated_at=excluded.updated_at
             """,
-            (wallet, now_ts, now_ts),
+            (wallet, now_ts, now_ts, now_ts),
         )
         conn.commit()
         return True
@@ -327,7 +410,8 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
 
         last_source_ts = int(cursor_map.get(wallet, 0))
         reactivated_at = int(status_row.get("reactivated_at") or 0)
-        inactivity_anchor = max(last_source_ts, reactivated_at)
+        tracking_started_at = int(status_row.get("tracking_started_at") or 0)
+        inactivity_anchor = max(last_source_ts, reactivated_at, tracking_started_at)
         if inactivity_anchor <= 0:
             continue
         if (now_ts - inactivity_anchor) < inactivity_limit:
@@ -335,6 +419,33 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
         to_drop.append((wallet, reason, now_ts, last_source_ts))
 
     _drop_wallets(to_drop)
+
+
+def _slow_wallet_drop_updates(
+    discovery_wallets: tuple[str, ...],
+    status_rows: dict[str, dict[str, int | str | None]],
+) -> list[tuple[str, str, int, int]]:
+    max_tracking_age = wallet_slow_drop_max_tracking_age_seconds()
+    if not math.isfinite(max_tracking_age) or not discovery_wallets:
+        return []
+
+    cursor_map = _wallet_cursor_map(list(discovery_wallets))
+    now_ts = int(time.time())
+    reason = f"slow>{_format_duration_label(max_tracking_age)}"
+    to_drop: list[tuple[str, str, int, int]] = []
+
+    for wallet in discovery_wallets:
+        status_row = status_rows.get(wallet, {})
+        if status_row.get("status") == "dropped":
+            continue
+        tracking_started_at = int(status_row.get("tracking_started_at") or 0)
+        if tracking_started_at <= 0:
+            continue
+        if (now_ts - tracking_started_at) < max_tracking_age:
+            continue
+        to_drop.append((wallet, reason, now_ts, int(cursor_map.get(wallet, 0))))
+
+    return to_drop
 
 
 def _load_watch_metrics(wallet_addresses: list[str]) -> list[RankedWallet]:
@@ -430,6 +541,7 @@ class WatchlistManager:
         self._snapshot = self._build_snapshot()
 
     def _build_snapshot(self) -> WatchTierSnapshot:
+        _ensure_tracking_started(self.wallets)
         _auto_drop_inactive_wallets(self.wallets)
         _auto_drop_underperforming_wallets(self.wallets)
         status_rows = _wallet_status_rows(self.wallets)
@@ -444,6 +556,23 @@ class WatchlistManager:
         hot = tuple(row.wallet for row in ranked[:hot_count])
         warm = tuple(row.wallet for row in ranked[hot_count:hot_count + warm_count])
         discovery = tuple(row.wallet for row in ranked[hot_count + warm_count:])
+
+        slow_drop_updates = _slow_wallet_drop_updates(discovery, status_rows)
+        if slow_drop_updates:
+            _drop_wallets(slow_drop_updates)
+            status_rows = _wallet_status_rows(self.wallets)
+            dropped_wallets = tuple(
+                wallet for wallet in self.wallets if status_rows.get(wallet, {}).get("status") == "dropped"
+            )
+            active_wallets = [wallet for wallet in self.wallets if wallet not in dropped_wallets]
+            ranked = _load_watch_metrics(active_wallets)
+            hot_count = min(len(ranked), hot_wallet_count())
+            remaining = max(len(ranked) - hot_count, 0)
+            warm_count = min(remaining, warm_wallet_count())
+            hot = tuple(row.wallet for row in ranked[:hot_count])
+            warm = tuple(row.wallet for row in ranked[hot_count:hot_count + warm_count])
+            discovery = tuple(row.wallet for row in ranked[hot_count + warm_count:])
+
         return WatchTierSnapshot(
             hot=hot,
             warm=warm,

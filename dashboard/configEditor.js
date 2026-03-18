@@ -11,6 +11,7 @@ export const maxMarketHorizonPresets = [
     'unlimited'
 ];
 export const walletInactivityPresets = ['1h', '3h', '5h', '8h', '24h', '7d', 'unlimited'];
+export const walletSlowDropPresets = ['24h', '3d', '7d', '14d', '30d', 'unlimited'];
 export const editableConfigFields = [
     {
         key: 'POLL_INTERVAL_SECONDS',
@@ -32,10 +33,19 @@ export const editableConfigFields = [
         key: 'WALLET_INACTIVITY_LIMIT',
         label: 'Wallet Inactivity',
         kind: 'duration',
-        description: 'Auto-Drop A Wallet After This Much Time Without A New Source Trade. Edit With Left/Right To Toggle 1h, 3h, 5h, 8h, 24h, 7d, Or Unlimited. Applies Live On The Next Loop.',
+        description: 'Auto-Drop A Wallet After This Much Time Without A New Source Trade, Even If It Never Traded After Tracking Began. Edit With Left/Right To Toggle 1h, 3h, 5h, 8h, 24h, 7d, Or Unlimited. Applies Live On The Next Loop.',
         defaultValue: 'unlimited',
         liveApplies: true,
         options: walletInactivityPresets
+    },
+    {
+        key: 'WALLET_SLOW_DROP_MAX_TRACKING_AGE',
+        label: 'Slow Wallet Max Age',
+        kind: 'duration',
+        description: 'Auto-Drop A Wallet If It Stays In The Slow Tier Longer Than This Current Tracking Stint. Edit With Left/Right To Toggle 24h, 3d, 7d, 14d, 30d, Or Unlimited. Applies Live On The Next Loop.',
+        defaultValue: 'unlimited',
+        liveApplies: true,
+        options: walletSlowDropPresets
     },
     {
         key: 'WALLET_PERFORMANCE_DROP_MIN_TRADES',

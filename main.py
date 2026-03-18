@@ -40,6 +40,7 @@ from config import (
     retrain_hour_local,
     use_real_money,
     wallet_inactivity_limit_seconds,
+    wallet_slow_drop_max_tracking_age_seconds,
     wallet_performance_drop_max_avg_return,
     wallet_performance_drop_max_win_rate,
     wallet_performance_drop_min_trades,
@@ -867,6 +868,7 @@ def _validate_startup() -> None:
     _capture_config(warm_poll_interval_multiplier)
     _capture_config(discovery_poll_interval_multiplier)
     _capture_config(wallet_inactivity_limit_seconds)
+    _capture_config(wallet_slow_drop_max_tracking_age_seconds)
     _capture_config(wallet_performance_drop_min_trades)
     _capture_config(wallet_performance_drop_max_win_rate)
     _capture_config(wallet_performance_drop_max_avg_return)

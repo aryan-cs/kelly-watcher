@@ -199,6 +199,15 @@ def wallet_inactivity_limit_seconds() -> float:
     )
 
 
+def wallet_slow_drop_max_tracking_age_seconds() -> float:
+    return _get_duration_seconds(
+        "WALLET_SLOW_DROP_MAX_TRACKING_AGE",
+        "unlimited",
+        minimum_seconds=60.0,
+        allow_unlimited=True,
+    )
+
+
 def wallet_performance_drop_min_trades() -> int:
     return _get_bounded_int("WALLET_PERFORMANCE_DROP_MIN_TRADES", "40", minimum=0)
 

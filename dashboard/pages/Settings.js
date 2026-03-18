@@ -57,7 +57,8 @@ export function Settings({ editor }) {
     const visibleWallets = envData.watchedWallets.slice(0, maxWalletLines);
     const hiddenWalletCount = Math.max(0, envData.watchedWallets.length - visibleWallets.length);
     const selectedField = editableConfigFields[editor.selectedIndex];
-    const helperWidth = Math.max(24, terminal.width - 14);
+    const panelContentWidth = Math.max(24, terminal.width - 10);
+    const helperWidth = panelContentWidth;
     const statusColor = editor.statusTone === 'error' ? theme.red : editor.statusTone === 'success' ? theme.green : theme.dim;
     const usernames = useMemo(() => {
         const lookup = new Map();
@@ -72,11 +73,11 @@ export function Settings({ editor }) {
         }
         return lookup;
     }, [events]);
-    const walletTableWidth = Math.max(24, helperWidth - 2);
+    const walletTableWidth = Math.max(24, panelContentWidth);
     const walletIndexWidth = Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1);
     const walletAddressWidth = Math.max(18, Math.min(42, Math.floor(walletTableWidth * 0.62)));
     const walletUsernameWidth = Math.max(8, walletTableWidth - walletIndexWidth - walletAddressWidth - 2);
-    const configRowWidth = Math.max(30, helperWidth - 2);
+    const configRowWidth = Math.max(30, panelContentWidth);
     const configValueWidth = Math.max(12, Math.min(30, Math.floor(configRowWidth * 0.42)));
     const configLabelWidth = Math.max(10, configRowWidth - configValueWidth - 1);
     const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);

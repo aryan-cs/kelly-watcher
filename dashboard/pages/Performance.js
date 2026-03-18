@@ -3,7 +3,7 @@ import { Box as InkBox, Text } from 'ink';
 import { BarSparkline } from '../components/BarSparkline.js';
 import { Box } from '../components/Box.js';
 import { StatRow } from '../components/StatRow.js';
-import { fit, fitRight, formatAdaptiveDollar, formatAdaptiveNumber, formatDisplayId, formatShortDateTime, formatDollar, formatNumber, formatPct, secondsAgo, timeUntil, shortAddress } from '../format.js';
+import { fit, fitRight, formatAdaptiveDollar, formatAdaptiveNumber, formatDisplayId, formatShortDateTime, formatDollar, formatNumber, formatPct, secondsAgo, terminalHyperlink, timeUntil, shortAddress } from '../format.js';
 import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
 import { outcomeColor, positiveDollarColor, probabilityColor, theme } from '../theme.js';
@@ -66,6 +66,7 @@ SELECT
   ('o:' || tl.id) AS row_key,
   tl.trade_id,
   tl.market_id,
+  tl.market_url,
   tl.side,
   ROUND(COALESCE(tl.remaining_entry_size_usd, tl.actual_entry_size_usd), 3) AS size_usd,
   ROUND(
@@ -116,6 +117,27 @@ SELECT
     )
   ) AS trade_id,
   p.market_id,
+  COALESCE(
+    (
+      SELECT tl.market_url
+      FROM trade_log tl
+      WHERE tl.market_id = p.market_id
+        AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${EXECUTED_ENTRY_WHERE}
+        AND tl.placed_at <= p.entered_at
+      ORDER BY tl.placed_at DESC, tl.id DESC
+      LIMIT 1
+    ),
+    (
+      SELECT tl.market_url
+      FROM trade_log tl
+      WHERE tl.market_id = p.market_id
+        AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${EXECUTED_ENTRY_WHERE}
+      ORDER BY tl.placed_at DESC, tl.id DESC
+      LIMIT 1
+    )
+  ) AS market_url,
   p.side,
   ROUND(p.size_usd, 3) AS size_usd,
   ROUND(
@@ -279,6 +301,7 @@ SELECT
   ('t:' || tl.id) AS row_key,
   tl.trade_id,
   tl.market_id,
+  tl.market_url,
   tl.side,
   ROUND(tl.actual_entry_size_usd, 3) AS size_usd,
   ROUND(tl.actual_entry_price, 3) AS entry_price,
@@ -550,7 +573,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane 
                     positionsLayout.showUser ? (React.createElement(React.Fragment, null,
                         React.createElement(Text, { color: username ? theme.white : theme.dim }, fit(userText, positionsLayout.userWidth)),
                         React.createElement(Text, null, " "))) : null,
-                    React.createElement(Text, null, fit(row.question || row.market_id, questionWidth)),
+                React.createElement(Text, { color: row.market_url ? theme.accent : undefined }, terminalHyperlink(fit(row.question || row.market_id, questionWidth), row.market_url)),
                     React.createElement(Text, null, " "),
                     React.createElement(Text, { color: theme.dim }, fitRight(secondsAgo(row.entered_at), positionsLayout.ageWidth)),
                     React.createElement(Text, null, " "),

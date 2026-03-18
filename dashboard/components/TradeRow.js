@@ -1,6 +1,6 @@
 import React, { memo, useMemo } from 'react';
 import { Box, Text } from 'ink';
-import { fit, fitRight, formatDisplayId, formatAdaptiveDollar, formatAdaptiveNumber, formatClock, formatNumber, formatPct, normalizeReasonText, shortAddress } from '../format.js';
+import { fit, fitRight, formatDisplayId, formatAdaptiveDollar, formatAdaptiveNumber, formatClock, formatNumber, formatPct, normalizeReasonText, shortAddress, terminalHyperlink } from '../format.js';
 import { getFeedLayout, getSignalsLayout } from '../tableLayout.js';
 import { outcomeColor, positiveDollarColor, probabilityColor, theme } from '../theme.js';
 function sliceViewport(text, offset, width) {
@@ -8,7 +8,7 @@ function sliceViewport(text, offset, width) {
     const viewportWidth = Math.max(0, width);
     return text.slice(start, start + viewportWidth).padEnd(viewportWidth);
 }
-export const TradeRow = memo(function TradeRow({ displayId, ts, username, trader, question, side, action, price, shares, sizeUsd, decision, confidence, reason, layout = 'feed', maxWidth = 80, viewportOffset = 0 }) {
+export const TradeRow = memo(function TradeRow({ displayId, ts, username, trader, question, marketUrl, side, action, price, shares, sizeUsd, decision, confidence, reason, layout = 'feed', maxWidth = 80, viewportOffset = 0 }) {
     const sideColor = useMemo(() => outcomeColor(side), [side]);
     const signalSpec = useMemo(() => getSignalsLayout(maxWidth), [maxWidth]);
     const spec = useMemo(() => getFeedLayout(maxWidth), [maxWidth]);
@@ -50,6 +50,8 @@ export const TradeRow = memo(function TradeRow({ displayId, ts, username, trader
     const signalDisplayName = useMemo(() => username || shortAddress(trader || '-'), [trader, username]);
     const signalDisplayReason = useMemo(() => normalizeReasonText(reason || '-'), [reason]);
     const visibleSignalReason = useMemo(() => sliceViewport(signalDisplayReason, viewportOffset, signalSpec.reasonWidth), [signalDisplayReason, viewportOffset, signalSpec.reasonWidth]);
+    const signalQuestionText = useMemo(() => terminalHyperlink(fit(question, signalSpec.questionWidth), marketUrl), [question, signalSpec.questionWidth, marketUrl]);
+    const feedQuestionText = useMemo(() => terminalHyperlink(fit(question, spec.questionWidth), marketUrl), [question, spec.questionWidth, marketUrl]);
     if (layout === 'signals') {
         return (React.createElement(Box, null,
             signalSpec.showId ? (React.createElement(React.Fragment, null,
@@ -60,7 +62,7 @@ export const TradeRow = memo(function TradeRow({ displayId, ts, username, trader
                 React.createElement(Text, null, " "),
                 React.createElement(Text, null, fit(signalDisplayName, signalSpec.usernameWidth)))) : null,
             React.createElement(Text, null, " "),
-            React.createElement(Text, null, fit(question, signalSpec.questionWidth)),
+            React.createElement(Text, { color: marketUrl ? theme.accent : undefined }, signalQuestionText),
             React.createElement(Text, null, " "),
             React.createElement(Text, { color: actionColor }, fit(actionText, signalSpec.actionWidth)),
             React.createElement(Text, null, " "),
@@ -93,7 +95,7 @@ export const TradeRow = memo(function TradeRow({ displayId, ts, username, trader
             React.createElement(Text, null, " "),
             React.createElement(Text, null, fit(feedDisplayName, spec.usernameWidth)))) : null,
         React.createElement(Text, null, " "),
-        React.createElement(Text, null, fit(question, spec.questionWidth)),
+        React.createElement(Text, { color: marketUrl ? theme.accent : undefined }, feedQuestionText),
         React.createElement(Text, null, " "),
         React.createElement(Text, { color: actionColor }, fit(actionText, spec.actionWidth)),
         React.createElement(Text, null, " "),

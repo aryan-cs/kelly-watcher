@@ -181,6 +181,15 @@ export function fitRight(text: string, width: number): string {
   return truncate(text, width).padStart(width)
 }
 
+export function terminalHyperlink(label: string, url?: string | null): string {
+  const text = label || ''
+  const sanitizedUrl = String(url || '').replace(/[\u0000-\u001f\u007f]/g, '').trim()
+  if (!text || !/^https?:\/\//i.test(sanitizedUrl)) {
+    return text
+  }
+  return `\u001B]8;;${sanitizedUrl}\u0007${text}\u001B]8;;\u0007`
+}
+
 export function formatDisplayId(value: number | null | undefined, width: number): string {
   if (value == null || width <= 0) return '-'
   return String(value).padStart(width, '0')

@@ -10,7 +10,8 @@ import {
   formatNumber,
   formatPct,
   normalizeReasonText,
-  shortAddress
+  shortAddress,
+  terminalHyperlink
 } from '../format.js'
 import {getFeedLayout, getSignalsLayout} from '../tableLayout.js'
 import {outcomeColor, positiveDollarColor, probabilityColor, theme} from '../theme.js'
@@ -21,6 +22,7 @@ interface Props {
   username?: string
   trader?: string
   question: string
+  marketUrl?: string | null
   side: string
   action?: string
   price: number
@@ -46,6 +48,7 @@ export const TradeRow = memo(function TradeRow({
   username,
   trader,
   question,
+  marketUrl,
   side,
   action,
   price,
@@ -123,6 +126,14 @@ export const TradeRow = memo(function TradeRow({
     () => sliceViewport(signalDisplayReason, viewportOffset, signalSpec.reasonWidth),
     [signalDisplayReason, viewportOffset, signalSpec.reasonWidth]
   )
+  const signalQuestionText = useMemo(
+    () => terminalHyperlink(fit(question, signalSpec.questionWidth), marketUrl),
+    [question, signalSpec.questionWidth, marketUrl]
+  )
+  const feedQuestionText = useMemo(
+    () => terminalHyperlink(fit(question, spec.questionWidth), marketUrl),
+    [question, spec.questionWidth, marketUrl]
+  )
 
   if (layout === 'signals') {
     return (
@@ -141,7 +152,7 @@ export const TradeRow = memo(function TradeRow({
           </>
         ) : null}
         <Text> </Text>
-        <Text>{fit(question, signalSpec.questionWidth)}</Text>
+        <Text color={marketUrl ? theme.accent : undefined}>{signalQuestionText}</Text>
         <Text> </Text>
         <Text color={actionColor}>{fit(actionText, signalSpec.actionWidth)}</Text>
         <Text> </Text>
@@ -202,7 +213,7 @@ export const TradeRow = memo(function TradeRow({
         </>
       ) : null}
       <Text> </Text>
-      <Text>{fit(question, spec.questionWidth)}</Text>
+      <Text color={marketUrl ? theme.accent : undefined}>{feedQuestionText}</Text>
       <Text> </Text>
       <Text color={actionColor}>{fit(actionText, spec.actionWidth)}</Text>
       <Text> </Text>

@@ -83,6 +83,7 @@ def init_db() -> None:
             trade_id            TEXT NOT NULL,
             market_id           TEXT NOT NULL,
             question            TEXT,
+            market_url          TEXT,
             trader_address      TEXT NOT NULL,
             trader_name         TEXT,
             side                TEXT NOT NULL,
@@ -272,6 +273,7 @@ def init_db() -> None:
         {
             "trader_name": "TEXT",
             "token_id": "TEXT",
+            "market_url": "TEXT",
             "source_action": "TEXT",
             "source_ts": "INTEGER",
             "source_ts_raw": "TEXT",

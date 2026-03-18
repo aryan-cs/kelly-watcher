@@ -9,6 +9,7 @@ export interface LiveEvent {
   trade_id: string
   market_id: string
   question: string
+  market_url?: string
   side: string
   action?: string
   price: number

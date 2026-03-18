@@ -38,6 +38,7 @@ export function LiveFeed({scrollOffset = 0}: LiveFeedProps) {
               username={event.username}
               trader={event.trader}
               question={event.question}
+              marketUrl={event.market_url}
               side={event.side}
               action={event.action}
               price={event.price}

@@ -67,6 +67,30 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def _market_url_from_metadata(meta: Any) -> str | None:
+    if not isinstance(meta, dict):
+        return None
+
+    candidates = [meta]
+    nested_event = meta.get("event")
+    if isinstance(nested_event, dict):
+        candidates.append(nested_event)
+
+    for candidate in candidates:
+        direct_url = str(candidate.get("url") or candidate.get("marketUrl") or "").strip()
+        if (
+            (direct_url.startswith("https://") or direct_url.startswith("http://"))
+            and "polymarket.com/" in direct_url.lower()
+        ):
+            return direct_url
+
+        slug = str(candidate.get("slug") or candidate.get("marketSlug") or "").strip().strip("/")
+        if slug:
+            return f"https://polymarket.com/event/{slug}"
+
+    return None
+
+
 class PolymarketExecutor:
     def __init__(self):
         self._clob = None
@@ -1678,6 +1702,7 @@ def log_trade(
         trade_id,
         market_id,
         question,
+        _market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
         trader_address.lower(),
         getattr(event, "trader_name", None),
         side,
@@ -1762,7 +1787,7 @@ def log_trade(
     conn.execute(
         f"""
         INSERT INTO trade_log (
-            trade_id, market_id, question, trader_address, trader_name, side,
+            trade_id, market_id, question, market_url, trader_address, trader_name, side,
             token_id, source_action, source_ts, source_ts_raw, observed_at, poll_started_at,
             market_close_ts, metadata_fetched_at, orderbook_fetched_at, source_latency_s,
             observation_latency_s, processing_latency_s, source_shares, source_amount_usd,

@@ -139,6 +139,36 @@ def _emit_event(payload: dict) -> None:
             pass
 
 
+def _market_url_for_event(event) -> str | None:
+    meta = getattr(event, "raw_market_metadata", None)
+    if not isinstance(meta, dict):
+        return None
+
+    candidates = [meta]
+    nested_event = meta.get("event")
+    if isinstance(nested_event, dict):
+        candidates.append(nested_event)
+
+    for candidate in candidates:
+        direct_url = str(candidate.get("url") or candidate.get("marketUrl") or "").strip()
+        if (
+            (direct_url.startswith("https://") or direct_url.startswith("http://"))
+            and "polymarket.com/" in direct_url.lower()
+        ):
+            return direct_url
+
+        slug = str(candidate.get("slug") or candidate.get("marketSlug") or "").strip().strip("/")
+        if slug:
+            return f"https://polymarket.com/event/{slug}"
+
+    return None
+
+
+def _event_market_payload(event) -> dict[str, str]:
+    market_url = _market_url_for_event(event)
+    return {"market_url": market_url} if market_url else {}
+
+
 def _write_bot_state(**extra) -> None:
     state = {
         "started_at": int(extra.pop("started_at", time.time())),
@@ -262,6 +292,7 @@ def _reject_event(event, confidence: float, amount_usd: float, reason: str) -> N
             "trade_id": event.trade_id,
             "market_id": event.market_id,
             "question": event.question,
+            **_event_market_payload(event),
             "side": event.side,
             "action": event.action,
             "price": event.price,
@@ -286,6 +317,7 @@ def _skip_event(event, amount_usd: float, reason: str, decision: str = "SKIP") -
             "trade_id": event.trade_id,
             "market_id": event.market_id,
             "question": event.question,
+            **_event_market_payload(event),
             "side": event.side,
             "action": event.action,
             "price": event.price,
@@ -317,6 +349,7 @@ def process_event(
             "trade_id": event.trade_id,
             "market_id": event.market_id,
             "question": event.question,
+            **_event_market_payload(event),
             "side": event.side,
             "action": event.action,
             "price": event.price,
@@ -346,6 +379,7 @@ def process_event(
                     "trade_id": event.trade_id,
                     "market_id": event.market_id,
                     "question": event.question,
+                    **_event_market_payload(event),
                     "side": event.side,
                     "action": event.action,
                     "price": round(execution_price, 6),
@@ -685,6 +719,7 @@ def process_event(
                 "trade_id": event.trade_id,
                 "market_id": event.market_id,
                 "question": event.question,
+                **_event_market_payload(event),
                 "side": event.side,
                 "action": event.action,
                 "price": round(execution_price, 6),

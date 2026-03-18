@@ -68,6 +68,7 @@ export function Signals({scrollOffset = 0, horizontalOffset = 0}: SignalsProps) 
               username={event.username}
               trader={event.trader}
               question={event.question}
+              marketUrl={event.market_url}
               side={event.side}
               action={event.action ?? incomingActionByTradeId.get(event.trade_id)}
               price={event.price}

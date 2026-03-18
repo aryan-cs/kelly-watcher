@@ -359,7 +359,6 @@ class PolymarketTracker:
         try:
             condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip()
             action = str(raw.get("side") or raw.get("tradeSide") or "BUY").strip().lower()
-            outcome = str(raw.get("outcome") or raw.get("title") or action).strip()
             token_id = str(
                 raw.get("asset")
                 or raw.get("asset_id")
@@ -372,21 +371,38 @@ class PolymarketTracker:
                 str(raw.get("name") or raw.get("pseudonym") or "").strip(),
                 client=self.client,
             )
-            price = float(raw.get("price") or raw.get("outcomePrice") or 0.5)
-            shares = float(raw.get("size") or raw.get("shares") or 0.0)
-            size_usd = float(raw.get("sizeUsd") or raw.get("usdc_size") or 0.0)
+            shares = self._optional_float(raw.get("size"))
+            if shares is None:
+                shares = self._optional_float(raw.get("shares"))
+            size_usd = self._optional_float(raw.get("sizeUsd"))
+            if size_usd is None:
+                size_usd = self._optional_float(raw.get("usdc_size"))
+            price = self._parse_trade_price(raw, shares=shares, size_usd=size_usd)
             source_ts_value = raw.get("timestamp") or raw.get("createdAt") or raw.get("created_at")
             source_ts_raw = "" if source_ts_value is None else str(source_ts_value).strip()
+            source_ts = self._normalize_timestamp(source_ts_value)
 
-            if shares <= 0 and size_usd > 0 and price > 0:
+            if (shares is None or shares <= 0) and size_usd is not None and size_usd > 0 and price is not None:
                 shares = size_usd / price
-            if size_usd <= 0 and shares > 0 and price > 0:
+            if (size_usd is None or size_usd <= 0) and shares is not None and shares > 0 and price is not None:
                 size_usd = shares * price
 
-            if not condition_id or shares <= 0 or size_usd <= 0 or not token_id:
+            if (
+                not condition_id
+                or not token_id
+                or price is None
+                or shares is None
+                or shares <= 0
+                or size_usd is None
+                or size_usd <= 0
+                or source_ts <= 0
+            ):
                 return None
 
             meta, metadata_fetched_at = self.get_market_metadata(condition_id)
+            outcome = self._resolve_outcome_name(raw, meta, token_id)
+            if not outcome:
+                return None
             question = str(meta.get("question") or meta.get("title") or raw.get("title") or condition_id)
             close_time = str(meta.get("endDate") or meta.get("closedTime") or meta.get("closeTime") or "")
             snapshot = self._metadata_snapshot(meta)
@@ -404,7 +420,7 @@ class PolymarketTracker:
                 token_id=token_id,
                 trader_name=trader_name,
                 trader_address=address.lower(),
-                timestamp=self._normalize_timestamp(source_ts_value),
+                timestamp=source_ts,
                 close_time=close_time,
                 snapshot=snapshot,
                 raw_trade=dict(raw),
@@ -435,57 +451,182 @@ class PolymarketTracker:
     @staticmethod
     def _normalize_timestamp(value: Any) -> int:
         if value is None:
-            return int(time.time())
+            return 0
         if isinstance(value, (int, float)):
             ts = int(value)
             return ts // 1000 if ts > 10_000_000_000 else ts
         text = str(value).strip()
-        if text.isdigit():
-            ts = int(text)
+        try:
+            ts = int(float(text))
             return ts // 1000 if ts > 10_000_000_000 else ts
+        except (TypeError, ValueError):
+            pass
         try:
             return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
         except Exception:
-            return int(time.time())
+            return 0
+
+    @staticmethod
+    def _first_present(mapping: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            value = mapping.get(key)
+            if value not in {None, ""}:
+                return value
+        return None
+
+    @staticmethod
+    def _optional_float(
+        value: Any,
+        *,
+        min_value: float | None = None,
+        max_value: float | None = None,
+    ) -> float | None:
+        if value in {None, ""}:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if min_value is not None and numeric < min_value:
+            return None
+        if max_value is not None and numeric > max_value:
+            return None
+        return numeric
+
+    @classmethod
+    def _parse_trade_price(
+        cls,
+        raw: dict[str, Any],
+        *,
+        shares: float | None,
+        size_usd: float | None,
+    ) -> float | None:
+        for key in ("price", "outcomePrice"):
+            price = cls._optional_float(raw.get(key), min_value=0.0, max_value=1.0)
+            if price is not None and 0.0 < price < 1.0:
+                return price
+
+        if shares is not None and shares > 0 and size_usd is not None and size_usd > 0:
+            derived = size_usd / shares
+            if 0.0 < derived < 1.0:
+                return derived
+        return None
+
+    @staticmethod
+    def _parse_meta_list(value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                return parsed
+            if "," in text:
+                return [part.strip() for part in text.split(",") if part.strip()]
+            return [text]
+        return []
+
+    @classmethod
+    def _resolve_outcome_name(
+        cls,
+        raw: dict[str, Any],
+        meta: dict[str, Any],
+        token_id: str,
+    ) -> str:
+        for key in ("outcome", "outcomeName", "outcome_name"):
+            direct = str(raw.get(key) or "").strip()
+            if direct:
+                return direct
+
+        outcomes = [
+            str(value).strip()
+            for value in cls._parse_meta_list(
+                cls._first_present(meta, "outcomes", "outcomeNames", "outcome_names")
+            )
+            if str(value).strip()
+        ]
+
+        outcome_index_raw = raw.get("outcomeIndex")
+        if outcome_index_raw is None:
+            outcome_index_raw = raw.get("outcome_index")
+        if outcomes and outcome_index_raw not in {None, ""}:
+            try:
+                outcome_index = int(float(outcome_index_raw))
+            except (TypeError, ValueError):
+                outcome_index = -1
+            if 0 <= outcome_index < len(outcomes):
+                return outcomes[outcome_index]
+
+        normalized_token_id = str(token_id or "").strip()
+        if outcomes and normalized_token_id:
+            token_ids = [
+                str(value).strip()
+                for value in cls._parse_meta_list(
+                    cls._first_present(meta, "clobTokenIds", "clobTokenIDs", "tokenIds", "token_ids")
+                )
+                if str(value).strip()
+            ]
+            if len(token_ids) == len(outcomes):
+                for mapped_token_id, outcome in zip(token_ids, outcomes):
+                    if mapped_token_id == normalized_token_id:
+                        return outcome
+
+            tokens = meta.get("tokens")
+            if isinstance(tokens, list):
+                for item in tokens:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate_token = str(
+                        item.get("token_id") or item.get("tokenId") or item.get("clobTokenId") or ""
+                    ).strip()
+                    if candidate_token != normalized_token_id:
+                        continue
+                    candidate_outcome = str(
+                        item.get("outcome") or item.get("name") or item.get("title") or ""
+                    ).strip()
+                    if candidate_outcome:
+                        return candidate_outcome
+        return ""
 
     @staticmethod
     def _metadata_snapshot(meta: dict) -> dict[str, float | None]:
         if not meta:
             return {}
 
-        best_bid = float(meta.get("bestBid") or 0.0)
-        best_ask = float(meta.get("bestAsk") or 0.0)
-        last_trade = float(meta.get("lastTradePrice") or 0.0)
+        best_bid = PolymarketTracker._optional_float(meta.get("bestBid"), min_value=0.0) or 0.0
+        best_ask = PolymarketTracker._optional_float(meta.get("bestAsk"), min_value=0.0) or 0.0
+        last_trade = PolymarketTracker._optional_float(meta.get("lastTradePrice"), min_value=0.0) or 0.0
         mid = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else last_trade
 
-        volume_24h = float(
-            meta.get("volume24hr")
-            or meta.get("volume24h")
-            or meta.get("oneDayVolume")
-            or 0.0
+        volume_24h = PolymarketTracker._optional_float(
+            PolymarketTracker._first_present(meta, "volume24hr", "volume24h", "oneDayVolume"),
+            min_value=0.0,
         )
-        volume_7d = float(
-            meta.get("volume7d")
-            or meta.get("sevenDayVolume")
-            or meta.get("oneWeekVolume")
-            or 0.0
+        volume_7d = PolymarketTracker._optional_float(
+            PolymarketTracker._first_present(meta, "volume7d", "sevenDayVolume", "oneWeekVolume"),
+            min_value=0.0,
         )
-        oi_usd = float(meta.get("openInterest") or meta.get("liquidity") or 0.0)
+        oi_usd = PolymarketTracker._optional_float(
+            PolymarketTracker._first_present(meta, "openInterest", "liquidity"),
+            min_value=0.0,
+        )
 
-        top_holder_pct: float | None = None
-        raw_top_holder = meta.get("topHolderPct") or meta.get("top_holder_pct")
-        if raw_top_holder not in {None, ""}:
-            try:
-                top_holder_pct = float(raw_top_holder)
-            except (TypeError, ValueError):
-                top_holder_pct = None
+        raw_top_holder = PolymarketTracker._first_present(meta, "topHolderPct", "top_holder_pct")
+        top_holder_pct = PolymarketTracker._optional_float(raw_top_holder, min_value=0.0, max_value=1.0)
 
         return {
             "best_bid": best_bid,
             "best_ask": best_ask,
-            "mid": mid if mid > 0 else 0.5,
+            "mid": mid if mid > 0 else 0.0,
             "volume_24h_usd": volume_24h,
-            "volume_7d_avg_usd": (volume_7d / 7) if volume_7d > 0 else None,
+            "volume_7d_avg_usd": (volume_7d / 7) if volume_7d is not None and volume_7d > 0 else None,
             "oi_usd": oi_usd,
             "top_holder_pct": top_holder_pct,
         }
@@ -504,6 +645,8 @@ class PolymarketTracker:
                 continue
             ts_raw = row.get("t") or row.get("timestamp") or row.get("time")
             ts = cls._normalize_timestamp(ts_raw) if ts_raw is not None else 0
+            if ts <= 0:
+                continue
             normalized.append({"p": price, "t": float(ts)})
         normalized.sort(key=lambda item: item.get("t", 0.0))
         return normalized

@@ -250,7 +250,11 @@ def _feature_buckets_from_live_signal(
         ),
         "volume_trend": _bucket_volume_trend(
             market_features.volume_24h_usd / market_features.volume_7d_avg_usd
-            if market_features.volume_7d_avg_usd is not None and market_features.volume_7d_avg_usd > 0
+            if (
+                market_features.volume_24h_usd is not None
+                and market_features.volume_7d_avg_usd is not None
+                and market_features.volume_7d_avg_usd > 0
+            )
             else None
         ),
         "oi_usd": _bucket_oi_usd(market_features.oi_usd),

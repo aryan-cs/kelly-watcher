@@ -22,9 +22,9 @@ class MarketFeatures:
     ask_depth_usd: float
     days_to_res: float
     price_1h_ago: float | None
-    volume_24h_usd: float
+    volume_24h_usd: float | None
     volume_7d_avg_usd: float | None
-    oi_usd: float
+    oi_usd: float | None
     top_holder_pct: float | None
     order_size_usd: float
 
@@ -38,21 +38,21 @@ def build_market_features(
     if not snapshot:
         return None
 
-    best_bid = float(snapshot.get("best_bid", 0.0))
-    best_ask = float(snapshot.get("best_ask", 0.0))
-    mid = float(snapshot.get("mid", (best_bid + best_ask) / 2 if best_bid and best_ask else 0.0))
+    best_bid = _optional_float(snapshot.get("best_bid"), min_value=0.0) or 0.0
+    best_ask = _optional_float(snapshot.get("best_ask"), min_value=0.0) or 0.0
+    inferred_mid = (best_bid + best_ask) / 2 if best_bid and best_ask else 0.0
+    mid = _optional_float(snapshot.get("mid"), min_value=0.0) or inferred_mid
     effective_execution_price = float(execution_price or 0.0)
     if not (0.0 < effective_execution_price < 1.0):
         effective_execution_price = best_ask if 0.0 < best_ask < 1.0 else mid
 
-    if close_time_iso:
-        try:
-            close_dt = datetime.fromisoformat(close_time_iso.replace("Z", "+00:00"))
-            days_to_res = max((close_dt - datetime.now(timezone.utc)).total_seconds() / 86400, 0.0)
-        except Exception:
-            days_to_res = 7.0
-    else:
-        days_to_res = 7.0
+    if not close_time_iso:
+        return None
+    try:
+        close_dt = datetime.fromisoformat(close_time_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    days_to_res = max((close_dt - datetime.now(timezone.utc)).total_seconds() / 86400, 0.0)
 
     price_1h_ago = _extract_price_1h_ago(snapshot.get("price_history_1h"), mid)
 
@@ -65,9 +65,9 @@ def build_market_features(
         ask_depth_usd=float(snapshot.get("ask_depth_usd", 0.0)),
         days_to_res=days_to_res,
         price_1h_ago=price_1h_ago,
-        volume_24h_usd=float(snapshot.get("volume_24h_usd", 0.0)),
+        volume_24h_usd=_optional_float(snapshot.get("volume_24h_usd"), min_value=0.0),
         volume_7d_avg_usd=_optional_float(snapshot.get("volume_7d_avg_usd"), min_value=0.0),
-        oi_usd=float(snapshot.get("oi_usd", 0.0)),
+        oi_usd=_optional_float(snapshot.get("oi_usd"), min_value=0.0),
         top_holder_pct=_optional_float(snapshot.get("top_holder_pct"), min_value=0.0, max_value=1.0),
         order_size_usd=order_size_usd,
     )
@@ -200,13 +200,15 @@ class MarketScorer:
     @staticmethod
     def _score_volume_trend(features: MarketFeatures) -> float | None:
         avg = features.volume_7d_avg_usd
-        if avg is None or avg <= 0:
+        if avg is None or avg <= 0 or features.volume_24h_usd is None:
             return None
         ratio = features.volume_24h_usd / avg
         return float(np.clip(np.interp(ratio, [0.3, 1.0, 1.5], [0.0, 0.7, 1.0]), 0, 1))
 
     @staticmethod
-    def _score_volume(features: MarketFeatures) -> float:
+    def _score_volume(features: MarketFeatures) -> float | None:
+        if features.volume_24h_usd is None:
+            return None
         volume = max(features.volume_24h_usd, 0.0)
         if volume <= 0:
             return 0.0

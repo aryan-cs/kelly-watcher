@@ -436,7 +436,7 @@ def process_event(
         return 0.0
 
     trader_f = get_trader_features(event.trader_address, event.size_usd)
-    rough_market_price = float(event.snapshot.get("best_ask") or event.snapshot.get("mid") or event.price or 0.5)
+    rough_market_price = float(event.snapshot.get("best_ask") or event.snapshot.get("mid") or event.price or 0.0)
     if not (0.01 < rough_market_price < 0.99):
         rough_market_price = event.price
     rough = size_signal(0.65, rough_market_price, bankroll, engine.sizing_mode()).get("dollar_size", 0.0)

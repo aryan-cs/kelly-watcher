@@ -14,6 +14,7 @@ import main
 import tracker
 from executor import PolymarketExecutor, log_trade
 from market_scorer import MarketScorer, build_market_features
+from trader_scorer import TraderScorer
 
 
 class RuntimeFixesTest(unittest.TestCase):
@@ -367,6 +368,68 @@ class RuntimeFixesTest(unittest.TestCase):
             self.assertTrue(tracker_obj._is_stale_event(stale_event, poll_started_at=200))
             self.assertFalse(tracker_obj._is_stale_event(new_same_ts, poll_started_at=220))
 
+    def test_tracker_rejects_missing_timestamp_and_missing_price(self) -> None:
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        tracker_obj.client = object()
+        tracker_obj.get_market_metadata = lambda _condition_id: (
+            {
+                "question": "Will it happen?",
+                "endDate": "2030-01-01T00:00:00Z",
+                "outcomes": '["Yes","No"]',
+                "clobTokenIds": '["token-yes","token-no"]',
+            },
+            123,
+        )
+
+        raw_missing_timestamp = {
+            "conditionId": "market-1",
+            "side": "BUY",
+            "asset": "token-yes",
+            "size": 10,
+            "price": 0.55,
+        }
+        raw_missing_price = {
+            "conditionId": "market-1",
+            "side": "BUY",
+            "asset": "token-yes",
+            "size": 10,
+            "timestamp": 1_700_000_000,
+        }
+
+        with patch("tracker.hydrate_observed_identity", return_value="Trader"):
+            self.assertIsNone(tracker_obj._parse_raw_trade(raw_missing_timestamp, "0xabc", 1_700_000_010))
+            self.assertIsNone(tracker_obj._parse_raw_trade(raw_missing_price, "0xabc", 1_700_000_010))
+
+    def test_tracker_resolves_outcome_from_metadata_token_map(self) -> None:
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        tracker_obj.client = object()
+        tracker_obj.get_market_metadata = lambda _condition_id: (
+            {
+                "question": "Will it happen?",
+                "endDate": "2030-01-01T00:00:00Z",
+                "outcomes": '["Yes","No"]',
+                "clobTokenIds": '["token-yes","token-no"]',
+            },
+            456,
+        )
+        raw = {
+            "conditionId": "market-1",
+            "side": "BUY",
+            "asset": "token-no",
+            "size": 12,
+            "price": 0.42,
+            "timestamp": 1_700_000_000,
+            "title": "Will it happen?",
+        }
+
+        with patch("tracker.hydrate_observed_identity", return_value="Trader"):
+            event = tracker_obj._parse_raw_trade(raw, "0xabc", 1_700_000_010)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.side, "no")
+        self.assertEqual(event.price, 0.42)
+        self.assertEqual(event.timestamp, 1_700_000_000)
+
     def test_market_scorer_handles_missing_optional_features(self) -> None:
         snapshot = {
             "best_bid": 0.49,
@@ -386,6 +449,27 @@ class RuntimeFixesTest(unittest.TestCase):
         score = scorer.score(features)
         self.assertGreaterEqual(score["score"], 0.0)
         self.assertLessEqual(score["score"], 1.0)
+
+    def test_market_scorer_rejects_missing_or_bad_close_time(self) -> None:
+        snapshot = {
+            "best_bid": 0.49,
+            "best_ask": 0.51,
+            "mid": 0.5,
+            "bid_depth_usd": 800.0,
+            "ask_depth_usd": 700.0,
+        }
+        self.assertIsNone(build_market_features(snapshot, "", order_size_usd=25.0, execution_price=0.5))
+        self.assertIsNone(
+            build_market_features(snapshot, "not-a-timestamp", order_size_usd=25.0, execution_price=0.5)
+        )
+
+    def test_trader_score_win_rate_shrinks_small_samples(self) -> None:
+        low_evidence = TraderScorer._score_win_rate(0.9, 2)
+        high_evidence = TraderScorer._score_win_rate(0.9, 200)
+
+        self.assertGreater(low_evidence, 0.5)
+        self.assertLess(low_evidence, 0.9)
+        self.assertGreater(high_evidence, low_evidence)
 
 
 if __name__ == "__main__":

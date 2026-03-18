@@ -464,8 +464,13 @@ class TraderScorer:
     }
 
     @staticmethod
-    def _score_win_rate(win_rate: float, _n_trades: int) -> float:
-        return float(np.clip(win_rate, 0, 1))
+    def _score_win_rate(win_rate: float, n_trades: int) -> float:
+        clipped = float(np.clip(win_rate, 0, 1))
+        if n_trades <= 0:
+            return 0.5
+        evidence_weight = n_trades / (n_trades + 20.0)
+        shrunk = 0.5 + (clipped - 0.5) * evidence_weight
+        return float(np.clip(shrunk, 0, 1))
 
     @staticmethod
     def _score_consistency(sharpe_like: float) -> float:

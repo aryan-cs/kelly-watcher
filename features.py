@@ -44,7 +44,11 @@ def build_feature_map(
     )
     volume_trend = (
         market_features.volume_24h_usd / market_features.volume_7d_avg_usd
-        if market_features.volume_7d_avg_usd is not None and market_features.volume_7d_avg_usd > 0
+        if (
+            market_features.volume_24h_usd is not None
+            and market_features.volume_7d_avg_usd is not None
+            and market_features.volume_7d_avg_usd > 0
+        )
         else None
     )
 

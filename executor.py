@@ -1602,7 +1602,7 @@ def log_trade(
     )
     volume_trend = (
         market_f.volume_24h_usd / (market_volume_7d_avg + 1e-6)
-        if market_f and market_volume_7d_avg is not None
+        if market_f and market_f.volume_24h_usd is not None and market_volume_7d_avg is not None
         else None
     )
     market_components = signal.get("market", {}).get("components", {}) if isinstance(signal, dict) else {}

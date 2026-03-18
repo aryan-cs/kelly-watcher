@@ -245,6 +245,16 @@ def init_db() -> None:
             updated_at        INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS wallet_watch_state (
+            wallet_address           TEXT PRIMARY KEY,
+            status                   TEXT NOT NULL DEFAULT 'active',
+            status_reason            TEXT,
+            dropped_at               INTEGER,
+            reactivated_at           INTEGER,
+            last_source_ts_at_status INTEGER NOT NULL DEFAULT 0,
+            updated_at               INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_seen_trades_seen_at ON seen_trades(seen_at);
         CREATE INDEX IF NOT EXISTS idx_trade_log_placed_at ON trade_log(placed_at);
         CREATE INDEX IF NOT EXISTS idx_trade_log_outcome ON trade_log(outcome);
@@ -252,6 +262,7 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_trade_log_real_money ON trade_log(real_money);
         CREATE INDEX IF NOT EXISTS idx_trade_log_skipped ON trade_log(skipped);
         CREATE INDEX IF NOT EXISTS idx_belief_updates_applied_at ON belief_updates(applied_at);
+        CREATE INDEX IF NOT EXISTS idx_wallet_watch_state_status ON wallet_watch_state(status);
         """
     )
     _ensure_table_columns(
@@ -327,6 +338,18 @@ def init_db() -> None:
             "f_top_holder_pct": "REAL",
             "market_components_json": "TEXT",
             "decision_context_json": "TEXT",
+        },
+    )
+    _ensure_table_columns(
+        conn,
+        "wallet_watch_state",
+        {
+            "status": "TEXT NOT NULL DEFAULT 'active'",
+            "status_reason": "TEXT",
+            "dropped_at": "INTEGER",
+            "reactivated_at": "INTEGER",
+            "last_source_ts_at_status": "INTEGER NOT NULL DEFAULT 0",
+            "updated_at": "INTEGER NOT NULL DEFAULT 0",
         },
     )
     _ensure_positions_schema(conn)

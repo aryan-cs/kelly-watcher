@@ -39,6 +39,7 @@ from config import (
     retrain_early_check_seconds,
     retrain_hour_local,
     use_real_money,
+    wallet_inactivity_limit_seconds,
     wallet_address,
     warm_poll_interval_multiplier,
     warm_wallet_count,
@@ -830,6 +831,7 @@ def _validate_startup() -> None:
     _capture_config(warm_wallet_count)
     _capture_config(warm_poll_interval_multiplier)
     _capture_config(discovery_poll_interval_multiplier)
+    _capture_config(wallet_inactivity_limit_seconds)
 
     if use_real_money():
         our_wallet = wallet_address()
@@ -1033,7 +1035,7 @@ def main() -> None:
     tracker.seen_ids.update(dedup.seen_ids)
 
     def _refresh_watchlist() -> None:
-        refresh_trader_cache(tracker.wallets)
+        refresh_trader_cache(watchlist.active_wallets())
         watchlist.refresh()
         _persist_bot_state(**watchlist.state_fields())
 
@@ -1098,6 +1100,7 @@ def main() -> None:
     send_alert(
         f"Bot started [{mode_str}]\n"
         f"Watching {len(tracker.wallets)} wallets\n"
+        f"Tracked/Dropped: {tier_state['tracked_wallet_count']}/{tier_state['dropped_wallet_count']}\n"
         f"Hot/Warm/Discovery: {tier_state['hot_wallet_count']}/{tier_state['warm_wallet_count']}/{tier_state['discovery_wallet_count']}\n"
         f"Poll interval: {poll_interval()}s"
     )
@@ -1120,6 +1123,7 @@ def main() -> None:
                     logger.warning("Low balance: $%.2f - skipping poll", bankroll)
                 else:
                     _heartbeat()
+                    watchlist.refresh()
                     poll_wallets = watchlist.wallets_for_poll()
                     polled_wallet_count = len(poll_wallets)
                     _persist_bot_state(

@@ -114,6 +114,38 @@ def poll_interval() -> float:
         return 45.0
 
 
+def _get_duration_seconds(
+    name: str,
+    default: str,
+    *,
+    minimum_seconds: float | None = None,
+    allow_unlimited: bool = True,
+) -> float:
+    raw = _get_env_file_value(name) or _get(name, default)
+    value = (raw or "").strip().lower()
+    if not value:
+        value = default.lower()
+
+    if allow_unlimited and value in {"unlimited", "infinite", "inf", "none"}:
+        return float("inf")
+
+    try:
+        seconds = max(float(value), 0.0)
+    except ValueError:
+        unit = value[-1:] if value else ""
+        number = value[:-1]
+        if unit not in _DURATION_UNITS or not number:
+            raise ConfigError(f"{name} must look like 1h, 24h, 7d, or unlimited, got {raw!r}")
+        try:
+            seconds = max(float(number) * _DURATION_UNITS[unit], 0.0)
+        except ValueError as exc:
+            raise ConfigError(f"{name} must look like 1h, 24h, 7d, or unlimited, got {raw!r}") from exc
+
+    if minimum_seconds is not None and seconds < minimum_seconds:
+        raise ConfigError(f"{name} must be >= {minimum_seconds} seconds, got {seconds}")
+    return seconds
+
+
 def hot_wallet_count() -> int:
     raw = _get_env_file_value("HOT_WALLET_COUNT") or _get("HOT_WALLET_COUNT", "12")
     try:
@@ -156,6 +188,15 @@ def discovery_poll_interval_multiplier() -> int:
     if value < 1:
         raise ConfigError(f"DISCOVERY_POLL_INTERVAL_MULTIPLIER must be >= 1, got {value}")
     return value
+
+
+def wallet_inactivity_limit_seconds() -> float:
+    return _get_duration_seconds(
+        "WALLET_INACTIVITY_LIMIT",
+        "unlimited",
+        minimum_seconds=60.0,
+        allow_unlimited=True,
+    )
 
 
 def _parse_duration(raw: str, default_seconds: float) -> float:

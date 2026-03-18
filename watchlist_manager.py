@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from config import (
     discovery_poll_interval_multiplier,
     hot_wallet_count,
+    wallet_inactivity_limit_seconds,
     warm_poll_interval_multiplier,
     warm_wallet_count,
 )
@@ -27,6 +28,7 @@ class WatchTierSnapshot:
     hot: tuple[str, ...]
     warm: tuple[str, ...]
     discovery: tuple[str, ...]
+    dropped: tuple[str, ...]
     ranked: tuple[RankedWallet, ...]
     refreshed_at: int
 
@@ -45,6 +47,21 @@ def _normalize_wallets(wallet_addresses: list[str]) -> list[str]:
         seen.add(address)
         normalized.append(address)
     return normalized
+
+
+def _format_duration_label(seconds: float) -> str:
+    if not math.isfinite(seconds):
+        return "unlimited"
+    rounded = int(max(seconds, 0))
+    if rounded % 604800 == 0 and rounded >= 604800:
+        return f"{rounded // 604800}w"
+    if rounded % 86400 == 0 and rounded >= 86400:
+        return f"{rounded // 86400}d"
+    if rounded % 3600 == 0 and rounded >= 3600:
+        return f"{rounded // 3600}h"
+    if rounded % 60 == 0 and rounded >= 60:
+        return f"{rounded // 60}m"
+    return f"{rounded}s"
 
 
 def _score_wallet(
@@ -90,6 +107,169 @@ def _score_wallet(
         + 0.05 * open_score
     ) - freshness_penalty
     return round(_clip(composite), 4)
+
+
+def _wallet_status_rows(wallet_addresses: list[str]) -> dict[str, dict[str, int | str | None]]:
+    wallets = _normalize_wallets(wallet_addresses)
+    if not wallets:
+        return {}
+
+    placeholders = ",".join("?" for _ in wallets)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                wallet_address,
+                status,
+                status_reason,
+                dropped_at,
+                reactivated_at,
+                last_source_ts_at_status,
+                updated_at
+            FROM wallet_watch_state
+            WHERE wallet_address IN ({placeholders})
+            """,
+            tuple(wallets),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        str(row["wallet_address"] or "").strip().lower(): {
+            "status": str(row["status"] or "active").strip().lower(),
+            "status_reason": row["status_reason"],
+            "dropped_at": int(row["dropped_at"] or 0),
+            "reactivated_at": int(row["reactivated_at"] or 0),
+            "last_source_ts_at_status": int(row["last_source_ts_at_status"] or 0),
+            "updated_at": int(row["updated_at"] or 0),
+        }
+        for row in rows
+    }
+
+
+def _wallet_cursor_map(wallet_addresses: list[str]) -> dict[str, int]:
+    wallets = _normalize_wallets(wallet_addresses)
+    if not wallets:
+        return {}
+
+    placeholders = ",".join("?" for _ in wallets)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT wallet_address, last_source_ts
+            FROM wallet_cursors
+            WHERE wallet_address IN ({placeholders})
+            """,
+            tuple(wallets),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        str(row["wallet_address"] or "").strip().lower(): int(row["last_source_ts"] or 0)
+        for row in rows
+    }
+
+
+def _drop_wallets(wallet_updates: list[tuple[str, str, int, int]]) -> None:
+    if not wallet_updates:
+        return
+
+    now_ts = int(time.time())
+    conn = get_conn()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO wallet_watch_state (
+                wallet_address,
+                status,
+                status_reason,
+                dropped_at,
+                last_source_ts_at_status,
+                updated_at
+            ) VALUES (?, 'dropped', ?, ?, ?, ?)
+            ON CONFLICT(wallet_address) DO UPDATE SET
+                status='dropped',
+                status_reason=excluded.status_reason,
+                dropped_at=excluded.dropped_at,
+                last_source_ts_at_status=excluded.last_source_ts_at_status,
+                updated_at=excluded.updated_at
+            """,
+            [
+                (wallet, reason, dropped_at, last_source_ts, now_ts)
+                for wallet, reason, dropped_at, last_source_ts in wallet_updates
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reactivate_wallet(wallet_address: str) -> bool:
+    wallet = str(wallet_address or "").strip().lower()
+    if not wallet:
+        return False
+
+    now_ts = int(time.time())
+    conn = get_conn()
+    try:
+        conn.execute(
+            """
+            INSERT INTO wallet_watch_state (
+                wallet_address,
+                status,
+                status_reason,
+                dropped_at,
+                reactivated_at,
+                updated_at
+            ) VALUES (?, 'active', NULL, NULL, ?, ?)
+            ON CONFLICT(wallet_address) DO UPDATE SET
+                status='active',
+                status_reason=NULL,
+                dropped_at=NULL,
+                reactivated_at=excluded.reactivated_at,
+                updated_at=excluded.updated_at
+            """,
+            (wallet, now_ts, now_ts),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
+    inactivity_limit = wallet_inactivity_limit_seconds()
+    if not math.isfinite(inactivity_limit):
+        return
+
+    wallets = _normalize_wallets(wallet_addresses)
+    if not wallets:
+        return
+
+    status_rows = _wallet_status_rows(wallets)
+    cursor_map = _wallet_cursor_map(wallets)
+    now_ts = int(time.time())
+    reason = f"inactive>{_format_duration_label(inactivity_limit)}"
+    to_drop: list[tuple[str, str, int, int]] = []
+
+    for wallet in wallets:
+        status_row = status_rows.get(wallet, {})
+        if status_row.get("status") == "dropped":
+            continue
+
+        last_source_ts = int(cursor_map.get(wallet, 0))
+        reactivated_at = int(status_row.get("reactivated_at") or 0)
+        inactivity_anchor = max(last_source_ts, reactivated_at)
+        if inactivity_anchor <= 0:
+            continue
+        if (now_ts - inactivity_anchor) < inactivity_limit:
+            continue
+        to_drop.append((wallet, reason, now_ts, last_source_ts))
+
+    _drop_wallets(to_drop)
 
 
 def _load_watch_metrics(wallet_addresses: list[str]) -> list[RankedWallet]:
@@ -185,7 +365,13 @@ class WatchlistManager:
         self._snapshot = self._build_snapshot()
 
     def _build_snapshot(self) -> WatchTierSnapshot:
-        ranked = _load_watch_metrics(self.wallets)
+        _auto_drop_inactive_wallets(self.wallets)
+        status_rows = _wallet_status_rows(self.wallets)
+        dropped_wallets = tuple(
+            wallet for wallet in self.wallets if status_rows.get(wallet, {}).get("status") == "dropped"
+        )
+        active_wallets = [wallet for wallet in self.wallets if wallet not in dropped_wallets]
+        ranked = _load_watch_metrics(active_wallets)
         hot_count = min(len(ranked), hot_wallet_count())
         remaining = max(len(ranked) - hot_count, 0)
         warm_count = min(remaining, warm_wallet_count())
@@ -196,6 +382,7 @@ class WatchlistManager:
             hot=hot,
             warm=warm,
             discovery=discovery,
+            dropped=dropped_wallets,
             ranked=tuple(ranked),
             refreshed_at=int(time.time()),
         )
@@ -211,6 +398,14 @@ class WatchlistManager:
             snapshot = self._snapshot
             wallets = list(snapshot.hot)
             wallets.extend(snapshot.warm)
+        return _normalize_wallets(wallets)
+
+    def active_wallets(self) -> list[str]:
+        with self._lock:
+            snapshot = self._snapshot
+            wallets = list(snapshot.hot)
+            wallets.extend(snapshot.warm)
+            wallets.extend(snapshot.discovery)
         return _normalize_wallets(wallets)
 
     def wallets_for_poll(self) -> list[str]:
@@ -229,7 +424,10 @@ class WatchlistManager:
     def state_fields(self) -> dict[str, int]:
         with self._lock:
             snapshot = self._snapshot
+        tracked_count = len(snapshot.hot) + len(snapshot.warm) + len(snapshot.discovery)
         return {
+            "tracked_wallet_count": tracked_count,
+            "dropped_wallet_count": len(snapshot.dropped),
             "hot_wallet_count": len(snapshot.hot),
             "warm_wallet_count": len(snapshot.warm),
             "discovery_wallet_count": len(snapshot.discovery),

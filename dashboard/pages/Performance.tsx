@@ -1,6 +1,5 @@
 import React, {useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
-import {BarSparkline} from '../components/BarSparkline.js'
 import {Box} from '../components/Box.js'
 import {StatRow} from '../components/StatRow.js'
 import {
@@ -405,13 +404,11 @@ interface DailyPnlEntry {
   day: string
   pnl: number
   label: string
-  normalized: number
 }
 
-interface DailyPnlLayout {
-  dateWidth: number
-  valueWidth: number
-  barWidth: number
+interface DailyQueueLayout {
+  leftWidth: number
+  rightWidth: number
 }
 
 function getPositionsLayout(width: number): PositionsLayout {
@@ -499,15 +496,15 @@ function getDailyPanelContentWidth(terminalWidth: number, stacked: boolean): num
     : Math.max(minContentWidth, Math.floor((terminalWidth - 15) / 2))
 }
 
-function getDailyPnlLayout(contentWidth: number, valueWidth: number): DailyPnlLayout {
-  const dateWidth = 10
-  const minBarWidth = 9
-  const panelContentWidth = Math.max(dateWidth + valueWidth + minBarWidth + 2, contentWidth)
+function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQueueLayout {
+  const minLeftWidth = 10
+  const minRightWidth = Math.max(12, valueWidth)
+  const usableWidth = Math.max(minLeftWidth + minRightWidth, contentWidth - 3)
+  const sideWidth = Math.max(minLeftWidth, Math.floor(usableWidth / 2))
 
   return {
-    dateWidth,
-    valueWidth,
-    barWidth: Math.max(minBarWidth, panelContentWidth - dateWidth - valueWidth - 2)
+    leftWidth: sideWidth,
+    rightWidth: sideWidth
   }
 }
 
@@ -664,8 +661,7 @@ export function Performance({
         return {
           day: row.day,
           pnl,
-          label: formatDollar(pnl),
-          normalized: Math.abs(pnl)
+          label: formatDollar(pnl)
         }
       }),
     [activeDailyRows]
@@ -681,10 +677,6 @@ export function Performance({
   const dailyPanelContentWidth = useMemo(
     () => getDailyPanelContentWidth(terminal.width, stacked),
     [stacked, terminal.width]
-  )
-  const dailyLayout = useMemo(
-    () => getDailyPnlLayout(dailyPanelContentWidth, dailyValueWidth),
-    [dailyPanelContentWidth, dailyValueWidth]
   )
   const paneMetrics = getPositionPaneMetrics(terminal.height, stacked)
   const currentMaxOffset = Math.max(0, currentPositions.length - paneMetrics.visibleRows)
@@ -707,19 +699,20 @@ export function Performance({
   const modalBackground = terminal.backgroundColor || theme.modalBackground
   const detailModalWidth = Math.max(60, Math.min(terminal.width - 8, terminal.wide ? 110 : 88))
   const detailModalContentWidth = Math.max(40, detailModalWidth - 4)
-  const detailVisibleRows = Math.max(1, terminal.height - 14)
+  const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12))
   const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows)
   const detailOffset = Math.min(dailyDetailScrollOffset, detailMaxOffset)
   const visibleDetailEntries = dailyEntries.slice(detailOffset, detailOffset + detailVisibleRows)
-  const detailBarScale = useMemo(
-    () => Math.max(1, ...dailyEntries.map((row) => Math.abs(row.pnl))),
-    [dailyEntries]
+  const paddedDetailEntries = useMemo(
+    () =>
+      Array.from({length: detailVisibleRows}, (_, index) => visibleDetailEntries[index] ?? null),
+    [detailVisibleRows, visibleDetailEntries]
   )
   const detailRangeLabel = dailyEntries.length
     ? `${detailOffset + 1}-${Math.min(detailOffset + visibleDetailEntries.length, dailyEntries.length)}/${dailyEntries.length}`
     : '0/0'
-  const detailLayout = useMemo(
-    () => getDailyPnlLayout(detailModalContentWidth, dailyValueWidth),
+  const detailQueueLayout = useMemo(
+    () => getDailyQueueLayout(detailModalContentWidth, dailyValueWidth),
     [detailModalContentWidth, dailyValueWidth]
   )
 
@@ -984,35 +977,20 @@ export function Performance({
                 {`${fitRight(detailRangeLabel, detailRangeLabel.length)} `}
               </Text>
             </InkBox>
-            <Text color={theme.dim} backgroundColor={modalBackground}>
-              {` ${fit('Realized P&L is bucketed by close time: exit when sold, resolution when held.', detailModalContentWidth)} `}
-            </Text>
-            <Text color={theme.dim} backgroundColor={modalBackground}>
-              {` ${fit('Up/down scroll. Esc closes.', detailModalContentWidth)} `}
-            </Text>
             <Text backgroundColor={modalBackground}>{' '.repeat(detailModalWidth - 2)}</Text>
-            {visibleDetailEntries.length ? (
-              visibleDetailEntries.map((row) => (
-                <InkBox key={`detail-${row.day}`} width="100%">
-                  <Text backgroundColor={modalBackground}>{` ${fit(row.day, detailLayout.dateWidth)}`}</Text>
-                  <Text backgroundColor={modalBackground}> </Text>
-                  <BarSparkline
-                    value={row.normalized / detailBarScale}
-                    width={detailLayout.barWidth}
-                    positive={row.pnl >= 0}
-                    centered
-                  />
-                  <Text backgroundColor={modalBackground}> </Text>
-                  <Text color={row.pnl >= 0 ? theme.green : theme.red} backgroundColor={modalBackground}>
-                    {`${fitRight(row.label, detailLayout.valueWidth)} `}
-                  </Text>
-                </InkBox>
-              ))
-            ) : (
-              <Text color={theme.dim} backgroundColor={modalBackground}>
-                {` ${fit('No resolved daily P&L rows yet.', detailModalContentWidth)} `}
-              </Text>
-            )}
+            {paddedDetailEntries.map((row, index) => (
+              <InkBox key={`detail-${row?.day || `empty-${index}`}`} width="100%">
+                <Text color={row ? theme.white : theme.dim} backgroundColor={modalBackground}>
+                  {` ${fitRight(row?.day || '', detailQueueLayout.leftWidth)}`}
+                </Text>
+                <Text backgroundColor={modalBackground}> </Text>
+                <Text color={theme.dim} backgroundColor={modalBackground}>│</Text>
+                <Text backgroundColor={modalBackground}> </Text>
+                <Text color={row ? (row.pnl >= 0 ? theme.green : theme.red) : theme.dim} backgroundColor={modalBackground}>
+                  {`${fit(row?.label || '', detailQueueLayout.rightWidth)} `}
+                </Text>
+              </InkBox>
+            ))}
           </InkBox>
         </InkBox>
       ) : null}

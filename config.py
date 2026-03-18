@@ -211,6 +211,22 @@ def wallet_performance_drop_max_avg_return() -> float:
     return _get_bounded_float("WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN", "-0.03", minimum=-1.0, maximum=1.0)
 
 
+def wallet_discovery_min_observed_buys() -> int:
+    return _get_bounded_int("WALLET_DISCOVERY_MIN_OBSERVED_BUYS", "12", minimum=0)
+
+
+def wallet_discovery_min_resolved_buys() -> int:
+    return _get_bounded_int("WALLET_DISCOVERY_MIN_RESOLVED_BUYS", "8", minimum=0)
+
+
+def wallet_trusted_min_resolved_copied_buys() -> int:
+    return _get_bounded_int("WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS", "20", minimum=0)
+
+
+def wallet_probation_size_multiplier() -> float:
+    return _get_bounded_float("WALLET_PROBATION_SIZE_MULTIPLIER", "0.25", minimum=0.01, maximum=1.0)
+
+
 def _parse_duration(raw: str, default_seconds: float) -> float:
     value = (raw or "").strip().lower()
     if not value:

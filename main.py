@@ -43,6 +43,10 @@ from config import (
     wallet_performance_drop_max_avg_return,
     wallet_performance_drop_max_win_rate,
     wallet_performance_drop_min_trades,
+    wallet_discovery_min_observed_buys,
+    wallet_discovery_min_resolved_buys,
+    wallet_probation_size_multiplier,
+    wallet_trusted_min_resolved_copied_buys,
     wallet_address,
     warm_poll_interval_multiplier,
     warm_wallet_count,
@@ -58,6 +62,7 @@ from signal_engine import SignalEngine
 from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
 from tracker import PolymarketTracker
 from trader_scorer import get_trader_features, refresh_trader_cache
+from wallet_trust import apply_wallet_trust_sizing, get_wallet_trust_state
 from watchlist_manager import WatchlistManager
 
 load_dotenv()
@@ -618,7 +623,31 @@ def process_event(
             _reject_event(event, signal["confidence"], preview_sizing.get("dollar_size", 0.0), reason)
         return 0.0
 
-    sizing = preview_sizing
+    trust_state = get_wallet_trust_state(event.trader_address)
+    signal = dict(signal)
+    signal["wallet_trust"] = trust_state.as_dict()
+    if trust_state.skip_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=preview_sizing.get("dollar_size", 0.0),
+            confidence=signal["confidence"],
+            kelly_f=preview_sizing.get("kelly_f", 0.0),
+            reason=trust_state.skip_reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _skip_event(event, preview_sizing.get("dollar_size", 0.0), trust_state.skip_reason)
+        return 0.0
+
+    sizing = apply_wallet_trust_sizing(preview_sizing, trust_state)
     fill_estimate = rough_fill
     fill_reason = None
     for _ in range(3):
@@ -636,6 +665,7 @@ def process_event(
             bankroll,
             signal.get("mode", "heuristic"),
         )
+        next_sizing = apply_wallet_trust_sizing(next_sizing, trust_state)
         if (
             next_sizing["dollar_size"] == sizing["dollar_size"]
             and abs(next_sizing.get("kelly_f", 0.0) - sizing.get("kelly_f", 0.0)) < 1e-9
@@ -762,6 +792,8 @@ def process_event(
                 "belief_evidence": signal.get("belief_evidence"),
                 "trader_score": signal.get("trader", {}).get("score"),
                 "market_score": signal.get("market", {}).get("score"),
+                "wallet_trust_tier": trust_state.tier,
+                "wallet_trust_note": sizing.get("wallet_trust_note"),
                 "shadow": result.shadow,
                 "order_id": result.order_id,
                 "reason": _humanize_reason("passed all checks"),
@@ -838,6 +870,10 @@ def _validate_startup() -> None:
     _capture_config(wallet_performance_drop_min_trades)
     _capture_config(wallet_performance_drop_max_win_rate)
     _capture_config(wallet_performance_drop_max_avg_return)
+    _capture_config(wallet_discovery_min_observed_buys)
+    _capture_config(wallet_discovery_min_resolved_buys)
+    _capture_config(wallet_probation_size_multiplier)
+    _capture_config(wallet_trusted_min_resolved_copied_buys)
 
     if use_real_money():
         our_wallet = wallet_address()

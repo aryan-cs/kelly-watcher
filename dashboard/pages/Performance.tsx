@@ -511,7 +511,7 @@ function getPositionPaneMetrics(terminalHeight: number, stacked: boolean) {
     12,
     terminalHeight - outerReserve - topRowHeight - sectionGaps
   )
-  const paneHeight = Math.max(6, Math.floor((availableHeight - 1) / 2))
+  const paneHeight = Math.max(6, Math.floor((availableHeight - 3) / 2))
   const visibleRows = Math.max(1, paneHeight - 5)
 
   return {paneHeight, visibleRows}
@@ -838,7 +838,7 @@ export function Performance({
             </>
           ) : null}
         </InkBox>
-        <InkBox flexDirection="column" marginTop={1}>
+        <InkBox flexDirection="column">
           {rowsToRender.map((row) => {
             const sideColor = outcomeColor(row.side)
             const displayId = row.trade_id ? tradeIdLookup.get(row.trade_id) ?? null : null

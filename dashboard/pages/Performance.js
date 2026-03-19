@@ -389,7 +389,7 @@ function getPositionPaneMetrics(terminalHeight, stacked, dailyCount) {
     const topRowHeight = stacked ? statsHeight + 1 + dailyHeight : Math.max(statsHeight, dailyHeight);
     const sectionGaps = stacked ? 3 : 2;
     const availableHeight = Math.max(12, terminalHeight - outerReserve - topRowHeight - sectionGaps);
-    const paneHeight = Math.max(6, Math.floor((availableHeight - 1) / 2));
+    const paneHeight = Math.max(6, Math.floor((availableHeight - 3) / 2));
     const visibleRows = Math.max(1, paneHeight - 5);
     return { paneHeight, visibleRows };
 }
@@ -528,7 +528,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane 
                 showTtr || showStatus ? (React.createElement(React.Fragment, null,
                     React.createElement(Text, { color: theme.dim }, " "),
                     React.createElement(Text, { color: theme.dim }, fitRight(showStatus ? 'STATUS' : 'TTR', trailingWidth)))) : null),
-            React.createElement(InkBox, { flexDirection: "column", marginTop: 1 }, rowsToRender.map((row) => {
+            React.createElement(InkBox, { flexDirection: "column" }, rowsToRender.map((row) => {
                 const sideColor = outcomeColor(row.side);
                 const displayId = row.trade_id ? tradeIdLookup.get(row.trade_id) ?? null : null;
                 const username = row.trader_address ? usernames.get(row.trader_address.toLowerCase()) : undefined;

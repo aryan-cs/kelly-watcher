@@ -897,8 +897,8 @@ export function Wallets({
             value: secondsAgo(selectedWallet.tracking_started_at || undefined)
           },
           {
-            label: 'Source Last',
-            value: secondsAgo(selectedWallet.last_source_ts || undefined)
+            label: 'Logged Last',
+            value: secondsAgo(selectedWallet.last_seen || undefined)
           },
           {
             label: 'Dropped',
@@ -1267,7 +1267,7 @@ export function Wallets({
                       </Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
-                        {fitRight(secondsAgo(wallet.last_source_ts || wallet.last_seen || undefined), layout.lastSeenWidth)}
+                        {fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth)}
                       </Text>
                     </InkBox>
                   )
@@ -1317,7 +1317,7 @@ export function Wallets({
                       </Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
-                        {fitRight(secondsAgo(wallet.last_source_ts || wallet.last_source_ts_at_status || undefined), droppedLayout.lastSeenWidth)}
+                        {fitRight(secondsAgo(wallet.last_seen || undefined), droppedLayout.lastSeenWidth)}
                       </Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={isSelected ? theme.accent : theme.red} backgroundColor={rowBackground} bold={isSelected}>

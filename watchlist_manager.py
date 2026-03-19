@@ -196,6 +196,32 @@ def _wallet_cursor_map(wallet_addresses: list[str]) -> dict[str, int]:
     }
 
 
+def _wallet_logged_activity_map(wallet_addresses: list[str]) -> dict[str, int]:
+    wallets = _normalize_wallets(wallet_addresses)
+    if not wallets:
+        return {}
+
+    placeholders = ",".join("?" for _ in wallets)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT trader_address, MAX(placed_at) AS last_logged_ts
+            FROM trade_log
+            WHERE trader_address IN ({placeholders})
+            GROUP BY trader_address
+            """,
+            tuple(wallets),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        str(row["trader_address"] or "").strip().lower(): int(row["last_logged_ts"] or 0)
+        for row in rows
+    }
+
+
 def _drop_wallets(wallet_updates: list[tuple[str, str, int, int]]) -> None:
     if not wallet_updates:
         return
@@ -237,7 +263,6 @@ def _ensure_tracking_started(wallet_addresses: list[str]) -> None:
 
     now_ts = int(time.time())
     placeholders = ",".join("?" for _ in wallets)
-    cursor_map = _wallet_cursor_map(wallets)
     conn = get_conn()
     try:
         existing_rows = conn.execute(
@@ -260,7 +285,7 @@ def _ensure_tracking_started(wallet_addresses: list[str]) -> None:
         to_insert = [
             (
                 wallet,
-                int(cursor_map.get(wallet, 0)) or now_ts,
+                now_ts,
                 now_ts,
             )
             for wallet in wallets
@@ -274,7 +299,7 @@ def _ensure_tracking_started(wallet_addresses: list[str]) -> None:
             tracking_started_at = int(row["tracking_started_at"] or 0)
             if tracking_started_at > 0:
                 continue
-            anchor = int(cursor_map.get(wallet, 0)) or int(row["reactivated_at"] or 0) or int(row["updated_at"] or 0) or now_ts
+            anchor = int(row["reactivated_at"] or 0) or int(row["updated_at"] or 0) or now_ts
             updated_at = int(row["updated_at"] or 0) or anchor
             to_update.append((anchor, updated_at, wallet))
 
@@ -320,7 +345,7 @@ def _auto_drop_underperforming_wallets(wallet_addresses: list[str]) -> None:
         return
 
     status_rows = _wallet_status_rows(wallets)
-    cursor_map = _wallet_cursor_map(wallets)
+    logged_activity_map = _wallet_logged_activity_map(wallets)
     placeholders = ",".join("?" for _ in wallets)
     conn = get_conn()
     try:
@@ -358,14 +383,14 @@ def _auto_drop_underperforming_wallets(wallet_addresses: list[str]) -> None:
             continue
 
         reactivated_at = int(status_row.get("reactivated_at") or 0)
-        last_source_ts = int(cursor_map.get(wallet, 0))
-        if reactivated_at > 0 and last_source_ts <= reactivated_at:
+        last_logged_ts = int(logged_activity_map.get(wallet, 0))
+        if reactivated_at > 0 and last_logged_ts <= reactivated_at:
             continue
 
         reason = (
             f"poor_perf {n_trades}t {win_rate * 100.0:.1f}%wr {avg_return * 100.0:.1f}%ret"
         )
-        to_drop.append((wallet, reason, now_ts, last_source_ts))
+        to_drop.append((wallet, reason, now_ts, last_logged_ts))
 
     _drop_wallets(to_drop)
 
@@ -415,7 +440,7 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
         return
 
     status_rows = _wallet_status_rows(wallets)
-    cursor_map = _wallet_cursor_map(wallets)
+    logged_activity_map = _wallet_logged_activity_map(wallets)
     now_ts = int(time.time())
     reason = f"inactive>{_format_duration_label(inactivity_limit)}"
     to_drop: list[tuple[str, str, int, int]] = []
@@ -425,15 +450,15 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
         if status_row.get("status") == "dropped":
             continue
 
-        last_source_ts = int(cursor_map.get(wallet, 0))
+        last_logged_ts = int(logged_activity_map.get(wallet, 0))
         reactivated_at = int(status_row.get("reactivated_at") or 0)
         tracking_started_at = int(status_row.get("tracking_started_at") or 0)
-        inactivity_anchor = max(last_source_ts, reactivated_at, tracking_started_at)
+        inactivity_anchor = max(last_logged_ts, reactivated_at, tracking_started_at)
         if inactivity_anchor <= 0:
             continue
         if (now_ts - inactivity_anchor) < inactivity_limit:
             continue
-        to_drop.append((wallet, reason, now_ts, last_source_ts))
+        to_drop.append((wallet, reason, now_ts, last_logged_ts))
 
     _drop_wallets(to_drop)
 
@@ -446,7 +471,7 @@ def _slow_wallet_drop_updates(
     if not math.isfinite(max_tracking_age) or not discovery_wallets:
         return []
 
-    cursor_map = _wallet_cursor_map(list(discovery_wallets))
+    logged_activity_map = _wallet_logged_activity_map(list(discovery_wallets))
     now_ts = int(time.time())
     reason = f"slow>{_format_duration_label(max_tracking_age)}"
     to_drop: list[tuple[str, str, int, int]] = []
@@ -460,7 +485,7 @@ def _slow_wallet_drop_updates(
             continue
         if (now_ts - tracking_started_at) < max_tracking_age:
             continue
-        to_drop.append((wallet, reason, now_ts, int(cursor_map.get(wallet, 0))))
+        to_drop.append((wallet, reason, now_ts, int(logged_activity_map.get(wallet, 0))))
 
     return to_drop
 

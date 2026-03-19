@@ -16,6 +16,37 @@ from watchlist_manager import (
 )
 
 
+def insert_logged_trade(conn, trader_address: str, placed_at: int, *, trade_id: str | None = None) -> None:
+    conn.execute(
+        """
+        INSERT INTO trade_log (
+            trade_id,
+            market_id,
+            trader_address,
+            side,
+            source_action,
+            price_at_signal,
+            signal_size_usd,
+            confidence,
+            kelly_fraction,
+            placed_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            trade_id or f"{trader_address}:{placed_at}",
+            f"market:{trader_address}",
+            trader_address,
+            "yes",
+            "buy",
+            0.55,
+            1.0,
+            0.60,
+            0.01,
+            placed_at,
+        ),
+    )
+
+
 class WatchlistManagerTest(unittest.TestCase):
     def test_watchlist_tiers_rank_wallets_by_copyability(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -244,14 +275,17 @@ class WatchlistManagerTest(unittest.TestCase):
                 )
                 conn.executemany(
                     """
-                    INSERT INTO wallet_cursors (wallet_address, last_source_ts, last_trade_ids_json, updated_at)
-                    VALUES (?,?,?,?)
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
                     """,
                     (
-                        ("0xactive", 1_700_000_000, "[]", 1_700_000_000),
-                        ("0xstale", 1_699_980_000, "[]", 1_699_980_000),
+                        ("0xactive", 1_699_970_000, 1_699_970_000),
+                        ("0xstale", 1_699_970_000, 1_699_970_000),
                     ),
                 )
+                insert_logged_trade(conn, "0xactive", 1_700_000_000)
+                insert_logged_trade(conn, "0xstale", 1_699_980_000)
                 conn.commit()
                 conn.close()
 
@@ -340,6 +374,54 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_raw_cursor_activity_does_not_prevent_inactivity_drop_without_logged_trades(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    ("0xcursoronly", 0.55, 20, 0.1, 0.0, 20.0, 6, 10, 10, 0, 25.0, 0.01, 0, 0.0, 0.0, 1_700_000_000),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    ("0xcursoronly", 1_699_990_000, 1_699_990_000),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_cursors (wallet_address, last_source_ts, last_trade_ids_json, updated_at)
+                    VALUES (?,?,?,?)
+                    """,
+                    ("0xcursoronly", 1_700_000_150, "[]", 1_700_000_150),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
+                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                    manager = WatchlistManager(["0xcursoronly"])
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.hot, ())
+                self.assertEqual(snapshot.dropped, ("0xcursoronly",))
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_underperforming_wallets_are_auto_dropped_after_minimum_sample(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -362,12 +444,13 @@ class WatchlistManagerTest(unittest.TestCase):
                 )
                 conn.executemany(
                     """
-                    INSERT INTO wallet_cursors (wallet_address, last_source_ts, last_trade_ids_json, updated_at)
-                    VALUES (?,?,?,?)
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
                     """,
                     (
-                        ("0xgood", 1_700_000_000, "[]", 1_700_000_000),
-                        ("0xbad", 1_700_000_050, "[]", 1_700_000_050),
+                        ("0xgood", 1_700_000_000, 1_700_000_000),
+                        ("0xbad", 1_700_000_050, 1_700_000_050),
                     ),
                 )
                 conn.commit()
@@ -415,10 +498,7 @@ class WatchlistManagerTest(unittest.TestCase):
                 self.assertEqual(snapshot.hot, ("0xgood", "0xbad"))
 
                 conn = db.get_conn()
-                conn.execute(
-                    "UPDATE wallet_cursors SET last_source_ts=? WHERE wallet_address=?",
-                    (1_700_000_450, "0xbad"),
-                )
+                insert_logged_trade(conn, "0xbad", 1_700_000_450)
                 conn.commit()
                 conn.close()
 

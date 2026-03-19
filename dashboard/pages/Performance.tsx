@@ -1,5 +1,6 @@
 import React, {useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
+import {BarSparkline} from '../components/BarSparkline.js'
 import {Box} from '../components/Box.js'
 import {StatRow} from '../components/StatRow.js'
 import {
@@ -433,8 +434,9 @@ interface DailyPnlEntry {
 }
 
 interface DailyQueueLayout {
-  leftWidth: number
-  rightWidth: number
+  dateWidth: number
+  barWidth: number
+  valueWidth: number
 }
 
 function getPositionsLayout(width: number): PositionsLayout {
@@ -523,14 +525,16 @@ function getDailyPanelContentWidth(terminalWidth: number, stacked: boolean): num
 }
 
 function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQueueLayout {
-  const minLeftWidth = 10
-  const minRightWidth = Math.max(12, valueWidth)
-  const usableWidth = Math.max(minLeftWidth + minRightWidth, contentWidth - 3)
-  const sideWidth = Math.max(minLeftWidth, Math.floor(usableWidth / 2))
+  const dateWidth = 10
+  const resolvedValueWidth = Math.max(12, valueWidth)
+  const minBarWidth = 9
+  const rawBarWidth = Math.max(minBarWidth, contentWidth - dateWidth - resolvedValueWidth - 2)
+  const centeredBarWidth = rawBarWidth % 2 === 0 ? rawBarWidth - 1 : rawBarWidth
 
   return {
-    leftWidth: sideWidth,
-    rightWidth: sideWidth
+    dateWidth,
+    barWidth: Math.max(minBarWidth, centeredBarWidth),
+    valueWidth: resolvedValueWidth
   }
 }
 
@@ -740,6 +744,10 @@ export function Performance({
   const detailQueueLayout = useMemo(
     () => getDailyQueueLayout(detailModalContentWidth, dailyValueWidth),
     [detailModalContentWidth, dailyValueWidth]
+  )
+  const detailMaxAbsPnl = useMemo(
+    () => Math.max(1, ...dailyEntries.map((entry) => Math.abs(entry.pnl))),
+    [dailyEntries]
   )
 
   const getPositionProfit = (row: PositionRow): number | null => {
@@ -1023,13 +1031,24 @@ export function Performance({
             {paddedDetailEntries.map((row, index) => (
               <InkBox key={`detail-${row?.day || `empty-${index}`}`} width="100%">
                 <Text color={row ? theme.white : theme.dim} backgroundColor={modalBackground}>
-                  {` ${fitRight(row?.day || '', detailQueueLayout.leftWidth)}`}
+                  {` ${fitRight(row?.day || '', detailQueueLayout.dateWidth)}`}
                 </Text>
                 <Text backgroundColor={modalBackground}> </Text>
-                <Text color={theme.dim} backgroundColor={modalBackground}>│</Text>
+                <InkBox width={detailQueueLayout.barWidth}>
+                  <BarSparkline
+                    value={row ? row.pnl / detailMaxAbsPnl : 0}
+                    width={detailQueueLayout.barWidth}
+                    positive={row ? row.pnl >= 0 : true}
+                    centered
+                    axisChar="│"
+                  />
+                </InkBox>
                 <Text backgroundColor={modalBackground}> </Text>
-                <Text color={row ? (row.pnl >= 0 ? theme.green : theme.red) : theme.dim} backgroundColor={modalBackground}>
-                  {`${fit(row?.label || '', detailQueueLayout.rightWidth)} `}
+                <Text
+                  color={row ? (row.pnl >= 0 ? theme.green : theme.red) : theme.dim}
+                  backgroundColor={modalBackground}
+                >
+                  {`${fitRight(row?.label || '', detailQueueLayout.valueWidth)} `}
                 </Text>
               </InkBox>
             ))}

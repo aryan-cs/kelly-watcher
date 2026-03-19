@@ -552,22 +552,11 @@ function formatHourlyBucketLabel(bucket: string, compact = false): string {
   return shortDate || shortTime || bucket
 }
 
-function formatHourlyPreviewLabel(bucket: string, width: number): string {
-  if (width >= 11) {
-    return formatHourlyBucketLabel(bucket)
-  }
-  if (width >= 5) {
-    return formatHourlyBucketLabel(bucket, true)
-  }
-  const hour = String(bucket || '').split(' ')[1]?.slice(0, 2) || ''
-  return hour || bucket.slice(-Math.max(1, width))
-}
-
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
-  const levelCount = 3
-  const gapWidth = entries.length <= 5 ? 2 : 1
+  const levelCount = 4
+  const gapWidth = entries.length <= 8 ? 1 : 0
   const totalGapWidth = Math.max(0, entries.length - 1) * gapWidth
-  const columnWidth = Math.max(2, Math.floor((Math.max(width, entries.length * 3) - totalGapWidth) / Math.max(entries.length, 1)))
+  const columnWidth = Math.max(1, Math.floor((Math.max(width - totalGapWidth, entries.length) / Math.max(entries.length, 1))))
   const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)))
   const heights = entries.map((entry) => Math.round((Math.abs(entry.pnl) / maxAbsPnl) * levelCount))
 
@@ -605,19 +594,6 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
         ))}
       </InkBox>
       {Array.from({length: levelCount}, (_, index) => renderRow(index + 1, true))}
-      <InkBox width="100%">
-        {entries.map((entry, index) => {
-          const label = formatHourlyPreviewLabel(entry.day, columnWidth)
-          return (
-            <React.Fragment key={`${entry.day}-label`}>
-              <InkBox width={columnWidth}>
-                <Text color={theme.dim}>{fit(label, columnWidth)}</Text>
-              </InkBox>
-              {index < entries.length - 1 ? <Text>{' '.repeat(gapWidth)}</Text> : null}
-            </React.Fragment>
-          )
-        })}
-      </InkBox>
     </InkBox>
   )
 }
@@ -721,17 +697,24 @@ export function Performance({
       }),
     [activeDailyRows]
   )
+  const dailyPanelContentWidth = useMemo(
+    () => getDailyPanelContentWidth(terminal.width, stacked),
+    [stacked, terminal.width]
+  )
+  const dailyPreviewCapacity = useMemo(
+    () =>
+      dailyEntries.length
+        ? Math.min(dailyEntries.length, Math.max(12, dailyPanelContentWidth))
+        : 0,
+    [dailyEntries.length, dailyPanelContentWidth]
+  )
   const dailyPreviewEntries = useMemo(
-    () => dailyEntries.slice(0, 12).reverse(),
-    [dailyEntries]
+    () => dailyEntries.slice(0, dailyPreviewCapacity).reverse(),
+    [dailyEntries, dailyPreviewCapacity]
   )
   const dailyValueWidth = useMemo(
     () => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10),
     [dailyEntries]
-  )
-  const dailyPanelContentWidth = useMemo(
-    () => getDailyPanelContentWidth(terminal.width, stacked),
-    [stacked, terminal.width]
   )
   const paneMetrics = getPositionPaneMetrics(terminal.height, stacked)
   const currentMaxOffset = Math.max(0, currentPositions.length - paneMetrics.visibleRows)

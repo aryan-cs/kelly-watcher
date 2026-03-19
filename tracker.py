@@ -29,6 +29,7 @@ METADATA_REQUEST_TIMEOUT_S = 4.0
 ORDERBOOK_REQUEST_TIMEOUT_S = 3.0
 PRICE_HISTORY_REQUEST_TIMEOUT_S = 4.0
 WALLET_TRADE_FETCH_WORKERS = 6
+ENRICHMENT_FETCH_WORKERS = 6
 MARKET_METADATA_CACHE_TTL_S = 300
 ORDERBOOK_CACHE_TTL_S = 2
 PRICE_HISTORY_CACHE_TTL_S = 60
@@ -67,6 +68,16 @@ class WalletCursor:
     last_trade_ids: set[str] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class RawTradeCandidate:
+    wallet: str
+    trade_id: str
+    timestamp: int
+    condition_id: str
+    token_id: str
+    raw: dict[str, Any]
+
+
 class PolymarketTracker:
     def __init__(
         self,
@@ -83,6 +94,7 @@ class PolymarketTracker:
         self._market_metadata_cache: dict[str, tuple[float, tuple[dict[str, Any], int]]] = {}
         self._orderbook_cache: dict[str, tuple[float, tuple[dict[str, float] | None, dict[str, Any] | None, int]]] = {}
         self._price_history_cache: dict[tuple[str, str], tuple[float, list[dict[str, float]]]] = {}
+        self._dirty_wallet_cursors: set[str] = set()
 
     def close(self) -> None:
         self.client.close()
@@ -138,13 +150,37 @@ class PolymarketTracker:
             )
         return cursors
 
-    def _persist_wallet_cursor(self, wallet: str) -> None:
-        cursor = self.wallet_cursors.get(wallet)
-        if cursor is None:
+    def _persist_wallet_cursors(self, wallets: set[str] | list[str] | tuple[str, ...]) -> None:
+        normalized_wallets = sorted(
+            {
+                str(wallet or "").strip().lower()
+                for wallet in wallets
+                if str(wallet or "").strip()
+            }
+        )
+        if not normalized_wallets:
             return
+
+        rows: list[tuple[str, int, str, int]] = []
+        now_ts = int(time.time())
+        for wallet in normalized_wallets:
+            cursor = self.wallet_cursors.get(wallet)
+            if cursor is None:
+                continue
+            rows.append(
+                (
+                    wallet,
+                    int(cursor.last_source_ts),
+                    json.dumps(sorted(cursor.last_trade_ids), separators=(",", ":")),
+                    now_ts,
+                )
+            )
+        if not rows:
+            return
+
         conn = get_conn()
         try:
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO wallet_cursors (wallet_address, last_source_ts, last_trade_ids_json, updated_at)
                 VALUES (?, ?, ?, ?)
@@ -153,31 +189,38 @@ class PolymarketTracker:
                     last_trade_ids_json=excluded.last_trade_ids_json,
                     updated_at=excluded.updated_at
                 """,
-                (
-                    wallet,
-                    int(cursor.last_source_ts),
-                    json.dumps(sorted(cursor.last_trade_ids), separators=(",", ":")),
-                    int(time.time()),
-                ),
+                rows,
             )
             conn.commit()
         finally:
             conn.close()
 
-    def _advance_wallet_cursor(self, wallet: str, event: TradeEvent) -> None:
+    def _flush_dirty_wallet_cursors(self) -> None:
+        dirty = set(self._dirty_wallet_cursors)
+        if not dirty:
+            return
+        self._persist_wallet_cursors(dirty)
+        self._dirty_wallet_cursors.difference_update(dirty)
+
+    def _advance_wallet_cursor_state(self, wallet: str, timestamp: int, trade_id: str) -> None:
         normalized_wallet = str(wallet or "").strip().lower()
-        if not normalized_wallet:
+        trade_id_text = str(trade_id or "").strip()
+        source_ts = int(timestamp or 0)
+        if not normalized_wallet or not trade_id_text or source_ts <= 0:
             return
 
         cursor = self.wallet_cursors.setdefault(normalized_wallet, WalletCursor())
-        if event.timestamp > cursor.last_source_ts:
-            cursor.last_source_ts = int(event.timestamp)
-            cursor.last_trade_ids = {event.trade_id}
-            self._persist_wallet_cursor(normalized_wallet)
+        if source_ts > cursor.last_source_ts:
+            cursor.last_source_ts = source_ts
+            cursor.last_trade_ids = {trade_id_text}
+            self._dirty_wallet_cursors.add(normalized_wallet)
             return
-        if event.timestamp == cursor.last_source_ts and event.trade_id not in cursor.last_trade_ids:
-            cursor.last_trade_ids.add(event.trade_id)
-            self._persist_wallet_cursor(normalized_wallet)
+        if source_ts == cursor.last_source_ts and trade_id_text not in cursor.last_trade_ids:
+            cursor.last_trade_ids.add(trade_id_text)
+            self._dirty_wallet_cursors.add(normalized_wallet)
+
+    def _advance_wallet_cursor(self, wallet: str, event: TradeEvent) -> None:
+        self._advance_wallet_cursor_state(wallet, event.timestamp, event.trade_id)
 
     def _record_trade_feed_result(self, ok: bool) -> None:
         if ok:
@@ -382,7 +425,7 @@ class PolymarketTracker:
             max_attempts=AUX_FETCH_MAX_ATTEMPTS,
         )
         if payload is None:
-            return []
+            return self._cache_put("_price_history_cache", cache_key, [])
         history = payload.get("history", []) if isinstance(payload, dict) else []
         return self._cache_put("_price_history_cache", cache_key, self._normalize_price_history(history))
 
@@ -415,45 +458,153 @@ class PolymarketTracker:
                     results[wallet] = []
         return results
 
-    def poll(self, wallet_addresses: list[str] | None = None) -> list[TradeEvent]:
+    def _fetch_market_metadata_batch(
+        self,
+        condition_ids: list[str],
+    ) -> dict[str, tuple[dict[str, Any], int]]:
+        normalized = sorted({str(condition_id or "").strip().lower() for condition_id in condition_ids if str(condition_id or "").strip()})
+        if not normalized:
+            return {}
+        if len(normalized) == 1:
+            condition_id = normalized[0]
+            return {condition_id: self.get_market_metadata(condition_id)}
+
+        results: dict[str, tuple[dict[str, Any], int]] = {}
+        worker_count = min(ENRICHMENT_FETCH_WORKERS, len(normalized))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            future_map = {
+                pool.submit(self.get_market_metadata, condition_id): condition_id
+                for condition_id in normalized
+            }
+            for future in as_completed(future_map):
+                condition_id = future_map[future]
+                try:
+                    results[condition_id] = future.result()
+                except Exception as exc:
+                    logger.error("Metadata worker failed for %s: %s", condition_id[:12], exc)
+                    results[condition_id] = ({}, 0)
+        return results
+
+    def _fetch_orderbook_snapshots_batch(
+        self,
+        token_ids: list[str],
+    ) -> dict[str, tuple[dict[str, float] | None, dict[str, Any] | None, int]]:
+        normalized = sorted({str(token_id or "").strip() for token_id in token_ids if str(token_id or "").strip()})
+        if not normalized:
+            return {}
+        if len(normalized) == 1:
+            token_id = normalized[0]
+            return {token_id: self.get_orderbook_snapshot(token_id)}
+
+        results: dict[str, tuple[dict[str, float] | None, dict[str, Any] | None, int]] = {}
+        worker_count = min(ENRICHMENT_FETCH_WORKERS, len(normalized))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            future_map = {
+                pool.submit(self.get_orderbook_snapshot, token_id): token_id
+                for token_id in normalized
+            }
+            for future in as_completed(future_map):
+                token_id = future_map[future]
+                try:
+                    results[token_id] = future.result()
+                except Exception as exc:
+                    logger.error("Orderbook worker failed for %s: %s", token_id[:12], exc)
+                    results[token_id] = (None, None, 0)
+        return results
+
+    def poll(self, wallet_addresses: list[str] | None = None, *, trade_limit: int = 50) -> list[TradeEvent]:
         new_events: list[TradeEvent] = []
         poll_started_at = int(time.time())
         poll_seen: set[str] = set()
         self._touch_activity()
 
         targets = self.wallets if wallet_addresses is None else wallet_addresses
-        wallet_trades = self._fetch_wallet_trades_batch(list(targets))
-        for address in targets:
-            self._touch_activity()
-            for raw in wallet_trades.get(address, []):
-                trade_id = self._raw_trade_id(raw)
-                if not trade_id or trade_id in self.seen_ids or trade_id in poll_seen:
-                    continue
+        wallet_trades = self._fetch_wallet_trades_batch(list(targets), limit=trade_limit)
+        candidates: list[RawTradeCandidate] = []
 
-                event = self._parse_raw_trade(raw, address, poll_started_at)
+        try:
+            for address in targets:
+                self._touch_activity()
+                cursor = self.wallet_cursors.get(str(address or "").strip().lower())
+                rows = sorted(
+                    wallet_trades.get(address, []),
+                    key=self._raw_trade_timestamp,
+                    reverse=True,
+                )
+                for raw in rows:
+                    trade_id = self._raw_trade_id(raw)
+                    if not trade_id or trade_id in self.seen_ids or trade_id in poll_seen:
+                        continue
+
+                    source_ts = self._raw_trade_timestamp(raw)
+                    if cursor is not None and source_ts > 0 and source_ts < cursor.last_source_ts:
+                        break
+                    if cursor is not None and source_ts == cursor.last_source_ts and trade_id in cursor.last_trade_ids:
+                        continue
+                    if source_ts <= 0:
+                        continue
+                    if self._is_stale_source_timestamp(source_ts, poll_started_at):
+                        self._advance_wallet_cursor_state(address, source_ts, trade_id)
+                        continue
+
+                    condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip().lower()
+                    token_id = str(
+                        raw.get("asset")
+                        or raw.get("asset_id")
+                        or raw.get("tokenId")
+                        or raw.get("token_id")
+                        or ""
+                    ).strip()
+                    if not condition_id or not token_id:
+                        continue
+
+                    poll_seen.add(trade_id)
+                    candidates.append(
+                        RawTradeCandidate(
+                            wallet=str(address or "").strip().lower(),
+                            trade_id=trade_id,
+                            timestamp=source_ts,
+                            condition_id=condition_id,
+                            token_id=token_id,
+                            raw=dict(raw),
+                        )
+                    )
+
+            metadata_by_condition = self._fetch_market_metadata_batch(
+                [candidate.condition_id for candidate in candidates]
+            )
+            orderbooks_by_token = self._fetch_orderbook_snapshots_batch(
+                [candidate.token_id for candidate in candidates]
+            )
+
+            for candidate in candidates:
+                meta, metadata_fetched_at = metadata_by_condition.get(candidate.condition_id, ({}, 0))
+                event = self._parse_raw_trade(
+                    candidate.raw,
+                    candidate.wallet,
+                    poll_started_at,
+                    market_meta=meta,
+                    metadata_fetched_at=metadata_fetched_at,
+                )
                 if event is None:
                     continue
-                if not self._is_new_for_wallet(address, event):
-                    continue
-                if self._is_stale_event(event, poll_started_at):
-                    self._advance_wallet_cursor(address, event)
-                    continue
-                poll_seen.add(trade_id)
 
                 self._touch_activity()
-                snap, raw_book, orderbook_fetched_at = self.get_orderbook_snapshot(event.token_id)
-                snap = snap or {}
+                snap, raw_book, orderbook_fetched_at = orderbooks_by_token.get(
+                    candidate.token_id,
+                    (None, None, 0),
+                )
+                merged_snapshot = dict(snap or {})
                 if event.snapshot:
-                    snap.update(event.snapshot)
-                history = self.get_price_history(event.token_id, interval="1h")
-                if history:
-                    snap["price_history_1h"] = history
+                    merged_snapshot.update(event.snapshot)
 
-                event.snapshot = snap or None
+                event.snapshot = merged_snapshot or None
                 event.raw_orderbook = raw_book
                 event.orderbook_fetched_at = orderbook_fetched_at
                 new_events.append(event)
-                self._advance_wallet_cursor(address, event)
+                self._advance_wallet_cursor(candidate.wallet, event)
+        finally:
+            self._flush_dirty_wallet_cursors()
 
         new_events.sort(key=lambda event: event.timestamp)
         return new_events
@@ -475,7 +626,22 @@ class PolymarketTracker:
             return False
         return (poll_started_at - int(event.timestamp or poll_started_at)) > max_age
 
-    def _parse_raw_trade(self, raw: dict, address: str, poll_started_at: int) -> TradeEvent | None:
+    @staticmethod
+    def _is_stale_source_timestamp(source_ts: int, poll_started_at: int) -> bool:
+        max_age = max_source_trade_age_seconds()
+        if max_age <= 0:
+            return False
+        return (poll_started_at - int(source_ts or poll_started_at)) > max_age
+
+    def _parse_raw_trade(
+        self,
+        raw: dict,
+        address: str,
+        poll_started_at: int,
+        *,
+        market_meta: dict[str, Any] | None = None,
+        metadata_fetched_at: int = 0,
+    ) -> TradeEvent | None:
         try:
             condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip()
             action = str(raw.get("side") or raw.get("tradeSide") or "BUY").strip().lower()
@@ -520,7 +686,10 @@ class PolymarketTracker:
             ):
                 return None
 
-            meta, metadata_fetched_at = self.get_market_metadata(condition_id)
+            meta = dict(market_meta or {})
+            fetched_at = int(metadata_fetched_at or 0)
+            if not meta:
+                meta, fetched_at = self.get_market_metadata(condition_id)
             outcome = self._resolve_outcome_name(raw, meta, token_id)
             if not outcome:
                 return None
@@ -549,12 +718,17 @@ class PolymarketTracker:
                 source_ts_raw=source_ts_raw,
                 observed_at=observed_at,
                 poll_started_at=poll_started_at,
-                metadata_fetched_at=metadata_fetched_at,
+                metadata_fetched_at=fetched_at,
                 market_close_ts=self._normalize_timestamp(close_time) if close_time else 0,
             )
         except Exception as exc:
             logger.warning("Failed to parse trade event: %s", exc)
             return None
+
+    @staticmethod
+    def _raw_trade_timestamp(raw: dict[str, Any]) -> int:
+        source_ts_value = raw.get("timestamp") or raw.get("createdAt") or raw.get("created_at")
+        return PolymarketTracker._normalize_timestamp(source_ts_value)
 
     @staticmethod
     def _raw_trade_id(raw: dict) -> str:

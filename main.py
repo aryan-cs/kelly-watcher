@@ -1206,13 +1206,17 @@ def main() -> None:
                 else:
                     _heartbeat()
                     watchlist.refresh()
-                    poll_wallets = watchlist.wallets_for_poll()
-                    polled_wallet_count = len(poll_wallets)
+                    poll_batches = watchlist.poll_batches()
+                    polled_wallet_count = sum(len(batch.wallets) for batch in poll_batches)
                     _persist_bot_state(
                         polled_wallet_count=polled_wallet_count,
                         **watchlist.state_fields(),
                     )
-                    events = tracker.poll(poll_wallets)
+                    events = []
+                    for batch in poll_batches:
+                        if not batch.wallets:
+                            continue
+                        events.extend(tracker.poll(list(batch.wallets), trade_limit=batch.trade_limit))
                     event_count = len(events)
                     for event in events:
                         _heartbeat()

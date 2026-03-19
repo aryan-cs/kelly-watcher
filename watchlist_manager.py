@@ -37,6 +37,17 @@ class WatchTierSnapshot:
     refreshed_at: int
 
 
+@dataclass(frozen=True)
+class PollBatch:
+    wallets: tuple[str, ...]
+    trade_limit: int
+
+
+HOT_WALLET_TRADE_FETCH_LIMIT = 30
+WARM_WALLET_TRADE_FETCH_LIMIT = 20
+DISCOVERY_WALLET_TRADE_FETCH_LIMIT = 12
+
+
 def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
@@ -616,17 +627,45 @@ class WatchlistManager:
         return _normalize_wallets(wallets)
 
     def wallets_for_poll(self) -> list[str]:
+        batches = self.poll_batches()
+        wallets: list[str] = []
+        for batch in batches:
+            wallets.extend(batch.wallets)
+        return _normalize_wallets(wallets)
+
+    def poll_batches(self) -> list[PollBatch]:
         with self._lock:
             self._loop_count += 1
             snapshot = self._snapshot
-            due: list[str] = list(snapshot.hot)
-            if snapshot.warm and (self._loop_count % warm_poll_interval_multiplier()) == 0:
-                due.extend(snapshot.warm)
-            if snapshot.discovery and (self._loop_count % discovery_poll_interval_multiplier()) == 0:
-                due.extend(snapshot.discovery)
-            if not due:
-                due = list(snapshot.hot or snapshot.warm or snapshot.discovery)
-        return _normalize_wallets(due)
+            loop_count = self._loop_count
+
+            batches: list[PollBatch] = []
+            if snapshot.hot:
+                batches.append(
+                    PollBatch(
+                        wallets=tuple(_normalize_wallets(list(snapshot.hot))),
+                        trade_limit=HOT_WALLET_TRADE_FETCH_LIMIT,
+                    )
+                )
+            if snapshot.warm and (loop_count % warm_poll_interval_multiplier()) == 0:
+                batches.append(
+                    PollBatch(
+                        wallets=tuple(_normalize_wallets(list(snapshot.warm))),
+                        trade_limit=WARM_WALLET_TRADE_FETCH_LIMIT,
+                    )
+                )
+            if snapshot.discovery and (loop_count % discovery_poll_interval_multiplier()) == 0:
+                batches.append(
+                    PollBatch(
+                        wallets=tuple(_normalize_wallets(list(snapshot.discovery))),
+                        trade_limit=DISCOVERY_WALLET_TRADE_FETCH_LIMIT,
+                    )
+                )
+            if not batches:
+                fallback = tuple(_normalize_wallets(list(snapshot.hot or snapshot.warm or snapshot.discovery)))
+                if fallback:
+                    batches.append(PollBatch(wallets=fallback, trade_limit=HOT_WALLET_TRADE_FETCH_LIMIT))
+        return batches
 
     def state_fields(self) -> dict[str, int]:
         with self._lock:

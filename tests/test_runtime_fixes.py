@@ -690,6 +690,83 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(result, {"0x1": [], "0x2": [], "0x3": [], "0x4": []})
         self.assertLess(elapsed, 0.35)
 
+    def test_tracker_poll_filters_old_rows_before_metadata_and_skips_price_history_fetch(self) -> None:
+        tracker_obj = tracker.PolymarketTracker(["0xabc"])
+        now_ts = int(time.time())
+        tracker_obj.wallet_cursors = {
+            "0xabc": tracker.WalletCursor(last_source_ts=now_ts - 90, last_trade_ids={"t-seen"})
+        }
+        tracker_obj._flush_dirty_wallet_cursors = lambda: None
+
+        old_raw = {
+            "id": "t-old",
+            "conditionId": "market-old",
+            "side": "BUY",
+            "asset": "token-old",
+            "size": 10,
+            "price": 0.41,
+            "timestamp": now_ts - 120,
+            "title": "Old market",
+        }
+        new_raw = {
+            "id": "t-new",
+            "conditionId": "market-new",
+            "side": "BUY",
+            "asset": "token-yes",
+            "size": 10,
+            "price": 0.55,
+            "timestamp": now_ts - 30,
+            "title": "New market",
+        }
+
+        metadata_calls: list[tuple[str, ...]] = []
+        orderbook_calls: list[tuple[str, ...]] = []
+        price_history_calls: list[str] = []
+
+        tracker_obj._fetch_wallet_trades_batch = lambda wallets, limit=50: {"0xabc": [old_raw, new_raw]}
+        tracker_obj._fetch_market_metadata_batch = (
+            lambda condition_ids: metadata_calls.append(tuple(condition_ids)) or {
+                "market-new": (
+                    {
+                        "conditionId": "market-new",
+                        "question": "Will it happen?",
+                        "endDate": "2030-01-01T00:00:00Z",
+                        "outcomes": '["Yes","No"]',
+                        "clobTokenIds": '["token-yes","token-no"]',
+                    },
+                    123,
+                )
+            }
+        )
+        tracker_obj._fetch_orderbook_snapshots_batch = (
+            lambda token_ids: orderbook_calls.append(tuple(token_ids)) or {
+                "token-yes": (
+                    {
+                        "best_bid": 0.54,
+                        "best_ask": 0.56,
+                        "mid": 0.55,
+                        "bid_depth_usd": 500.0,
+                        "ask_depth_usd": 500.0,
+                    },
+                    {"bids": [], "asks": []},
+                    456,
+                )
+            }
+        )
+        tracker_obj.get_price_history = lambda token_id, interval="1h": price_history_calls.append(token_id) or []
+
+        try:
+            with patch("tracker.hydrate_observed_identity", return_value="Trader"):
+                events = tracker_obj.poll(["0xabc"], trade_limit=50)
+        finally:
+            tracker_obj.close()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].trade_id, "t-new")
+        self.assertEqual(metadata_calls, [("market-new",)])
+        self.assertEqual(orderbook_calls, [("token-yes",)])
+        self.assertEqual(price_history_calls, [])
+
     def test_tracker_market_metadata_cache_reuses_recent_fetch(self) -> None:
         tracker_obj = object.__new__(tracker.PolymarketTracker)
         calls: list[str] = []

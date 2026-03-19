@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 import db
 from tracker import PolymarketTracker
-from watchlist_manager import WatchlistManager, reactivate_wallet
+from watchlist_manager import (
+    DISCOVERY_WALLET_TRADE_FETCH_LIMIT,
+    HOT_WALLET_TRADE_FETCH_LIMIT,
+    WARM_WALLET_TRADE_FETCH_LIMIT,
+    WatchlistManager,
+    reactivate_wallet,
+)
 
 
 class WatchlistManagerTest(unittest.TestCase):
@@ -160,6 +166,61 @@ class WatchlistManagerTest(unittest.TestCase):
 
         self.assertEqual(events, [])
         self.assertEqual(calls, [])
+
+    def test_poll_batches_apply_tier_specific_trade_limits(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xhot", 0.70, 50, 0.5, 0.0, 20.0, 10, 10, 35, 0, 500.0, 0.08, 1, 0.0, 0.0, 1_700_000_000),
+                        ("0xwarm", 0.60, 20, 0.2, 0.0, 20.0, 10, 10, 10, 0, 100.0, 0.02, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xdisc", 0.50, 10, 0.0, 0.0, 20.0, 10, 10, 5, 0, 0.0, 0.0, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("watchlist_manager.warm_poll_interval_multiplier", return_value=2), patch(
+                    "watchlist_manager.discovery_poll_interval_multiplier", return_value=3
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.time.time", return_value=1_700_000_200
+                ):
+                    manager = WatchlistManager(["0xhot", "0xwarm", "0xdisc"])
+
+                    first = manager.poll_batches()
+                    second = manager.poll_batches()
+                    third = manager.poll_batches()
+
+                self.assertEqual([(batch.wallets, batch.trade_limit) for batch in first], [(("0xhot",), HOT_WALLET_TRADE_FETCH_LIMIT)])
+                self.assertEqual(
+                    [(batch.wallets, batch.trade_limit) for batch in second],
+                    [
+                        (("0xhot",), HOT_WALLET_TRADE_FETCH_LIMIT),
+                        (("0xwarm",), WARM_WALLET_TRADE_FETCH_LIMIT),
+                    ],
+                )
+                self.assertEqual(
+                    [(batch.wallets, batch.trade_limit) for batch in third],
+                    [
+                        (("0xhot",), HOT_WALLET_TRADE_FETCH_LIMIT),
+                        (("0xdisc",), DISCOVERY_WALLET_TRADE_FETCH_LIMIT),
+                    ],
+                )
+            finally:
+                db.DB_PATH = original_db_path
 
     def test_inactive_wallets_are_auto_dropped_until_reactivated(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -934,7 +934,7 @@ export function Wallets({
   )
   const shadowPanelsWide = terminal.wide
   const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 1) / 2)) : tableWidth
-  const shadowCopyWrWidth = 9
+  const shadowCopyWrWidth = 10
   const shadowSkipWidth = 6
   const shadowCopyPnlWidth = 10
   const shadowNameWidth = Math.max(
@@ -1223,7 +1223,7 @@ export function Wallets({
       <InkBox width="100%">
         <Text color={theme.dim}>{fit('WALLET', shadowNameWidth)}</Text>
         <Text color={theme.dim}> </Text>
-        <Text color={theme.dim}>{fitRight('COPY WR', shadowCopyWrWidth)}</Text>
+        <Text color={theme.dim}>{fitRight('COPY WR%', shadowCopyWrWidth)}</Text>
         <Text color={theme.dim}> </Text>
         <Text color={theme.dim}>{fitRight('SKIP %', shadowSkipWidth)}</Text>
         <Text color={theme.dim}> </Text>

@@ -8,6 +8,8 @@ from config import (
     wallet_discovery_min_observed_buys,
     wallet_discovery_min_resolved_buys,
     wallet_discovery_size_multiplier,
+    wallet_quality_size_max_multiplier,
+    wallet_quality_size_min_multiplier,
     wallet_probation_size_multiplier,
     wallet_trusted_min_resolved_copied_buys,
 )
@@ -188,24 +190,51 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
     )
 
 
-def apply_wallet_trust_sizing(sizing: dict, trust_state: WalletTrustState) -> dict:
+def wallet_quality_multiplier(quality_score: float | None) -> float:
+    minimum = wallet_quality_size_min_multiplier()
+    maximum = wallet_quality_size_max_multiplier()
+    if quality_score is None:
+        return 1.0
+    clipped_score = max(0.0, min(float(quality_score), 1.0))
+    return minimum + (clipped_score * (maximum - minimum))
+
+
+def apply_wallet_trust_sizing(
+    sizing: dict,
+    trust_state: WalletTrustState,
+    *,
+    quality_score: float | None = None,
+    max_size_usd: float | None = None,
+) -> dict:
     adjusted = dict(sizing)
     adjusted["wallet_trust"] = trust_state.as_dict()
+    adjusted["wallet_quality_score"] = (
+        round(float(quality_score), 4) if quality_score is not None else None
+    )
 
     base_size = float(adjusted.get("dollar_size", 0.0) or 0.0)
-    if base_size <= 0 or trust_state.size_multiplier >= 0.999 or trust_state.size_multiplier <= 0:
+    quality_multiplier = wallet_quality_multiplier(quality_score) if base_size > 0 else 1.0
+    adjusted["wallet_quality_multiplier"] = round(quality_multiplier, 5)
+    adjusted["wallet_quality_effective_multiplier"] = (
+        round(quality_multiplier, 5) if base_size > 0 and trust_state.size_multiplier > 0 else 0.0
+    )
+
+    if base_size <= 0 or trust_state.size_multiplier <= 0:
         adjusted["wallet_trust_note"] = trust_state.tier_note
         adjusted["wallet_trust_multiplier"] = trust_state.size_multiplier
         adjusted["wallet_trust_effective_multiplier"] = (
-            1.0 if base_size > 0 and trust_state.size_multiplier >= 0.999 else 0.0
+            0.0 if trust_state.size_multiplier <= 0 else 1.0
         )
         return adjusted
 
-    scaled_size = round(base_size * trust_state.size_multiplier, 2)
+    combined_multiplier = trust_state.size_multiplier * quality_multiplier
+    scaled_size = round(base_size * combined_multiplier, 2)
+    if max_size_usd is not None and max_size_usd > 0:
+        scaled_size = round(min(scaled_size, max_size_usd), 2)
     min_bet = min_bet_usd()
     if 0.0 < scaled_size < min_bet:
-        scaled_size = min(base_size, min_bet)
-    scaled_size = round(min(base_size, scaled_size), 2)
+        scaled_size = min_bet if max_size_usd is None or max_size_usd >= min_bet else max_size_usd
+    scaled_size = round(max(scaled_size, 0.0), 2)
     effective_multiplier = (scaled_size / base_size) if base_size > 0 else 0.0
 
     adjusted["dollar_size"] = scaled_size
@@ -213,9 +242,17 @@ def apply_wallet_trust_sizing(sizing: dict, trust_state: WalletTrustState) -> di
     adjusted["full_kelly_f"] = round(float(adjusted.get("full_kelly_f", 0.0) or 0.0) * effective_multiplier, 5)
     adjusted["wallet_trust_multiplier"] = trust_state.size_multiplier
     adjusted["wallet_trust_effective_multiplier"] = round(effective_multiplier, 5)
-    adjusted["wallet_trust_note"] = (
-        f"{trust_state.tier_note}, size scaled to {effective_multiplier * 100:.0f}%"
-        if effective_multiplier < 0.999
-        else f"{trust_state.tier_note}, minimum bet floor kept size unchanged"
+    trust_prefix = trust_state.tier_note
+    quality_note = (
+        f"wallet quality {adjusted['wallet_quality_score']:.2f} -> {quality_multiplier * 100:.0f}%"
+        if quality_score is not None
+        else "wallet quality neutral"
     )
+    scaling_note = (
+        f"size scaled to {effective_multiplier * 100:.0f}%"
+        if abs(effective_multiplier - 1.0) > 1e-9
+        else "size unchanged after wallet adjustments"
+    )
+    note_parts = [part for part in (trust_prefix, quality_note, scaling_note) if part]
+    adjusted["wallet_trust_note"] = ", ".join(note_parts)
     return adjusted

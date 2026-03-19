@@ -90,6 +90,22 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: true
   },
   {
+    key: 'WALLET_QUALITY_SIZE_MIN_MULTIPLIER',
+    label: 'Wallet Quality Min Multiplier',
+    kind: 'float',
+    description: 'Lowest Sizing Multiplier Applied To Lower-Quality Wallets After Trust Gating. A Score Near 0 Maps Toward This Floor. Applies Live On The Next Loop.',
+    defaultValue: '0.75',
+    liveApplies: true
+  },
+  {
+    key: 'WALLET_QUALITY_SIZE_MAX_MULTIPLIER',
+    label: 'Wallet Quality Max Multiplier',
+    kind: 'float',
+    description: 'Highest Sizing Multiplier Applied To Stronger Wallets After Trust Gating. A Score Near 1 Maps Toward This Ceiling. Applies Live On The Next Loop.',
+    defaultValue: '1.25',
+    liveApplies: true
+  },
+  {
     key: 'MIN_CONFIDENCE',
     label: 'Min Confidence',
     kind: 'float',

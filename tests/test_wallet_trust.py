@@ -255,6 +255,94 @@ class WalletTrustTest(unittest.TestCase):
         self.assertAlmostEqual(adjusted["wallet_trust_effective_multiplier"], 0.05, places=6)
         self.assertIn("wallet is in discovery", adjusted["wallet_trust_note"])
 
+    def test_quality_multiplier_scales_trusted_wallet_size_within_cap(self) -> None:
+        trust_state = WalletTrustState(
+            wallet_address="0xabc",
+            tier="trusted",
+            size_multiplier=1.0,
+            observed_buy_count=40,
+            resolved_observed_buy_count=30,
+            resolved_copied_buy_count=20,
+            resolved_copied_win_rate=0.65,
+            resolved_copied_avg_return=0.07,
+            min_cold_start_observed_buy_count=3,
+            min_observed_buy_count=8,
+            min_resolved_observed_buy_count=3,
+            min_resolved_copied_buy_count=15,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "MIN_BET_USD": "1.00",
+                "WALLET_QUALITY_SIZE_MIN_MULTIPLIER": "0.75",
+                "WALLET_QUALITY_SIZE_MAX_MULTIPLIER": "1.25",
+            },
+            clear=False,
+        ):
+            high_quality = apply_wallet_trust_sizing(
+                {"dollar_size": 20.0, "kelly_f": 0.10, "full_kelly_f": 0.20},
+                trust_state,
+                quality_score=1.0,
+                max_size_usd=30.0,
+            )
+            low_quality = apply_wallet_trust_sizing(
+                {"dollar_size": 20.0, "kelly_f": 0.10, "full_kelly_f": 0.20},
+                trust_state,
+                quality_score=0.0,
+                max_size_usd=30.0,
+            )
+
+        self.assertEqual(high_quality["dollar_size"], 25.0)
+        self.assertAlmostEqual(high_quality["wallet_quality_multiplier"], 1.25, places=6)
+        self.assertAlmostEqual(high_quality["wallet_trust_effective_multiplier"], 1.25, places=6)
+        self.assertAlmostEqual(high_quality["kelly_f"], 0.125, places=6)
+        self.assertIn("wallet quality 1.00 -> 125%", high_quality["wallet_trust_note"])
+
+        self.assertEqual(low_quality["dollar_size"], 15.0)
+        self.assertAlmostEqual(low_quality["wallet_quality_multiplier"], 0.75, places=6)
+        self.assertAlmostEqual(low_quality["wallet_trust_effective_multiplier"], 0.75, places=6)
+        self.assertAlmostEqual(low_quality["kelly_f"], 0.075, places=6)
+        self.assertIn("wallet quality 0.00 -> 75%", low_quality["wallet_trust_note"])
+
+    def test_quality_multiplier_respects_hard_max_size_cap(self) -> None:
+        trust_state = WalletTrustState(
+            wallet_address="0xabc",
+            tier="trusted",
+            size_multiplier=1.0,
+            observed_buy_count=40,
+            resolved_observed_buy_count=30,
+            resolved_copied_buy_count=20,
+            resolved_copied_win_rate=0.65,
+            resolved_copied_avg_return=0.07,
+            min_cold_start_observed_buy_count=3,
+            min_observed_buy_count=8,
+            min_resolved_observed_buy_count=3,
+            min_resolved_copied_buy_count=15,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "MIN_BET_USD": "1.00",
+                "WALLET_QUALITY_SIZE_MIN_MULTIPLIER": "0.75",
+                "WALLET_QUALITY_SIZE_MAX_MULTIPLIER": "1.25",
+            },
+            clear=False,
+        ):
+            adjusted = apply_wallet_trust_sizing(
+                {"dollar_size": 20.0, "kelly_f": 0.10, "full_kelly_f": 0.20},
+                trust_state,
+                quality_score=1.0,
+                max_size_usd=22.0,
+            )
+
+        self.assertEqual(adjusted["dollar_size"], 22.0)
+        self.assertAlmostEqual(adjusted["wallet_quality_multiplier"], 1.25, places=6)
+        self.assertAlmostEqual(adjusted["wallet_trust_effective_multiplier"], 1.1, places=6)
+        self.assertAlmostEqual(adjusted["kelly_f"], 0.11, places=6)
+        self.assertIn("size scaled to 110%", adjusted["wallet_trust_note"])
+
 
 if __name__ == "__main__":
     unittest.main()

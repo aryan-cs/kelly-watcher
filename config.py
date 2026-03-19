@@ -244,6 +244,14 @@ def wallet_probation_size_multiplier() -> float:
     return _get_bounded_float("WALLET_PROBATION_SIZE_MULTIPLIER", "0.20", minimum=0.01, maximum=1.0)
 
 
+def wallet_quality_size_min_multiplier() -> float:
+    return _get_bounded_float("WALLET_QUALITY_SIZE_MIN_MULTIPLIER", "0.75", minimum=0.10, maximum=1.0)
+
+
+def wallet_quality_size_max_multiplier() -> float:
+    return _get_bounded_float("WALLET_QUALITY_SIZE_MAX_MULTIPLIER", "1.25", minimum=1.0, maximum=3.0)
+
+
 def _parse_duration(raw: str, default_seconds: float) -> float:
     value = (raw or "").strip().lower()
     if not value:

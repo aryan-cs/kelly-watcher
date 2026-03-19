@@ -114,6 +114,8 @@ interface TopShadowRow {
   n: number
   wins: number
   resolved: number
+  seen_trades: number
+  skipped_trades: number
   pnl: number | null
 }
 
@@ -292,13 +294,15 @@ const SHADOW_WALLETS_SQL = `
 SELECT
   trader_address,
   COUNT(*) AS n,
-  SUM(CASE WHEN shadow_pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
-  SUM(CASE WHEN shadow_pnl_usd IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-  ROUND(SUM(shadow_pnl_usd), 3) AS pnl
+  COUNT(*) AS seen_trades,
+  SUM(CASE WHEN skipped=1 THEN 1 ELSE 0 END) AS skipped_trades,
+  SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} AND shadow_pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+  SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) AS resolved,
+  ROUND(SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN shadow_pnl_usd ELSE 0 END), 3) AS pnl
 FROM trade_log
 WHERE real_money=0
-  AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
 GROUP BY trader_address
+HAVING SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) > 0
 `
 
 function readWatchConfig(): {wallets: string[]; hotCount: number; warmCount: number} {
@@ -833,11 +837,6 @@ export function Wallets({
     ? `showing ${droppedVisibleStart}-${droppedVisibleEnd} of ${droppedWallets.length}  selected ${clampedDroppedSelectedIndex + 1}/${droppedWallets.length}  auto-dropped until reactivated`
     : 'no dropped wallets'
 
-  const traderCacheByWallet = useMemo(
-    () => new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row])),
-    [traderCacheRows]
-  )
-
   const bestShadowWallets = useMemo(
     () => [...shadowWalletRows].sort((left, right) => (right.pnl || 0) - (left.pnl || 0)).slice(0, 5),
     [shadowWalletRows]
@@ -848,7 +847,13 @@ export function Wallets({
   )
   const shadowPanelsWide = terminal.wide
   const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 1) / 2)) : tableWidth
-  const shadowNameWidth = Math.max(14, Math.min(28, shadowPanelWidth - 22))
+  const shadowCopyWrWidth = 8
+  const shadowSkipWidth = 6
+  const shadowCopyPnlWidth = 10
+  const shadowNameWidth = Math.max(
+    10,
+    shadowPanelWidth - shadowCopyWrWidth - shadowSkipWidth - shadowCopyPnlWidth - 3
+  )
   const maxAbsShadowPnl = useMemo(
     () => shadowWalletRows.reduce((max, wallet) => Math.max(max, Math.abs(wallet.pnl || 0)), 0),
     [shadowWalletRows]
@@ -1131,9 +1136,11 @@ export function Wallets({
       <InkBox width="100%">
         <Text color={theme.dim}>{fit('WALLET', shadowNameWidth)}</Text>
         <Text color={theme.dim}> </Text>
-        <Text color={theme.dim}>{fitRight('PROFILE WR', 10)}</Text>
+        <Text color={theme.dim}>{fitRight('COPY WR', shadowCopyWrWidth)}</Text>
         <Text color={theme.dim}> </Text>
-        <Text color={theme.dim}>{fitRight('COPY P&L', 10)}</Text>
+        <Text color={theme.dim}>{fitRight('SKIP %', shadowSkipWidth)}</Text>
+        <Text color={theme.dim}> </Text>
+        <Text color={theme.dim}>{fitRight('COPY P&L', shadowCopyPnlWidth)}</Text>
       </InkBox>
       <InkBox flexDirection="column">
         {shadowWallets.length ? (
@@ -1143,19 +1150,23 @@ export function Wallets({
                 <InkBox key={`${title}-empty-${index}`} width="100%">
                   <Text color={theme.dim}>{fit('', shadowNameWidth)}</Text>
                   <Text> </Text>
-                  <Text color={theme.dim}>{fitRight('', 10)}</Text>
+                  <Text color={theme.dim}>{fitRight('', shadowCopyWrWidth)}</Text>
                   <Text> </Text>
-                  <Text color={theme.dim}>{fitRight('', 10)}</Text>
+                  <Text color={theme.dim}>{fitRight('', shadowSkipWidth)}</Text>
+                  <Text> </Text>
+                  <Text color={theme.dim}>{fitRight('', shadowCopyPnlWidth)}</Text>
                 </InkBox>
               )
             }
 
             const username = usernames.get(wallet.trader_address.toLowerCase())
             const label = username || shortAddress(wallet.trader_address)
-            const profile = traderCacheByWallet.get(wallet.trader_address.toLowerCase())
-            const profileWinRate = profile?.win_rate ?? null
-            const winRateColor =
-              profileWinRate == null ? theme.dim : probabilityColor(profileWinRate)
+            const copyWinRate = wallet.resolved > 0 ? wallet.wins / wallet.resolved : null
+            const skipRate = wallet.seen_trades > 0 ? wallet.skipped_trades / wallet.seen_trades : null
+            const copyWinRateColor =
+              copyWinRate == null ? theme.dim : probabilityColor(copyWinRate)
+            const skipRateColor =
+              skipRate == null ? theme.dim : negativeHeatColor(skipRate * 100, 100)
             const pnlColor =
               wallet.pnl == null
                 ? theme.dim
@@ -1165,11 +1176,17 @@ export function Wallets({
               <InkBox key={`${title}-${wallet.trader_address}`} width="100%">
                 <Text color={username ? theme.white : theme.dim}>{fit(label, shadowNameWidth)}</Text>
                 <Text> </Text>
-                <Text color={winRateColor}>
-                  {fitRight(profileWinRate == null ? '-' : formatPct(profileWinRate), 10)}
+                <Text color={copyWinRateColor}>
+                  {fitRight(copyWinRate == null ? '-' : formatPct(copyWinRate), shadowCopyWrWidth)}
                 </Text>
                 <Text> </Text>
-                <Text color={pnlColor}>{fitRight(formatSignedMoney(wallet.pnl, 10), 10)}</Text>
+                <Text color={skipRateColor}>
+                  {fitRight(skipRate == null ? '-' : formatPct(skipRate, 0), shadowSkipWidth)}
+                </Text>
+                <Text> </Text>
+                <Text color={pnlColor}>
+                  {fitRight(formatSignedMoney(wallet.pnl, shadowCopyPnlWidth), shadowCopyPnlWidth)}
+                </Text>
               </InkBox>
             )
           })

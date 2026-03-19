@@ -51,6 +51,8 @@ from config import (
     wallet_discovery_min_observed_buys,
     wallet_discovery_min_resolved_buys,
     wallet_discovery_size_multiplier,
+    wallet_quality_size_max_multiplier,
+    wallet_quality_size_min_multiplier,
     wallet_probation_size_multiplier,
     wallet_trusted_min_resolved_copied_buys,
     wallet_address,
@@ -627,6 +629,7 @@ def process_event(
     trust_state = get_wallet_trust_state(event.trader_address)
     signal = dict(signal)
     signal["wallet_trust"] = trust_state.as_dict()
+    wallet_quality_score = signal.get("trader", {}).get("score")
     if trust_state.skip_reason:
         executor.log_skip(
             trade_id=event.trade_id,
@@ -648,7 +651,13 @@ def process_event(
         _skip_event(event, preview_sizing.get("dollar_size", 0.0), trust_state.skip_reason)
         return 0.0
 
-    sizing = apply_wallet_trust_sizing(preview_sizing, trust_state)
+    max_wallet_size_usd = round(bankroll * max_bet_fraction(), 2)
+    sizing = apply_wallet_trust_sizing(
+        preview_sizing,
+        trust_state,
+        quality_score=wallet_quality_score,
+        max_size_usd=max_wallet_size_usd,
+    )
     fill_estimate = rough_fill
     fill_reason = None
     for _ in range(3):
@@ -667,7 +676,12 @@ def process_event(
             signal.get("mode", "heuristic"),
             min_confidence_override=signal.get("min_confidence"),
         )
-        next_sizing = apply_wallet_trust_sizing(next_sizing, trust_state)
+        next_sizing = apply_wallet_trust_sizing(
+            next_sizing,
+            trust_state,
+            quality_score=wallet_quality_score,
+            max_size_usd=max_wallet_size_usd,
+        )
         if (
             next_sizing["dollar_size"] == sizing["dollar_size"]
             and abs(next_sizing.get("kelly_f", 0.0) - sizing.get("kelly_f", 0.0)) < 1e-9
@@ -796,6 +810,8 @@ def process_event(
                 "market_score": signal.get("market", {}).get("score"),
                 "wallet_trust_tier": trust_state.tier,
                 "wallet_trust_note": sizing.get("wallet_trust_note"),
+                "wallet_quality_score": sizing.get("wallet_quality_score"),
+                "wallet_quality_multiplier": sizing.get("wallet_quality_multiplier"),
                 "shadow": result.shadow,
                 "order_id": result.order_id,
                 "reason": _humanize_reason("passed all checks"),
@@ -877,6 +893,8 @@ def _validate_startup() -> None:
     discovery_min_observed = _capture_config(wallet_discovery_min_observed_buys)
     discovery_min_resolved = _capture_config(wallet_discovery_min_resolved_buys)
     discovery_multiplier = _capture_config(wallet_discovery_size_multiplier)
+    quality_min_multiplier = _capture_config(wallet_quality_size_min_multiplier)
+    quality_max_multiplier = _capture_config(wallet_quality_size_max_multiplier)
     probation_multiplier = _capture_config(wallet_probation_size_multiplier)
     trusted_min_resolved = _capture_config(wallet_trusted_min_resolved_copied_buys)
     min_window_seconds = _capture_config(min_execution_window_seconds)
@@ -898,6 +916,14 @@ def _validate_startup() -> None:
     ):
         warnings.append(
             "WALLET_DISCOVERY_SIZE_MULTIPLIER is greater than WALLET_PROBATION_SIZE_MULTIPLIER; discovery trades will size larger than probation trades"
+        )
+    if (
+        quality_min_multiplier is not None
+        and quality_max_multiplier is not None
+        and quality_min_multiplier > quality_max_multiplier
+    ):
+        errors.append(
+            "WALLET_QUALITY_SIZE_MIN_MULTIPLIER must be <= WALLET_QUALITY_SIZE_MAX_MULTIPLIER"
         )
     if (
         min_window_seconds is not None

@@ -934,12 +934,13 @@ export function Wallets({
   )
   const shadowPanelsWide = terminal.wide
   const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 1) / 2)) : tableWidth
+  const shadowPanelContentWidth = Math.max(24, shadowPanelWidth - 4)
   const shadowCopyWrWidth = 10
   const shadowSkipWidth = 6
   const shadowCopyPnlWidth = 10
   const shadowNameWidth = Math.max(
     10,
-    shadowPanelWidth - shadowCopyWrWidth - shadowSkipWidth - shadowCopyPnlWidth - 3
+    shadowPanelContentWidth - shadowCopyWrWidth - shadowSkipWidth - shadowCopyPnlWidth - 3
   )
   const maxAbsShadowPnl = useMemo(
     () => shadowWalletRows.reduce((max, wallet) => Math.max(max, Math.abs(wallet.pnl || 0)), 0),

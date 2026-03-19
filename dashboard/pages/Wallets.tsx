@@ -15,7 +15,9 @@ import {useEventStream} from '../useEventStream.js'
 
 interface WalletActivityRow {
   trader_address: string
+  buy_signals: number | null
   skipped_trades: number | null
+  uncopyable_skips: number | null
   seen_trades: number | null
   seen_resolved: number | null
   seen_wins: number | null
@@ -74,8 +76,11 @@ interface WalletRow {
   trader_address: string
   username: string
   watch_tier: WatchTier
+  buy_signals: number | null
   skipped_trades: number | null
   skip_rate: number | null
+  uncopyable_skips: number | null
+  uncopyable_skip_rate: number | null
   seen_trades: number | null
   seen_resolved: number | null
   seen_wins: number | null
@@ -182,10 +187,40 @@ ${EXECUTED_ENTRY_WHERE}
 AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
 `
 
+const UNCOPYABLE_TIMING_WHERE = `
+(
+  market_veto LIKE 'expires in <%'
+  OR market_veto LIKE 'beyond max horizon %'
+)
+`
+
+const UNCOPYABLE_LIQUIDITY_WHERE = `
+(
+  market_veto='missing order book'
+  OR market_veto='no visible order book depth'
+  OR skip_reason LIKE 'shadow simulation rejected the buy because the order book had no asks%'
+  OR skip_reason LIKE 'shadow simulation rejected the buy because there was not enough ask depth%'
+)
+`
+
+const UNCOPYABLE_SKIP_WHERE = `
+(
+  ${UNCOPYABLE_TIMING_WHERE}
+  OR ${UNCOPYABLE_LIQUIDITY_WHERE}
+)
+`
+
 const WALLET_ACTIVITY_SQL = `
 SELECT
   trader_address,
+  SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' THEN 1 ELSE 0 END) AS buy_signals,
   SUM(CASE WHEN skipped=1 THEN 1 ELSE 0 END) AS skipped_trades,
+  SUM(
+    CASE
+      WHEN COALESCE(source_action, 'buy')='buy' AND ${UNCOPYABLE_SKIP_WHERE} THEN 1
+      ELSE 0
+    END
+  ) AS uncopyable_skips,
   COUNT(*) AS seen_trades,
   SUM(
     CASE
@@ -305,11 +340,19 @@ GROUP BY trader_address
 HAVING SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) > 0
 `
 
-function readWatchConfig(): {wallets: string[]; hotCount: number; warmCount: number} {
+function readWatchConfig(): {
+  wallets: string[]
+  hotCount: number
+  warmCount: number
+  uncopyablePenaltyMinBuys: number
+  uncopyablePenaltyWeight: number
+} {
   const path = fs.existsSync(envPath) ? envPath : envExamplePath
   let wallets: string[] = []
   let hotCount = 12
   let warmCount = 24
+  let uncopyablePenaltyMinBuys = 12
+  let uncopyablePenaltyWeight = 0.25
   try {
     const lines = fs.readFileSync(path, 'utf8').split('\n')
     for (const rawLine of lines) {
@@ -334,12 +377,22 @@ function readWatchConfig(): {wallets: string[]; hotCount: number; warmCount: num
         if (Number.isFinite(parsed) && parsed >= 0) {
           warmCount = parsed
         }
+      } else if (key === 'WALLET_UNCOPYABLE_PENALTY_MIN_BUYS') {
+        const parsed = Number.parseInt(value, 10)
+        if (Number.isFinite(parsed) && parsed >= 0) {
+          uncopyablePenaltyMinBuys = parsed
+        }
+      } else if (key === 'WALLET_UNCOPYABLE_PENALTY_WEIGHT') {
+        const parsed = Number.parseFloat(value)
+        if (Number.isFinite(parsed) && parsed >= 0) {
+          uncopyablePenaltyWeight = parsed
+        }
       }
     }
   } catch {
-    return {wallets: [], hotCount, warmCount}
+    return {wallets: [], hotCount, warmCount, uncopyablePenaltyMinBuys, uncopyablePenaltyWeight}
   }
-  return {wallets, hotCount, warmCount}
+  return {wallets, hotCount, warmCount, uncopyablePenaltyMinBuys, uncopyablePenaltyWeight}
 }
 
 function formatAddress(value: string, width: number): string {
@@ -445,6 +498,10 @@ function scoreWalletForTier(params: {
   openPositions: number | null | undefined
   lastSourceTs: number | null | undefined
   cacheUpdatedAt: number | null | undefined
+  buySignals: number | null | undefined
+  uncopyableSkipRate: number | null | undefined
+  uncopyablePenaltyMinBuys: number
+  uncopyablePenaltyWeight: number
   nowTs: number
 }): number {
   const winRate = params.winRate ?? 0.5
@@ -454,6 +511,8 @@ function scoreWalletForTier(params: {
   const openPositions = params.openPositions ?? 0
   const lastSourceTs = params.lastSourceTs ?? 0
   const cacheUpdatedAt = params.cacheUpdatedAt ?? 0
+  const buySignals = Math.max(0, params.buySignals ?? 0)
+  const uncopyableSkipRate = clip(params.uncopyableSkipRate ?? 0)
 
   const shrunkWinRate = ((nTrades * winRate) + (20 * 0.5)) / (nTrades + 20)
   const winScore = clip((shrunkWinRate - 0.45) / 0.25)
@@ -472,6 +531,10 @@ function scoreWalletForTier(params: {
 
   const openScore = clip(openPositions / 3)
   const freshnessPenalty = cacheUpdatedAt > 0 && (params.nowTs - cacheUpdatedAt) > 86400 ? 0.1 : 0
+  const uncopyablePenalty =
+    buySignals >= params.uncopyablePenaltyMinBuys && params.uncopyablePenaltyWeight > 0
+      ? params.uncopyablePenaltyWeight * clip(buySignals / Math.max(params.uncopyablePenaltyMinBuys * 3, 1)) * uncopyableSkipRate
+      : 0
   const qualityScore =
     (0.45 * winScore) +
     (0.2 * returnScore) +
@@ -481,7 +544,7 @@ function scoreWalletForTier(params: {
     (0.7 * qualityScore) +
     (0.25 * activityScore) +
     (0.05 * openScore)
-  ) - freshnessPenalty).toFixed(4))
+  ) - freshnessPenalty - uncopyablePenalty).toFixed(4))
 }
 
 function tierLabel(tier: WatchTier): string {
@@ -667,11 +730,13 @@ export function Wallets({
 
   const tierByWallet = useMemo(() => {
     const cacheByWallet = new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row]))
+    const activityByWallet = new Map(activityRows.map((row) => [row.trader_address.toLowerCase(), row]))
     const activeWallets = sourceWallets.filter((wallet) => watchStateByWallet.get(wallet)?.status !== 'dropped')
     const nowTs = Math.floor(Date.now() / 1000)
     const ranked = activeWallets.map((wallet, index) => {
       const cached = cacheByWallet.get(wallet)
       const cursor = cursorByWallet.get(wallet)
+      const activity = activityByWallet.get(wallet)
       return {
         wallet,
         index,
@@ -683,6 +748,13 @@ export function Wallets({
           openPositions: cached?.open_positions,
           lastSourceTs: cursor?.last_source_ts,
           cacheUpdatedAt: cached?.updated_at,
+          buySignals: activity?.buy_signals,
+          uncopyableSkipRate:
+            (activity?.buy_signals ?? 0) > 0
+              ? (activity?.uncopyable_skips ?? 0) / (activity?.buy_signals ?? 0)
+              : 0,
+          uncopyablePenaltyMinBuys: watchConfig.uncopyablePenaltyMinBuys,
+          uncopyablePenaltyWeight: watchConfig.uncopyablePenaltyWeight,
           nowTs
         }),
         lastSourceTs: cursor?.last_source_ts ?? 0,
@@ -705,7 +777,17 @@ export function Wallets({
       lookup.set(row.wallet, tier)
     })
     return lookup
-  }, [cursorByWallet, sourceWallets, traderCacheRows, watchConfig.hotCount, watchConfig.warmCount, watchStateByWallet])
+  }, [
+    activityRows,
+    cursorByWallet,
+    sourceWallets,
+    traderCacheRows,
+    watchConfig.hotCount,
+    watchConfig.uncopyablePenaltyMinBuys,
+    watchConfig.uncopyablePenaltyWeight,
+    watchConfig.warmCount,
+    watchStateByWallet
+  ])
 
   const wallets = useMemo(() => {
     const activityByWallet = new Map(activityRows.map((row) => [row.trader_address.toLowerCase(), row]))
@@ -720,10 +802,16 @@ export function Wallets({
         trader_address: wallet,
         username: usernames.get(wallet) || '',
         watch_tier: watchState?.status === 'dropped' ? 'DISC' : (tierByWallet.get(wallet) || 'DISC'),
+        buy_signals: activity?.buy_signals ?? 0,
         skipped_trades: activity?.skipped_trades ?? 0,
+        uncopyable_skips: activity?.uncopyable_skips ?? 0,
         skip_rate:
           (activity?.seen_trades ?? 0) > 0
             ? (activity?.skipped_trades ?? 0) / (activity?.seen_trades ?? 0)
+            : null,
+        uncopyable_skip_rate:
+          (activity?.buy_signals ?? 0) > 0
+            ? (activity?.uncopyable_skips ?? 0) / (activity?.buy_signals ?? 0)
             : null,
         seen_trades: activity?.seen_trades ?? 0,
         seen_resolved: activity?.seen_resolved ?? 0,

@@ -220,6 +220,26 @@ def wallet_performance_drop_max_avg_return() -> float:
     return _get_bounded_float("WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN", "-0.03", minimum=-1.0, maximum=1.0)
 
 
+def wallet_uncopyable_penalty_min_buys() -> int:
+    return _get_bounded_int("WALLET_UNCOPYABLE_PENALTY_MIN_BUYS", "12", minimum=0)
+
+
+def wallet_uncopyable_penalty_weight() -> float:
+    return _get_bounded_float("WALLET_UNCOPYABLE_PENALTY_WEIGHT", "0.25", minimum=0.0, maximum=1.0)
+
+
+def wallet_uncopyable_drop_min_buys() -> int:
+    return _get_bounded_int("WALLET_UNCOPYABLE_DROP_MIN_BUYS", "24", minimum=0)
+
+
+def wallet_uncopyable_drop_max_skip_rate() -> float:
+    return _get_bounded_float("WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE", "0.75", minimum=0.0, maximum=1.0)
+
+
+def wallet_uncopyable_drop_max_resolved_copied() -> int:
+    return _get_bounded_int("WALLET_UNCOPYABLE_DROP_MAX_RESOLVED_COPIED", "3", minimum=0)
+
+
 def wallet_discovery_min_observed_buys() -> int:
     return _get_bounded_int("WALLET_DISCOVERY_MIN_OBSERVED_BUYS", "8", minimum=0)
 

@@ -203,8 +203,8 @@ function AppContent({
             ? '↑↓ list  esc close  r refresh  q exit'
             : '↑/↓: list  esc: close  r: refresh  q: exit'
           : terminal.compact
-            ? 'arrows box  j/k scroll  enter detail  r refresh  q exit'
-            : 'arrows: select box  j/k: scroll positions  enter: hourly detail  r: refresh  q: exit'
+            ? '←→ boxes  ↑↓ scroll  enter detail  r refresh  q exit'
+            : '←/→: cycle boxes  ↑/↓: scroll list  enter: daily detail  r: refresh  q: exit'
       : page === 4
         ? modelDetailOpen
           ? terminal.compact
@@ -375,33 +375,17 @@ function App() {
     setModelSettingSelectionIndex(0)
   }
 
-  const movePerfSelection = (direction: 'up' | 'down' | 'left' | 'right') => {
-    const grid: PerfBox[][] = [
-      ['summary', 'daily'],
-      ['current', 'past']
-    ]
-    const locations: Record<PerfBox, [number, number]> = {
-      summary: [0, 0],
-      daily: [0, 1],
-      current: [1, 0],
-      past: [1, 1]
-    }
+  const movePerfSelection = (direction: 'left' | 'right') => {
+    const order: PerfBox[] = ['summary', 'daily', 'current', 'past']
 
     setPerfSelectedBox((current) => {
-      const [row, column] = locations[current]
-      const nextRow =
-        direction === 'up'
-          ? Math.max(0, row - 1)
-          : direction === 'down'
-            ? Math.min(grid.length - 1, row + 1)
-            : row
-      const nextColumn =
-        direction === 'left'
-          ? Math.max(0, column - 1)
-          : direction === 'right'
-            ? Math.min(grid[0].length - 1, column + 1)
-            : column
-      const next = grid[nextRow][nextColumn]
+      const index = order.indexOf(current)
+      const currentIndex = index >= 0 ? index : 0
+      const nextIndex =
+        direction === 'right'
+          ? (currentIndex + 1) % order.length
+          : (currentIndex - 1 + order.length) % order.length
+      const next = order[nextIndex]
       if (next === 'current' || next === 'past') {
         setPerfActivePane(next)
       }
@@ -864,12 +848,12 @@ function App() {
       }
 
       if (key.upArrow) {
-        movePerfSelection('up')
+        scrollSelectedPerformancePane(-1)
         return
       }
 
       if (key.downArrow) {
-        movePerfSelection('down')
+        scrollSelectedPerformancePane(1)
         return
       }
 
@@ -880,16 +864,6 @@ function App() {
 
       if (key.rightArrow || normalized === 'l') {
         movePerfSelection('right')
-        return
-      }
-
-      if (normalized === 'k') {
-        scrollSelectedPerformancePane(-1)
-        return
-      }
-
-      if (normalized === 'j') {
-        scrollSelectedPerformancePane(1)
         return
       }
 

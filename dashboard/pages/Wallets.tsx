@@ -15,6 +15,7 @@ import {useEventStream} from '../useEventStream.js'
 
 interface WalletActivityRow {
   trader_address: string
+  skipped_trades: number | null
   seen_trades: number | null
   seen_resolved: number | null
   seen_wins: number | null
@@ -73,6 +74,7 @@ interface WalletRow {
   trader_address: string
   username: string
   watch_tier: WatchTier
+  skipped_trades: number | null
   seen_trades: number | null
   seen_resolved: number | null
   seen_wins: number | null
@@ -119,6 +121,7 @@ interface WalletsLayout {
   addressWidth: number
   trackingSinceWidth: number
   tierWidth: number
+  skippedTradesWidth: number
   seenTradesWidth: number
   seenWinRateWidth: number
   observedResolvedWidth: number
@@ -179,6 +182,7 @@ AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
 const WALLET_ACTIVITY_SQL = `
 SELECT
   trader_address,
+  SUM(CASE WHEN skipped=1 THEN 1 ELSE 0 END) AS skipped_trades,
   COUNT(*) AS seen_trades,
   SUM(
     CASE
@@ -490,6 +494,7 @@ function tierColor(tier: WatchTier): string {
 function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   const trackingSinceWidth = 10
   const tierWidth = 5
+  const skippedTradesWidth = 5
   const seenTradesWidth = 6
   const seenWinRateWidth = 8
   const observedResolvedWidth = 7
@@ -500,6 +505,7 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   const fixedWidths =
     trackingSinceWidth +
     tierWidth +
+    skippedTradesWidth +
     seenTradesWidth +
     seenWinRateWidth +
     observedResolvedWidth +
@@ -507,7 +513,7 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
     profileWinRateWidth +
     copyPnlWidth +
     lastSeenWidth
-  const gapCount = 9
+  const gapCount = 11
   const variableBudget = Math.max(40, width - fixedWidths - gapCount)
   const desiredUsernameWidth = Math.max(
     14,
@@ -534,6 +540,7 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
     addressWidth,
     trackingSinceWidth,
     tierWidth,
+    skippedTradesWidth,
     seenTradesWidth,
     seenWinRateWidth,
     observedResolvedWidth,
@@ -708,6 +715,7 @@ export function Wallets({
         trader_address: wallet,
         username: usernames.get(wallet) || '',
         watch_tier: watchState?.status === 'dropped' ? 'DISC' : (tierByWallet.get(wallet) || 'DISC'),
+        skipped_trades: activity?.skipped_trades ?? 0,
         seen_trades: activity?.seen_trades ?? 0,
         seen_resolved: activity?.seen_resolved ?? 0,
         seen_wins: activity?.seen_wins ?? 0,
@@ -913,6 +921,10 @@ export function Wallets({
       {
         title: 'Local',
         metrics: [
+          {
+            label: 'Skipped',
+            value: formatFullCount(selectedWallet.skipped_trades)
+          },
           {
             label: 'Seen Trades',
             value: formatFullCount(selectedWallet.seen_trades)
@@ -1183,6 +1195,8 @@ export function Wallets({
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('TRACK', layout.tierWidth)}</Text>
               <Text color={theme.dim}> </Text>
+              <Text color={theme.dim}>{fitRight('SKIPS', layout.skippedTradesWidth)}</Text>
+              <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fitRight('SEEN', layout.seenTradesWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fitRight('SEEN WR', layout.seenWinRateWidth)}</Text>
@@ -1235,6 +1249,10 @@ export function Wallets({
                       </Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={tierTextColor} backgroundColor={rowBackground} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text backgroundColor={rowBackground}>
+                        {fitRight(formatCount(wallet.skipped_trades, layout.skippedTradesWidth), layout.skippedTradesWidth)}
+                      </Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text backgroundColor={rowBackground}>
                         {fitRight(formatCount(wallet.seen_trades, layout.seenTradesWidth), layout.seenTradesWidth)}

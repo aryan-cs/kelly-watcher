@@ -557,6 +557,8 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
   const gapWidth = 0
   const totalGapWidth = Math.max(0, entries.length - 1) * gapWidth
   const columnWidth = 1
+  const chartWidth = Math.max(1, width)
+  const leftPaddingWidth = Math.max(0, chartWidth - entries.length)
   const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)))
   const heights = entries.map((entry) => {
     const magnitude = Math.abs(entry.pnl)
@@ -568,6 +570,11 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
 
   const renderRow = (rowIndex: number, negative: boolean) => (
     <InkBox width="100%">
+      {leftPaddingWidth > 0 ? (
+        <InkBox width={leftPaddingWidth}>
+          <Text>{' '.repeat(leftPaddingWidth)}</Text>
+        </InkBox>
+      ) : null}
       {entries.map((entry, index) => {
         const filled =
           negative
@@ -590,14 +597,7 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
     <InkBox flexDirection="column">
       {Array.from({length: levelCount}, (_, index) => renderRow(levelCount - index, false))}
       <InkBox width="100%">
-        {entries.map((entry, index) => (
-          <React.Fragment key={`${entry.day}-axis`}>
-            <InkBox width={columnWidth}>
-              <Text color={theme.dim}>{'─'.repeat(columnWidth)}</Text>
-            </InkBox>
-            {index < entries.length - 1 ? <Text>{' '.repeat(gapWidth)}</Text> : null}
-          </React.Fragment>
-        ))}
+        <Text color={theme.dim}>{'─'.repeat(chartWidth)}</Text>
       </InkBox>
       {Array.from({length: levelCount}, (_, index) => renderRow(index + 1, true))}
     </InkBox>

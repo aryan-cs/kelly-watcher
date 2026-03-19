@@ -996,8 +996,8 @@ export function Performance({
         </Box>
       </InkBox>
 
-      <InkBox marginTop={1} flexDirection="column" flexGrow={1}>
-        <InkBox flexGrow={1}>
+      <InkBox marginTop={1} flexDirection="column" height={paneMetrics.paneHeight * 2 + 1}>
+        <InkBox height={paneMetrics.paneHeight}>
           <Box
             title={`Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`}
             height="100%"
@@ -1013,7 +1013,7 @@ export function Performance({
 
         <InkBox height={1} />
 
-        <InkBox flexGrow={1}>
+        <InkBox height={paneMetrics.paneHeight}>
           <Box
             title={`Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`}
             height="100%"

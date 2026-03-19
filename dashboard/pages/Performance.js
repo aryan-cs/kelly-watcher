@@ -636,10 +636,10 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane 
                     React.createElement(InkBox, { width: dailyLayout.valueWidth, justifyContent: "flex-end" },
                         React.createElement(Text, { color: theme.dim }, fitRight(row.label, dailyLayout.valueWidth)))));
             })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeMode} trades yet.`)))),
-        React.createElement(InkBox, { marginTop: 1, flexDirection: "column", flexGrow: 1 },
-            React.createElement(InkBox, { flexGrow: 1 },
+        React.createElement(InkBox, { marginTop: 1, flexDirection: "column", height: paneMetrics.paneHeight * 2 + 1 },
+            React.createElement(InkBox, { height: paneMetrics.paneHeight },
                 React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: activePane === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, { profitScaleRows: currentPositions })) : (React.createElement(Text, { color: theme.dim }, "No open positions right now.")))),
             React.createElement(InkBox, { height: 1 }),
-            React.createElement(InkBox, { flexGrow: 1 },
+            React.createElement(InkBox, { height: paneMetrics.paneHeight },
                 React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: activePane === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, { showStatus: true, showTtr: false, profitScaleRows: pastPositions })) : (React.createElement(Text, { color: theme.dim }, "No past positions yet.")))))));
 }

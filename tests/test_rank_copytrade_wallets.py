@@ -4,6 +4,7 @@ import unittest
 
 from rank_copytrade_wallets import (
     LeaderboardEntry,
+    LocalCopyMetrics,
     PerformanceMetrics,
     TradeTimingMetrics,
     build_ranked_wallet,
@@ -11,6 +12,38 @@ from rank_copytrade_wallets import (
 
 
 class RankCopytradeWalletsTest(unittest.TestCase):
+    def rank_wallet(
+        self,
+        entry: LeaderboardEntry,
+        performance: PerformanceMetrics,
+        timing: TradeTimingMetrics,
+        *,
+        now_ts: int,
+        **overrides,
+    ):
+        params = {
+            "now_ts": now_ts,
+            "activity_window_days": 3,
+            "min_closed_positions": 25,
+            "min_recent_trades": 5,
+            "min_recent_buys": 2,
+            "min_lead_samples": 5,
+            "min_median_lead_seconds": 60 * 60,
+            "max_median_lead_seconds": 6 * 60 * 60,
+            "min_p25_lead_seconds": 20 * 60,
+            "max_late_buy_ratio": 0.20,
+            "max_days_since_last_trade": 7,
+            "min_avg_buy_size_usd": 75.0,
+            "min_large_buy_count": 2,
+            "min_conviction_buy_ratio": 0.25,
+            "large_buy_threshold_usd": 100.0,
+            "local_copy_metrics": None,
+            "min_local_resolved_copies": 3,
+            "min_local_copy_avg_return": 0.0,
+        }
+        params.update(overrides)
+        return build_ranked_wallet(entry, performance, timing, **params)
+
     def test_build_ranked_wallet_accepts_active_profitable_wallet_with_good_lead_times(self) -> None:
         now_ts = 2_000_000_000
         entry = LeaderboardEntry(
@@ -45,34 +78,24 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             conviction_buy_count=5,
             conviction_buy_ratio=0.556,
             lead_sample_count=9,
-            median_buy_lead_seconds=8 * 3600,
-            p25_buy_lead_seconds=4 * 3600,
+            median_buy_lead_seconds=4 * 3600,
+            p25_buy_lead_seconds=2 * 3600,
             late_buy_ratio=0.0,
         )
 
-        ranked = build_ranked_wallet(
+        ranked = self.rank_wallet(
             entry,
             performance,
             timing,
             now_ts=now_ts,
-            activity_window_days=3,
-            min_closed_positions=25,
             min_recent_trades=10,
             min_recent_buys=5,
-            min_lead_samples=5,
-            min_median_lead_seconds=2 * 3600,
-            max_late_buy_ratio=0.25,
-            max_days_since_last_trade=7,
-            min_avg_buy_size_usd=75.0,
-            min_large_buy_count=2,
-            min_conviction_buy_ratio=0.25,
-            large_buy_threshold_usd=100.0,
         )
 
         self.assertTrue(ranked.accepted)
         self.assertEqual(ranked.reject_reason, "")
         self.assertGreater(ranked.follow_score, 0.6)
-        self.assertIn("medium-horizon", ranked.style)
+        self.assertIn("short-horizon", ranked.style)
 
     def test_build_ranked_wallet_rejects_late_entry_wallet_even_if_profitable(self) -> None:
         now_ts = 2_000_000_000
@@ -113,28 +136,19 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             late_buy_ratio=0.75,
         )
 
-        ranked = build_ranked_wallet(
+        ranked = self.rank_wallet(
             entry,
             performance,
             timing,
             now_ts=now_ts,
-            activity_window_days=3,
-            min_closed_positions=25,
             min_recent_trades=10,
             min_recent_buys=5,
-            min_lead_samples=5,
-            min_median_lead_seconds=2 * 3600,
-            max_late_buy_ratio=0.25,
-            max_days_since_last_trade=7,
-            min_avg_buy_size_usd=75.0,
-            min_large_buy_count=2,
-            min_conviction_buy_ratio=0.25,
-            large_buy_threshold_usd=100.0,
         )
 
         self.assertFalse(ranked.accepted)
         self.assertIn("median_lead_too_short", ranked.reject_reason)
-        self.assertIn("late_buy_ratio>25%", ranked.reject_reason)
+        self.assertIn("p25_lead_too_short", ranked.reject_reason)
+        self.assertIn("late_buy_ratio>20%", ranked.reject_reason)
 
     def test_build_ranked_wallet_prefers_more_active_wallet_when_quality_is_similar(self) -> None:
         now_ts = 2_000_000_000
@@ -170,8 +184,8 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             conviction_buy_count=5,
             conviction_buy_ratio=0.417,
             lead_sample_count=10,
-            median_buy_lead_seconds=7 * 3600,
-            p25_buy_lead_seconds=3 * 3600,
+            median_buy_lead_seconds=4 * 3600,
+            p25_buy_lead_seconds=2 * 3600,
             late_buy_ratio=0.05,
         )
         sleepy = TradeTimingMetrics(
@@ -185,46 +199,22 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             conviction_buy_count=2,
             conviction_buy_ratio=0.667,
             lead_sample_count=10,
-            median_buy_lead_seconds=7 * 3600,
-            p25_buy_lead_seconds=3 * 3600,
+            median_buy_lead_seconds=4 * 3600,
+            p25_buy_lead_seconds=2 * 3600,
             late_buy_ratio=0.05,
         )
 
-        active_ranked = build_ranked_wallet(
+        active_ranked = self.rank_wallet(
             entry,
             performance,
             hyperactive,
             now_ts=now_ts,
-            activity_window_days=3,
-            min_closed_positions=25,
-            min_recent_trades=5,
-            min_recent_buys=2,
-            min_lead_samples=5,
-            min_median_lead_seconds=2 * 3600,
-            max_late_buy_ratio=0.25,
-            max_days_since_last_trade=7,
-            min_avg_buy_size_usd=75.0,
-            min_large_buy_count=2,
-            min_conviction_buy_ratio=0.25,
-            large_buy_threshold_usd=100.0,
         )
-        sleepy_ranked = build_ranked_wallet(
+        sleepy_ranked = self.rank_wallet(
             entry,
             performance,
             sleepy,
             now_ts=now_ts,
-            activity_window_days=3,
-            min_closed_positions=25,
-            min_recent_trades=5,
-            min_recent_buys=2,
-            min_lead_samples=5,
-            min_median_lead_seconds=2 * 3600,
-            max_late_buy_ratio=0.25,
-            max_days_since_last_trade=7,
-            min_avg_buy_size_usd=75.0,
-            min_large_buy_count=2,
-            min_conviction_buy_ratio=0.25,
-            large_buy_threshold_usd=100.0,
         )
 
         self.assertGreater(active_ranked.follow_score, sleepy_ranked.follow_score)
@@ -264,7 +254,7 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             conviction_buy_count=5,
             conviction_buy_ratio=0.625,
             lead_sample_count=8,
-            median_buy_lead_seconds=6 * 3600,
+            median_buy_lead_seconds=4 * 3600,
             p25_buy_lead_seconds=2 * 3600,
             late_buy_ratio=0.05,
         )
@@ -279,52 +269,83 @@ class RankCopytradeWalletsTest(unittest.TestCase):
             conviction_buy_count=1,
             conviction_buy_ratio=0.125,
             lead_sample_count=8,
-            median_buy_lead_seconds=6 * 3600,
+            median_buy_lead_seconds=4 * 3600,
             p25_buy_lead_seconds=2 * 3600,
             late_buy_ratio=0.05,
         )
 
-        strong_ranked = build_ranked_wallet(
+        strong_ranked = self.rank_wallet(
             entry,
             performance,
             high_copyability,
             now_ts=now_ts,
-            activity_window_days=3,
-            min_closed_positions=25,
-            min_recent_trades=5,
-            min_recent_buys=2,
-            min_lead_samples=5,
-            min_median_lead_seconds=2 * 3600,
-            max_late_buy_ratio=0.25,
-            max_days_since_last_trade=7,
-            min_avg_buy_size_usd=75.0,
-            min_large_buy_count=2,
-            min_conviction_buy_ratio=0.25,
-            large_buy_threshold_usd=100.0,
         )
-        weak_ranked = build_ranked_wallet(
+        weak_ranked = self.rank_wallet(
             entry,
             performance,
             low_copyability,
             now_ts=now_ts,
-            activity_window_days=3,
-            min_closed_positions=25,
-            min_recent_trades=5,
-            min_recent_buys=2,
-            min_lead_samples=5,
-            min_median_lead_seconds=2 * 3600,
-            max_late_buy_ratio=0.25,
-            max_days_since_last_trade=7,
-            min_avg_buy_size_usd=75.0,
-            min_large_buy_count=2,
-            min_conviction_buy_ratio=0.25,
-            large_buy_threshold_usd=100.0,
         )
 
         self.assertTrue(strong_ranked.accepted)
         self.assertFalse(weak_ranked.accepted)
         self.assertGreater(strong_ranked.copyability_score, weak_ranked.copyability_score)
         self.assertGreater(strong_ranked.follow_score, weak_ranked.follow_score)
+
+    def test_build_ranked_wallet_rejects_wallet_with_bad_local_copy_feedback(self) -> None:
+        now_ts = 2_000_000_000
+        entry = LeaderboardEntry(
+            address="0xlocal",
+            username="burned_us",
+            rank=9,
+            pnl_usd=55_000.0,
+            volume_usd=210_000.0,
+            verified=False,
+        )
+        performance = PerformanceMetrics(
+            closed_positions=90,
+            wins=58,
+            ties=4,
+            shrunk_win_rate=0.65,
+            realized_pnl_usd=22_000.0,
+            total_bought_usd=140_000.0,
+            roi=0.157,
+            avg_return=0.09,
+            consistency=0.61,
+            avg_position_size_usd=1_450.0,
+            account_age_days=220,
+        )
+        timing = TradeTimingMetrics(
+            last_trade_ts=now_ts - 900,
+            recent_trade_count=18,
+            recent_buy_count=8,
+            recent_buy_volume_usd=2_000.0,
+            avg_recent_buy_size_usd=250.0,
+            large_buy_count=4,
+            large_buy_ratio=0.5,
+            conviction_buy_count=3,
+            conviction_buy_ratio=0.375,
+            lead_sample_count=8,
+            median_buy_lead_seconds=3 * 3600,
+            p25_buy_lead_seconds=90 * 60,
+            late_buy_ratio=0.0,
+        )
+
+        ranked = self.rank_wallet(
+            entry,
+            performance,
+            timing,
+            now_ts=now_ts,
+            local_copy_metrics=LocalCopyMetrics(
+                resolved_copied_count=4,
+                copied_win_rate=0.25,
+                copied_avg_return=-0.18,
+                copied_pnl_usd=-1.72,
+            ),
+        )
+
+        self.assertFalse(ranked.accepted)
+        self.assertIn("local_copy_avg_return<0%", ranked.reject_reason)
 
 
 if __name__ == "__main__":

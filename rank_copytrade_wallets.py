@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sqlite3
 import statistics
 import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -62,6 +64,14 @@ class TradeTimingMetrics:
 
 
 @dataclass
+class LocalCopyMetrics:
+    resolved_copied_count: int
+    copied_win_rate: float | None
+    copied_avg_return: float | None
+    copied_pnl_usd: float
+
+
+@dataclass
 class RankedWallet:
     address: str
     username: str
@@ -86,6 +96,9 @@ class RankedWallet:
     median_buy_lead_hours: float | None
     p25_buy_lead_hours: float | None
     late_buy_ratio: float | None
+    local_resolved_copied: int
+    local_copy_avg_return: float | None
+    local_copy_pnl_usd: float
 
 
 def _request_json(
@@ -595,6 +608,21 @@ def _score_lead_time(seconds: float | None) -> float:
     return _clip(math.log1p(seconds) / math.log1p(3 * 86400))
 
 
+def _score_window_fit(seconds: float | None, preferred_min_seconds: int, preferred_max_seconds: int) -> float:
+    if seconds is None or seconds <= 0:
+        return 0.0
+    lower = max(float(preferred_min_seconds), 1.0)
+    upper = max(float(preferred_max_seconds), lower)
+    if lower <= seconds <= upper:
+        return 1.0
+    if seconds < lower:
+        return _clip(seconds / lower)
+    fade_end = max(upper * 4.0, upper + lower)
+    if seconds >= fade_end:
+        return 0.0
+    return _clip(1.0 - ((seconds - upper) / max(fade_end - upper, 1.0)))
+
+
 def _score_avg_buy_size(avg_buy_size_usd: float | None, large_buy_threshold_usd: float) -> float:
     if avg_buy_size_usd is None or avg_buy_size_usd <= 0:
         return 0.0
@@ -614,6 +642,95 @@ def _score_leaderboard_signal(pnl_usd: float, volume_usd: float) -> float:
     return (0.65 * pnl_score) + (0.35 * volume_score)
 
 
+def _score_local_copy_feedback(metrics: LocalCopyMetrics | None, min_resolved_copies: int) -> float:
+    if metrics is None or metrics.resolved_copied_count < min_resolved_copies:
+        return 0.5
+    avg_return = float(metrics.copied_avg_return or 0.0)
+    avg_return_score = _clip((avg_return + 0.10) / 0.25)
+    win_rate_score = _clip(metrics.copied_win_rate or 0.5)
+    sample_score = _score_sample(metrics.resolved_copied_count)
+    return (0.50 * avg_return_score) + (0.30 * win_rate_score) + (0.20 * sample_score)
+
+
+def load_local_copy_metrics(db_path: str | None) -> dict[str, LocalCopyMetrics]:
+    candidate = Path(str(db_path or "").strip())
+    if not candidate.exists():
+        return {}
+
+    conn = sqlite3.connect(candidate)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                LOWER(trader_address) AS trader_address,
+                SUM(
+                    CASE
+                        WHEN skipped=0
+                         AND source_action='buy'
+                         AND actual_entry_size_usd IS NOT NULL
+                         AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
+                            THEN 1
+                        ELSE 0
+                    END
+                ) AS resolved_copied_count,
+                SUM(
+                    CASE
+                        WHEN skipped=0
+                         AND source_action='buy'
+                         AND actual_entry_size_usd IS NOT NULL
+                         AND COALESCE(actual_pnl_usd, shadow_pnl_usd) > 0
+                            THEN 1
+                        ELSE 0
+                    END
+                ) AS resolved_copied_wins,
+                AVG(
+                    CASE
+                        WHEN skipped=0
+                         AND source_action='buy'
+                         AND actual_entry_size_usd IS NOT NULL
+                         AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
+                            THEN COALESCE(actual_pnl_usd, shadow_pnl_usd) / NULLIF(actual_entry_size_usd, 0)
+                        ELSE NULL
+                    END
+                ) AS copied_avg_return,
+                SUM(
+                    CASE
+                        WHEN skipped=0
+                         AND source_action='buy'
+                            THEN COALESCE(actual_pnl_usd, shadow_pnl_usd, 0)
+                        ELSE 0
+                    END
+                ) AS copied_pnl_usd
+            FROM trade_log
+            GROUP BY LOWER(trader_address)
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    metrics: dict[str, LocalCopyMetrics] = {}
+    for row in rows:
+        address = str(row["trader_address"] or "").strip().lower()
+        if not address:
+            continue
+        resolved_copied_count = int(row["resolved_copied_count"] or 0)
+        wins = int(row["resolved_copied_wins"] or 0)
+        copied_win_rate = (wins / resolved_copied_count) if resolved_copied_count > 0 else None
+        copied_avg_return = (
+            float(row["copied_avg_return"])
+            if row["copied_avg_return"] is not None
+            else None
+        )
+        metrics[address] = LocalCopyMetrics(
+            resolved_copied_count=resolved_copied_count,
+            copied_win_rate=copied_win_rate,
+            copied_avg_return=copied_avg_return,
+            copied_pnl_usd=float(row["copied_pnl_usd"] or 0.0),
+        )
+    return metrics
+
+
 def build_ranked_wallet(
     entry: LeaderboardEntry,
     performance: PerformanceMetrics,
@@ -626,12 +743,17 @@ def build_ranked_wallet(
     min_recent_buys: int,
     min_lead_samples: int,
     min_median_lead_seconds: int,
+    max_median_lead_seconds: int,
+    min_p25_lead_seconds: int,
     max_late_buy_ratio: float,
     max_days_since_last_trade: int,
     min_avg_buy_size_usd: float,
     min_large_buy_count: int,
     min_conviction_buy_ratio: float,
     large_buy_threshold_usd: float,
+    local_copy_metrics: LocalCopyMetrics | None,
+    min_local_resolved_copies: int,
+    min_local_copy_avg_return: float,
 ) -> RankedWallet:
     reasons: list[str] = []
     if performance.closed_positions < min_closed_positions:
@@ -646,6 +768,10 @@ def build_ranked_wallet(
         reasons.append(f"stale>{max_days_since_last_trade}d")
     if timing.median_buy_lead_seconds is None or timing.median_buy_lead_seconds < min_median_lead_seconds:
         reasons.append("median_lead_too_short")
+    if timing.median_buy_lead_seconds is not None and timing.median_buy_lead_seconds > max_median_lead_seconds:
+        reasons.append("median_lead_too_long")
+    if timing.p25_buy_lead_seconds is None or timing.p25_buy_lead_seconds < min_p25_lead_seconds:
+        reasons.append("p25_lead_too_short")
     if timing.late_buy_ratio is None or timing.late_buy_ratio > max_late_buy_ratio:
         reasons.append(f"late_buy_ratio>{max_late_buy_ratio:.0%}")
     if timing.avg_recent_buy_size_usd is None or timing.avg_recent_buy_size_usd < min_avg_buy_size_usd:
@@ -654,6 +780,13 @@ def build_ranked_wallet(
         reasons.append(f"large_buys<{min_large_buy_count}")
     if timing.conviction_buy_ratio is None or timing.conviction_buy_ratio < min_conviction_buy_ratio:
         reasons.append(f"conviction_ratio<{min_conviction_buy_ratio:.0%}")
+    if (
+        local_copy_metrics is not None
+        and local_copy_metrics.resolved_copied_count >= min_local_resolved_copies
+        and local_copy_metrics.copied_avg_return is not None
+        and local_copy_metrics.copied_avg_return < min_local_copy_avg_return
+    ):
+        reasons.append(f"local_copy_avg_return<{min_local_copy_avg_return:.0%}")
 
     success_score = (
         0.45 * _score_win_rate(performance.shrunk_win_rate, performance.closed_positions)
@@ -666,8 +799,16 @@ def build_ranked_wallet(
         + 0.30 * _score_recency(now_ts, timing.last_trade_ts, max_days_since_last_trade)
     )
     timing_score = (
-        0.45 * _score_lead_time(timing.median_buy_lead_seconds)
-        + 0.20 * _score_lead_time(timing.p25_buy_lead_seconds)
+        0.45 * _score_window_fit(
+            timing.median_buy_lead_seconds,
+            min_median_lead_seconds,
+            max_median_lead_seconds,
+        )
+        + 0.20 * _score_window_fit(
+            timing.p25_buy_lead_seconds,
+            min_p25_lead_seconds,
+            max_median_lead_seconds,
+        )
         + 0.35 * (1.0 - min(1.0, timing.late_buy_ratio if timing.late_buy_ratio is not None else 1.0))
     )
     copyability_score = (
@@ -676,12 +817,14 @@ def build_ranked_wallet(
         + 0.25 * _score_ratio(timing.conviction_buy_ratio)
         + 0.10 * (1.0 - min(1.0, timing.late_buy_ratio if timing.late_buy_ratio is not None else 1.0))
     )
+    local_copy_score = _score_local_copy_feedback(local_copy_metrics, min_local_resolved_copies)
     follow_score = (
-        0.30 * success_score
-        + 0.20 * activity_score
-        + 0.25 * timing_score
+        0.28 * success_score
+        + 0.18 * activity_score
+        + 0.27 * timing_score
         + 0.20 * copyability_score
-        + 0.05 * _score_leaderboard_signal(entry.pnl_usd, entry.volume_usd)
+        + 0.05 * local_copy_score
+        + 0.02 * _score_leaderboard_signal(entry.pnl_usd, entry.volume_usd)
     )
 
     last_trade_age_hours = ((now_ts - timing.last_trade_ts) / 3600) if timing.last_trade_ts > 0 else None
@@ -709,6 +852,9 @@ def build_ranked_wallet(
         median_buy_lead_hours=(timing.median_buy_lead_seconds / 3600) if timing.median_buy_lead_seconds is not None else None,
         p25_buy_lead_hours=(timing.p25_buy_lead_seconds / 3600) if timing.p25_buy_lead_seconds is not None else None,
         late_buy_ratio=timing.late_buy_ratio,
+        local_resolved_copied=(local_copy_metrics.resolved_copied_count if local_copy_metrics else 0),
+        local_copy_avg_return=(local_copy_metrics.copied_avg_return if local_copy_metrics else None),
+        local_copy_pnl_usd=(local_copy_metrics.copied_pnl_usd if local_copy_metrics else 0.0),
     )
 
 
@@ -726,6 +872,8 @@ def analyze_wallet(
     min_recent_buys: int,
     min_lead_samples: int,
     min_median_lead_seconds: int,
+    max_median_lead_seconds: int,
+    min_p25_lead_seconds: int,
     max_late_buy_ratio: float,
     max_days_since_last_trade: int,
     min_avg_buy_size_usd: float,
@@ -734,6 +882,9 @@ def analyze_wallet(
     large_buy_threshold_usd: float,
     high_conviction_price: float,
     market_close_cache: dict[str, int],
+    local_copy_metrics: LocalCopyMetrics | None,
+    min_local_resolved_copies: int,
+    min_local_copy_avg_return: float,
 ) -> RankedWallet:
     now_ts = int(time.time())
     with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
@@ -767,12 +918,17 @@ def analyze_wallet(
         min_recent_buys=min_recent_buys,
         min_lead_samples=min_lead_samples,
         min_median_lead_seconds=min_median_lead_seconds,
+        max_median_lead_seconds=max_median_lead_seconds,
+        min_p25_lead_seconds=min_p25_lead_seconds,
         max_late_buy_ratio=max_late_buy_ratio,
         max_days_since_last_trade=max_days_since_last_trade,
         min_avg_buy_size_usd=min_avg_buy_size_usd,
         min_large_buy_count=min_large_buy_count,
         min_conviction_buy_ratio=min_conviction_buy_ratio,
         large_buy_threshold_usd=large_buy_threshold_usd,
+        local_copy_metrics=local_copy_metrics,
+        min_local_resolved_copies=min_local_resolved_copies,
+        min_local_copy_avg_return=min_local_copy_avg_return,
     )
 
 
@@ -791,18 +947,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--activity-window-days", type=int, default=3)
     parser.add_argument("--late-buy-threshold-minutes", type=int, default=20)
     parser.add_argument("--buy-sample-limit", type=int, default=12)
-    parser.add_argument("--min-closed-positions", type=int, default=10)
+    parser.add_argument("--min-closed-positions", type=int, default=15)
     parser.add_argument("--min-recent-trades", type=int, default=10)
-    parser.add_argument("--min-recent-buys", type=int, default=3)
+    parser.add_argument("--min-recent-buys", type=int, default=4)
     parser.add_argument("--min-lead-samples", type=int, default=2)
-    parser.add_argument("--min-median-lead-hours", type=float, default=2.0)
-    parser.add_argument("--max-late-buy-ratio", type=float, default=0.25)
+    parser.add_argument("--min-median-lead-hours", type=float, default=1.0)
+    parser.add_argument("--max-median-lead-hours", type=float, default=6.0)
+    parser.add_argument("--min-p25-lead-minutes", type=int, default=20)
+    parser.add_argument("--max-late-buy-ratio", type=float, default=0.20)
     parser.add_argument("--max-days-since-last-trade", type=int, default=2)
-    parser.add_argument("--large-buy-usd", type=float, default=150.0)
-    parser.add_argument("--min-large-buys", type=int, default=2)
-    parser.add_argument("--high-conviction-price", type=float, default=0.80)
+    parser.add_argument("--large-buy-usd", type=float, default=200.0)
+    parser.add_argument("--min-large-buys", type=int, default=3)
+    parser.add_argument("--high-conviction-price", type=float, default=0.75)
     parser.add_argument("--min-conviction-buy-ratio", type=float, default=0.30)
-    parser.add_argument("--min-avg-buy-size-usd", type=float, default=100.0)
+    parser.add_argument("--min-avg-buy-size-usd", type=float, default=125.0)
+    parser.add_argument("--local-db", default="data/trading.db")
+    parser.add_argument("--min-local-resolved-copies", type=int, default=3)
+    parser.add_argument("--min-local-copy-avg-return", type=float, default=0.00)
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--show-rejected", action="store_true")
     parser.add_argument("--wallets-only", action="store_true")
@@ -858,6 +1019,7 @@ def print_ranked_wallets(rows: list[RankedWallet], *, wallets_only: bool) -> Non
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     market_close_cache: dict[str, int] = {}
+    local_copy_metrics_map = load_local_copy_metrics(args.local_db)
 
     with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
         leaderboard = fetch_leaderboard(
@@ -890,6 +1052,8 @@ def main(argv: list[str] | None = None) -> int:
                     min_recent_buys=args.min_recent_buys,
                     min_lead_samples=args.min_lead_samples,
                     min_median_lead_seconds=int(args.min_median_lead_hours * 3600),
+                    max_median_lead_seconds=int(args.max_median_lead_hours * 3600),
+                    min_p25_lead_seconds=args.min_p25_lead_minutes * 60,
                     max_late_buy_ratio=args.max_late_buy_ratio,
                     max_days_since_last_trade=args.max_days_since_last_trade,
                     min_avg_buy_size_usd=args.min_avg_buy_size_usd,
@@ -898,6 +1062,9 @@ def main(argv: list[str] | None = None) -> int:
                     large_buy_threshold_usd=args.large_buy_usd,
                     high_conviction_price=args.high_conviction_price,
                     market_close_cache=market_close_cache,
+                    local_copy_metrics=local_copy_metrics_map.get(entry.address.lower()),
+                    min_local_resolved_copies=args.min_local_resolved_copies,
+                    min_local_copy_avg_return=args.min_local_copy_avg_return,
                 )
             )
         except Exception as exc:
@@ -926,6 +1093,9 @@ def main(argv: list[str] | None = None) -> int:
                     median_buy_lead_hours=None,
                     p25_buy_lead_hours=None,
                     late_buy_ratio=None,
+                    local_resolved_copied=0,
+                    local_copy_avg_return=None,
+                    local_copy_pnl_usd=0.0,
                 )
             )
 

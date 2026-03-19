@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
@@ -19,8 +20,18 @@ logger = logging.getLogger(__name__)
 DATA_API = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
-TRADE_FETCH_MAX_ATTEMPTS = 4
-RETRY_BASE_DELAY_S = 0.5
+TRADE_FETCH_MAX_ATTEMPTS = 2
+AUX_FETCH_MAX_ATTEMPTS = 2
+RETRY_BASE_DELAY_S = 0.35
+TRADE_REQUEST_TIMEOUT_S = 3.0
+POSITIONS_REQUEST_TIMEOUT_S = 4.0
+METADATA_REQUEST_TIMEOUT_S = 4.0
+ORDERBOOK_REQUEST_TIMEOUT_S = 3.0
+PRICE_HISTORY_REQUEST_TIMEOUT_S = 4.0
+WALLET_TRADE_FETCH_WORKERS = 6
+MARKET_METADATA_CACHE_TTL_S = 300
+ORDERBOOK_CACHE_TTL_S = 2
+PRICE_HISTORY_CACHE_TTL_S = 60
 
 
 @dataclass
@@ -69,6 +80,9 @@ class PolymarketTracker:
         self.wallet_cursors = self._load_wallet_cursors()
         self.last_trade_poll_ok_at = 0
         self.consecutive_trade_poll_failures = 0
+        self._market_metadata_cache: dict[str, tuple[float, tuple[dict[str, Any], int]]] = {}
+        self._orderbook_cache: dict[str, tuple[float, tuple[dict[str, float] | None, dict[str, Any] | None, int]]] = {}
+        self._price_history_cache: dict[tuple[str, str], tuple[float, list[dict[str, float]]]] = {}
 
     def close(self) -> None:
         self.client.close()
@@ -179,11 +193,17 @@ class PolymarketTracker:
         params: dict[str, Any] | None = None,
         failure_log: str,
         suppress_404: bool = False,
+        timeout_s: float | None = None,
+        max_attempts: int = TRADE_FETCH_MAX_ATTEMPTS,
     ) -> tuple[Any | None, bool]:
-        for attempt in range(TRADE_FETCH_MAX_ATTEMPTS):
+        attempt_count = max(1, int(max_attempts or 1))
+        for attempt in range(attempt_count):
             try:
                 self._touch_activity()
-                response = self.client.get(url, params=params)
+                request_kwargs: dict[str, Any] = {"params": params}
+                if timeout_s is not None:
+                    request_kwargs["timeout"] = timeout_s
+                response = self.client.get(url, **request_kwargs)
                 if response.status_code == 404 and suppress_404:
                     self._touch_activity()
                     return None, True
@@ -199,7 +219,7 @@ class PolymarketTracker:
             except httpx.HTTPStatusError as exc:
                 self._touch_activity()
                 status_code = exc.response.status_code if exc.response is not None else 0
-                if status_code in {429, 500, 502, 503, 504} and attempt < TRADE_FETCH_MAX_ATTEMPTS - 1:
+                if status_code in {429, 500, 502, 503, 504} and attempt < attempt_count - 1:
                     retry_after = 0.0
                     try:
                         retry_after = float((exc.response.headers or {}).get("Retry-After") or 0.0)
@@ -212,12 +232,34 @@ class PolymarketTracker:
                 return None, False
             except Exception as exc:
                 self._touch_activity()
-                if attempt < TRADE_FETCH_MAX_ATTEMPTS - 1:
+                if attempt < attempt_count - 1:
                     time.sleep((RETRY_BASE_DELAY_S * (attempt + 1)) + random.uniform(0.0, 0.25))
                     continue
                 logger.error("%s: %s", failure_log, exc)
                 return None, False
         return None, False
+
+    def _cache_get(self, cache_name: str, key: Any, ttl_seconds: int) -> Any | None:
+        cache = getattr(self, cache_name, None)
+        if cache is None:
+            cache = {}
+            setattr(self, cache_name, cache)
+        entry = cache.get(key)
+        if not entry:
+            return None
+        cached_at, value = entry
+        if (time.time() - float(cached_at)) <= ttl_seconds:
+            return value
+        cache.pop(key, None)
+        return None
+
+    def _cache_put(self, cache_name: str, key: Any, value: Any) -> Any:
+        cache = getattr(self, cache_name, None)
+        if cache is None:
+            cache = {}
+            setattr(self, cache_name, cache)
+        cache[key] = (time.time(), value)
+        return value
 
     def get_leaderboard(self, window: str = "1w", limit: int = 50) -> list[dict]:
         payload, _ = self._request_json(
@@ -241,6 +283,8 @@ class PolymarketTracker:
             f"{DATA_API}/trades",
             params={"user": address, "limit": limit},
             failure_log=f"Trade fetch failed for {address[:10]}",
+            timeout_s=TRADE_REQUEST_TIMEOUT_S,
+            max_attempts=TRADE_FETCH_MAX_ATTEMPTS,
         )
         self._record_trade_feed_result(ok)
         if payload is None:
@@ -254,6 +298,8 @@ class PolymarketTracker:
             f"{DATA_API}/positions",
             params={"user": address},
             failure_log=f"Position fetch failed for {address[:10]}",
+            timeout_s=POSITIONS_REQUEST_TIMEOUT_S,
+            max_attempts=AUX_FETCH_MAX_ATTEMPTS,
         )
         if payload is None and not ok:
             return None
@@ -263,10 +309,17 @@ class PolymarketTracker:
         if not condition_id:
             return {}, 0
 
+        cache_key = str(condition_id).strip().lower()
+        cached = self._cache_get("_market_metadata_cache", cache_key, MARKET_METADATA_CACHE_TTL_S)
+        if cached is not None:
+            return cached
+
         payload, ok = self._request_json(
             f"{GAMMA_API}/markets",
             params={"condition_ids": condition_id},
             failure_log=f"Market metadata fetch failed for {condition_id[:12]}",
+            timeout_s=METADATA_REQUEST_TIMEOUT_S,
+            max_attempts=AUX_FETCH_MAX_ATTEMPTS,
         )
         if payload is None or not ok:
             return {}, 0
@@ -275,22 +328,29 @@ class PolymarketTracker:
         markets = payload if isinstance(payload, list) else payload.get("markets", [])
         for market in markets:
             if str(market.get("conditionId", "")).lower() == condition_id.lower():
-                return market, fetched_at
+                return self._cache_put("_market_metadata_cache", cache_key, (market, fetched_at))
         if markets:
-            return markets[0], fetched_at
+            return self._cache_put("_market_metadata_cache", cache_key, (markets[0], fetched_at))
         return {}, 0
 
     def get_orderbook_snapshot(self, token_id: str) -> tuple[dict[str, float] | None, dict[str, Any] | None, int]:
         if not token_id:
             return None, None, 0
+
+        cache_key = str(token_id).strip()
+        cached = self._cache_get("_orderbook_cache", cache_key, ORDERBOOK_CACHE_TTL_S)
+        if cached is not None:
+            return cached
         book, ok = self._request_json(
             f"{CLOB_API}/book",
             params={"token_id": token_id},
             failure_log=f"Orderbook fetch failed for {token_id[:12]}",
             suppress_404=True,
+            timeout_s=ORDERBOOK_REQUEST_TIMEOUT_S,
+            max_attempts=AUX_FETCH_MAX_ATTEMPTS,
         )
         if book is None:
-            return None, None, 0
+            return self._cache_put("_orderbook_cache", cache_key, (None, None, 0))
 
         fetched_at = int(time.time())
         bids = book.get("bids", []) if isinstance(book, dict) else []
@@ -298,27 +358,62 @@ class PolymarketTracker:
         best_bid = float(bids[0]["price"]) if bids else 0.0
         best_ask = float(asks[0]["price"]) if asks else 0.0
         if not ok:
-            return None, None, 0
-        return {
+            return self._cache_put("_orderbook_cache", cache_key, (None, None, 0))
+        return self._cache_put("_orderbook_cache", cache_key, ({
             "best_bid": best_bid,
             "best_ask": best_ask,
             "mid": (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 0.0,
             "bid_depth_usd": sum(float(b["size"]) * float(b["price"]) for b in bids[:5]),
             "ask_depth_usd": sum(float(a["size"]) * float(a["price"]) for a in asks[:5]),
-        }, book, fetched_at
+        }, book, fetched_at))
 
     def get_price_history(self, token_id: str, interval: str = "1h") -> list[dict]:
         if not token_id:
             return []
+        cache_key = (str(token_id).strip(), str(interval).strip())
+        cached = self._cache_get("_price_history_cache", cache_key, PRICE_HISTORY_CACHE_TTL_S)
+        if cached is not None:
+            return cached
         payload, _ = self._request_json(
             f"{CLOB_API}/prices-history",
             params={"token_id": token_id, "interval": interval},
             failure_log=f"Price history fetch failed for {token_id[:12]}",
+            timeout_s=PRICE_HISTORY_REQUEST_TIMEOUT_S,
+            max_attempts=AUX_FETCH_MAX_ATTEMPTS,
         )
         if payload is None:
             return []
         history = payload.get("history", []) if isinstance(payload, dict) else []
-        return self._normalize_price_history(history)
+        return self._cache_put("_price_history_cache", cache_key, self._normalize_price_history(history))
+
+    def _fetch_wallet_trades_batch(
+        self,
+        wallet_addresses: list[str],
+        *,
+        limit: int = 50,
+    ) -> dict[str, list[dict]]:
+        targets = [str(address or "").strip().lower() for address in wallet_addresses if str(address or "").strip()]
+        if not targets:
+            return {}
+        if len(targets) == 1:
+            wallet = targets[0]
+            return {wallet: self.get_wallet_trades(wallet, limit=limit)}
+
+        results: dict[str, list[dict]] = {}
+        worker_count = min(WALLET_TRADE_FETCH_WORKERS, len(targets))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            future_map = {
+                pool.submit(self.get_wallet_trades, wallet, limit): wallet
+                for wallet in targets
+            }
+            for future in as_completed(future_map):
+                wallet = future_map[future]
+                try:
+                    results[wallet] = future.result()
+                except Exception as exc:
+                    logger.error("Trade fetch worker failed for %s: %s", wallet[:10], exc)
+                    results[wallet] = []
+        return results
 
     def poll(self, wallet_addresses: list[str] | None = None) -> list[TradeEvent]:
         new_events: list[TradeEvent] = []
@@ -327,9 +422,10 @@ class PolymarketTracker:
         self._touch_activity()
 
         targets = self.wallets if wallet_addresses is None else wallet_addresses
+        wallet_trades = self._fetch_wallet_trades_batch(list(targets))
         for address in targets:
             self._touch_activity()
-            for raw in self.get_wallet_trades(address):
+            for raw in wallet_trades.get(address, []):
                 trade_id = self._raw_trade_id(raw)
                 if not trade_id or trade_id in self.seen_ids or trade_id in poll_seen:
                     continue
@@ -394,6 +490,7 @@ class PolymarketTracker:
                 address.lower(),
                 str(raw.get("name") or raw.get("pseudonym") or "").strip(),
                 client=self.client,
+                allow_network=False,
             )
             shares = self._optional_float(raw.get("size"))
             if shares is None:

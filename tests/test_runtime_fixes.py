@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,6 +14,7 @@ import dedup
 import db
 import evaluator
 import httpx
+import identity_cache
 import main
 import tracker
 import trader_scorer
@@ -674,6 +676,51 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(event.side, "no")
         self.assertEqual(event.price, 0.42)
         self.assertEqual(event.timestamp, 1_700_000_000)
+
+    def test_tracker_batches_wallet_trade_fetches_in_parallel(self) -> None:
+        tracker_obj = tracker.PolymarketTracker(["0x1", "0x2", "0x3", "0x4"])
+        tracker_obj.get_wallet_trades = lambda address, limit=50: time.sleep(0.12) or []
+        try:
+            started = time.perf_counter()
+            result = tracker_obj._fetch_wallet_trades_batch(["0x1", "0x2", "0x3", "0x4"])
+            elapsed = time.perf_counter() - started
+        finally:
+            tracker_obj.close()
+
+        self.assertEqual(result, {"0x1": [], "0x2": [], "0x3": [], "0x4": []})
+        self.assertLess(elapsed, 0.35)
+
+    def test_tracker_market_metadata_cache_reuses_recent_fetch(self) -> None:
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        calls: list[str] = []
+
+        def fake_request_json(url: str, **kwargs):
+            calls.append(url)
+            return ([{"conditionId": "market-1", "question": "Question"}], True)
+
+        tracker_obj._market_metadata_cache = {}
+        tracker_obj._request_json = fake_request_json
+
+        first = tracker_obj.get_market_metadata("market-1")
+        second = tracker_obj.get_market_metadata("market-1")
+
+        self.assertEqual(first[0]["question"], "Question")
+        self.assertEqual(second[0]["question"], "Question")
+        self.assertEqual(len(calls), 1)
+
+    def test_hydrate_observed_identity_skips_network_when_disabled(self) -> None:
+        wallet = "0x1111111111111111111111111111111111111111"
+        with patch("identity_cache.lookup_username", return_value=None), patch(
+            "identity_cache.resolve_username_for_wallet"
+        ) as resolve_mock:
+            resolved = identity_cache.hydrate_observed_identity(
+                wallet,
+                "",
+                allow_network=False,
+            )
+
+        self.assertEqual(resolved, "")
+        resolve_mock.assert_not_called()
 
     def test_market_scorer_handles_missing_optional_features(self) -> None:
         snapshot = {

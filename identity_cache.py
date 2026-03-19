@@ -267,6 +267,8 @@ def hydrate_observed_identity(
     wallet: str | None,
     observed_username: str | None,
     client: httpx.Client | None = None,
+    *,
+    allow_network: bool = True,
 ) -> str:
     normalized_wallet = normalize_wallet(wallet)
     observed = clean_display_name(observed_username)
@@ -280,6 +282,9 @@ def hydrate_observed_identity(
     cached_username = lookup_username(normalized_wallet)
     if cached_username:
         return cached_username
+
+    if not allow_network:
+        return observed or ""
 
     resolved_username = resolve_username_for_wallet(normalized_wallet, client=client)
     if resolved_username:

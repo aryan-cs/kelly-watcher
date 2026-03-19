@@ -24,6 +24,60 @@ from trader_scorer import TraderScorer
 
 
 class RuntimeFixesTest(unittest.TestCase):
+    def test_resolve_wallet_for_username_returns_wallet_and_caches_identity(self) -> None:
+        class _Response:
+            def __init__(self, text: str, status_code: int = 200) -> None:
+                self.text = text
+                self.status_code = status_code
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise httpx.HTTPStatusError(
+                        "request failed",
+                        request=httpx.Request("GET", "https://polymarket.com"),
+                        response=httpx.Response(self.status_code),
+                    )
+                return None
+
+        class _Client:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def get(self, url: str) -> _Response:
+                self.calls.append(url)
+                if url != "https://polymarket.com/@TraderName":
+                    return _Response("", status_code=404)
+                return _Response(
+                    """
+                    <html>
+                      0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                      <script id="__NEXT_DATA__" type="application/json" crossorigin="anonymous">
+                        {"props":{"pageProps":{"proxyAddress":"0x1234567890abcdef1234567890abcdef12345678"}}}
+                      </script>
+                      0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                    </html>
+                    """
+                )
+
+        with TemporaryDirectory() as tmpdir:
+            original_cache_path = identity_cache.CACHE_PATH
+            try:
+                identity_cache.CACHE_PATH = Path(tmpdir) / "identity_cache.json"
+                client = _Client()
+                resolved = identity_cache.resolve_wallet_for_username("TraderName", client)
+                self.assertEqual(resolved, "0x1234567890abcdef1234567890abcdef12345678")
+                self.assertEqual(
+                    identity_cache.lookup_wallet("TraderName"),
+                    "0x1234567890abcdef1234567890abcdef12345678",
+                )
+                self.assertEqual(client.calls, ["https://polymarket.com/@TraderName"])
+                self.assertEqual(
+                    identity_cache.lookup_username("0x1234567890abcdef1234567890abcdef12345678"),
+                    "tradername",
+                )
+            finally:
+                identity_cache.CACHE_PATH = original_cache_path
+
     def test_live_account_equity_includes_open_positions(self) -> None:
         executor = object.__new__(PolymarketExecutor)
         executor.get_usdc_balance = lambda: 80.0

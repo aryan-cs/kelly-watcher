@@ -27,6 +27,10 @@ OG_IMAGE_USERNAME_RE = re.compile(
     r'https://polymarket\.com/api/og\?username=([^"&]+)',
     re.IGNORECASE,
 )
+NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__" type="application/json" crossorigin="anonymous">(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def normalize_wallet(wallet: str | None) -> str:
@@ -194,6 +198,41 @@ def extract_username_from_profile_html(text: str) -> str | None:
     return None
 
 
+def extract_wallet_from_profile_html(text: str) -> str | None:
+    match = NEXT_DATA_RE.search(text)
+    if match:
+        try:
+            payload = json.loads(match.group(1))
+            page_props = payload.get("props", {}).get("pageProps", {})
+            for key in ("proxyAddress", "baseAddress", "primaryAddress"):
+                wallet = normalize_wallet(page_props.get(key))
+                if wallet:
+                    return wallet
+
+            queries = page_props.get("dehydratedState", {}).get("queries", [])
+            for query in queries:
+                query_key = query.get("queryKey")
+                if not isinstance(query_key, list) or not query_key:
+                    continue
+                data = query.get("state", {}).get("data", {})
+                if not isinstance(data, dict):
+                    continue
+                wallet = normalize_wallet(data.get("proxyWallet"))
+                if wallet:
+                    return wallet
+        except Exception:
+            pass
+
+    for key in ("proxyAddress", "baseAddress", "primaryAddress", "proxyWallet"):
+        key_match = re.search(rf'"{key}"\s*:\s*"(0x[a-fA-F0-9]{{40}})"', text)
+        if key_match:
+            wallet = normalize_wallet(key_match.group(1))
+            if wallet:
+                return wallet
+
+    return None
+
+
 def resolve_username_for_wallet(
     wallet: str | None,
     client: httpx.Client | None = None,
@@ -232,31 +271,51 @@ def resolve_username_for_wallet(
             client.close()
 
 
-def resolve_wallet_for_username(username: str | None, client: httpx.Client | None = None) -> str | None:
+def resolve_wallet_for_username(
+    username: str | None,
+    client: httpx.Client | None = None,
+    *,
+    force: bool = False,
+) -> str | None:
+    raw_username = (username or "").strip().lstrip("@")
     normalized_username = normalize_username(username)
     if not normalized_username:
         return None
 
     cached_wallet = lookup_wallet(normalized_username)
-    if cached_wallet:
+    if cached_wallet and not force:
         return cached_wallet
 
     owns_client = client is None
     client = client or httpx.Client(timeout=15.0, follow_redirects=True)
     try:
-        for url in (
-            f"https://polymarket.com/@{normalized_username}",
-            f"https://polymarket.com/profile/{normalized_username}",
-            f"https://polymarket.com/{normalized_username}",
-        ):
-            try:
-                response = client.get(url)
-                response.raise_for_status()
-                match = ADDRESS_RE.search(response.text)
-                if match:
-                    return remember_identity(match.group(0), normalized_username)
-            except Exception:
+        slugs: list[str] = []
+        seen_slugs: set[str] = set()
+        for slug in (raw_username, normalized_username):
+            value = slug.strip()
+            if not value:
                 continue
+            key = value.casefold()
+            if key in seen_slugs:
+                continue
+            seen_slugs.add(key)
+            slugs.append(value)
+
+        for slug in slugs:
+            for url in (
+                f"https://polymarket.com/@{slug}",
+                f"https://polymarket.com/profile/{slug}",
+                f"https://polymarket.com/{slug}",
+            ):
+                try:
+                    response = client.get(url)
+                    response.raise_for_status()
+                    wallet = extract_wallet_from_profile_html(response.text)
+                    if wallet:
+                        remember_identity(wallet, normalized_username)
+                        return wallet
+                except Exception:
+                    continue
     finally:
         if owns_client:
             client.close()

@@ -4,7 +4,7 @@ import { Box as InkBox, Text } from 'ink';
 import { Box } from '../components/Box.js';
 import { StatRow } from '../components/StatRow.js';
 import { editableConfigFields, formatEditableConfigValue } from '../configEditor.js';
-import { fit, fitRight, formatNumber, truncate } from '../format.js';
+import { fit, fitRight, formatNumber, truncate, wrapText } from '../format.js';
 import { envExamplePath, envPath } from '../paths.js';
 import { rowsForHeight, stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
@@ -60,6 +60,16 @@ export function Settings({ editor }) {
     const panelContentWidth = Math.max(24, terminal.width - 10);
     const helperWidth = panelContentWidth;
     const statusColor = editor.statusTone === 'error' ? theme.red : editor.statusTone === 'success' ? theme.green : theme.dim;
+    const defaultStatusMessage = editor.isEditing
+        ? 'Type a value, then press Enter to save or Esc to cancel.'
+        : 'Use j/k or arrows to select. Press e or Enter to edit.';
+    const selectedDescription = `${selectedField.key} - ${selectedField.description}`;
+    const rawStatusMessage = (editor.statusMessage || '').trim();
+    const effectiveStatusMessage = rawStatusMessage && rawStatusMessage !== selectedField.description && rawStatusMessage !== selectedDescription
+        ? rawStatusMessage
+        : defaultStatusMessage;
+    const descriptionLines = wrapText(selectedDescription, helperWidth);
+    const statusLines = wrapText(effectiveStatusMessage, helperWidth);
     const usernames = useMemo(() => {
         const lookup = new Map();
         for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -116,12 +126,8 @@ export function Settings({ editor }) {
                         React.createElement(Text, { color: valueColor, backgroundColor: rowBackground, bold: selected }, fitRight(truncate(shownValue, configValueWidth), configValueWidth))));
                 }),
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(Text, { color: theme.dim }, truncate(`${selectedField.key} - ${selectedField.description}`, helperWidth)),
-                    React.createElement(Text, { color: statusColor }, truncate(editor.statusMessage ||
-                        (editor.isEditing
-                            ? 'Type a value, then press Enter to save or Esc to cancel.'
-                            : 'Use j/k or arrows to select. Press e or Enter to edit.'), helperWidth)),
-                    React.createElement(Text, { color: theme.dim }, editor.isEditing ? 'editing mode active' : 'poll interval applies live; most other changes need a bot restart')))),
+                    descriptionLines.map((line, index) => (React.createElement(Text, { key: `desc-${index}`, color: theme.dim }, line))),
+                    statusLines.map((line, index) => (React.createElement(Text, { key: `status-${index}`, color: statusColor }, line)))))),
         React.createElement(InkBox, { marginTop: 1 },
             React.createElement(Box, { title: "Environment" }, envRows.length || envData.watchedWallets.length ? (React.createElement(React.Fragment, null,
                 envRows.map((row) => (React.createElement(StatRow, { key: row.key, label: row.key, value: row.value }))),

@@ -8,7 +8,7 @@ import {
   formatEditableConfigValue,
   type EditableConfigValues
 } from '../configEditor.js'
-import {fit, fitRight, formatNumber, shortAddress, truncate} from '../format.js'
+import {fit, fitRight, formatNumber, shortAddress, truncate, wrapText} from '../format.js'
 import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {envExamplePath, envPath} from '../paths.js'
 import {rowsForHeight, stackPanels} from '../responsive.js'
@@ -91,6 +91,17 @@ export function Settings({editor}: SettingsProps) {
   const helperWidth = panelContentWidth
   const statusColor =
     editor.statusTone === 'error' ? theme.red : editor.statusTone === 'success' ? theme.green : theme.dim
+  const defaultStatusMessage = editor.isEditing
+    ? 'Type a value, then press Enter to save or Esc to cancel.'
+    : 'Use j/k or arrows to select. Press e or Enter to edit.'
+  const selectedDescription = `${selectedField.key} - ${selectedField.description}`
+  const rawStatusMessage = (editor.statusMessage || '').trim()
+  const effectiveStatusMessage =
+    rawStatusMessage && rawStatusMessage !== selectedField.description && rawStatusMessage !== selectedDescription
+      ? rawStatusMessage
+      : defaultStatusMessage
+  const descriptionLines = wrapText(selectedDescription, helperWidth)
+  const statusLines = wrapText(effectiveStatusMessage, helperWidth)
   const usernames = useMemo(() => {
     const lookup = readIdentityMap()
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -164,19 +175,16 @@ export function Settings({editor}: SettingsProps) {
           })}
 
           <InkBox flexDirection="column" marginTop={1}>
-            <Text color={theme.dim}>{truncate(`${selectedField.key} - ${selectedField.description}`, helperWidth)}</Text>
-            <Text color={statusColor}>
-              {truncate(
-                editor.statusMessage ||
-                  (editor.isEditing
-                    ? 'Type a value, then press Enter to save or Esc to cancel.'
-                    : 'Use j/k or arrows to select. Press e or Enter to edit.'),
-                helperWidth
-              )}
-            </Text>
-            <Text color={theme.dim}>
-              {editor.isEditing ? 'editing mode active' : 'poll interval applies live; most other changes need a bot restart'}
-            </Text>
+            {descriptionLines.map((line, index) => (
+              <Text key={`desc-${index}`} color={theme.dim}>
+                {line}
+              </Text>
+            ))}
+            {statusLines.map((line, index) => (
+              <Text key={`status-${index}`} color={statusColor}>
+                {line}
+              </Text>
+            ))}
           </InkBox>
         </Box>
       </InkBox>

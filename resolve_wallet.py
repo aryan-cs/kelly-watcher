@@ -74,7 +74,7 @@ def resolve_wallets(value: str, client: httpx.Client | None = None) -> list[str]
 
     try:
         for handle in candidates:
-            wallet = resolve_wallet_for_username(handle, client)
+            wallet = resolve_wallet_for_username(handle, client, force=True)
             add_wallet(wallet)
         return resolved
     finally:

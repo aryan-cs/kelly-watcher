@@ -97,7 +97,7 @@ GROUP BY real_money
 const DAILY_SQL = `
 SELECT
   real_money,
-  strftime('%Y-%m-%d', datetime(${REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
+  strftime('%Y-%m-%d %H:00', datetime(${REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
   ROUND(
     SUM(
       CASE
@@ -525,7 +525,7 @@ function getDailyPanelContentWidth(terminalWidth: number, stacked: boolean): num
 }
 
 function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQueueLayout {
-  const dateWidth = 10
+  const dateWidth = 11
   const resolvedValueWidth = Math.max(12, valueWidth)
   const minBarWidth = 9
   const rawBarWidth = Math.max(minBarWidth, contentWidth - dateWidth - resolvedValueWidth - 2)
@@ -536,6 +536,31 @@ function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQue
     barWidth: Math.max(minBarWidth, centeredBarWidth),
     valueWidth: resolvedValueWidth
   }
+}
+
+function formatHourlyBucketLabel(bucket: string, compact = false): string {
+  const [datePart, timePart = ''] = String(bucket || '').split(' ')
+  const shortDate = datePart.length >= 10 ? datePart.slice(5) : datePart
+  const shortTime = timePart.slice(0, 5)
+
+  if (compact) {
+    return shortTime || shortDate
+  }
+  if (shortDate && shortTime) {
+    return `${shortDate} ${shortTime}`
+  }
+  return shortDate || shortTime || bucket
+}
+
+function formatHourlyPreviewLabel(bucket: string, width: number): string {
+  if (width >= 11) {
+    return formatHourlyBucketLabel(bucket)
+  }
+  if (width >= 5) {
+    return formatHourlyBucketLabel(bucket, true)
+  }
+  const hour = String(bucket || '').split(' ')[1]?.slice(0, 2) || ''
+  return hour || bucket.slice(-Math.max(1, width))
 }
 
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
@@ -582,7 +607,7 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
       {Array.from({length: levelCount}, (_, index) => renderRow(index + 1, true))}
       <InkBox width="100%">
         {entries.map((entry, index) => {
-          const label = columnWidth >= 5 ? entry.day.slice(5) : entry.day.slice(8)
+          const label = formatHourlyPreviewLabel(entry.day, columnWidth)
           return (
             <React.Fragment key={`${entry.day}-label`}>
               <InkBox width={columnWidth}>
@@ -697,7 +722,7 @@ export function Performance({
     [activeDailyRows]
   )
   const dailyPreviewEntries = useMemo(
-    () => dailyEntries.slice(0, 7).reverse(),
+    () => dailyEntries.slice(0, 12).reverse(),
     [dailyEntries]
   )
   const dailyValueWidth = useMemo(
@@ -974,7 +999,7 @@ export function Performance({
           <StatRow label="Avg total" value={formatDollar(activeSummary?.avg_size)} />
         </Box>
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
-        <Box title={`Daily ${activeTitle} P&L`} width={stacked ? '100%' : '50%'} accent={selectedBox === 'daily'}>
+        <Box title={`Hourly ${activeTitle} P&L`} width={stacked ? '100%' : '50%'} accent={selectedBox === 'daily'}>
           {dailyPreviewEntries.length ? (
             <DailyPnlPreviewChart entries={dailyPreviewEntries} width={dailyPanelContentWidth} />
           ) : (
@@ -1020,7 +1045,7 @@ export function Performance({
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={detailModalWidth}>
             <InkBox width="100%">
               <Text color={theme.accent} backgroundColor={modalBackground} bold>
-                {` ${fit(`Daily ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`}
+                {` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`}
               </Text>
               <Text backgroundColor={modalBackground}> </Text>
               <Text color={theme.dim} backgroundColor={modalBackground}>
@@ -1031,7 +1056,7 @@ export function Performance({
             {paddedDetailEntries.map((row, index) => (
               <InkBox key={`detail-${row?.day || `empty-${index}`}`} width="100%">
                 <Text color={row ? theme.white : theme.dim} backgroundColor={modalBackground}>
-                  {` ${fitRight(row?.day || '', detailQueueLayout.dateWidth)}`}
+                  {` ${fitRight(row ? formatHourlyBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`}
                 </Text>
                 <Text backgroundColor={modalBackground}> </Text>
                 <InkBox width={detailQueueLayout.barWidth}>

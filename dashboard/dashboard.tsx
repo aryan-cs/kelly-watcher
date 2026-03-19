@@ -204,7 +204,7 @@ function AppContent({
             : '↑/↓: list  esc: close  r: refresh  q: exit'
           : terminal.compact
             ? 'arrows box  j/k scroll  enter detail  r refresh  q exit'
-            : 'arrows: select box  j/k: scroll positions  enter: daily detail  r: refresh  q: exit'
+            : 'arrows: select box  j/k: scroll positions  enter: hourly detail  r: refresh  q: exit'
       : page === 4
         ? modelDetailOpen
           ? terminal.compact

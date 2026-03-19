@@ -71,6 +71,12 @@ export function positiveDollarColor(value, greenAt = 100) {
     }
     return blendHex('#ffffff', theme.green, clamp(value / greenAt, 0, 1));
 }
+export function negativeHeatColor(value, redAt = 100) {
+    if (value <= 0) {
+        return '#ffffff';
+    }
+    return blendHex('#ffffff', theme.red, clamp(value / redAt, 0, 1));
+}
 export function outcomeColor(side) {
     const normalized = side.trim().toLowerCase();
     const positiveSides = new Set(['yes', 'up', 'buy', 'long']);

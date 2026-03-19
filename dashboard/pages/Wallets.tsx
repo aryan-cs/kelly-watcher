@@ -9,7 +9,7 @@ import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {rowsForHeight} from '../responsive.js'
 import {useRefreshToken} from '../refresh.js'
 import {useTerminalSize} from '../terminal.js'
-import {centeredGradientColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
+import {centeredGradientColor, negativeHeatColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
 import {useQuery} from '../useDb.js'
 import {useEventStream} from '../useEventStream.js'
 
@@ -1233,6 +1233,10 @@ export function Wallets({
                   const tierTextColor = isSelected ? theme.accent : tierColor(wallet.watch_tier)
                   const winRateColor =
                     wallet.win_rate == null ? theme.dim : probabilityColor(wallet.win_rate)
+                  const skippedTradesColor =
+                    wallet.skipped_trades == null
+                      ? theme.dim
+                      : negativeHeatColor(wallet.skipped_trades, 100)
                   const localPnlColor =
                     wallet.local_pnl == null
                       ? theme.dim
@@ -1250,7 +1254,7 @@ export function Wallets({
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={tierTextColor} backgroundColor={rowBackground} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
                       <Text backgroundColor={rowBackground}> </Text>
-                      <Text backgroundColor={rowBackground}>
+                      <Text color={skippedTradesColor} backgroundColor={rowBackground}>
                         {fitRight(formatCount(wallet.skipped_trades, layout.skippedTradesWidth), layout.skippedTradesWidth)}
                       </Text>
                       <Text backgroundColor={rowBackground}> </Text>

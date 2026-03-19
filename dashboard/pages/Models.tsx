@@ -224,6 +224,12 @@ interface ModelsProps {
   settingsValues: EditableConfigValues
 }
 
+interface CompactStatItem {
+  label: string
+  value: string
+  color?: string
+}
+
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
 AND COALESCE(source_action, 'buy')='buy'
@@ -469,6 +475,19 @@ function modeLabel(mode: string): string {
   return mode || 'Unknown'
 }
 
+function splitIntoColumns<T>(items: T[], columnCount: number): T[][] {
+  if (columnCount <= 1 || items.length <= 1) {
+    return [items]
+  }
+
+  const perColumn = Math.ceil(items.length / columnCount)
+  const columns: T[][] = []
+  for (let index = 0; index < items.length; index += perColumn) {
+    columns.push(items.slice(index, index + perColumn))
+  }
+  return columns
+}
+
 export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues}: ModelsProps) {
   const terminal = useTerminalSize()
   const modalBackground = terminal.backgroundColor || theme.modalBackground
@@ -606,6 +625,52 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => getNextScheduledRetrainTs(normalizeCadence(baseCadenceRaw), clampHour(retrainHourRaw), nowTs),
     [baseCadenceRaw, retrainHourRaw, nowTs]
   )
+  const trackerHealthStats = useMemo<CompactStatItem[]>(
+    () => [
+      {label: 'Signals logged', value: formatCount(tracker?.signals)},
+      {label: 'Bets taken', value: formatCount(tracker?.taken)},
+      {
+        label: 'Use rate',
+        value: formatPct(useRate, 1),
+        color: useRate != null ? probabilityColor(Math.max(0.5, useRate)) : theme.dim
+      },
+      {label: 'Resolved bets', value: formatCount(tracker?.resolved)},
+      {
+        label: 'Win rate',
+        value: formatPct(trackerWinRate, 1),
+        color: trackerWinRate != null ? probabilityColor(trackerWinRate) : theme.dim
+      },
+      {
+        label: 'Avg confidence',
+        value: formatPct(tracker?.avg_confidence, 1),
+        color: tracker?.avg_confidence != null ? probabilityColor(tracker.avg_confidence) : theme.dim
+      },
+      {
+        label: 'Avg edge',
+        value: formatPct(tracker?.avg_edge, 1),
+        color: signedMetricColor(tracker?.avg_edge)
+      },
+      {
+        label: 'Tracker P&L',
+        value: formatDollar(tracker?.total_pnl),
+        color: dollarColor(tracker?.total_pnl)
+      },
+      {
+        label: 'Sharpe ratio',
+        value: formatNumber(trackerSnapshot?.sharpe, 2),
+        color: sharpeColor(trackerSnapshot?.sharpe)
+      },
+      {
+        label: 'Snapshot age',
+        value: trackerSnapshot ? secondsAgo(trackerSnapshot.snapshot_at) : '-'
+      }
+    ],
+    [tracker, trackerSnapshot, trackerWinRate, useRate]
+  )
+  const trackerHealthColumns = useMemo(
+    () => splitIntoColumns(trackerHealthStats, 2),
+    [trackerHealthStats]
+  )
 
   return (
     <InkBox flexDirection="column" width="100%">
@@ -637,40 +702,23 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
 
         <Box title="Tracker Health" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 1}>
-          <StatRow label="Signals logged" value={formatCount(tracker?.signals)} />
-          <StatRow label="Bets taken" value={formatCount(tracker?.taken)} />
-          <StatRow
-            label="Use rate"
-            value={formatPct(useRate, 1)}
-            color={useRate != null ? probabilityColor(Math.max(0.5, useRate)) : theme.dim}
-          />
-          <StatRow label="Resolved bets" value={formatCount(tracker?.resolved)} />
-          <StatRow
-            label="Win rate"
-            value={formatPct(trackerWinRate, 1)}
-            color={trackerWinRate != null ? probabilityColor(trackerWinRate) : theme.dim}
-          />
-          <StatRow
-            label="Avg confidence"
-            value={formatPct(tracker?.avg_confidence, 1)}
-            color={tracker?.avg_confidence != null ? probabilityColor(tracker.avg_confidence) : theme.dim}
-          />
-          <StatRow
-            label="Avg edge"
-            value={formatPct(tracker?.avg_edge, 1)}
-            color={signedMetricColor(tracker?.avg_edge)}
-          />
-          <StatRow
-            label="Tracker P&L"
-            value={formatDollar(tracker?.total_pnl)}
-            color={dollarColor(tracker?.total_pnl)}
-          />
-          <StatRow
-            label="Sharpe ratio"
-            value={formatNumber(trackerSnapshot?.sharpe, 2)}
-            color={sharpeColor(trackerSnapshot?.sharpe)}
-          />
-          <StatRow label="Snapshot age" value={trackerSnapshot ? secondsAgo(trackerSnapshot.snapshot_at) : '-'} />
+          <InkBox width="100%">
+            {trackerHealthColumns.map((column, columnIndex) => (
+              <React.Fragment key={`tracker-health-column-${columnIndex}`}>
+                <InkBox flexDirection="column" flexGrow={1}>
+                  {column.map((item) => (
+                    <StatRow
+                      key={item.label}
+                      label={item.label}
+                      value={item.value}
+                      color={item.color ?? theme.white}
+                    />
+                  ))}
+                </InkBox>
+                {columnIndex < trackerHealthColumns.length - 1 ? <InkBox width={2} /> : null}
+              </React.Fragment>
+            ))}
+          </InkBox>
           <Text color={theme.dim}>Sharpe compares return to volatility.</Text>
           <Text color={theme.dim}>Above 1 is solid; below 0 is rough.</Text>
         </Box>

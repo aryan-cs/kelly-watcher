@@ -2,25 +2,35 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 import numpy as np
 
 from alerter import send_alert
 from beliefs import sync_belief_priors
-from db import get_conn
+from db import DB_PATH, get_conn
 from trade_contract import (
     EXECUTED_ENTRY_SQL,
+    OPEN_EXECUTED_ENTRY_SQL,
     REALIZED_CLOSE_TS_SQL,
     RESOLVED_EXECUTED_ENTRY_SQL,
     is_fill_aware_executed_buy,
+    remaining_entry_shares_expr,
+    remaining_entry_size_expr,
 )
 
 logger = logging.getLogger(__name__)
 
-GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API = "https://clob.polymarket.com"
+PREMATURE_RESOLUTION_WHERE_SQL = """
+outcome IS NOT NULL
+AND resolution_json IS NOT NULL
+AND COALESCE(json_extract(resolution_json, '$.closed'), 0) IN (0, 'false', '0')
+"""
 
 
 def resolve_shadow_trades() -> list[dict]:
@@ -31,7 +41,7 @@ def resolve_shadow_trades() -> list[dict]:
                actual_entry_price, actual_entry_shares, actual_entry_size_usd,
                remaining_entry_shares, remaining_entry_size_usd, realized_exit_pnl_usd,
                shadow_pnl_usd, actual_pnl_usd,
-               real_money, skipped, source_action, exited_at
+               real_money, skipped, source_action, exited_at, source_shares
         FROM trade_log
         WHERE outcome IS NULL
           AND COALESCE(source_action, 'buy')='buy'
@@ -51,12 +61,15 @@ def resolve_shadow_trades() -> list[dict]:
                 if not market:
                     continue
 
-                result = _winning_outcome(market)
-                close_ts = _market_close_ts(market)
-                is_closed = bool(market.get("closed", False))
-                if not is_closed and close_ts and close_ts > int(time.time()) and not result:
+                now_ts = int(time.time())
+                if not _market_is_closed(market):
                     continue
-                if not result:
+                result = _winning_outcome(market)
+                if result is None:
+                    logger.info(
+                        "Skipping closed market %s without explicit Polymarket winner",
+                        str(row["market_id"])[:12],
+                    )
                     continue
 
                 won = str(row["side"]).strip().lower() == str(result).strip().lower()
@@ -64,10 +77,12 @@ def resolve_shadow_trades() -> list[dict]:
                 price = float(
                     row["actual_entry_price"] if row["actual_entry_price"] is not None else row["price_at_signal"]
                 )
-                size = float(
-                    row["actual_entry_size_usd"] if row["actual_entry_size_usd"] is not None else row["signal_size_usd"]
-                )
-                unit_return = round(((1 - price) / price) if won and price > 0 else -1.0, 6)
+                if won and price > 0:
+                    unit_return = round((1.0 - price) / price, 6)
+                elif price > 0:
+                    unit_return = round(-price / price, 6)
+                else:
+                    unit_return = -1.0
                 pnl = None
                 if fill_aware:
                     existing_pnl = row["actual_pnl_usd"] if row["real_money"] == 1 else row["shadow_pnl_usd"]
@@ -77,12 +92,16 @@ def resolve_shadow_trades() -> list[dict]:
                         remaining_shares = float(
                             row["remaining_entry_shares"]
                             if row["remaining_entry_shares"] is not None
-                            else row["actual_entry_shares"] or 0.0
+                            else row["actual_entry_shares"]
+                            if row["actual_entry_shares"] is not None
+                            else row["source_shares"] or 0.0
                         )
                         remaining_size = float(
                             row["remaining_entry_size_usd"]
                             if row["remaining_entry_size_usd"] is not None
-                            else row["actual_entry_size_usd"] or 0.0
+                            else row["actual_entry_size_usd"]
+                            if row["actual_entry_size_usd"] is not None
+                            else row["signal_size_usd"] or 0.0
                         )
                         realized_exit_pnl = float(row["realized_exit_pnl_usd"] or 0.0)
                         payout = remaining_shares if won else 0.0
@@ -121,23 +140,29 @@ def resolve_shadow_trades() -> list[dict]:
                         pnl if fill_aware else None,
                         pnl if fill_aware else None,
                         pnl if fill_aware else None,
-                        int(time.time()),
-                        int(time.time()),
+                        now_ts,
+                        now_ts,
                         json.dumps(market, separators=(",", ":"), default=str),
                         row["id"],
                     ),
                 )
-                if fill_aware:
-                    if str(row["token_id"] or "").strip():
-                        conn.execute(
-                            "DELETE FROM positions WHERE market_id=? AND token_id=? AND real_money=?",
-                            (row["market_id"], str(row["token_id"]).strip(), row["real_money"]),
-                        )
-                    else:
+                token_id_str = str(row["token_id"] or "").strip()
+                side_str = str(row["side"] or "").strip().lower()
+                if token_id_str:
+                    deleted = conn.execute(
+                        "DELETE FROM positions WHERE market_id=? AND token_id=? AND real_money=?",
+                        (row["market_id"], token_id_str, row["real_money"]),
+                    ).rowcount
+                    if deleted == 0:
                         conn.execute(
                             "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
-                            (row["market_id"], str(row["side"] or "").strip().lower(), row["real_money"]),
+                            (row["market_id"], side_str, row["real_money"]),
                         )
+                else:
+                    conn.execute(
+                        "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
+                        (row["market_id"], side_str, row["real_money"]),
+                    )
                 conn.commit()
                 conn.close()
 
@@ -311,31 +336,147 @@ def daily_report() -> None:
     send_alert("\n".join(lines))
 
 
-def _winning_outcome(market: dict) -> str | None:
-    for token in market.get("tokens", []):
-        try:
-            if float(token.get("price", 0.0)) >= 0.99:
-                outcome = str(token.get("outcome", "")).strip()
-                if outcome:
-                    return outcome
-        except Exception:
+def cleanup_premature_resolutions(backup_path: Path | None = None) -> dict[str, int | str]:
+    if not DB_PATH.exists():
+        raise FileNotFoundError(f"Database not found at {DB_PATH}")
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    backup_target = backup_path or DB_PATH.with_name(f"{DB_PATH.stem}.premature_cleanup_{timestamp}.bak")
+    backup_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(DB_PATH, backup_target)
+
+    conn = get_conn()
+    rows = conn.execute(
+        f"""
+        SELECT
+            id,
+            real_money,
+            skipped,
+            actual_entry_price,
+            actual_entry_shares,
+            actual_entry_size_usd,
+            source_shares,
+            realized_exit_shares,
+            realized_exit_size_usd,
+            exited_at
+        FROM trade_log
+        WHERE {PREMATURE_RESOLUTION_WHERE_SQL}
+        ORDER BY id
+        """
+    ).fetchall()
+
+    if not rows:
+        conn.close()
+        return {
+            "backup_path": str(backup_target),
+            "rows_cleaned": 0,
+            "skipped_rows_cleaned": 0,
+            "open_positions_reopened": 0,
+            "exited_rows_preserved": 0,
+            "belief_rows_reapplied": 0,
+        }
+
+    skipped_rows_cleaned = 0
+    open_positions_reopened = 0
+    exited_rows_preserved = 0
+    for row in rows:
+        fill_aware = is_fill_aware_executed_buy(row)
+        exited_at = row["exited_at"]
+        restored_resolved_at = int(exited_at) if exited_at is not None else None
+
+        conn.execute(
+            """
+            UPDATE trade_log
+            SET outcome=NULL,
+                market_resolved_outcome=NULL,
+                counterfactual_return=NULL,
+                label_applied_at=NULL,
+                resolution_json=NULL,
+                resolved_at=?
+            WHERE id=?
+            """,
+            (restored_resolved_at, int(row["id"])),
+        )
+
+        if bool(row["skipped"]):
+            skipped_rows_cleaned += 1
             continue
 
-    outcomes_raw = market.get("outcomes") or market.get("outcomeNames") or market.get("outcome_names")
-    prices_raw = market.get("outcomePrices") or market.get("outcome_prices")
-    try:
-        outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else list(outcomes_raw or [])
-        prices = json.loads(prices_raw) if isinstance(prices_raw, str) else list(prices_raw or [])
-        for outcome, price in zip(outcomes, prices):
-            try:
-                if float(price) >= 0.99:
-                    winner = str(outcome).strip()
-                    if winner:
-                        return winner
-            except Exception:
-                continue
-    except Exception:
-        pass
+        if fill_aware and exited_at is None:
+            actual_shares = max(float(row["actual_entry_shares"] or 0.0), 0.0)
+            actual_size = max(float(row["actual_entry_size_usd"] or 0.0), 0.0)
+            source_shares = max(float(row["source_shares"] or 0.0), 0.0)
+            realized_exit_shares = max(float(row["realized_exit_shares"] or 0.0), 0.0)
+            realized_exit_size = max(float(row["realized_exit_size_usd"] or 0.0), 0.0)
+
+            remaining_shares = max(round(actual_shares - realized_exit_shares, 6), 0.0)
+            remaining_size = max(round(actual_size - realized_exit_size, 6), 0.0)
+            if actual_shares > 1e-9:
+                remaining_source = max(round(source_shares * (remaining_shares / actual_shares), 6), 0.0)
+            else:
+                remaining_source = source_shares
+
+            conn.execute(
+                """
+                UPDATE trade_log
+                SET shadow_pnl_usd=NULL,
+                    actual_pnl_usd=NULL,
+                    remaining_entry_shares=?,
+                    remaining_entry_size_usd=?,
+                    remaining_source_shares=?
+                WHERE id=?
+                """,
+                (
+                    remaining_shares,
+                    remaining_size,
+                    remaining_source,
+                    int(row["id"]),
+                ),
+            )
+            open_positions_reopened += 1
+        elif fill_aware and exited_at is not None:
+            exited_rows_preserved += 1
+
+    _rebuild_shadow_positions(conn)
+    conn.execute("DELETE FROM belief_updates")
+    conn.execute("DELETE FROM belief_priors")
+    conn.commit()
+    conn.close()
+
+    belief_rows_reapplied = sync_belief_priors()
+    logger.info(
+        "Cleaned %s premature resolutions (%s skipped, %s reopened, %s exited preserved)",
+        len(rows),
+        skipped_rows_cleaned,
+        open_positions_reopened,
+        exited_rows_preserved,
+    )
+    return {
+        "backup_path": str(backup_target),
+        "rows_cleaned": len(rows),
+        "skipped_rows_cleaned": skipped_rows_cleaned,
+        "open_positions_reopened": open_positions_reopened,
+        "exited_rows_preserved": exited_rows_preserved,
+        "belief_rows_reapplied": belief_rows_reapplied,
+    }
+
+
+def _winning_outcome(market: dict) -> str | None:
+    winner_tokens: list[str] = []
+    for token in market.get("tokens", []):
+        if not isinstance(token, dict):
+            continue
+        if not _truthy_market_flag(token.get("winner", False)):
+            continue
+        outcome = str(token.get("outcome", "")).strip()
+        if outcome:
+            winner_tokens.append(outcome)
+
+    if len(winner_tokens) == 1:
+        return winner_tokens[0]
+    if len(winner_tokens) > 1:
+        logger.warning("Closed market reported multiple winning tokens: %s", winner_tokens)
+        return None
 
     winner = str(market.get("winner") or market.get("resolvedOutcome") or "").strip()
     if winner:
@@ -343,16 +484,14 @@ def _winning_outcome(market: dict) -> str | None:
     return None
 
 
-def _market_close_ts(market: dict) -> int:
-    for key in ("endDate", "closedTime", "closeTime", "end_date"):
-        value = market.get(key)
-        if not value:
-            continue
-        try:
-            return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
-        except Exception:
-            continue
-    return 0
+def _market_is_closed(market: dict) -> bool:
+    return _truthy_market_flag(market.get("closed", False))
+
+
+def _truthy_market_flag(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
 
 
 def _fetch_market(client: httpx.Client, market_id: str, cache: dict[str, dict | None]) -> dict | None:
@@ -362,27 +501,18 @@ def _fetch_market(client: httpx.Client, market_id: str, cache: dict[str, dict | 
 
     for attempt in range(3):
         try:
-            response = client.get(
-                f"{GAMMA_API}/markets",
-                params={"condition_ids": market_id},
-            )
+            response = client.get(f"{CLOB_API}/markets/{market_id}")
             if response.status_code == 429:
                 time.sleep(0.5 * (attempt + 1))
                 continue
-            response.raise_for_status()
-            payload = response.json()
-            markets = payload if isinstance(payload, list) else payload.get("markets", [])
-            if not markets:
+            if response.status_code == 404:
                 cache[key] = None
                 return None
-            market = next(
-                (
-                    candidate
-                    for candidate in markets
-                    if str(candidate.get("conditionId", "")).lower() == key
-                ),
-                markets[0],
-            )
+            response.raise_for_status()
+            market = response.json()
+            if not isinstance(market, dict):
+                cache[key] = None
+                return None
             cache[key] = market
             time.sleep(0.04)
             return market
@@ -395,3 +525,40 @@ def _fetch_market(client: httpx.Client, market_id: str, cache: dict[str, dict | 
 
     cache[key] = None
     return None
+
+
+def _rebuild_shadow_positions(conn) -> None:
+    conn.execute("DELETE FROM positions WHERE real_money=0")
+    rows = conn.execute(
+        f"""
+        SELECT
+            market_id,
+            LOWER(side) AS side,
+            COALESCE(token_id, '') AS token_id,
+            SUM({remaining_entry_size_expr()}) AS size_usd,
+            SUM({remaining_entry_shares_expr()}) AS shares,
+            MIN(placed_at) AS entered_at
+        FROM trade_log
+        WHERE real_money=0
+          AND {OPEN_EXECUTED_ENTRY_SQL}
+        GROUP BY market_id, COALESCE(token_id, ''), LOWER(side)
+        """
+    ).fetchall()
+
+    for row in rows:
+        size_usd = float(row["size_usd"] or 0.0)
+        shares = float(row["shares"] or 0.0)
+        if size_usd <= 0 or shares <= 0:
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
+            (
+                row["market_id"],
+                row["side"],
+                size_usd,
+                size_usd / shares,
+                str(row["token_id"] or ""),
+                int(row["entered_at"] or time.time()),
+                0,
+            ),
+        )

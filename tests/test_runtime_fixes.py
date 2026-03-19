@@ -131,7 +131,13 @@ class RuntimeFixesTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                market = {"closed": True, "winner": "yes"}
+                market = {
+                    "closed": True,
+                    "tokens": [
+                        {"outcome": "yes", "winner": True},
+                        {"outcome": "no", "winner": False},
+                    ],
+                }
                 with patch("evaluator._fetch_market", return_value=market), patch(
                     "evaluator.sync_belief_priors", return_value=0
                 ):
@@ -158,6 +164,569 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertEqual(int(row["exited_at"]), 1_700_000_100)
                 self.assertEqual(int(row["resolved_at"]), 1_700_000_100)
                 self.assertGreater(int(row["label_applied_at"]), 0)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_resolve_shadow_trades_does_not_resolve_open_markets_from_prices(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-early",
+                        "market-eth-1900",
+                        "Will the price of Ethereum be above $1,900 on March 20?",
+                        "0xabc",
+                        "yes",
+                        "buy",
+                        0.996,
+                        10.0,
+                        0.61,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                market = {
+                    "closed": False,
+                    "tokens": [
+                        {"outcome": "Yes", "winner": False, "price": "0.994"},
+                        {"outcome": "No", "winner": False, "price": "0.006"},
+                    ],
+                }
+                with patch("evaluator._fetch_market", return_value=market), patch(
+                    "evaluator.sync_belief_priors", return_value=0
+                ):
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual(resolved, [])
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, resolved_at, label_applied_at
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-early",),
+                ).fetchone()
+                conn.close()
+
+                self.assertIsNone(row["outcome"])
+                self.assertIsNone(row["market_resolved_outcome"])
+                self.assertIsNone(row["resolved_at"])
+                self.assertIsNone(row["label_applied_at"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_resolve_shadow_trades_resolves_closed_markets_from_token_winner(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-after-end",
+                        "market-eth-1900",
+                        "Will the price of Ethereum be above $1,900 on March 20?",
+                        "0xabc",
+                        "yes",
+                        "buy",
+                        0.996,
+                        10.0,
+                        0.61,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                market = {
+                    "closed": True,
+                    "tokens": [
+                        {"outcome": "Yes", "winner": True},
+                        {"outcome": "No", "winner": False},
+                    ],
+                }
+                with patch("evaluator._fetch_market", return_value=market), patch(
+                    "evaluator.sync_belief_priors", return_value=0
+                ), patch("evaluator.time.time", return_value=1_700_000_123):
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual(len(resolved), 1)
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, resolved_at, label_applied_at
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-after-end",),
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(int(row["outcome"]), 1)
+                self.assertEqual(row["market_resolved_outcome"], "yes")
+                self.assertEqual(int(row["resolved_at"]), 1_700_000_123)
+                self.assertEqual(int(row["label_applied_at"]), 1_700_000_123)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_resolve_shadow_trades_deletes_positions_when_token_id_delete_misses(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, token_id,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at,
+                        actual_entry_price, actual_entry_shares, actual_entry_size_usd
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-token-mismatch",
+                        "market-token-mismatch",
+                        "Will it happen?",
+                        "0xabc",
+                        "yes",
+                        "TOKEN-1",
+                        "buy",
+                        0.4,
+                        10.0,
+                        0.61,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                        0.4,
+                        25.0,
+                        10.0,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO positions VALUES (?,?,?,?,?,?,?)",
+                    ("market-token-mismatch", "yes", 10.0, 0.4, "token-1", 1_700_000_000, 0),
+                )
+                conn.commit()
+                conn.close()
+
+                market = {
+                    "closed": True,
+                    "tokens": [
+                        {"outcome": "yes", "winner": True},
+                        {"outcome": "no", "winner": False},
+                    ],
+                }
+                with patch("evaluator._fetch_market", return_value=market), patch(
+                    "evaluator.sync_belief_priors", return_value=0
+                ):
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual(len(resolved), 1)
+
+                conn = db.get_conn()
+                position = conn.execute(
+                    "SELECT 1 FROM positions WHERE market_id=? AND real_money=0",
+                    ("market-token-mismatch",),
+                ).fetchone()
+                conn.close()
+
+                self.assertIsNone(position)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_resolve_shadow_trades_waits_for_polymarket_closed_even_if_event_ended(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-sports-ended",
+                        "market-favbet-bo3",
+                        "Counter-Strike: Favbet vs ESC Gaming (BO3) - CCT Europe Series #18 Playoffs",
+                        "0xabc",
+                        "favbet",
+                        "buy",
+                        0.5,
+                        10.0,
+                        0.61,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                market = {
+                    "closed": False,
+                    "tokens": [
+                        {"outcome": "Favbet", "winner": True},
+                        {"outcome": "ESC Gaming", "winner": False},
+                    ],
+                    "events": [{"ended": True, "live": False}],
+                }
+                with patch("evaluator._fetch_market", return_value=market), patch(
+                    "evaluator.sync_belief_priors", return_value=0
+                ):
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual(resolved, [])
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, resolved_at, label_applied_at
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-sports-ended",),
+                ).fetchone()
+                conn.close()
+
+                self.assertIsNone(row["outcome"])
+                self.assertIsNone(row["market_resolved_outcome"])
+                self.assertIsNone(row["resolved_at"])
+                self.assertIsNone(row["label_applied_at"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_cleanup_premature_resolutions_reopens_bad_rows_and_rebuilds_beliefs(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                premature_resolution_json = json.dumps(
+                    {
+                        "closed": False,
+                        "endDate": "2026-03-20T16:00:00Z",
+                        "outcomes": '["Yes", "No"]',
+                        "outcomePrices": '["0.994", "0.006"]',
+                        "events": [{"ended": False, "live": True}],
+                    }
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, skip_reason, signal_mode, placed_at,
+                        resolved_at, label_applied_at, outcome, market_resolved_outcome,
+                        counterfactual_return, resolution_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "skip-bad",
+                        "market-skip",
+                        "Will it happen?",
+                        "0xskip",
+                        "yes",
+                        "buy",
+                        0.9,
+                        10.0,
+                        0.61,
+                        0.10,
+                        0,
+                        1,
+                        "confidence was 0.61 below the 0.62 minimum",
+                        "heuristic",
+                        1_700_000_000,
+                        1_700_000_100,
+                        1_700_000_100,
+                        1,
+                        "yes",
+                        0.111111,
+                        premature_resolution_json,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, token_id,
+                        source_action, price_at_signal, signal_size_usd, actual_entry_price,
+                        actual_entry_shares, actual_entry_size_usd, source_shares, confidence,
+                        kelly_fraction, real_money, skipped, placed_at, resolved_at,
+                        label_applied_at, outcome, market_resolved_outcome, counterfactual_return,
+                        shadow_pnl_usd, remaining_entry_shares, remaining_entry_size_usd,
+                        remaining_source_shares, resolution_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "open-bad",
+                        "market-open",
+                        "Counter-Strike: Favbet vs ESC Gaming - Map 2 Winner",
+                        "0xopen",
+                        "favbet",
+                        "token-open",
+                        "buy",
+                        0.5,
+                        1.0,
+                        0.5,
+                        2.0,
+                        1.0,
+                        19.0,
+                        0.617,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                        1_700_000_100,
+                        1_700_000_100,
+                        0,
+                        "esc gaming",
+                        -1.0,
+                        -1.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        premature_resolution_json,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, token_id,
+                        source_action, price_at_signal, signal_size_usd, actual_entry_price,
+                        actual_entry_shares, actual_entry_size_usd, source_shares, confidence,
+                        kelly_fraction, real_money, skipped, placed_at, exited_at,
+                        resolved_at, shadow_pnl_usd, resolution_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "resolved-good",
+                        "market-good",
+                        "Already settled",
+                        "0xgood",
+                        "yes",
+                        "token-good",
+                        "buy",
+                        0.4,
+                        10.0,
+                        0.4,
+                        25.0,
+                        10.0,
+                        100.0,
+                        0.7,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                        1_700_000_200,
+                        1_700_000_200,
+                        3.21,
+                        json.dumps({"closed": True, "winner": "yes", "endDate": "2026-03-19T16:00:00Z"}),
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO belief_updates (trade_log_id, applied_at) VALUES (?, ?)",
+                    (999, 1_700_000_300),
+                )
+                conn.execute(
+                    "INSERT INTO belief_priors (feature_name, bucket, wins, losses, updated_at) VALUES (?,?,?,?,?)",
+                    ("__global__", "all", 99.0, 1.0, 1_700_000_300),
+                )
+                conn.commit()
+                conn.close()
+
+                backup_path = Path(tmpdir) / "premature_cleanup_test.bak"
+                result = evaluator.cleanup_premature_resolutions(backup_path=backup_path)
+
+                self.assertEqual(result["rows_cleaned"], 2)
+                self.assertEqual(result["skipped_rows_cleaned"], 1)
+                self.assertEqual(result["open_positions_reopened"], 1)
+                self.assertEqual(result["exited_rows_preserved"], 0)
+                self.assertEqual(result["belief_rows_reapplied"], 1)
+                self.assertTrue(backup_path.exists())
+
+                conn = db.get_conn()
+                skipped_row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, counterfactual_return,
+                           resolved_at, label_applied_at, resolution_json
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("skip-bad",),
+                ).fetchone()
+                open_row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, shadow_pnl_usd, actual_pnl_usd,
+                           remaining_entry_shares, remaining_entry_size_usd, remaining_source_shares,
+                           resolved_at, label_applied_at, resolution_json
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("open-bad",),
+                ).fetchone()
+                position_row = conn.execute(
+                    """
+                    SELECT size_usd, avg_price, token_id, side
+                    FROM positions
+                    WHERE market_id=? AND token_id=? AND real_money=0
+                    """,
+                    ("market-open", "token-open"),
+                ).fetchone()
+                belief_updates_count = conn.execute("SELECT COUNT(*) AS n FROM belief_updates").fetchone()["n"]
+                belief_priors_count = conn.execute("SELECT COUNT(*) AS n FROM belief_priors").fetchone()["n"]
+                conn.close()
+
+                self.assertIsNone(skipped_row["outcome"])
+                self.assertIsNone(skipped_row["market_resolved_outcome"])
+                self.assertIsNone(skipped_row["counterfactual_return"])
+                self.assertIsNone(skipped_row["resolved_at"])
+                self.assertIsNone(skipped_row["label_applied_at"])
+                self.assertIsNone(skipped_row["resolution_json"])
+
+                self.assertIsNone(open_row["outcome"])
+                self.assertIsNone(open_row["market_resolved_outcome"])
+                self.assertIsNone(open_row["shadow_pnl_usd"])
+                self.assertIsNone(open_row["actual_pnl_usd"])
+                self.assertAlmostEqual(float(open_row["remaining_entry_shares"]), 2.0, places=6)
+                self.assertAlmostEqual(float(open_row["remaining_entry_size_usd"]), 1.0, places=6)
+                self.assertAlmostEqual(float(open_row["remaining_source_shares"]), 19.0, places=6)
+                self.assertIsNone(open_row["resolved_at"])
+                self.assertIsNone(open_row["label_applied_at"])
+                self.assertIsNone(open_row["resolution_json"])
+
+                self.assertIsNotNone(position_row)
+                self.assertAlmostEqual(float(position_row["size_usd"]), 1.0, places=6)
+                self.assertAlmostEqual(float(position_row["avg_price"]), 0.5, places=6)
+                self.assertEqual(position_row["token_id"], "token-open")
+                self.assertEqual(position_row["side"], "favbet")
+
+                self.assertEqual(int(belief_updates_count), 1)
+                self.assertGreater(int(belief_priors_count), 0)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_cleanup_premature_resolutions_clears_closed_false_rows_even_when_event_ended(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side,
+                        source_action, price_at_signal, signal_size_usd, actual_entry_price,
+                        actual_entry_shares, actual_entry_size_usd, source_shares, confidence,
+                        kelly_fraction, real_money, skipped, placed_at, resolved_at,
+                        label_applied_at, outcome, market_resolved_outcome, counterfactual_return,
+                        shadow_pnl_usd, remaining_entry_shares, remaining_entry_size_usd,
+                        remaining_source_shares, resolution_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "ended-but-open",
+                        "market-ended-open",
+                        "Spread: Wisconsin Badgers (-10.5)",
+                        "0xabc",
+                        "wisconsin badgers",
+                        "buy",
+                        0.51,
+                        1.0,
+                        0.51,
+                        1.9607843137,
+                        1.0,
+                        20.0,
+                        0.64,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                        1_700_000_200,
+                        1_700_000_200,
+                        0,
+                        "high point panthers",
+                        -1.0,
+                        -1.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        json.dumps(
+                            {
+                                "closed": False,
+                                "events": [{"ended": True, "score": "83-82"}],
+                                "tokens": [
+                                    {"outcome": "Wisconsin Badgers", "winner": False},
+                                    {"outcome": "High Point Panthers", "winner": True},
+                                ],
+                            }
+                        ),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                result = evaluator.cleanup_premature_resolutions(backup_path=Path(tmpdir) / "cleanup.bak")
+                self.assertEqual(result["rows_cleaned"], 1)
+                self.assertEqual(result["open_positions_reopened"], 1)
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, shadow_pnl_usd,
+                           remaining_entry_shares, remaining_entry_size_usd, resolution_json
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("ended-but-open",),
+                ).fetchone()
+                conn.close()
+
+                self.assertIsNone(row["outcome"])
+                self.assertIsNone(row["market_resolved_outcome"])
+                self.assertIsNone(row["shadow_pnl_usd"])
+                self.assertAlmostEqual(float(row["remaining_entry_shares"]), 1.960784, places=5)
+                self.assertAlmostEqual(float(row["remaining_entry_size_usd"]), 1.0, places=6)
+                self.assertIsNone(row["resolution_json"])
             finally:
                 db.DB_PATH = original_db_path
 

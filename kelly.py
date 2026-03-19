@@ -5,9 +5,16 @@ from config import max_bet_fraction, min_bet_usd, min_confidence
 KELLY_FRACTION = 0.5
 
 
-def kelly_size(confidence: float, market_price: float, bankroll_usd: float) -> dict:
-    if confidence < min_confidence():
-        return _no_bet(f"conf {confidence:.3f} < min {min_confidence():.2f}")
+def kelly_size(
+    confidence: float,
+    market_price: float,
+    bankroll_usd: float,
+    *,
+    min_confidence_override: float | None = None,
+) -> dict:
+    threshold = _effective_min_confidence(min_confidence_override)
+    if confidence < threshold:
+        return _no_bet(f"conf {confidence:.3f} < min {threshold:.3f}")
 
     if bankroll_usd <= 0:
         return _no_bet("bankroll depleted")
@@ -36,15 +43,21 @@ def kelly_size(confidence: float, market_price: float, bankroll_usd: float) -> d
     }
 
 
-def heuristic_size(score: float, bankroll_usd: float) -> dict:
-    if score < min_confidence():
-        return _no_bet(f"score {score:.3f} < min {min_confidence():.2f}")
+def heuristic_size(
+    score: float,
+    bankroll_usd: float,
+    *,
+    min_confidence_override: float | None = None,
+) -> dict:
+    threshold = _effective_min_confidence(min_confidence_override)
+    if score < threshold:
+        return _no_bet(f"score {score:.3f} < min {threshold:.3f}")
 
     if bankroll_usd <= 0:
         return _no_bet("bankroll depleted")
 
-    span = max(1.0 - min_confidence(), 1e-6)
-    edge = min(max((score - min_confidence()) / span, 0.0), 1.0)
+    span = max(1.0 - threshold, 1e-6)
+    edge = min(max((score - threshold) / span, 0.0), 1.0)
 
     # Heuristic scores are ranking signals, not calibrated probabilities.
     # Scale position size by score margin instead of running raw Kelly on them.
@@ -63,10 +76,26 @@ def heuristic_size(score: float, bankroll_usd: float) -> dict:
     }
 
 
-def size_signal(confidence: float, market_price: float, bankroll_usd: float, mode: str) -> dict:
+def size_signal(
+    confidence: float,
+    market_price: float,
+    bankroll_usd: float,
+    mode: str,
+    *,
+    min_confidence_override: float | None = None,
+) -> dict:
     if mode == "xgboost":
-        return kelly_size(confidence, market_price, bankroll_usd)
-    return heuristic_size(confidence, bankroll_usd)
+        return kelly_size(
+            confidence,
+            market_price,
+            bankroll_usd,
+            min_confidence_override=min_confidence_override,
+        )
+    return heuristic_size(
+        confidence,
+        bankroll_usd,
+        min_confidence_override=min_confidence_override,
+    )
 
 
 def _no_bet(reason: str) -> dict:
@@ -77,6 +106,11 @@ def _no_bet(reason: str) -> dict:
         "method": "none",
         "reason": reason,
     }
+
+
+def _effective_min_confidence(min_confidence_override: float | None) -> float:
+    threshold = min_confidence() if min_confidence_override is None else float(min_confidence_override)
+    return max(0.0, min(threshold, 1.0))
 
 
 def _apply_minimum_bet(size: float, bankroll_usd: float) -> tuple[float, str | None]:

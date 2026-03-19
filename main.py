@@ -542,7 +542,12 @@ def process_event(
         _reject_event(event, 0.0, 0.0, reason)
         return 0.0
 
-    signal = engine.evaluate(trader_f, market_f, rough_size)
+    signal = engine.evaluate(
+        trader_f,
+        market_f,
+        rough_size,
+        trader_address=event.trader_address,
+    )
     if signal.get("veto"):
         reason = _humanize_market_veto(signal["veto"])
         executor.log_skip(
@@ -593,6 +598,7 @@ def process_event(
         rough_fill.avg_price if rough_fill.avg_price > 0 else event.price,
         bankroll,
         signal.get("mode", "heuristic"),
+        min_confidence_override=signal.get("min_confidence"),
     )
 
     if not ok:
@@ -659,6 +665,7 @@ def process_event(
             fill_estimate.avg_price if fill_estimate.avg_price > 0 else event.price,
             bankroll,
             signal.get("mode", "heuristic"),
+            min_confidence_override=signal.get("min_confidence"),
         )
         next_sizing = apply_wallet_trust_sizing(next_sizing, trust_state)
         if (

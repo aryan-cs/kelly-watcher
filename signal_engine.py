@@ -5,8 +5,9 @@ import os
 
 import numpy as np
 
+from adaptive_confidence import adaptive_min_confidence_for_signal
 from beliefs import adjust_heuristic_confidence
-from config import min_confidence, model_path
+from config import model_path
 from features import FEATURE_COLS, build_feature_map
 from market_scorer import MarketFeatures, MarketScorer
 from trade_contract import DATA_CONTRACT_VERSION
@@ -79,6 +80,7 @@ class SignalEngine:
         trader_features: TraderFeatures,
         market_features: MarketFeatures,
         order_size_usd: float = 10.0,
+        trader_address: str | None = None,
     ) -> dict:
         market_result = self.market_scorer.score(market_features)
         if market_result["veto"]:
@@ -94,13 +96,20 @@ class SignalEngine:
         if self._xgb is not None:
             return self._evaluate_xgb(trader_features, market_features, order_size_usd)
 
-        return self._evaluate_heuristic(trader_features, market_features, market_result)
+        return self._evaluate_heuristic(
+            trader_features,
+            market_features,
+            market_result,
+            trader_address=trader_address,
+        )
 
     def _evaluate_heuristic(
         self,
         trader_features: TraderFeatures,
         market_features: MarketFeatures,
         market_result: dict,
+        *,
+        trader_address: str | None = None,
     ) -> dict:
         trader_result = self.trader_scorer.score(trader_features)
         trader_score = trader_result["score"]
@@ -114,7 +123,12 @@ class SignalEngine:
             )
         belief = adjust_heuristic_confidence(combined, trader_features, market_features)
         adjusted = belief.adjusted_confidence
-        passed = adjusted >= min_confidence()
+        adaptive_floor = adaptive_min_confidence_for_signal(
+            days_to_res=market_features.days_to_res,
+            trader_address=trader_address,
+        )
+        min_floor = adaptive_floor.floor
+        passed = adjusted >= min_floor
 
         return {
             "confidence": adjusted,
@@ -122,8 +136,10 @@ class SignalEngine:
             "belief_prior": belief.prior_confidence,
             "belief_blend": belief.blend,
             "belief_evidence": belief.evidence,
+            "min_confidence": min_floor,
+            "adaptive_floor": adaptive_floor.as_dict(),
             "passed": passed,
-            "reason": "passed heuristic threshold" if passed else f"heuristic conf {adjusted:.3f} < min {min_confidence():.2f}",
+            "reason": "passed heuristic threshold" if passed else f"heuristic conf {adjusted:.3f} < min {min_floor:.3f}",
             "veto": None,
             "mode": "heuristic",
             "trader": trader_result,

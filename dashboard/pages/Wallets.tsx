@@ -75,6 +75,7 @@ interface WalletRow {
   username: string
   watch_tier: WatchTier
   skipped_trades: number | null
+  skip_rate: number | null
   seen_trades: number | null
   seen_resolved: number | null
   seen_wins: number | null
@@ -494,7 +495,7 @@ function tierColor(tier: WatchTier): string {
 function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   const trackingSinceWidth = 10
   const tierWidth = 5
-  const skippedTradesWidth = 5
+  const skippedTradesWidth = 6
   const seenTradesWidth = 6
   const seenWinRateWidth = 8
   const observedResolvedWidth = 7
@@ -716,6 +717,10 @@ export function Wallets({
         username: usernames.get(wallet) || '',
         watch_tier: watchState?.status === 'dropped' ? 'DISC' : (tierByWallet.get(wallet) || 'DISC'),
         skipped_trades: activity?.skipped_trades ?? 0,
+        skip_rate:
+          (activity?.seen_trades ?? 0) > 0
+            ? (activity?.skipped_trades ?? 0) / (activity?.seen_trades ?? 0)
+            : null,
         seen_trades: activity?.seen_trades ?? 0,
         seen_resolved: activity?.seen_resolved ?? 0,
         seen_wins: activity?.seen_wins ?? 0,
@@ -1195,7 +1200,7 @@ export function Wallets({
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('TRACK', layout.tierWidth)}</Text>
               <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('SKIPS', layout.skippedTradesWidth)}</Text>
+              <Text color={theme.dim}>{fitRight('SKIP %', layout.skippedTradesWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fitRight('SEEN', layout.seenTradesWidth)}</Text>
               <Text color={theme.dim}> </Text>
@@ -1234,9 +1239,9 @@ export function Wallets({
                   const winRateColor =
                     wallet.win_rate == null ? theme.dim : probabilityColor(wallet.win_rate)
                   const skippedTradesColor =
-                    wallet.skipped_trades == null
+                    wallet.skip_rate == null
                       ? theme.dim
-                      : negativeHeatColor(wallet.skipped_trades, 100)
+                      : negativeHeatColor(wallet.skip_rate * 100, 100)
                   const localPnlColor =
                     wallet.local_pnl == null
                       ? theme.dim
@@ -1255,7 +1260,7 @@ export function Wallets({
                       <Text color={tierTextColor} backgroundColor={rowBackground} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={skippedTradesColor} backgroundColor={rowBackground}>
-                        {fitRight(formatCount(wallet.skipped_trades, layout.skippedTradesWidth), layout.skippedTradesWidth)}
+                        {fitRight(wallet.skip_rate == null ? '-' : formatPct(wallet.skip_rate, 0), layout.skippedTradesWidth)}
                       </Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text backgroundColor={rowBackground}>

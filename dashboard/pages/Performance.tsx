@@ -554,11 +554,17 @@ function formatHourlyBucketLabel(bucket: string, compact = false): string {
 
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
   const levelCount = 4
-  const gapWidth = entries.length <= 8 ? 1 : 0
+  const gapWidth = 0
   const totalGapWidth = Math.max(0, entries.length - 1) * gapWidth
-  const columnWidth = Math.max(1, Math.floor((Math.max(width - totalGapWidth, entries.length) / Math.max(entries.length, 1))))
+  const columnWidth = 1
   const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)))
-  const heights = entries.map((entry) => Math.round((Math.abs(entry.pnl) / maxAbsPnl) * levelCount))
+  const heights = entries.map((entry) => {
+    const magnitude = Math.abs(entry.pnl)
+    if (magnitude <= 0) {
+      return 0
+    }
+    return Math.max(1, Math.min(levelCount, Math.round((magnitude / maxAbsPnl) * levelCount)))
+  })
 
   const renderRow = (rowIndex: number, negative: boolean) => (
     <InkBox width="100%">
@@ -704,7 +710,7 @@ export function Performance({
   const dailyPreviewCapacity = useMemo(
     () =>
       dailyEntries.length
-        ? Math.min(dailyEntries.length, Math.max(12, dailyPanelContentWidth))
+        ? Math.min(dailyEntries.length, Math.max(1, dailyPanelContentWidth))
         : 0,
     [dailyEntries.length, dailyPanelContentWidth]
   )

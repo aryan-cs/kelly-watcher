@@ -935,7 +935,7 @@ export function Wallets({
   )
   const shadowPanelsWide = terminal.wide
   const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 1) / 2)) : tableWidth
-  const shadowCopyWrWidth = 8
+  const shadowCopyWrWidth = 9
   const shadowSkipWidth = 6
   const shadowCopyPnlWidth = 10
   const shadowNameWidth = Math.max(
@@ -1265,7 +1265,7 @@ export function Wallets({
                 <Text color={username ? theme.white : theme.dim}>{fit(label, shadowNameWidth)}</Text>
                 <Text> </Text>
                 <Text color={copyWinRateColor}>
-                  {fitRight(copyWinRate == null ? '-' : formatPct(copyWinRate), shadowCopyWrWidth)}
+                  {fitRight(copyWinRate == null ? '-' : formatPct(copyWinRate, 1), shadowCopyWrWidth)}
                 </Text>
                 <Text> </Text>
                 <Text color={skipRateColor}>

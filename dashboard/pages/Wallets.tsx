@@ -636,14 +636,13 @@ function buildDetailColumns(sections: WalletDetailSection[], wide: boolean): Wal
   return columns.filter((column) => column.length > 0)
 }
 
-function getDroppedWalletsLayout(width: number): DroppedWalletsLayout {
+function getDroppedWalletsLayout(width: number, sharedLayout: WalletsLayout): DroppedWalletsLayout {
   const lastSeenWidth = 10
   const droppedWidth = 10
   const gapCount = 4
-  const variableBudget = Math.max(44, width - lastSeenWidth - droppedWidth - gapCount)
-  const usernameWidth = Math.max(14, Math.min(22, Math.floor(variableBudget * 0.22)))
-  const addressWidth = Math.max(18, Math.min(34, Math.floor(variableBudget * 0.42)))
-  const reasonWidth = Math.max(14, variableBudget - usernameWidth - addressWidth)
+  const usernameWidth = sharedLayout.usernameWidth
+  const addressWidth = sharedLayout.addressWidth
+  const reasonWidth = Math.max(14, width - usernameWidth - addressWidth - lastSeenWidth - droppedWidth - gapCount)
   return {
     usernameWidth,
     addressWidth,
@@ -865,7 +864,7 @@ export function Wallets({
     () => getWalletsLayout(tableWidth, trackedWallets.length ? trackedWallets : wallets),
     [tableWidth, trackedWallets, wallets]
   )
-  const droppedLayout = useMemo(() => getDroppedWalletsLayout(tableWidth), [tableWidth])
+  const droppedLayout = useMemo(() => getDroppedWalletsLayout(tableWidth, layout), [layout, tableWidth])
 
   useEffect(() => {
     onWalletMetaChange?.({

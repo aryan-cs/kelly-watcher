@@ -555,10 +555,9 @@ function formatHourlyBucketLabel(bucket: string, compact = false): string {
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
   const levelCount = 4
   const gapWidth = 0
-  const totalGapWidth = Math.max(0, entries.length - 1) * gapWidth
-  const columnWidth = 1
+  const columnWidth = 2
   const chartWidth = Math.max(1, width)
-  const leftPaddingWidth = Math.max(0, chartWidth - entries.length)
+  const leftPaddingWidth = Math.max(0, chartWidth - (entries.length * columnWidth))
   const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)))
   const heights = entries.map((entry) => {
     const magnitude = Math.abs(entry.pnl)
@@ -710,7 +709,7 @@ export function Performance({
   const dailyPreviewCapacity = useMemo(
     () =>
       dailyEntries.length
-        ? Math.min(dailyEntries.length, Math.max(1, dailyPanelContentWidth))
+        ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
         : 0,
     [dailyEntries.length, dailyPanelContentWidth]
   )

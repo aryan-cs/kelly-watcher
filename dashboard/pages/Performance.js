@@ -6,7 +6,7 @@ import { StatRow } from '../components/StatRow.js';
 import { fit, fitRight, formatAdaptiveDollar, formatAdaptiveNumber, formatDisplayId, formatShortDateTime, formatDollar, formatNumber, formatPct, secondsAgo, terminalHyperlink, timeUntil, shortAddress } from '../format.js';
 import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
-import { outcomeColor, positiveDollarColor, probabilityColor, theme } from '../theme.js';
+import { centeredGradientColor, outcomeColor, positiveDollarColor, probabilityColor, theme } from '../theme.js';
 import { useBotState } from '../useBotState.js';
 import { useQuery } from '../useDb.js';
 import { useEventStream } from '../useEventStream.js';
@@ -475,11 +475,27 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane 
     const shadowBalance = botState.mode === 'shadow' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const liveBalance = botState.mode === 'live' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const activeBalance = activeMode === 'live' ? liveBalance : shadowBalance;
-    const renderPositionsTable = (rowsToRender, { showStatus = false, showTtr = true } = {}) => {
+    const getPositionProfit = (row) => {
+        const shares = row.entry_price > 0 ? row.size_usd / row.entry_price : null;
+        const toWin = row.status === 'exit'
+            ? row.exit_size_usd
+            : row.status === 'lose'
+                ? 0
+                : shares != null
+                    ? shares
+                    : null;
+        return row.status === 'win' || row.status === 'lose' || row.status === 'exit'
+            ? (row.pnl_usd ?? null)
+            : toWin != null
+                ? toWin - row.size_usd
+                : null;
+    };
+    const renderPositionsTable = (rowsToRender, { showStatus = false, showTtr = true, profitScaleRows = rowsToRender } = {}) => {
         const trailingWidth = positionsLayout.ttrWidth;
         const trailingDelta = trailingWidth - positionsLayout.ttrWidth;
         const questionWidth = Math.max(14, positionsLayout.questionWidth - trailingDelta);
         const resolutionWidth = positionsLayout.resolutionWidth;
+        const maxAbsProfit = profitScaleRows.reduce((max, row) => Math.max(max, Math.abs(getPositionProfit(row) ?? 0)), 0);
         return (React.createElement(React.Fragment, null,
             React.createElement(InkBox, { width: "100%" },
                 positionsLayout.showId ? (React.createElement(React.Fragment, null,
@@ -533,11 +549,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane 
                         : shares != null
                             ? shares
                             : null;
-                const profit = row.status === 'win' || row.status === 'lose' || row.status === 'exit'
-                    ? (row.pnl_usd ?? null)
-                    : toWin != null
-                        ? toWin - row.size_usd
-                        : null;
+                const profit = getPositionProfit(row);
                 const statusText = row.status === 'win'
                     ? 'win'
                     : row.status === 'lose'
@@ -563,9 +575,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane 
                 const toWinColor = toWin != null ? positiveDollarColor(toWin, 100) : theme.dim;
                 const profitColor = profit == null
                     ? theme.dim
-                    : profit < 0
-                        ? theme.red
-                        : positiveDollarColor(profit, 100);
+                    : centeredGradientColor(profit, maxAbsProfit || 1);
                 return (React.createElement(InkBox, { key: row.row_key, width: "100%" },
                     positionsLayout.showId ? (React.createElement(React.Fragment, null,
                         React.createElement(Text, { color: theme.dim }, fitRight(displayIdText, positionsLayout.idWidth)),
@@ -628,8 +638,8 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane 
             })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeMode} trades yet.`)))),
         React.createElement(InkBox, { marginTop: 1, flexDirection: "column", flexGrow: 1 },
             React.createElement(InkBox, { flexGrow: 1 },
-                React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: activePane === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions)) : (React.createElement(Text, { color: theme.dim }, "No open positions right now.")))),
+                React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: activePane === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, { profitScaleRows: currentPositions })) : (React.createElement(Text, { color: theme.dim }, "No open positions right now.")))),
             React.createElement(InkBox, { height: 1 }),
             React.createElement(InkBox, { flexGrow: 1 },
-                React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: activePane === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, { showStatus: true, showTtr: false })) : (React.createElement(Text, { color: theme.dim }, "No past positions yet.")))))));
+                React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: activePane === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, { showStatus: true, showTtr: false, profitScaleRows: pastPositions })) : (React.createElement(Text, { color: theme.dim }, "No past positions yet.")))))));
 }

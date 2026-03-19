@@ -19,7 +19,7 @@ import {
 } from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
-import {outcomeColor, positiveDollarColor, probabilityColor, theme} from '../theme.js'
+import {centeredGradientColor, outcomeColor, positiveDollarColor, probabilityColor, theme} from '../theme.js'
 import {useBotState} from '../useBotState.js'
 import {useQuery} from '../useDb.js'
 import {useEventStream} from '../useEventStream.js'
@@ -412,6 +412,7 @@ interface PositionRowBudget {
 interface RenderPositionsOptions {
   showStatus?: boolean
   showTtr?: boolean
+  profitScaleRows?: PositionRow[]
 }
 
 export type PerfBox = 'summary' | 'daily' | 'current' | 'past'
@@ -741,14 +742,35 @@ export function Performance({
     [detailModalContentWidth, dailyValueWidth]
   )
 
+  const getPositionProfit = (row: PositionRow): number | null => {
+    const shares = row.entry_price > 0 ? row.size_usd / row.entry_price : null
+    const toWin =
+      row.status === 'exit'
+        ? row.exit_size_usd
+        : row.status === 'lose'
+          ? 0
+          : shares != null
+            ? shares
+            : null
+    return row.status === 'win' || row.status === 'lose' || row.status === 'exit'
+      ? (row.pnl_usd ?? null)
+      : toWin != null
+        ? toWin - row.size_usd
+        : null
+  }
+
   const renderPositionsTable = (
     rowsToRender: PositionRow[],
-    {showStatus = false, showTtr = true}: RenderPositionsOptions = {}
+    {showStatus = false, showTtr = true, profitScaleRows = rowsToRender}: RenderPositionsOptions = {}
   ) => {
     const trailingWidth = positionsLayout.ttrWidth
     const trailingDelta = trailingWidth - positionsLayout.ttrWidth
     const questionWidth = Math.max(14, positionsLayout.questionWidth - trailingDelta)
     const resolutionWidth = positionsLayout.resolutionWidth
+    const maxAbsProfit = profitScaleRows.reduce(
+      (max, row) => Math.max(max, Math.abs(getPositionProfit(row) ?? 0)),
+      0
+    )
 
     return (
       <>
@@ -819,12 +841,7 @@ export function Performance({
                   : shares != null
                     ? shares
                     : null
-            const profit =
-              row.status === 'win' || row.status === 'lose' || row.status === 'exit'
-                ? (row.pnl_usd ?? null)
-                : toWin != null
-                  ? toWin - row.size_usd
-                  : null
+            const profit = getPositionProfit(row)
             const statusText =
               row.status === 'win'
                 ? 'win'
@@ -854,9 +871,7 @@ export function Performance({
             const profitColor =
               profit == null
                 ? theme.dim
-                : profit < 0
-                  ? theme.red
-                  : positiveDollarColor(profit, 100)
+                : centeredGradientColor(profit, maxAbsProfit || 1)
 
             return (
               <InkBox key={row.row_key} width="100%">
@@ -968,7 +983,7 @@ export function Performance({
             accent={selectedBox === 'current'}
           >
             {visibleCurrentPositions.length ? (
-              renderPositionsTable(visibleCurrentPositions)
+              renderPositionsTable(visibleCurrentPositions, {profitScaleRows: currentPositions})
             ) : (
               <Text color={theme.dim}>No open positions right now.</Text>
             )}
@@ -984,7 +999,7 @@ export function Performance({
             accent={selectedBox === 'past'}
           >
             {visiblePastPositions.length ? (
-              renderPositionsTable(visiblePastPositions, {showStatus: true, showTtr: false})
+              renderPositionsTable(visiblePastPositions, {showStatus: true, showTtr: false, profitScaleRows: pastPositions})
             ) : (
               <Text color={theme.dim}>No past positions yet.</Text>
             )}

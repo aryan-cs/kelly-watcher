@@ -20,7 +20,7 @@ import {secondsAgo} from './format.js'
 import {ManualRefreshProvider} from './refresh.js'
 import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} from './terminal.js'
 import {useBotState} from './useBotState.js'
-import {reactivateDroppedWallet} from './walletWatchState.js'
+import {dropTrackedWallet, reactivateDroppedWallet} from './walletWatchState.js'
 
 type Page = 1 | 2 | 3 | 4 | 5 | 6
 type PerfPane = 'current' | 'past'
@@ -275,8 +275,8 @@ function AppContent({
             : '↑/↓/←/→: select  enter: help  r: refresh  q: exit'
       : page === 5
         ? terminal.compact
-          ? '←→ pane  ↑↓ select  enter detail  a reactivate  esc close  r refresh  q exit'
-          : '←/→: pane  ↑/↓: select  enter: detail  a: reactivate dropped  esc: close  r: refresh  q: exit'
+          ? '←→ pane  ↑↓ select  enter detail  d drop  a reactivate  esc close  r refresh  q exit'
+          : '←/→: pane  ↑/↓: select  enter: detail  d: drop tracked  a: reactivate dropped  esc: close  r: refresh  q: exit'
       : terminal.compact
         ? 'r refresh  q exit'
         : 'r: refresh  q: exit'
@@ -410,6 +410,10 @@ function App() {
   const selectedDroppedWalletAddress =
     walletMeta.droppedWalletAddresses[
       Math.max(0, Math.min(walletDroppedSelectionIndex, Math.max(walletMeta.droppedCount - 1, 0)))
+    ] || ''
+  const selectedTrackedWalletAddress =
+    walletMeta.trackedWalletAddresses[
+      Math.max(0, Math.min(walletTrackedSelectionIndex, Math.max(walletMeta.trackedCount - 1, 0)))
     ] || ''
 
   const moveModelSelection = (direction: 'up' | 'down' | 'left' | 'right') => {
@@ -889,6 +893,14 @@ function App() {
 
       if (normalized === 'a' && walletPane === 'dropped' && selectedDroppedWalletAddress) {
         if (reactivateDroppedWallet(selectedDroppedWalletAddress)) {
+          setWalletDetailOpen(false)
+          setRefreshToken((current) => current + 1)
+        }
+        return
+      }
+
+      if (normalized === 'd' && walletPane === 'tracked' && selectedTrackedWalletAddress) {
+        if (dropTrackedWallet(selectedTrackedWalletAddress)) {
           setWalletDetailOpen(false)
           setRefreshToken((current) => current + 1)
         }

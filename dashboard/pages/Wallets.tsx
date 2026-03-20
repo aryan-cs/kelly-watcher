@@ -1536,7 +1536,7 @@ export function Wallets({
                 truncate(
                   activePane === 'dropped'
                     ? 'Up/down switches dropped wallets. a reactivates. esc closes.'
-                    : 'Up/down switches tracked wallets. left/right switches panes. esc closes.',
+                    : 'Up/down switches tracked wallets. d drops. left/right switches panes. esc closes.',
                   modalContentWidth
                 ),
                 modalContentWidth

@@ -3,6 +3,7 @@ from __future__ import annotations
 from config import max_bet_fraction, min_bet_usd, min_confidence
 
 KELLY_FRACTION = 0.5
+HEURISTIC_EDGE_EXPONENT = 0.5
 
 
 def kelly_size(
@@ -57,10 +58,12 @@ def heuristic_size(
         return _no_bet("bankroll depleted")
 
     span = max(1.0 - threshold, 1e-6)
-    edge = min(max((score - threshold) / span, 0.0), 1.0)
+    raw_edge = min(max((score - threshold) / span, 0.0), 1.0)
 
     # Heuristic scores are ranking signals, not calibrated probabilities.
-    # Scale position size by score margin instead of running raw Kelly on them.
+    # Expand small but valid score margins so the ranking signal does not
+    # collapse most trades back onto the minimum bet floor.
+    edge = raw_edge**HEURISTIC_EDGE_EXPONENT
     fraction = max_bet_fraction() * edge
     size = round(bankroll_usd * fraction, 2)
     adjusted_size, reject_reason = _apply_minimum_bet(size, bankroll_usd)
@@ -71,6 +74,8 @@ def heuristic_size(
         "dollar_size": adjusted_size,
         "kelly_f": round(fraction, 5),
         "full_kelly_f": 0.0,
+        "heuristic_raw_edge": round(raw_edge, 5),
+        "heuristic_size_edge": round(edge, 5),
         "method": "heuristic",
         "reason": "ok",
     }

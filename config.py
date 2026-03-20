@@ -253,7 +253,7 @@ def wallet_discovery_min_resolved_buys() -> int:
 
 
 def wallet_discovery_size_multiplier() -> float:
-    return _get_bounded_float("WALLET_DISCOVERY_SIZE_MULTIPLIER", "0.05", minimum=0.01, maximum=1.0)
+    return _get_bounded_float("WALLET_DISCOVERY_SIZE_MULTIPLIER", "0.20", minimum=0.01, maximum=1.0)
 
 
 def wallet_trusted_min_resolved_copied_buys() -> int:
@@ -261,7 +261,7 @@ def wallet_trusted_min_resolved_copied_buys() -> int:
 
 
 def wallet_probation_size_multiplier() -> float:
-    return _get_bounded_float("WALLET_PROBATION_SIZE_MULTIPLIER", "0.20", minimum=0.01, maximum=1.0)
+    return _get_bounded_float("WALLET_PROBATION_SIZE_MULTIPLIER", "0.50", minimum=0.01, maximum=1.0)
 
 
 def wallet_quality_size_min_multiplier() -> float:

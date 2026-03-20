@@ -6,7 +6,7 @@ export const theme = {
     blue: '#17cdff',
     yellow: '#ffd84d',
     white: 'white',
-    dim: 'gray',
+    dim: '#c2ccd8',
     border: 'gray'
 };
 function clamp(value, min, max) {

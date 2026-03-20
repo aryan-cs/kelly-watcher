@@ -154,20 +154,22 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     id: 'confidence_check',
     title: 'Confidence Check',
     summary: [
-      'This box asks whether the probabilities are calibrated.',
-      'If the bot says 70%, the actual win rate should land close to 70% over time.'
+      'This box compares what the model expected against what actually happened.',
+      'It should quickly answer: are we calling trades too hot, too cold, or about right?'
     ],
     rows: [
-      {label: 'Resolved bets', text: 'Accepted tracker bets that already settled and can be graded.'},
-      {label: 'Avg confidence', text: 'Mean predicted probability across resolved accepted bets.'},
-      {label: 'Actual win', text: 'Observed win rate for those same bets.'},
-      {label: 'Calib gap', text: 'Average absolute distance between predicted odds and actual outcomes. Lower is better.'},
+      {label: 'Resolved', text: 'Accepted tracker bets that already settled and can be graded.'},
+      {label: 'Predicted', text: 'Average predicted win probability across those graded bets.'},
+      {label: 'Actual', text: 'Observed win rate for those same graded bets.'},
+      {label: 'Read', text: 'Plain-English read on the current bias: overcalling, undercalling, or roughly in line.'},
+      {label: 'Bias', text: 'Confidence minus actual win rate, measured in percentage points. Positive means overcalling.'},
+      {label: 'Avg miss', text: 'Average miss per graded bet versus the actual 0/1 outcome. Lower is better.'},
       {
         label: 'TP / FP / TN / FN',
         text: 'Accepted winners, accepted losers, correctly skipped losers, and missed profitable low-confidence skips.'
       },
-      {label: 'Range', text: 'Confidence bucket for grouped calibration checks.'},
-      {label: 'Pred / Act / Gap', text: 'Predicted win rate, actual win rate, and the difference for that bucket.'}
+      {label: 'Main band', text: 'The confidence range with the most graded bets right now.'},
+      {label: 'Band hit', text: 'Observed win rate inside that most-common confidence band.'}
     ],
     settingKeys: ['MIN_CONFIDENCE']
   },
@@ -175,14 +177,16 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     id: 'signal_modes',
     title: 'Signal Modes',
     summary: [
-      'This box compares how each decision path is behaving.',
-      'It helps you see whether XGBoost is actually earning its keep versus the heuristic fallback.'
+      'This box breaks performance out by decision path.',
+      'It should tell you which scorer is doing real work, which one is idle, and which one is losing money.'
     ],
     rows: [
-      {label: 'Mode', text: 'The decision path used for that signal group.'},
-      {label: 'Use', text: 'Acceptance rate for that path.'},
-      {label: 'Win', text: 'Resolved win rate for accepted bets from that path.'},
-      {label: 'Edge', text: 'Average confidence edge over price for that path.'},
+      {label: 'Active scorer', text: 'Which scorer is currently driving accepted trades right now.'},
+      {label: 'Primary path', text: 'Which decision path has produced the most accepted trades so far.'},
+      {label: 'Role', text: 'Whether a path is primary, secondary, or currently idle.'},
+      {label: 'Signals / taken', text: 'How many candidate signals flowed through that path, and how many became bets.'},
+      {label: 'Use / win', text: 'Acceptance rate and settled win rate for that path.'},
+      {label: 'Avg edge', text: 'Average confidence edge over price for accepted bets in that path.'},
       {label: 'P&L', text: 'Cumulative tracker profit from that path.'}
     ],
     settingKeys: ['MIN_CONFIDENCE', 'MAX_MARKET_HORIZON']
@@ -191,18 +195,18 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     id: 'how_it_works',
     title: 'How It Works',
     summary: [
-      'This box shows historical averages of the heuristic inputs, not parts that should add to 100%.',
-      'For one signal, base = trader^0.60 * market^0.40.',
-      'Then final = (1 - blend) * base + blend * prior.'
+      'This box shows the moving parts behind the heuristic score in plainer language.',
+      'The base score comes from trader quality and market quality, then history can nudge it up or down.'
     ],
     rows: [
-      {label: 'Avg trader qual', text: 'Average trader quality score from history and behavior.'},
-      {label: 'Avg market qual', text: 'Average market quality score from spread, depth, time, and momentum.'},
-      {label: 'Avg prior win', text: 'Average resolved-history prior for similar trades.'},
-      {label: 'Avg prior blend', text: 'Average fraction of the prior allowed to move the base score.'},
-      {label: 'Avg evidence', text: 'Average number of prior examples supporting the adjustment.'},
-      {label: 'Base formula', text: 'trader^0.60 * market^0.40 weighted geometric mean.'},
-      {label: 'Final formula', text: '(1 - blend) * base + blend * prior.'}
+      {label: 'Trader input', text: 'Average trader quality score from behavior and results.'},
+      {label: 'Market input', text: 'Average market quality score from spread, depth, time, and momentum.'},
+      {label: 'Base mix', text: 'Weighted blend before history shifts it. Formula: trader^0.60 * market^0.40.'},
+      {label: 'History prior', text: 'Average historical win prior for similar resolved trades.'},
+      {label: 'History weight', text: 'How much the prior was allowed to move the base score.'},
+      {label: 'Final estimate', text: 'Estimated final heuristic score after the prior adjustment.'},
+      {label: 'History nudge', text: 'How many percentage points history moved the base score.'},
+      {label: 'Evidence', text: 'Average number of prior examples backing that adjustment.'}
     ],
     settingKeys: ['MIN_CONFIDENCE', 'MAX_MARKET_HORIZON', 'MAX_BET_FRACTION']
   },
@@ -239,6 +243,12 @@ interface CompactStatItem {
   label: string
   value: string
   color?: string
+}
+
+interface ModePreviewCard {
+  title: string
+  titleColor?: string
+  rows: CompactStatItem[]
 }
 
 type ConfusionHeatKind = 'good' | 'bad'
@@ -476,6 +486,12 @@ function signedMetricColor(value: number | null | undefined): string {
   return theme.white
 }
 
+function biasColor(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return theme.dim
+  if (Math.abs(value) <= 0.03) return theme.yellow
+  return value > 0 ? theme.red : theme.blue
+}
+
 function dollarColor(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return theme.dim
   if (value < 0) return theme.red
@@ -486,6 +502,30 @@ function bucketLabel(bucket: number): string {
   const lower = bucket * 10
   const upper = bucket === 9 ? 100 : bucket * 10 + 9
   return `${lower}-${upper}%`
+}
+
+function formatPointDelta(value: number | null | undefined, digits = 1): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  const abs = Math.abs(value * 100).toFixed(digits)
+  const sign = value > 0 ? '+' : value < 0 ? '-' : ''
+  return `${sign}${abs}pt`
+}
+
+function calibrationRead(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '-'
+  if (Math.abs(value) <= 0.03) return 'In line'
+  return value > 0 ? 'Overcalling' : 'Undercalling'
+}
+
+function modeRoleLabel(mode: string, taken: number, primaryMode: string | null, activeScorerLabel: string): string {
+  const normalizedMode = mode.trim().toLowerCase()
+  if (taken <= 0) {
+    return normalizedMode === 'veto' ? 'Guardrail idle' : 'Idle'
+  }
+  if (normalizedMode === primaryMode) {
+    return normalizedMode === activeScorerLabel.trim().toLowerCase() ? 'Primary live path' : 'Primary path'
+  }
+  return 'Secondary path'
 }
 
 function formatInterval(seconds: number | null | undefined): string {
@@ -826,6 +866,213 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => Math.max(1, ...confusionCells.map((cell) => cell.value)),
     [confusionCells]
   )
+  const calibrationBias = useMemo(
+    () => (
+      calibration?.avg_confidence != null && calibration?.actual_win_rate != null
+        ? calibration.avg_confidence - calibration.actual_win_rate
+        : null
+    ),
+    [calibration?.actual_win_rate, calibration?.avg_confidence]
+  )
+  const mainCalibrationBucket = useMemo(
+    () => calibrationRows.reduce<CalibrationRow | null>((best, row) => (best == null || row.n > best.n ? row : best), null),
+    [calibrationRows]
+  )
+  const confidenceCheckStats = useMemo<CompactStatItem[]>(
+    () => [
+      {label: 'Resolved', value: formatCount(calibration?.resolved)},
+      {
+        label: 'Predicted',
+        value: formatPct(calibration?.avg_confidence, 1),
+        color: calibration?.avg_confidence != null ? probabilityColor(calibration.avg_confidence) : theme.dim
+      },
+      {
+        label: 'Actual',
+        value: formatPct(calibration?.actual_win_rate, 1),
+        color: calibration?.actual_win_rate != null ? probabilityColor(calibration.actual_win_rate) : theme.dim
+      },
+      {
+        label: 'Read',
+        value: calibrationRead(calibrationBias),
+        color: biasColor(calibrationBias)
+      },
+      {
+        label: 'Bias',
+        value: formatPointDelta(calibrationBias, 1),
+        color: biasColor(calibrationBias)
+      },
+      {
+        label: 'Avg miss',
+        value: formatPct(calibration?.avg_gap, 1),
+        color: lowerIsBetterColor(calibration?.avg_gap, 0.12, 0.2)
+      },
+      {
+        label: 'Main band',
+        value: mainCalibrationBucket ? bucketLabel(mainCalibrationBucket.bucket) : '-',
+        color: theme.white
+      },
+      {
+        label: 'Band hit',
+        value: mainCalibrationBucket ? formatPct(mainCalibrationBucket.actual_win_rate, 1) : '-',
+        color: mainCalibrationBucket?.actual_win_rate != null ? probabilityColor(mainCalibrationBucket.actual_win_rate) : theme.dim
+      },
+      {
+        label: 'Band size',
+        value: mainCalibrationBucket ? formatCount(mainCalibrationBucket.n) : '-',
+        color: theme.white
+      }
+    ],
+    [
+      calibration?.actual_win_rate,
+      calibration?.avg_confidence,
+      calibration?.avg_gap,
+      calibration?.resolved,
+      calibrationBias,
+      mainCalibrationBucket
+    ]
+  )
+  const confidenceCheckColumns = useMemo(
+    () => splitIntoColumns(confidenceCheckStats, 2),
+    [confidenceCheckStats]
+  )
+  const activeScorerLabel = latest?.deployed ? 'XGBoost' : 'Heuristic'
+  const primaryMode = useMemo(
+    () =>
+      signalModes.reduce<string | null>(
+        (best, row) => {
+          if (best == null) return row.mode
+          const currentBest = signalModes.find((candidate) => candidate.mode === best)
+          return (currentBest?.taken || 0) >= row.taken ? best : row.mode
+        },
+        null
+      ),
+    [signalModes]
+  )
+  const signalModeCards = useMemo<ModePreviewCard[]>(
+    () =>
+      signalModes.map((row) => {
+        const modeWinRate = ratio(row.wins, row.resolved)
+        const modeUseRate = ratio(row.taken, row.signals)
+        return {
+          title: modeLabel(row.mode),
+          titleColor: row.mode.trim().toLowerCase() === primaryMode ? theme.accent : theme.white,
+          rows: [
+            {
+              label: 'Role',
+              value: modeRoleLabel(row.mode, row.taken, primaryMode, activeScorerLabel),
+              color: row.taken > 0 ? theme.accent : theme.dim
+            },
+            {
+              label: 'Signals / taken',
+              value: `${formatCount(row.signals)} / ${formatCount(row.taken)}`,
+              color: theme.white
+            },
+            {
+              label: 'Use / win',
+              value: `${formatPct(modeUseRate, 1)} / ${formatPct(modeWinRate, 1)}`,
+              color: modeWinRate != null ? probabilityColor(modeWinRate) : theme.dim
+            },
+            {
+              label: 'Avg edge',
+              value: formatPct(row.avg_edge, 1),
+              color: signedMetricColor(row.avg_edge)
+            },
+            {
+              label: 'P&L',
+              value: formatDollar(row.total_pnl),
+              color: dollarColor(row.total_pnl)
+            }
+          ]
+        }
+      }),
+    [activeScorerLabel, primaryMode, signalModes]
+  )
+  const signalModeCardColumns = useMemo(
+    () => splitIntoColumns(signalModeCards, combinedPanelsWide && signalModeCards.length > 1 ? 2 : 1),
+    [combinedPanelsWide, signalModeCards]
+  )
+  const baseHeuristicScore = useMemo(
+    () => (
+      flow?.trader_score != null && flow?.market_score != null
+        ? (Math.max(flow.trader_score, 0) ** 0.6) * (Math.max(flow.market_score, 0) ** 0.4)
+        : null
+    ),
+    [flow?.market_score, flow?.trader_score]
+  )
+  const finalHeuristicEstimate = useMemo(
+    () => (
+      baseHeuristicScore != null && flow?.belief_prior != null && flow?.belief_blend != null
+        ? ((1 - flow.belief_blend) * baseHeuristicScore) + (flow.belief_blend * flow.belief_prior)
+        : null
+    ),
+    [baseHeuristicScore, flow?.belief_blend, flow?.belief_prior]
+  )
+  const priorPull = useMemo(
+    () => (
+      finalHeuristicEstimate != null && baseHeuristicScore != null
+        ? finalHeuristicEstimate - baseHeuristicScore
+        : null
+    ),
+    [baseHeuristicScore, finalHeuristicEstimate]
+  )
+  const scoringMixStats = useMemo<CompactStatItem[]>(
+    () => [
+      {
+        label: 'Trader input',
+        value: formatPct(flow?.trader_score, 1),
+        color: flow?.trader_score != null ? probabilityColor(flow.trader_score) : theme.dim
+      },
+      {
+        label: 'Market input',
+        value: formatPct(flow?.market_score, 1),
+        color: flow?.market_score != null ? probabilityColor(flow.market_score) : theme.dim
+      },
+      {
+        label: 'Base mix',
+        value: formatPct(baseHeuristicScore, 1),
+        color: baseHeuristicScore != null ? probabilityColor(baseHeuristicScore) : theme.dim
+      },
+      {
+        label: 'Final estimate',
+        value: formatPct(finalHeuristicEstimate, 1),
+        color: finalHeuristicEstimate != null ? probabilityColor(finalHeuristicEstimate) : theme.dim
+      },
+      {
+        label: 'History prior',
+        value: formatPct(flow?.belief_prior, 1),
+        color: flow?.belief_prior != null ? probabilityColor(flow.belief_prior) : theme.dim
+      },
+      {
+        label: 'History weight',
+        value: formatPct(flow?.belief_blend, 1),
+        color: flow?.belief_blend != null ? probabilityColor(flow.belief_blend) : theme.dim
+      },
+      {
+        label: 'History nudge',
+        value: formatPointDelta(priorPull, 1),
+        color: theme.blue
+      },
+      {
+        label: 'Evidence',
+        value: formatNumber(flow?.belief_evidence, 0),
+        color: theme.white
+      }
+    ],
+    [
+      baseHeuristicScore,
+      finalHeuristicEstimate,
+      flow?.belief_blend,
+      flow?.belief_evidence,
+      flow?.belief_prior,
+      flow?.market_score,
+      flow?.trader_score,
+      priorPull
+    ]
+  )
+  const scoringMixColumns = useMemo(
+    () => splitIntoColumns(scoringMixStats, 2),
+    [scoringMixStats]
+  )
   const topRowBoxWidth: string | number = stacked ? '100%' : '50%'
   const confusionMatrixBox = (
     <Box width={confusionBoxWidth} accent={clampedSelectedPanelIndex === 2}>
@@ -938,59 +1185,24 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                 width={combinedPanelsWide ? confidenceSectionContentWidth : '100%'}
                 flexGrow={combinedPanelsWide ? 1 : 0}
               >
-              <Text color={theme.accent} bold>Confidence Check</Text>
-              <StatRow label="Resolved bets" value={formatCount(calibration?.resolved)} />
-              <StatRow
-                label="Avg confidence"
-                value={formatPct(calibration?.avg_confidence, 1)}
-                color={calibration?.avg_confidence != null ? probabilityColor(calibration.avg_confidence) : theme.dim}
-              />
-              <StatRow
-                label="Actual win"
-                value={formatPct(calibration?.actual_win_rate, 1)}
-                color={calibration?.actual_win_rate != null ? probabilityColor(calibration.actual_win_rate) : theme.dim}
-              />
-              <StatRow
-                label="Calib gap"
-                value={formatPct(calibration?.avg_gap, 1)}
-                color={lowerIsBetterColor(calibration?.avg_gap, 0.12, 0.2)}
-              />
-              {calibrationRows.length ? (
-                <>
-                  <InkBox width="100%" marginTop={1}>
-                    <Text color={theme.dim}>{fit('RANGE', calibrationWidths.rangeWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight('PRED', calibrationWidths.metricWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight('ACT', calibrationWidths.metricWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight('GAP', calibrationWidths.metricWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight('N', calibrationWidths.nWidth)}</Text>
-                  </InkBox>
-                  {calibrationRows.slice(0, calibrationLimit).map((row) => (
-                    <InkBox key={row.bucket} width="100%">
-                      <Text color={theme.white}>{fit(bucketLabel(row.bucket), calibrationWidths.rangeWidth)}</Text>
-                      <Text> </Text>
-                      <Text color={row.avg_confidence != null ? probabilityColor(row.avg_confidence) : theme.dim}>
-                        {fitRight(formatPct(row.avg_confidence, 1), calibrationWidths.metricWidth)}
-                      </Text>
-                      <Text> </Text>
-                      <Text color={row.actual_win_rate != null ? probabilityColor(row.actual_win_rate) : theme.dim}>
-                        {fitRight(formatPct(row.actual_win_rate, 1), calibrationWidths.metricWidth)}
-                      </Text>
-                      <Text> </Text>
-                      <Text color={lowerIsBetterColor(row.avg_gap, 0.12, 0.2)}>
-                        {fitRight(formatPct(row.avg_gap, 1), calibrationWidths.metricWidth)}
-                      </Text>
-                      <Text> </Text>
-                      <Text color={theme.dim}>{fitRight(String(row.n), calibrationWidths.nWidth)}</Text>
+              <Text color={theme.accent} bold>Calibration Read</Text>
+              <InkBox width="100%">
+                {confidenceCheckColumns.map((column, columnIndex) => (
+                  <React.Fragment key={`confidence-column-${columnIndex}`}>
+                    <InkBox flexDirection="column" flexGrow={1}>
+                      {column.map((item) => (
+                        <StatRow
+                          key={item.label}
+                          label={item.label}
+                          value={item.value}
+                          color={item.color ?? theme.white}
+                        />
+                      ))}
                     </InkBox>
-                  ))}
-                </>
-              ) : (
-                <Text color={theme.dim}>Need a few resolved tracker bets to grade calibration.</Text>
-              )}
+                    {columnIndex < confidenceCheckColumns.length - 1 ? <InkBox width={2} /> : null}
+                  </React.Fragment>
+                ))}
+              </InkBox>
               </InkBox>
 
               {combinedPanelsWide ? <InkBox width={combinedSectionGap} /> : <InkBox height={1} />}
@@ -1000,46 +1212,41 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                 width={combinedPanelsWide ? signalModesSectionContentWidth : '100%'}
                 flexGrow={combinedPanelsWide ? 1 : 0}
               >
-              <Text color={theme.accent} bold>Signal Modes</Text>
-              {signalModes.length ? (
-                <>
-                  <InkBox width="100%">
-                    <Text color={theme.dim}>{fit('MODE', signalModeWidths.modeWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight('USE', signalModeWidths.useWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight('WIN', signalModeWidths.winWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight('EDGE', signalModeWidths.edgeWidth)}</Text>
-                    <Text> </Text>
-                    <Text color={theme.dim}>{fitRight('P&L', signalModeWidths.pnlWidth)}</Text>
-                  </InkBox>
-                  {signalModes.map((row) => {
-                    const modeWinRate = ratio(row.wins, row.resolved)
-                    const modeUseRate = ratio(row.taken, row.signals)
-                    return (
-                      <InkBox key={row.mode} width="100%">
-                        <Text color={theme.white}>{fit(modeLabel(row.mode), signalModeWidths.modeWidth)}</Text>
-                        <Text> </Text>
-                        <Text color={modeUseRate != null ? probabilityColor(Math.max(0.5, modeUseRate)) : theme.dim}>
-                          {fitRight(formatPct(modeUseRate, 1), signalModeWidths.useWidth)}
-                        </Text>
-                        <Text> </Text>
-                        <Text color={modeWinRate != null ? probabilityColor(modeWinRate) : theme.dim}>
-                          {fitRight(formatPct(modeWinRate, 1), signalModeWidths.winWidth)}
-                        </Text>
-                        <Text> </Text>
-                        <Text color={signedMetricColor(row.avg_edge)}>
-                          {fitRight(formatPct(row.avg_edge, 1), signalModeWidths.edgeWidth)}
-                        </Text>
-                        <Text> </Text>
-                        <Text color={dollarColor(row.total_pnl)}>
-                          {fitRight(formatDollar(row.total_pnl), signalModeWidths.pnlWidth)}
-                        </Text>
+              <Text color={theme.accent} bold>Decision Paths</Text>
+              <StatRow
+                label="Active scorer"
+                value={activeScorerLabel}
+                color={latest?.deployed ? theme.green : theme.yellow}
+              />
+              <StatRow
+                label="Primary path"
+                value={primaryMode ? modeLabel(primaryMode) : '-'}
+                color={primaryMode ? theme.accent : theme.dim}
+              />
+              {signalModeCards.length ? (
+                <InkBox width="100%">
+                  {signalModeCardColumns.map((column, columnIndex) => (
+                    <React.Fragment key={`signal-mode-column-${columnIndex}`}>
+                      <InkBox flexDirection="column" flexGrow={1}>
+                        {column.map((card, rowIndex) => (
+                          <InkBox key={card.title} flexDirection="column">
+                            <Text color={card.titleColor ?? theme.white} bold>{card.title}</Text>
+                            {card.rows.map((item) => (
+                              <StatRow
+                                key={`${card.title}-${item.label}`}
+                                label={item.label}
+                                value={item.value}
+                                color={item.color ?? theme.white}
+                              />
+                            ))}
+                            {rowIndex < column.length - 1 ? <InkBox height={1} /> : null}
+                          </InkBox>
+                        ))}
                       </InkBox>
-                    )
-                  })}
-                </>
+                      {columnIndex < signalModeCardColumns.length - 1 ? <InkBox width={2} /> : null}
+                    </React.Fragment>
+                  ))}
+                </InkBox>
               ) : (
                 <Text color={theme.dim}>No tracker signals yet.</Text>
               )}
@@ -1051,27 +1258,31 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
       <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'}>
         <Box title="How It Works" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 4}>
-          <StatRow
-            label="Avg trader qual"
-            value={formatPct(flow?.trader_score, 1)}
-            color={flow?.trader_score != null ? probabilityColor(flow.trader_score) : theme.dim}
-          />
-          <StatRow
-            label="Avg market qual"
-            value={formatPct(flow?.market_score, 1)}
-            color={flow?.market_score != null ? probabilityColor(flow.market_score) : theme.dim}
-          />
-          <StatRow
-            label="Avg prior win"
-            value={formatPct(flow?.belief_prior, 1)}
-            color={flow?.belief_prior != null ? probabilityColor(flow.belief_prior) : theme.dim}
-          />
-          <StatRow
-            label="Avg prior blend"
-            value={formatPct(flow?.belief_blend, 1)}
-            color={flow?.belief_blend != null ? probabilityColor(flow.belief_blend) : theme.dim}
-          />
-          <StatRow label="Avg evidence" value={formatNumber(flow?.belief_evidence, 0)} />
+          <InkBox width="100%">
+            <InkBox flexDirection="column" flexGrow={1}>
+              <Text color={theme.accent} bold>Score Build</Text>
+              {scoringMixColumns[0]?.map((item) => (
+                <StatRow
+                  key={item.label}
+                  label={item.label}
+                  value={item.value}
+                  color={item.color ?? theme.white}
+                />
+              ))}
+            </InkBox>
+            <InkBox width={2} />
+            <InkBox flexDirection="column" flexGrow={1}>
+              <Text color={theme.accent} bold>History Nudge</Text>
+              {scoringMixColumns[1]?.map((item) => (
+                <StatRow
+                  key={item.label}
+                  label={item.label}
+                  value={item.value}
+                  color={item.color ?? theme.white}
+                />
+              ))}
+            </InkBox>
+          </InkBox>
         </Box>
 
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
@@ -1145,7 +1356,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             </InkBox>
 
             {selectedPanel.summary.map((line) => (
-              <Text key={line} color={theme.dim} backgroundColor={modalBackground}>
+              <Text key={line} color={theme.white} backgroundColor={modalBackground}>
                 {` ${fit(line, helpContentWidth)} `}
               </Text>
             ))}
@@ -1157,7 +1368,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                 {` ${fit('Label Guide', helpContentWidth)} `}
               </Text>
               {selectedPanel.rows.map((row) => (
-                <Text key={`${selectedPanel.id}-${row.label}`} color={theme.dim} backgroundColor={modalBackground}>
+                <Text key={`${selectedPanel.id}-${row.label}`} color={theme.white} backgroundColor={modalBackground}>
                   {` ${fit(`${row.label}: ${row.text}`, helpContentWidth)} `}
                 </Text>
               ))}

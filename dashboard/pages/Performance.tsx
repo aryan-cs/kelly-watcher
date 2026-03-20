@@ -528,7 +528,7 @@ function getDailyPanelContentWidth(terminalWidth: number, stacked: boolean): num
 }
 
 function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQueueLayout {
-  const dateWidth = 11
+  const dateWidth = 14
   const resolvedValueWidth = Math.max(12, valueWidth)
   const minBarWidth = 9
   const rawBarWidth = Math.max(minBarWidth, contentWidth - dateWidth - resolvedValueWidth - 2)
@@ -541,18 +541,55 @@ function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQue
   }
 }
 
-function formatHourlyBucketLabel(bucket: string, compact = false): string {
-  const [datePart, timePart = ''] = String(bucket || '').split(' ')
-  const shortDate = datePart.length >= 10 ? datePart.slice(5) : datePart
-  const shortTime = timePart.slice(0, 5)
+function parseHourlyBucket(bucket: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):00$/.exec(String(bucket || '').trim())
+  if (!match) {
+    return null
+  }
 
-  if (compact) {
-    return shortTime || shortDate
+  const [, year, month, day, hour] = match
+  return new Date(
+    Number.parseInt(year, 10),
+    Number.parseInt(month, 10) - 1,
+    Number.parseInt(day, 10),
+    Number.parseInt(hour, 10),
+    0,
+    0,
+    0
+  )
+}
+
+function formatHourlyBucketKey(date: Date): string {
+  const year = String(date.getFullYear()).padStart(4, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:00`
+}
+
+function formatHourlyBucketLabel(bucket: string, compact = false): string {
+  const bucketDate = parseHourlyBucket(bucket)
+  if (!bucketDate) {
+    const [datePart, timePart = ''] = String(bucket || '').split(' ')
+    const shortDate = datePart.length >= 10 ? datePart.slice(5) : datePart
+    const shortTime = timePart.slice(0, 5)
+
+    if (compact) {
+      return shortTime || shortDate
+    }
+    if (shortDate && shortTime) {
+      return `${shortDate} ${shortTime}`
+    }
+    return shortDate || shortTime || bucket
   }
-  if (shortDate && shortTime) {
-    return `${shortDate} ${shortTime}`
-  }
-  return shortDate || shortTime || bucket
+
+  const shortDate = `${String(bucketDate.getMonth() + 1).padStart(2, '0')}-${String(bucketDate.getDate()).padStart(2, '0')}`
+  const hour24 = bucketDate.getHours()
+  const suffix = hour24 >= 12 ? 'PM' : 'AM'
+  const hour12 = hour24 % 12 || 12
+  const timeText = `${hour12}:00 ${suffix}`
+
+  return compact ? timeText : `${shortDate} ${timeText}`
 }
 
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
@@ -697,15 +734,55 @@ export function Performance({
     [activeRealMoney, daily]
   )
   const dailyEntries = useMemo<DailyPnlEntry[]>(
-    () =>
-      activeDailyRows.map((row) => {
-        const pnl = Number(row.pnl || 0)
-        return {
-          day: row.day,
-          pnl,
-          label: formatDollar(pnl)
-        }
-      }),
+    () => {
+      const parsedEntries = activeDailyRows
+        .map((row) => {
+          const bucketDate = parseHourlyBucket(row.day)
+          if (!bucketDate) {
+            return null
+          }
+          const pnl = Number(row.pnl || 0)
+          return {
+            day: row.day,
+            pnl,
+            label: formatDollar(pnl),
+            bucketDate
+          }
+        })
+        .filter((row): row is DailyPnlEntry & {bucketDate: Date} => row != null)
+        .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime())
+
+      if (!parsedEntries.length) {
+        return activeDailyRows.map((row) => {
+          const pnl = Number(row.pnl || 0)
+          return {
+            day: row.day,
+            pnl,
+            label: formatDollar(pnl)
+          }
+        })
+      }
+
+      const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]))
+      const newest = new Date(parsedEntries[0].bucketDate.getTime())
+      const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime())
+      const filledEntries: DailyPnlEntry[] = []
+
+      for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
+        const bucketKey = formatHourlyBucketKey(cursor)
+        const existing = entryByBucket.get(bucketKey)
+        filledEntries.push(
+          existing
+            ? {day: existing.day, pnl: existing.pnl, label: existing.label}
+            : {day: bucketKey, pnl: 0, label: formatDollar(0)}
+        )
+        const nextCursor = new Date(cursor.getTime())
+        nextCursor.setHours(nextCursor.getHours() - 1)
+        cursor = nextCursor
+      }
+
+      return filledEntries
+    },
     [activeDailyRows]
   )
   const dailyPanelContentWidth = useMemo(

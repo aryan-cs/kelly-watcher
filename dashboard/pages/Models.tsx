@@ -626,13 +626,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const confusionBoxWidth = secondaryThreeAcross
     ? Math.max(18, Math.floor(secondaryWideBudget * 0.18))
     : Math.max(13, Math.min(23, terminal.width - 12))
-  const secondaryMetricPanelWidth = secondaryThreeAcross
-    ? Math.max(30, Math.floor((secondaryWideBudget - confusionBoxWidth - secondaryRowGap * 2) / 2))
-    : undefined
-  const calibrationPanelContentWidth = secondaryThreeAcross
-    ? Math.max(24, (secondaryMetricPanelWidth ?? twoColumnPanelContentWidth + 4) - 4)
+  const combinedSectionGap = 3
+  const combinedMetricsBoxWidth: string | number = secondaryThreeAcross
+    ? Math.max(60, secondaryWideBudget - confusionBoxWidth - secondaryRowGap)
+    : '100%'
+  const combinedMetricsContentWidth = secondaryThreeAcross
+    ? Math.max(56, Number(combinedMetricsBoxWidth) - 4)
     : twoColumnPanelContentWidth
-  const signalModePanelContentWidth = calibrationPanelContentWidth
+  const combinedPanelsWide = secondaryThreeAcross && combinedMetricsContentWidth >= 68
+  const combinedSectionContentWidth = combinedPanelsWide
+    ? Math.max(24, Math.floor((combinedMetricsContentWidth - combinedSectionGap) / 2))
+    : combinedMetricsContentWidth
   const retrainPanelContentWidth = twoColumnPanelContentWidth
   const confusionPanelContentWidth = Math.max(9, confusionBoxWidth - 4)
   const confusionCellWidth = Math.max(4, Math.floor((confusionPanelContentWidth - 1) / 2))
@@ -640,28 +644,28 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     const rangeWidth = 8
     const nWidth = 5
     const gapCount = 4
-    const metricWidth = Math.max(7, Math.floor((calibrationPanelContentWidth - rangeWidth - nWidth - gapCount) / 3))
+    const metricWidth = Math.max(7, Math.floor((combinedSectionContentWidth - rangeWidth - nWidth - gapCount) / 3))
     const used = rangeWidth + nWidth + gapCount + metricWidth * 3
     return {
-      rangeWidth: rangeWidth + Math.max(0, calibrationPanelContentWidth - used),
+      rangeWidth: rangeWidth + Math.max(0, combinedSectionContentWidth - used),
       metricWidth,
       nWidth
     }
-  }, [calibrationPanelContentWidth])
+  }, [combinedSectionContentWidth])
   const signalModeWidths = useMemo(() => {
     const useWidth = 7
     const winWidth = 7
     const edgeWidth = 7
-    const pnlWidth = Math.max(12, Math.min(14, Math.floor(signalModePanelContentWidth * 0.22)))
+    const pnlWidth = Math.max(12, Math.min(14, Math.floor(combinedSectionContentWidth * 0.22)))
     const gapCount = 4
     return {
-      modeWidth: Math.max(10, signalModePanelContentWidth - useWidth - winWidth - edgeWidth - pnlWidth - gapCount),
+      modeWidth: Math.max(10, combinedSectionContentWidth - useWidth - winWidth - edgeWidth - pnlWidth - gapCount),
       useWidth,
       winWidth,
       edgeWidth,
       pnlWidth
     }
-  }, [signalModePanelContentWidth])
+  }, [combinedSectionContentWidth])
   const retrainWidths = useMemo(() => {
     const sampleWidth = 8
     const brierWidth = 7
@@ -769,6 +773,38 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => splitIntoColumns(trackerHealthStats, 2),
     [trackerHealthStats]
   )
+  const trainingCycleStats = useMemo<CompactStatItem[]>(
+    () => [
+      {label: 'Update style', value: 'Full retrain'},
+      {label: 'Base cadence', value: baseCadenceValue},
+      {label: 'Run time', value: retrainHourValue},
+      {label: 'Next scheduled', value: formatShortDateTime(nextScheduledRetrainTs)},
+      {label: 'Scheduled in', value: timeUntil(nextScheduledRetrainTs)},
+      {label: 'Early check', value: earlyCheckValue},
+      {label: 'Early trigger', value: earlyTriggerValue},
+      {label: 'Total runs', value: formatCount(trainingSummary?.total_runs)},
+      {label: 'Last gap', value: formatInterval(lastRetrainGap)},
+      {label: 'Avg gap', value: formatInterval(averageRetrainGap)},
+      {label: 'Runs 7d', value: formatCount(trainingSummary?.runs_7d)},
+      {label: 'Runs 30d', value: formatCount(trainingSummary?.runs_30d)}
+    ],
+    [
+      averageRetrainGap,
+      baseCadenceValue,
+      earlyCheckValue,
+      earlyTriggerValue,
+      lastRetrainGap,
+      nextScheduledRetrainTs,
+      retrainHourValue,
+      trainingSummary?.runs_7d,
+      trainingSummary?.runs_30d,
+      trainingSummary?.total_runs
+    ]
+  )
+  const trainingCycleColumns = useMemo(
+    () => splitIntoColumns(trainingCycleStats, 2),
+    [trainingCycleStats]
+  )
   const confusionCells = useMemo(
     () => [
       {label: 'TP', value: Math.max(0, Number(confusion?.true_positive || 0)), kind: 'good' as const},
@@ -783,7 +819,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [confusionCells]
   )
   const topRowBoxWidth: string | number = stacked ? '100%' : '50%'
-  const calibrationRowBoxWidth: string | number = secondaryThreeAcross && secondaryMetricPanelWidth ? secondaryMetricPanelWidth : '100%'
   const confusionMatrixBox = (
     <Box width={confusionBoxWidth} accent={clampedSelectedPanelIndex === 2}>
       <InkBox width="100%" flexDirection="column">
@@ -883,106 +918,116 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
         {secondaryThreeAcross ? <InkBox width={secondaryRowGap} /> : <InkBox height={1} />}
 
-        <Box title="Confidence Check" width={calibrationRowBoxWidth} accent={clampedSelectedPanelIndex === 2}>
-          <StatRow label="Resolved bets" value={formatCount(calibration?.resolved)} />
-          <StatRow
-            label="Avg confidence"
-            value={formatPct(calibration?.avg_confidence, 1)}
-            color={calibration?.avg_confidence != null ? probabilityColor(calibration.avg_confidence) : theme.dim}
-          />
-          <StatRow
-            label="Actual win"
-            value={formatPct(calibration?.actual_win_rate, 1)}
-            color={calibration?.actual_win_rate != null ? probabilityColor(calibration.actual_win_rate) : theme.dim}
-          />
-          <StatRow
-            label="Calib gap"
-            value={formatPct(calibration?.avg_gap, 1)}
-            color={lowerIsBetterColor(calibration?.avg_gap, 0.12, 0.2)}
-          />
-          {calibrationRows.length ? (
-            <>
-              <InkBox width="100%" marginTop={1}>
-                <Text color={theme.dim}>{fit('RANGE', calibrationWidths.rangeWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight('PRED', calibrationWidths.metricWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight('ACT', calibrationWidths.metricWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight('GAP', calibrationWidths.metricWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight('N', calibrationWidths.nWidth)}</Text>
-              </InkBox>
-              {calibrationRows.slice(0, calibrationLimit).map((row) => (
-                <InkBox key={row.bucket} width="100%">
-                  <Text color={theme.white}>{fit(bucketLabel(row.bucket), calibrationWidths.rangeWidth)}</Text>
-                  <Text> </Text>
-                  <Text color={row.avg_confidence != null ? probabilityColor(row.avg_confidence) : theme.dim}>
-                    {fitRight(formatPct(row.avg_confidence, 1), calibrationWidths.metricWidth)}
-                  </Text>
-                  <Text> </Text>
-                  <Text color={row.actual_win_rate != null ? probabilityColor(row.actual_win_rate) : theme.dim}>
-                    {fitRight(formatPct(row.actual_win_rate, 1), calibrationWidths.metricWidth)}
-                  </Text>
-                  <Text> </Text>
-                  <Text color={lowerIsBetterColor(row.avg_gap, 0.12, 0.2)}>
-                    {fitRight(formatPct(row.avg_gap, 1), calibrationWidths.metricWidth)}
-                  </Text>
-                  <Text> </Text>
-                  <Text color={theme.dim}>{fitRight(String(row.n), calibrationWidths.nWidth)}</Text>
-                </InkBox>
-              ))}
-            </>
-          ) : (
-            <Text color={theme.dim}>Need a few resolved tracker bets to grade calibration.</Text>
-          )}
-        </Box>
-
-        {secondaryThreeAcross ? <InkBox width={secondaryRowGap} /> : <InkBox height={1} />}
-
-        <Box title="Signal Modes" width={calibrationRowBoxWidth} accent={clampedSelectedPanelIndex === 3}>
-          {signalModes.length ? (
-            <>
-              <InkBox width="100%">
-                <Text color={theme.dim}>{fit('MODE', signalModeWidths.modeWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight('USE', signalModeWidths.useWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight('WIN', signalModeWidths.winWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight('EDGE', signalModeWidths.edgeWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight('P&L', signalModeWidths.pnlWidth)}</Text>
-              </InkBox>
-              {signalModes.map((row) => {
-                const modeWinRate = ratio(row.wins, row.resolved)
-                const modeUseRate = ratio(row.taken, row.signals)
-                return (
-                  <InkBox key={row.mode} width="100%">
-                    <Text color={theme.white}>{fit(modeLabel(row.mode), signalModeWidths.modeWidth)}</Text>
+        <Box
+          title="Confidence + Modes"
+          width={combinedMetricsBoxWidth}
+          accent={clampedSelectedPanelIndex === 2 || clampedSelectedPanelIndex === 3}
+        >
+          <InkBox width="100%" flexDirection={combinedPanelsWide ? 'row' : 'column'}>
+            <InkBox flexDirection="column" width={combinedPanelsWide ? combinedSectionContentWidth : '100%'}>
+              <Text color={theme.accent} bold>Confidence Check</Text>
+              <StatRow label="Resolved bets" value={formatCount(calibration?.resolved)} />
+              <StatRow
+                label="Avg confidence"
+                value={formatPct(calibration?.avg_confidence, 1)}
+                color={calibration?.avg_confidence != null ? probabilityColor(calibration.avg_confidence) : theme.dim}
+              />
+              <StatRow
+                label="Actual win"
+                value={formatPct(calibration?.actual_win_rate, 1)}
+                color={calibration?.actual_win_rate != null ? probabilityColor(calibration.actual_win_rate) : theme.dim}
+              />
+              <StatRow
+                label="Calib gap"
+                value={formatPct(calibration?.avg_gap, 1)}
+                color={lowerIsBetterColor(calibration?.avg_gap, 0.12, 0.2)}
+              />
+              {calibrationRows.length ? (
+                <>
+                  <InkBox width="100%" marginTop={1}>
+                    <Text color={theme.dim}>{fit('RANGE', calibrationWidths.rangeWidth)}</Text>
                     <Text> </Text>
-                    <Text color={modeUseRate != null ? probabilityColor(Math.max(0.5, modeUseRate)) : theme.dim}>
-                      {fitRight(formatPct(modeUseRate, 1), signalModeWidths.useWidth)}
-                    </Text>
+                    <Text color={theme.dim}>{fitRight('PRED', calibrationWidths.metricWidth)}</Text>
                     <Text> </Text>
-                    <Text color={modeWinRate != null ? probabilityColor(modeWinRate) : theme.dim}>
-                      {fitRight(formatPct(modeWinRate, 1), signalModeWidths.winWidth)}
-                    </Text>
+                    <Text color={theme.dim}>{fitRight('ACT', calibrationWidths.metricWidth)}</Text>
                     <Text> </Text>
-                    <Text color={signedMetricColor(row.avg_edge)}>
-                      {fitRight(formatPct(row.avg_edge, 1), signalModeWidths.edgeWidth)}
-                    </Text>
+                    <Text color={theme.dim}>{fitRight('GAP', calibrationWidths.metricWidth)}</Text>
                     <Text> </Text>
-                    <Text color={dollarColor(row.total_pnl)}>
-                      {fitRight(formatDollar(row.total_pnl), signalModeWidths.pnlWidth)}
-                    </Text>
+                    <Text color={theme.dim}>{fitRight('N', calibrationWidths.nWidth)}</Text>
                   </InkBox>
-                )
-              })}
-            </>
-          ) : (
-            <Text color={theme.dim}>No tracker signals yet.</Text>
-          )}
+                  {calibrationRows.slice(0, calibrationLimit).map((row) => (
+                    <InkBox key={row.bucket} width="100%">
+                      <Text color={theme.white}>{fit(bucketLabel(row.bucket), calibrationWidths.rangeWidth)}</Text>
+                      <Text> </Text>
+                      <Text color={row.avg_confidence != null ? probabilityColor(row.avg_confidence) : theme.dim}>
+                        {fitRight(formatPct(row.avg_confidence, 1), calibrationWidths.metricWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={row.actual_win_rate != null ? probabilityColor(row.actual_win_rate) : theme.dim}>
+                        {fitRight(formatPct(row.actual_win_rate, 1), calibrationWidths.metricWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={lowerIsBetterColor(row.avg_gap, 0.12, 0.2)}>
+                        {fitRight(formatPct(row.avg_gap, 1), calibrationWidths.metricWidth)}
+                      </Text>
+                      <Text> </Text>
+                      <Text color={theme.dim}>{fitRight(String(row.n), calibrationWidths.nWidth)}</Text>
+                    </InkBox>
+                  ))}
+                </>
+              ) : (
+                <Text color={theme.dim}>Need a few resolved tracker bets to grade calibration.</Text>
+              )}
+            </InkBox>
+
+            {combinedPanelsWide ? <InkBox width={combinedSectionGap} /> : <InkBox height={1} />}
+
+            <InkBox flexDirection="column" width={combinedPanelsWide ? combinedSectionContentWidth : '100%'}>
+              <Text color={theme.accent} bold>Signal Modes</Text>
+              {signalModes.length ? (
+                <>
+                  <InkBox width="100%">
+                    <Text color={theme.dim}>{fit('MODE', signalModeWidths.modeWidth)}</Text>
+                    <Text> </Text>
+                    <Text color={theme.dim}>{fitRight('USE', signalModeWidths.useWidth)}</Text>
+                    <Text> </Text>
+                    <Text color={theme.dim}>{fitRight('WIN', signalModeWidths.winWidth)}</Text>
+                    <Text> </Text>
+                    <Text color={theme.dim}>{fitRight('EDGE', signalModeWidths.edgeWidth)}</Text>
+                    <Text> </Text>
+                    <Text color={theme.dim}>{fitRight('P&L', signalModeWidths.pnlWidth)}</Text>
+                  </InkBox>
+                  {signalModes.map((row) => {
+                    const modeWinRate = ratio(row.wins, row.resolved)
+                    const modeUseRate = ratio(row.taken, row.signals)
+                    return (
+                      <InkBox key={row.mode} width="100%">
+                        <Text color={theme.white}>{fit(modeLabel(row.mode), signalModeWidths.modeWidth)}</Text>
+                        <Text> </Text>
+                        <Text color={modeUseRate != null ? probabilityColor(Math.max(0.5, modeUseRate)) : theme.dim}>
+                          {fitRight(formatPct(modeUseRate, 1), signalModeWidths.useWidth)}
+                        </Text>
+                        <Text> </Text>
+                        <Text color={modeWinRate != null ? probabilityColor(modeWinRate) : theme.dim}>
+                          {fitRight(formatPct(modeWinRate, 1), signalModeWidths.winWidth)}
+                        </Text>
+                        <Text> </Text>
+                        <Text color={signedMetricColor(row.avg_edge)}>
+                          {fitRight(formatPct(row.avg_edge, 1), signalModeWidths.edgeWidth)}
+                        </Text>
+                        <Text> </Text>
+                        <Text color={dollarColor(row.total_pnl)}>
+                          {fitRight(formatDollar(row.total_pnl), signalModeWidths.pnlWidth)}
+                        </Text>
+                      </InkBox>
+                    )
+                  })}
+                </>
+              ) : (
+                <Text color={theme.dim}>No tracker signals yet.</Text>
+              )}
+            </InkBox>
+          </InkBox>
         </Box>
       </InkBox>
 
@@ -1014,18 +1059,23 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
 
         <Box title="Training Cycle" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 5}>
-          <StatRow label="Update style" value="Full retrain" />
-          <StatRow label="Base cadence" value={baseCadenceValue} />
-          <StatRow label="Run time" value={retrainHourValue} />
-          <StatRow label="Next scheduled" value={formatShortDateTime(nextScheduledRetrainTs)} />
-          <StatRow label="Scheduled in" value={timeUntil(nextScheduledRetrainTs)} />
-          <StatRow label="Early check" value={earlyCheckValue} />
-          <StatRow label="Early trigger" value={earlyTriggerValue} />
-          <StatRow label="Total runs" value={formatCount(trainingSummary?.total_runs)} />
-          <StatRow label="Last gap" value={formatInterval(lastRetrainGap)} />
-          <StatRow label="Avg gap" value={formatInterval(averageRetrainGap)} />
-          <StatRow label="Runs 7d" value={formatCount(trainingSummary?.runs_7d)} />
-          <StatRow label="Runs 30d" value={formatCount(trainingSummary?.runs_30d)} />
+          <InkBox width="100%">
+            {trainingCycleColumns.map((column, columnIndex) => (
+              <React.Fragment key={`training-cycle-column-${columnIndex}`}>
+                <InkBox flexDirection="column" flexGrow={1}>
+                  {column.map((item) => (
+                    <StatRow
+                      key={item.label}
+                      label={item.label}
+                      value={item.value}
+                      color={item.color ?? theme.white}
+                    />
+                  ))}
+                </InkBox>
+                {columnIndex < trainingCycleColumns.length - 1 ? <InkBox width={2} /> : null}
+              </React.Fragment>
+            ))}
+          </InkBox>
           <InkBox width="100%" marginTop={1}>
             <Text color={theme.dim}>{fit('TIME', retrainWidths.timeWidth)}</Text>
             <Text> </Text>

@@ -58,6 +58,13 @@ interface CalibrationSummaryRow {
   avg_gap: number | null
 }
 
+interface ConfusionMatrixRow {
+  true_positive: number | null
+  false_positive: number | null
+  true_negative: number | null
+  false_negative: number | null
+}
+
 interface CalibrationRow {
   bucket: number
   n: number
@@ -155,6 +162,10 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Avg confidence', text: 'Mean predicted probability across resolved accepted bets.'},
       {label: 'Actual win', text: 'Observed win rate for those same bets.'},
       {label: 'Calib gap', text: 'Average absolute distance between predicted odds and actual outcomes. Lower is better.'},
+      {
+        label: 'TP / FP / TN / FN',
+        text: 'Accepted winners, accepted losers, correctly skipped losers, and missed profitable low-confidence skips.'
+      },
       {label: 'Range', text: 'Confidence bucket for grouped calibration checks.'},
       {label: 'Pred / Act / Gap', text: 'Predicted win rate, actual win rate, and the difference for that bucket.'}
     ],
@@ -245,6 +256,18 @@ AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
 
 const PROFITABLE_TRADE_SQL = `CASE WHEN COALESCE(actual_pnl_usd, shadow_pnl_usd) > 0 THEN 1 ELSE 0 END`
 
+const LOW_CONF_SKIP_WHERE = `
+skipped=1
+AND outcome IS NOT NULL
+AND counterfactual_return IS NOT NULL
+AND LOWER(COALESCE(skip_reason, '')) LIKE '%below the%'
+AND LOWER(COALESCE(skip_reason, '')) LIKE '%minimum%'
+AND (
+  LOWER(COALESCE(skip_reason, '')) LIKE '%confidence%'
+  OR LOWER(COALESCE(skip_reason, '')) LIKE '%heuristic score%'
+)
+`
+
 const MODEL_SQL = `
 SELECT trained_at, n_samples, brier_score, log_loss, feature_cols, deployed
 FROM model_history
@@ -304,6 +327,17 @@ FROM trade_log
 WHERE real_money=0
   AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
   AND confidence IS NOT NULL
+`
+
+const CONFUSION_SQL = `
+SELECT
+  SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} AND COALESCE(actual_pnl_usd, shadow_pnl_usd) > 0 THEN 1 ELSE 0 END) AS true_positive,
+  SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} AND COALESCE(actual_pnl_usd, shadow_pnl_usd) <= 0 THEN 1 ELSE 0 END) AS false_positive,
+  SUM(CASE WHEN ${LOW_CONF_SKIP_WHERE} AND counterfactual_return <= 0 THEN 1 ELSE 0 END) AS true_negative,
+  SUM(CASE WHEN ${LOW_CONF_SKIP_WHERE} AND counterfactual_return > 0 THEN 1 ELSE 0 END) AS false_negative
+FROM trade_log
+WHERE COALESCE(source_action, 'buy')='buy'
+  AND real_money=0
 `
 
 const CALIBRATION_SQL = `
@@ -499,6 +533,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const perfRows = useQuery<PerfRow>(PERF_SQL)
   const signalModes = useQuery<SignalModeRow>(SIGNAL_MODE_SQL)
   const calibrationSummaryRows = useQuery<CalibrationSummaryRow>(CALIBRATION_SUMMARY_SQL)
+  const confusionRows = useQuery<ConfusionMatrixRow>(CONFUSION_SQL)
   const calibrationRows = useQuery<CalibrationRow>(CALIBRATION_SQL)
   const flowRows = useQuery<FlowRow>(FLOW_SQL)
   const trainingSummaryRows = useQuery<TrainingSummaryRow>(TRAINING_SUMMARY_SQL)
@@ -506,6 +541,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const latest = models[0]
   const tracker = trackerRows[0]
   const calibration = calibrationSummaryRows[0]
+  const confusion = confusionRows[0]
   const flow = flowRows[0]
   const trainingSummary = trainingSummaryRows[0]
   const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0]
@@ -742,6 +778,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={formatPct(calibration?.avg_gap, 1)}
             color={lowerIsBetterColor(calibration?.avg_gap, 0.12, 0.2)}
           />
+          <StatRow label="True positive" value={formatCount(confusion?.true_positive)} color={theme.green} />
+          <StatRow label="False positive" value={formatCount(confusion?.false_positive)} color={theme.red} />
+          <StatRow label="True negative" value={formatCount(confusion?.true_negative)} color={theme.green} />
+          <StatRow label="False negative" value={formatCount(confusion?.false_negative)} color={theme.red} />
           {calibrationRows.length ? (
             <>
               <InkBox width="100%" marginTop={1}>

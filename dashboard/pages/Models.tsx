@@ -18,6 +18,15 @@ interface ModelRow {
   deployed: number
 }
 
+interface RetrainRunRow {
+  finished_at: number
+  sample_count: number
+  brier_score: number | null
+  log_loss: number | null
+  status: string | null
+  deployed: number
+}
+
 interface TrackerRow {
   signals: number | null
   taken: number | null
@@ -90,8 +99,8 @@ interface TrainingSummaryRow {
 export type ModelPanelId =
   | 'prediction_quality'
   | 'tracker_health'
-  | 'confidence_check'
-  | 'signal_modes'
+  | 'confusion_matrix'
+  | 'confidence_modes'
   | 'how_it_works'
   | 'training_cycle'
 
@@ -151,36 +160,36 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     settingKeys: ['MIN_CONFIDENCE', 'MAX_BET_FRACTION', 'SHADOW_BANKROLL_USD']
   },
   {
-    id: 'confidence_check',
-    title: 'Confidence Check',
+    id: 'confusion_matrix',
+    title: 'Confusion Matrix',
     summary: [
-      'This box compares what the model expected against what actually happened.',
-      'It should quickly answer: are we calling trades too hot, too cold, or about right?'
+      'This box is the outcome split behind the confidence gate.',
+      'It shows where accepted bets were right or wrong, and where low-confidence skips helped or hurt.'
     ],
     rows: [
-      {label: 'Resolved', text: 'Accepted tracker bets that already settled and can be graded.'},
-      {label: 'Predicted', text: 'Average predicted win probability across those graded bets.'},
-      {label: 'Actual', text: 'Observed win rate for those same graded bets.'},
-      {label: 'Read', text: 'Plain-English read on the current bias: overcalling, undercalling, or roughly in line.'},
-      {label: 'Bias', text: 'Confidence minus actual win rate, measured in percentage points. Positive means overcalling.'},
-      {label: 'Avg miss', text: 'Average miss per graded bet versus the actual 0/1 outcome. Lower is better.'},
-      {
-        label: 'TP / FP / TN / FN',
-        text: 'Accepted winners, accepted losers, correctly skipped losers, and missed profitable low-confidence skips.'
-      },
-      {label: 'Main band', text: 'The confidence range with the most graded bets right now.'},
-      {label: 'Band hit', text: 'Observed win rate inside that most-common confidence band.'}
+      {label: 'TP', text: 'Accepted bets that settled profitable.'},
+      {label: 'FP', text: 'Accepted bets that settled unprofitable.'},
+      {label: 'TN', text: 'Low-confidence skips that would have lost anyway.'},
+      {label: 'FN', text: 'Low-confidence skips that would have won if taken.'},
+      {label: 'Top row', text: 'Accepted bets. Left is good, right is bad.'},
+      {label: 'Bottom row', text: 'Skipped bets. Left is good, right is bad.'},
+      {label: 'Color scale', text: 'Bigger counts get stronger green or red heat.'}
     ],
     settingKeys: ['MIN_CONFIDENCE']
   },
   {
-    id: 'signal_modes',
-    title: 'Signal Modes',
+    id: 'confidence_modes',
+    title: 'Confidence + Modes',
     summary: [
-      'This box breaks performance out by decision path.',
-      'It should tell you which scorer is doing real work, which one is idle, and which one is losing money.'
+      'This box answers two questions: how calibrated are accepted bets, and which decision path is carrying the load?',
+      'The left side reads model bias. The right side shows which scorer is active, primary, or idle.'
     ],
     rows: [
+      {label: 'Resolved', text: 'Accepted tracker bets that already settled and can be graded.'},
+      {label: 'Predicted / Actual', text: 'Average model confidence versus the realized win rate on those graded bets.'},
+      {label: 'Read / Bias', text: 'Plain-English bias read plus the point gap between prediction and reality.'},
+      {label: 'Avg miss', text: 'Average miss per graded bet versus the actual 0/1 outcome. Lower is better.'},
+      {label: 'Main band / hit', text: 'The most common confidence range and how often it actually won.'},
       {label: 'Active scorer', text: 'Which scorer is currently driving accepted trades right now.'},
       {label: 'Primary path', text: 'Which decision path has produced the most accepted trades so far.'},
       {label: 'Role', text: 'Whether a path is primary, secondary, or currently idle.'},
@@ -215,7 +224,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     title: 'Training Cycle',
     summary: [
       'This box covers how often the model gets rebuilt and what has to happen before a new one goes live.',
-      'These are full retrains on resolved trades, not online fine-tunes.'
+      'These are full retrains on resolved trades, not online fine-tunes.',
+      'History below includes deployed, no-deploy, skipped, and failed retrain attempts.'
     ],
     rows: [
       {label: 'Update style', text: 'The system rebuilds the model from resolved trades each cycle.'},
@@ -225,8 +235,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Scheduled in', text: 'Countdown until that scheduled retrain window.'},
       {label: 'Early check', text: 'How often the bot checks whether it should retrain sooner.'},
       {label: 'Early trigger', text: 'Minimum new labels needed to fire an unscheduled retrain.'},
-      {label: 'Last / Avg gap', text: 'Observed time between recent successful training runs.'},
-      {label: 'Runs 7d / 30d', text: 'How many training runs landed recently.'}
+      {label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.'},
+      {label: 'Runs 7d / 30d', text: 'How many retrain attempts landed recently, including failures and skips.'}
     ],
     settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS']
   }
@@ -293,6 +303,13 @@ SELECT trained_at, n_samples, brier_score, log_loss, feature_cols, deployed
 FROM model_history
 ORDER BY trained_at DESC
 LIMIT 12
+`
+
+const RETRAIN_RUN_SQL = `
+SELECT finished_at, sample_count, brier_score, log_loss, status, deployed
+FROM retrain_runs
+ORDER BY finished_at DESC, id DESC
+LIMIT 48
 `
 
 const TRACKER_SQL = `
@@ -402,9 +419,9 @@ WHERE COALESCE(source_action, 'buy')='buy'
 const TRAINING_SUMMARY_SQL = `
 SELECT
   COUNT(*) AS total_runs,
-  SUM(CASE WHEN trained_at >= strftime('%s', 'now', '-7 days') THEN 1 ELSE 0 END) AS runs_7d,
-  SUM(CASE WHEN trained_at >= strftime('%s', 'now', '-30 days') THEN 1 ELSE 0 END) AS runs_30d
-FROM model_history
+  SUM(CASE WHEN finished_at >= strftime('%s', 'now', '-7 days') THEN 1 ELSE 0 END) AS runs_7d,
+  SUM(CASE WHEN finished_at >= strftime('%s', 'now', '-30 days') THEN 1 ELSE 0 END) AS runs_30d
+FROM retrain_runs
 `
 
 function formatCount(value: number | null | undefined): string {
@@ -528,6 +545,29 @@ function modeRoleLabel(mode: string, taken: number, primaryMode: string | null, 
   return 'Secondary path'
 }
 
+function retrainRunStateLabel(status: string | null | undefined, deployed: number | null | undefined): string {
+  if (deployed) return 'deployed'
+  const normalized = (status || '').trim().toLowerCase()
+  if (!normalized) return '-'
+  if (normalized === 'completed_not_deployed') return 'no deploy'
+  if (normalized.startsWith('skipped_')) return 'skipped'
+  if (normalized === 'failed') return 'failed'
+  if (normalized === 'already_running') return 'busy'
+  return normalized.replace(/_/g, ' ')
+}
+
+function retrainRunStateColor(status: string | null | undefined, deployed: number | null | undefined): string {
+  if (deployed) return theme.green
+  const normalized = (status || '').trim().toLowerCase()
+  if (!normalized) return theme.dim
+  if (normalized === 'deployed') return theme.green
+  if (normalized === 'completed_not_deployed') return theme.yellow
+  if (normalized.startsWith('skipped_')) return theme.dim
+  if (normalized === 'failed') return theme.red
+  if (normalized === 'already_running') return theme.yellow
+  return theme.white
+}
+
 function formatInterval(seconds: number | null | undefined): string {
   if (seconds == null || Number.isNaN(seconds) || seconds <= 0) return '-'
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`
@@ -617,6 +657,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const nowTs = useNow()
   const stacked = stackPanels(terminal.width)
   const models = useQuery<ModelRow>(MODEL_SQL)
+  const retrainRuns = useQuery<RetrainRunRow>(RETRAIN_RUN_SQL)
   const trackerRows = useQuery<TrackerRow>(TRACKER_SQL)
   const perfRows = useQuery<PerfRow>(PERF_SQL)
   const signalModes = useQuery<SignalModeRow>(SIGNAL_MODE_SQL)
@@ -643,14 +684,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const trackerWinRate = ratio(tracker?.wins, tracker?.resolved)
   const retrainGaps = useMemo(
     () =>
-      models
+      retrainRuns
         .slice(0, 12)
         .map((row, index, rows) => {
           const next = rows[index + 1]
-          return next ? row.trained_at - next.trained_at : null
+          return next ? row.finished_at - next.finished_at : null
         })
         .filter((gap): gap is number => gap != null && gap > 0),
-    [models]
+    [retrainRuns]
   )
   const lastRetrainGap = retrainGaps[0] ?? null
   const averageRetrainGap =
@@ -658,7 +699,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       ? retrainGaps.reduce((sum, gap) => sum + gap, 0) / retrainGaps.length
       : null
   const calibrationLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 5
-  const historyLimit = terminal.compact ? 3 : 4
+  const historyLimit = terminal.compact ? 4 : terminal.height < 42 ? 5 : terminal.height < 50 ? 7 : 10
   const twoColumnPanelContentWidth = stacked
     ? Math.max(46, terminal.width - 12)
     : Math.max(34, Math.floor((terminal.width - 18) / 2))
@@ -1177,7 +1218,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           <Box
             title="Confidence + Modes"
             width="100%"
-            accent={clampedSelectedPanelIndex === 2 || clampedSelectedPanelIndex === 3}
+            accent={clampedSelectedPanelIndex === 3}
           >
             <InkBox width="100%" flexDirection={combinedPanelsWide ? 'row' : 'column'}>
               <InkBox
@@ -1228,20 +1269,22 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                   {signalModeCardColumns.map((column, columnIndex) => (
                     <React.Fragment key={`signal-mode-column-${columnIndex}`}>
                       <InkBox flexDirection="column" flexGrow={1}>
-                        {column.map((card, rowIndex) => (
-                          <InkBox key={card.title} flexDirection="column">
-                            <Text color={card.titleColor ?? theme.white} bold>{card.title}</Text>
-                            {card.rows.map((item) => (
-                              <StatRow
-                                key={`${card.title}-${item.label}`}
-                                label={item.label}
-                                value={item.value}
-                                color={item.color ?? theme.white}
-                              />
-                            ))}
-                            {rowIndex < column.length - 1 ? <InkBox height={1} /> : null}
-                          </InkBox>
-                        ))}
+                        {column.map((card, rowIndex) => {
+                          return (
+                            <InkBox key={card.title} flexDirection="column">
+                              <Text color={card.titleColor ?? theme.white} bold>{card.title}</Text>
+                              {card.rows.map((item) => (
+                                <StatRow
+                                  key={`${card.title}-${item.label}`}
+                                  label={item.label}
+                                  value={item.value}
+                                  color={item.color ?? theme.white}
+                                />
+                              ))}
+                              {rowIndex < column.length - 1 ? <InkBox height={1} /> : null}
+                            </InkBox>
+                          )
+                        })}
                       </InkBox>
                       {columnIndex < signalModeCardColumns.length - 1 ? <InkBox width={2} /> : null}
                     </React.Fragment>
@@ -1316,28 +1359,28 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             <Text> </Text>
             <Text color={theme.dim}>{fitRight('STATE', retrainWidths.stateWidth)}</Text>
           </InkBox>
-          {models.length ? (
-            models.slice(0, historyLimit).map((row) => (
-              <InkBox key={row.trained_at} width="100%">
-                <Text color={theme.white}>{fit(formatShortDateTime(row.trained_at), retrainWidths.timeWidth)}</Text>
+          {retrainRuns.length ? (
+            retrainRuns.slice(0, historyLimit).map((row, index) => (
+              <InkBox key={`${row.finished_at}-${row.status || 'run'}-${index}`} width="100%">
+                <Text color={theme.white}>{fit(formatShortDateTime(row.finished_at), retrainWidths.timeWidth)}</Text>
                 <Text> </Text>
-                <Text color={theme.white}>{fitRight(formatCount(row.n_samples), retrainWidths.sampleWidth)}</Text>
+                <Text color={theme.white}>{fitRight(formatCount(row.sample_count), retrainWidths.sampleWidth)}</Text>
                 <Text> </Text>
-                <Text color={lowerIsBetterColor(row.brier_score, 0.18, 0.25)}>
+                <Text color={row.brier_score == null ? theme.dim : lowerIsBetterColor(row.brier_score, 0.18, 0.25)}>
                   {fitRight(formatNumber(row.brier_score, 4), retrainWidths.brierWidth)}
                 </Text>
                 <Text> </Text>
-                <Text color={lowerIsBetterColor(row.log_loss, 0.55, 0.69)}>
+                <Text color={row.log_loss == null ? theme.dim : lowerIsBetterColor(row.log_loss, 0.55, 0.69)}>
                   {fitRight(formatNumber(row.log_loss, 4), retrainWidths.lossWidth)}
                 </Text>
                 <Text> </Text>
-                <Text color={row.deployed ? theme.green : theme.dim}>
-                  {fitRight(row.deployed ? 'active' : 'archived', retrainWidths.stateWidth)}
+                <Text color={retrainRunStateColor(row.status, row.deployed)}>
+                  {fitRight(retrainRunStateLabel(row.status, row.deployed), retrainWidths.stateWidth)}
                 </Text>
               </InkBox>
             ))
           ) : (
-            <Text color={theme.dim}>No trained models yet. The heuristic path is active.</Text>
+            <Text color={theme.dim}>No retrain attempts logged yet.</Text>
           )}
         </Box>
       </InkBox>

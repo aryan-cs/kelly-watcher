@@ -1300,6 +1300,8 @@ export function Wallets({
 
             const username = usernames.get(wallet.trader_address.toLowerCase())
             const label = username || shortAddress(wallet.trader_address)
+            const linkedWallet = walletByAddress.get(wallet.trader_address.toLowerCase())
+            const isDroppedWallet = linkedWallet?.status === 'dropped'
             const copyWinRate = wallet.resolved > 0 ? wallet.wins / wallet.resolved : null
             const skipRate = wallet.seen_trades > 0 ? wallet.skipped_trades / wallet.seen_trades : null
             const copyWinRateColor =
@@ -1320,7 +1322,19 @@ export function Wallets({
 
                   return (
                     <>
-                      <Text color={isSelected ? theme.accent : username ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
+                      <Text
+                        color={
+                          isSelected
+                            ? theme.accent
+                            : isDroppedWallet
+                              ? theme.red
+                              : username
+                                ? theme.white
+                                : theme.dim
+                        }
+                        backgroundColor={rowBackground}
+                        bold={isSelected}
+                      >
                         {fit(displayLabel, shadowNameWidth)}
                       </Text>
                       <Text backgroundColor={rowBackground}> </Text>
@@ -1491,7 +1505,7 @@ export function Wallets({
               <Text color={theme.dim}>{fitRight('DROPPED', droppedLayout.droppedWidth)}</Text>
             </InkBox>
 
-            <InkBox flexDirection="column" width="100%">
+            <InkBox flexDirection="column" width="100%" flexGrow={1} justifyContent="flex-start">
               {visibleDroppedWallets.length ? (
                 visibleDroppedWallets.map((wallet) => {
                   const isSelected = wallet.trader_address === selectedDroppedWalletAddress

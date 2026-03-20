@@ -63,11 +63,15 @@ interface WalletWatchStateRow {
 }
 
 type WatchTier = 'HOT' | 'WARM' | 'DISC'
-export type WalletPane = 'tracked' | 'dropped'
+export type WalletPane = 'best' | 'worst' | 'tracked' | 'dropped'
 
 export interface WalletMeta {
+  bestCount: number
+  worstCount: number
   trackedCount: number
   droppedCount: number
+  bestWalletAddresses: string[]
+  worstWalletAddresses: string[]
   trackedWalletAddresses: string[]
   droppedWalletAddresses: string[]
 }
@@ -149,6 +153,8 @@ interface DroppedWalletsLayout {
 
 interface WalletsProps {
   activePane: WalletPane
+  bestSelectedIndex: number
+  worstSelectedIndex: number
   trackedSelectedIndex: number
   droppedSelectedIndex: number
   detailOpen: boolean
@@ -654,6 +660,8 @@ function getDroppedWalletsLayout(width: number, sharedLayout: WalletsLayout): Dr
 
 export function Wallets({
   activePane,
+  bestSelectedIndex,
+  worstSelectedIndex,
   trackedSelectedIndex,
   droppedSelectedIndex,
   detailOpen,
@@ -866,25 +874,12 @@ export function Wallets({
   )
   const droppedLayout = useMemo(() => getDroppedWalletsLayout(tableWidth, layout), [layout, tableWidth])
 
-  useEffect(() => {
-    onWalletMetaChange?.({
-      trackedCount: trackedWallets.length,
-      droppedCount: droppedWallets.length,
-      trackedWalletAddresses: trackedWallets.map((wallet) => wallet.trader_address),
-      droppedWalletAddresses: droppedWallets.map((wallet) => wallet.trader_address)
-    })
-  }, [droppedWallets, onWalletMetaChange, trackedWallets])
-
   const clampedTrackedSelectedIndex = trackedWallets.length
     ? Math.max(0, Math.min(trackedSelectedIndex, trackedWallets.length - 1))
     : 0
   const clampedDroppedSelectedIndex = droppedWallets.length
     ? Math.max(0, Math.min(droppedSelectedIndex, droppedWallets.length - 1))
     : 0
-  const selectedWallet =
-    activePane === 'dropped'
-      ? droppedWallets[clampedDroppedSelectedIndex] || null
-      : trackedWallets[clampedTrackedSelectedIndex] || null
 
   const trackedWindowStart =
     trackedWallets.length > trackedVisibleRows
@@ -932,6 +927,57 @@ export function Wallets({
     () => [...shadowWalletRows].sort((left, right) => (left.pnl || 0) - (right.pnl || 0)).slice(0, 5),
     [shadowWalletRows]
   )
+  const bestWalletAddresses = useMemo(
+    () => bestShadowWallets.map((wallet) => wallet.trader_address.toLowerCase()),
+    [bestShadowWallets]
+  )
+  const worstWalletAddresses = useMemo(
+    () => worstShadowWallets.map((wallet) => wallet.trader_address.toLowerCase()),
+    [worstShadowWallets]
+  )
+  const clampedBestSelectedIndex = bestWalletAddresses.length
+    ? Math.max(0, Math.min(bestSelectedIndex, bestWalletAddresses.length - 1))
+    : 0
+  const clampedWorstSelectedIndex = worstWalletAddresses.length
+    ? Math.max(0, Math.min(worstSelectedIndex, worstWalletAddresses.length - 1))
+    : 0
+  const selectedBestWalletAddress = bestWalletAddresses[clampedBestSelectedIndex] || ''
+  const selectedWorstWalletAddress = worstWalletAddresses[clampedWorstSelectedIndex] || ''
+  const selectedTrackedWalletAddress = trackedWallets[clampedTrackedSelectedIndex]?.trader_address || ''
+  const selectedDroppedWalletAddress = droppedWallets[clampedDroppedSelectedIndex]?.trader_address || ''
+  const selectedWalletAddress =
+    activePane === 'best'
+      ? selectedBestWalletAddress
+      : activePane === 'worst'
+        ? selectedWorstWalletAddress
+        : activePane === 'dropped'
+          ? selectedDroppedWalletAddress
+          : selectedTrackedWalletAddress
+  const walletByAddress = useMemo(
+    () => new Map(wallets.map((wallet) => [wallet.trader_address.toLowerCase(), wallet])),
+    [wallets]
+  )
+  const selectedWallet = selectedWalletAddress ? walletByAddress.get(selectedWalletAddress.toLowerCase()) || null : null
+
+  useEffect(() => {
+    onWalletMetaChange?.({
+      bestCount: bestWalletAddresses.length,
+      worstCount: worstWalletAddresses.length,
+      trackedCount: trackedWallets.length,
+      droppedCount: droppedWallets.length,
+      bestWalletAddresses,
+      worstWalletAddresses,
+      trackedWalletAddresses: trackedWallets.map((wallet) => wallet.trader_address),
+      droppedWalletAddresses: droppedWallets.map((wallet) => wallet.trader_address)
+    })
+  }, [
+    bestWalletAddresses,
+    droppedWallets,
+    onWalletMetaChange,
+    trackedWallets,
+    worstWalletAddresses
+  ])
+
   const shadowPanelsWide = terminal.wide
   const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 1) / 2)) : tableWidth
   const shadowPanelContentWidth = Math.max(24, shadowPanelWidth - 4)
@@ -1178,9 +1224,14 @@ export function Wallets({
   )
   const detailLabelWidth = Math.max(8, Math.floor(detailColumnWidth * 0.46))
   const detailValueWidth = Math.max(7, detailColumnWidth - detailLabelWidth - 1)
-  const detailIndexLabel = activePane === 'dropped'
-    ? `${clampedDroppedSelectedIndex + 1}/${Math.max(droppedWallets.length, 1)}`
-    : `${clampedTrackedSelectedIndex + 1}/${Math.max(trackedWallets.length, 1)}`
+  const detailIndexLabel =
+    activePane === 'best'
+      ? `${clampedBestSelectedIndex + 1}/${Math.max(bestWalletAddresses.length, 1)}`
+      : activePane === 'worst'
+        ? `${clampedWorstSelectedIndex + 1}/${Math.max(worstWalletAddresses.length, 1)}`
+        : activePane === 'dropped'
+          ? `${clampedDroppedSelectedIndex + 1}/${Math.max(droppedWallets.length, 1)}`
+          : `${clampedTrackedSelectedIndex + 1}/${Math.max(trackedWallets.length, 1)}`
   const detailHeaderWidth = Math.max(1, modalContentWidth - detailIndexLabel.length - 1)
   const modalSpacerLine = ' '.repeat(modalWidth - 2)
   const detailTitle = selectedWallet?.username || (selectedWallet ? shortAddress(selectedWallet.trader_address) : '-')
@@ -1213,14 +1264,14 @@ export function Wallets({
     () => detailColumnLines.reduce((max, column) => Math.max(max, column.length), 0),
     [detailColumnLines]
   )
-  const selectedTrackedWalletAddress = trackedWallets[clampedTrackedSelectedIndex]?.trader_address || ''
-  const selectedDroppedWalletAddress = droppedWallets[clampedDroppedSelectedIndex]?.trader_address || ''
 
-  const renderShadowWalletBox = (title: string, shadowWallets: TopShadowRow[]) => {
+  const renderShadowWalletBox = (title: string, pane: 'best' | 'worst', shadowWallets: TopShadowRow[]) => {
     const paddedRows = Array.from({length: shadowLeaderboardRows}, (_, index) => shadowWallets[index] ?? null)
+    const activeShadowAddress = pane === 'best' ? selectedBestWalletAddress : selectedWorstWalletAddress
+    const boxIsSelected = activePane === pane
 
     return (
-    <Box title={title} width={shadowPanelsWide ? shadowPanelWidth : '100%'} height={shadowPanelHeight}>
+    <Box title={title} width={shadowPanelsWide ? shadowPanelWidth : '100%'} height={shadowPanelHeight} accent={boxIsSelected}>
       <InkBox width="100%">
         <Text color={theme.dim}>{fit('WALLET', shadowNameWidth)}</Text>
         <Text color={theme.dim}> </Text>
@@ -1262,19 +1313,31 @@ export function Wallets({
 
             return (
               <InkBox key={`${title}-${wallet.trader_address}`} width="100%">
-                <Text color={username ? theme.white : theme.dim}>{fit(label, shadowNameWidth)}</Text>
-                <Text> </Text>
-                <Text color={copyWinRateColor}>
+                {(() => {
+                  const isSelected = boxIsSelected && wallet.trader_address.toLowerCase() === activeShadowAddress
+                  const rowBackground = isSelected ? selectedRowBackground : undefined
+                  const displayLabel = `${isSelected ? '> ' : '  '}${label}`
+
+                  return (
+                    <>
+                      <Text color={isSelected ? theme.accent : username ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
+                        {fit(displayLabel, shadowNameWidth)}
+                      </Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={isSelected ? theme.accent : copyWinRateColor} backgroundColor={rowBackground} bold={isSelected}>
                   {fitRight(copyWinRate == null ? '-' : formatPct(copyWinRate, 1), shadowCopyWrWidth)}
-                </Text>
-                <Text> </Text>
-                <Text color={skipRateColor}>
+                      </Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={isSelected ? theme.accent : skipRateColor} backgroundColor={rowBackground} bold={isSelected}>
                   {fitRight(skipRate == null ? '-' : formatPct(skipRate, 0), shadowSkipWidth)}
-                </Text>
-                <Text> </Text>
-                <Text color={pnlColor}>
+                      </Text>
+                      <Text backgroundColor={rowBackground}> </Text>
+                      <Text color={isSelected ? theme.accent : pnlColor} backgroundColor={rowBackground} bold={isSelected}>
                   {fitRight(formatSignedMoney(wallet.pnl, shadowCopyPnlWidth), shadowCopyPnlWidth)}
-                </Text>
+                      </Text>
+                    </>
+                  )
+                })()}
               </InkBox>
             )
           })
@@ -1289,8 +1352,8 @@ export function Wallets({
   return (
     <InkBox flexDirection="column" width="100%" height="100%">
       <InkBox flexDirection={shadowPanelsWide ? 'row' : 'column'} columnGap={1} rowGap={1} flexShrink={0}>
-        {renderShadowWalletBox('Best Wallets', bestShadowWallets)}
-        {renderShadowWalletBox('Worst Wallets', worstShadowWallets)}
+        {renderShadowWalletBox('Best Wallets', 'best', bestShadowWallets)}
+        {renderShadowWalletBox('Worst Wallets', 'worst', worstShadowWallets)}
       </InkBox>
 
       <InkBox marginTop={1} flexGrow={1} flexDirection="column">
@@ -1536,7 +1599,9 @@ export function Wallets({
                 truncate(
                   activePane === 'dropped'
                     ? 'Up/down switches dropped wallets. a reactivates. esc closes.'
-                    : 'Up/down switches tracked wallets. d drops. left/right switches panes. esc closes.',
+                    : activePane === 'tracked'
+                      ? 'Up/down switches tracked wallets. d drops. left/right switches panes. esc closes.'
+                      : 'Up/down switches leaderboard wallets. f finds this wallet in profiles. esc closes.',
                   modalContentWidth
                 ),
                 modalContentWidth

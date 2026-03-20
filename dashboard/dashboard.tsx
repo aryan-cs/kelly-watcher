@@ -14,7 +14,7 @@ import {theme} from './theme.js'
 import {LiveFeed} from './pages/LiveFeed.js'
 import {Signals} from './pages/Signals.js'
 import {Performance, type PerfBox} from './pages/Performance'
-import {Wallets} from './pages/Wallets.js'
+import {Wallets} from './pages/Wallets'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
 import {secondsAgo} from './format.js'
 import {ManualRefreshProvider} from './refresh.js'
@@ -24,14 +24,18 @@ import {dropTrackedWallet, reactivateDroppedWallet} from './walletWatchState.js'
 
 type Page = 1 | 2 | 3 | 4 | 5 | 6
 type PerfPane = 'current' | 'past'
-type WalletPane = 'tracked' | 'dropped'
+type WalletPane = 'best' | 'worst' | 'tracked' | 'dropped'
 const DOUBLE_UP_JUMP_MS = 350
 const DOUBLE_UP_CONFIRM_MS = 140
 const HORIZONTAL_SCROLL_STEP = 8
 
 interface WalletMeta {
+  bestCount: number
+  worstCount: number
   trackedCount: number
   droppedCount: number
+  bestWalletAddresses: string[]
+  worstWalletAddresses: string[]
   trackedWalletAddresses: string[]
   droppedWalletAddresses: string[]
 }
@@ -87,6 +91,8 @@ interface AppContentProps {
   modelDetailOpen: boolean
   modelSettingSelectionIndex: number
   walletPane: WalletPane
+  walletBestSelectionIndex: number
+  walletWorstSelectionIndex: number
   walletTrackedSelectionIndex: number
   walletDroppedSelectionIndex: number
   walletDetailOpen: boolean
@@ -119,6 +125,8 @@ function renderPage(
   modelSettingSelectionIndex: number,
   settingsValues: SettingsEditorState['values'],
   walletPane: WalletPane,
+  walletBestSelectionIndex: number,
+  walletWorstSelectionIndex: number,
   walletTrackedSelectionIndex: number,
   walletDroppedSelectionIndex: number,
   walletDetailOpen: boolean,
@@ -163,6 +171,8 @@ function renderPage(
       return (
         <Wallets
           activePane={walletPane}
+          bestSelectedIndex={walletBestSelectionIndex}
+          worstSelectedIndex={walletWorstSelectionIndex}
           trackedSelectedIndex={walletTrackedSelectionIndex}
           droppedSelectedIndex={walletDroppedSelectionIndex}
           detailOpen={walletDetailOpen}
@@ -194,6 +204,8 @@ function AppContent({
   modelDetailOpen,
   modelSettingSelectionIndex,
   walletPane,
+  walletBestSelectionIndex,
+  walletWorstSelectionIndex,
   walletTrackedSelectionIndex,
   walletDroppedSelectionIndex,
   walletDetailOpen,
@@ -337,6 +349,8 @@ function AppContent({
           modelSettingSelectionIndex,
           settingsEditor.values,
           walletPane,
+          walletBestSelectionIndex,
+          walletWorstSelectionIndex,
           walletTrackedSelectionIndex,
           walletDroppedSelectionIndex,
           walletDetailOpen,
@@ -381,12 +395,18 @@ function App() {
   const [modelDetailOpen, setModelDetailOpen] = useState(false)
   const [modelSettingSelectionIndex, setModelSettingSelectionIndex] = useState(0)
   const [walletPane, setWalletPane] = useState<WalletPane>('tracked')
+  const [walletBestSelectionIndex, setWalletBestSelectionIndex] = useState(0)
+  const [walletWorstSelectionIndex, setWalletWorstSelectionIndex] = useState(0)
   const [walletTrackedSelectionIndex, setWalletTrackedSelectionIndex] = useState(0)
   const [walletDroppedSelectionIndex, setWalletDroppedSelectionIndex] = useState(0)
   const [walletDetailOpen, setWalletDetailOpen] = useState(false)
   const [walletMeta, setWalletMeta] = useState<WalletMeta>({
+    bestCount: 0,
+    worstCount: 0,
     trackedCount: 0,
     droppedCount: 0,
+    bestWalletAddresses: [],
+    worstWalletAddresses: [],
     trackedWalletAddresses: [],
     droppedWalletAddresses: []
   })
@@ -406,7 +426,21 @@ function App() {
   const selectedField = editableConfigFields[settingsEditor.selectedIndex]
   const selectedModelPanel = MODEL_PANEL_DEFS[Math.max(0, Math.min(modelSelectionIndex, MODEL_PANEL_DEFS.length - 1))]
   const selectedModelSettingKeys = selectedModelPanel?.settingKeys || []
-  const activeWalletCount = walletPane === 'dropped' ? walletMeta.droppedCount : walletMeta.trackedCount
+  const walletPaneCount = (pane: WalletPane): number => {
+    if (pane === 'best') return walletMeta.bestCount
+    if (pane === 'worst') return walletMeta.worstCount
+    if (pane === 'dropped') return walletMeta.droppedCount
+    return walletMeta.trackedCount
+  }
+  const activeWalletCount = walletPaneCount(walletPane)
+  const selectedBestWalletAddress =
+    walletMeta.bestWalletAddresses[
+      Math.max(0, Math.min(walletBestSelectionIndex, Math.max(walletMeta.bestCount - 1, 0)))
+    ] || ''
+  const selectedWorstWalletAddress =
+    walletMeta.worstWalletAddresses[
+      Math.max(0, Math.min(walletWorstSelectionIndex, Math.max(walletMeta.worstCount - 1, 0)))
+    ] || ''
   const selectedDroppedWalletAddress =
     walletMeta.droppedWalletAddresses[
       Math.max(0, Math.min(walletDroppedSelectionIndex, Math.max(walletMeta.droppedCount - 1, 0)))
@@ -415,6 +449,27 @@ function App() {
     walletMeta.trackedWalletAddresses[
       Math.max(0, Math.min(walletTrackedSelectionIndex, Math.max(walletMeta.trackedCount - 1, 0)))
     ] || ''
+  const selectedWalletAddress =
+    walletPane === 'best'
+      ? selectedBestWalletAddress
+      : walletPane === 'worst'
+        ? selectedWorstWalletAddress
+        : walletPane === 'dropped'
+          ? selectedDroppedWalletAddress
+          : selectedTrackedWalletAddress
+
+  const getAvailableWalletPanes = (): WalletPane[] => {
+    const order: WalletPane[] = ['best', 'worst', 'tracked', 'dropped']
+    const available = order.filter((pane) => walletPaneCount(pane) > 0)
+    return available.length ? available : ['tracked']
+  }
+
+  const moveWalletPane = (direction: 'left' | 'right') => {
+    const available = getAvailableWalletPanes()
+    const currentIndex = Math.max(0, available.indexOf(walletPane))
+    const delta = direction === 'left' ? -1 : 1
+    setWalletPane(available[(currentIndex + delta + available.length) % available.length])
+  }
 
   const moveModelSelection = (direction: 'up' | 'down' | 'left' | 'right') => {
     const panelCount = MODEL_PANEL_DEFS.length
@@ -595,42 +650,51 @@ function App() {
   }, [page, perfDailyDetailOpen])
 
   useEffect(() => {
-    if (walletMeta.trackedCount <= 0) {
-      setWalletTrackedSelectionIndex(0)
-      if (walletPane === 'tracked' && walletDetailOpen) {
+    setWalletBestSelectionIndex((current) => Math.min(current, Math.max(walletMeta.bestCount - 1, 0)))
+    setWalletWorstSelectionIndex((current) => Math.min(current, Math.max(walletMeta.worstCount - 1, 0)))
+    setWalletTrackedSelectionIndex((current) => Math.min(current, Math.max(walletMeta.trackedCount - 1, 0)))
+    setWalletDroppedSelectionIndex((current) => Math.min(current, Math.max(walletMeta.droppedCount - 1, 0)))
+
+    const available = getAvailableWalletPanes()
+    if (walletPaneCount(walletPane) <= 0) {
+      setWalletPane(available[0])
+      if (walletDetailOpen) {
         setWalletDetailOpen(false)
       }
-      if (walletMeta.droppedCount > 0) {
-        setWalletPane('dropped')
-      }
       return
     }
 
-    setWalletTrackedSelectionIndex((current) => Math.min(current, walletMeta.trackedCount - 1))
-  }, [walletDetailOpen, walletMeta.droppedCount, walletMeta.trackedCount, walletPane])
-
-  useEffect(() => {
-    if (walletMeta.droppedCount <= 0) {
-      setWalletDroppedSelectionIndex(0)
-      if (walletPane === 'dropped') {
-        setWalletPane(walletMeta.trackedCount > 0 ? 'tracked' : 'dropped')
-        if (walletDetailOpen) {
-          setWalletDetailOpen(false)
-        }
-      }
-      return
+    if (available.length <= 0 && walletDetailOpen) {
+      setWalletDetailOpen(false)
     }
-
-    setWalletDroppedSelectionIndex((current) => Math.min(current, walletMeta.droppedCount - 1))
-  }, [walletDetailOpen, walletMeta.droppedCount, walletMeta.trackedCount, walletPane])
+  }, [
+    walletDetailOpen,
+    walletMeta.bestCount,
+    walletMeta.droppedCount,
+    walletMeta.trackedCount,
+    walletMeta.worstCount,
+    walletPane
+  ])
 
   useEffect(() => {
-    if (walletMeta.trackedCount <= 0 && walletMeta.droppedCount <= 0) {
+    if (
+      walletMeta.bestCount <= 0 &&
+      walletMeta.worstCount <= 0 &&
+      walletMeta.trackedCount <= 0 &&
+      walletMeta.droppedCount <= 0 &&
+      walletDetailOpen
+    ) {
       if (walletDetailOpen) {
         setWalletDetailOpen(false)
       }
     }
-  }, [walletDetailOpen, walletMeta.droppedCount, walletMeta.trackedCount])
+  }, [
+    walletDetailOpen,
+    walletMeta.bestCount,
+    walletMeta.droppedCount,
+    walletMeta.trackedCount,
+    walletMeta.worstCount
+  ])
 
   useEffect(() => {
     setModelSelectionIndex((current) => Math.min(current, MODEL_PANEL_DEFS.length - 1))
@@ -864,17 +928,21 @@ function App() {
       }
 
       if (key.leftArrow || normalized === 'h') {
-        setWalletPane('tracked')
+        moveWalletPane('left')
         return
       }
 
       if (key.rightArrow || normalized === 'l') {
-        setWalletPane('dropped')
+        moveWalletPane('right')
         return
       }
 
       if ((key.upArrow || normalized === 'k') && activeWalletCount > 0) {
-        if (walletPane === 'dropped') {
+        if (walletPane === 'best') {
+          setWalletBestSelectionIndex((current) => (current <= 0 ? activeWalletCount - 1 : current - 1))
+        } else if (walletPane === 'worst') {
+          setWalletWorstSelectionIndex((current) => (current <= 0 ? activeWalletCount - 1 : current - 1))
+        } else if (walletPane === 'dropped') {
           setWalletDroppedSelectionIndex((current) => (current <= 0 ? activeWalletCount - 1 : current - 1))
         } else {
           setWalletTrackedSelectionIndex((current) => (current <= 0 ? activeWalletCount - 1 : current - 1))
@@ -883,12 +951,34 @@ function App() {
       }
 
       if ((key.downArrow || normalized === 'j') && activeWalletCount > 0) {
-        if (walletPane === 'dropped') {
+        if (walletPane === 'best') {
+          setWalletBestSelectionIndex((current) => (current >= activeWalletCount - 1 ? 0 : current + 1))
+        } else if (walletPane === 'worst') {
+          setWalletWorstSelectionIndex((current) => (current >= activeWalletCount - 1 ? 0 : current + 1))
+        } else if (walletPane === 'dropped') {
           setWalletDroppedSelectionIndex((current) => (current >= activeWalletCount - 1 ? 0 : current + 1))
         } else {
           setWalletTrackedSelectionIndex((current) => (current >= activeWalletCount - 1 ? 0 : current + 1))
         }
         return
+      }
+
+      if (normalized === 'f' && selectedWalletAddress) {
+        const trackedIndex = walletMeta.trackedWalletAddresses.findIndex((address) => address === selectedWalletAddress)
+        if (trackedIndex >= 0) {
+          setWalletPane('tracked')
+          setWalletTrackedSelectionIndex(trackedIndex)
+          setWalletDetailOpen(false)
+          return
+        }
+
+        const droppedIndex = walletMeta.droppedWalletAddresses.findIndex((address) => address === selectedWalletAddress)
+        if (droppedIndex >= 0) {
+          setWalletPane('dropped')
+          setWalletDroppedSelectionIndex(droppedIndex)
+          setWalletDetailOpen(false)
+          return
+        }
       }
 
       if (normalized === 'a' && walletPane === 'dropped' && selectedDroppedWalletAddress) {
@@ -1087,6 +1177,8 @@ function App() {
           modelDetailOpen={modelDetailOpen}
           modelSettingSelectionIndex={modelSettingSelectionIndex}
           walletPane={walletPane}
+          walletBestSelectionIndex={walletBestSelectionIndex}
+          walletWorstSelectionIndex={walletWorstSelectionIndex}
           walletTrackedSelectionIndex={walletTrackedSelectionIndex}
           walletDroppedSelectionIndex={walletDroppedSelectionIndex}
           walletDetailOpen={walletDetailOpen}

@@ -422,6 +422,7 @@ function confusionHeatColor(value: number, scale: number, kind: ConfusionHeatKin
 function ConfusionMatrixCell({label, value, width, kind, scale}: ConfusionCellProps) {
   const fillColor = confusionHeatColor(value, scale, kind)
   const innerWidth = Math.max(1, width - 2)
+  const centeredValue = centerLine(`${label} ${formatCount(value)}`, innerWidth)
 
   return (
     <InkBox width={width} height={6} borderStyle="round" borderColor={fillColor} flexDirection="column">
@@ -429,14 +430,12 @@ function ConfusionMatrixCell({label, value, width, kind, scale}: ConfusionCellPr
         {' '.repeat(innerWidth)}
       </Text>
       <Text color={theme.modalBackground} backgroundColor={fillColor} bold>
-        {centerLine(label, innerWidth)}
-      </Text>
-      <Text color={theme.modalBackground} backgroundColor={fillColor}>
         {' '.repeat(innerWidth)}
       </Text>
       <Text color={theme.modalBackground} backgroundColor={fillColor} bold>
-        {centerLine(formatCount(value), innerWidth)}
+        {centeredValue}
       </Text>
+      <Text color={theme.modalBackground} backgroundColor={fillColor}>{' '.repeat(innerWidth)}</Text>
     </InkBox>
   )
 }

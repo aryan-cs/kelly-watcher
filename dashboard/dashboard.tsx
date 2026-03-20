@@ -57,8 +57,11 @@ interface AppContentProps {
   isRefreshing: boolean
   settingsEditor: SettingsEditorState
   feedScrollOffset: number
+  onFeedScrollOffsetChange: (offset: number) => void
   signalsScrollOffset: number
+  onSignalsScrollOffsetChange: (offset: number) => void
   signalsHorizontalOffset: number
+  onSignalsHorizontalOffsetChange: (offset: number) => void
   perfCurrentScrollOffset: number
   perfPastScrollOffset: number
   perfActivePane: PerfPane
@@ -73,20 +76,29 @@ interface AppContentProps {
   walletDroppedSelectionIndex: number
   walletDetailOpen: boolean
   onWalletMetaChange: (meta: WalletMeta) => void
+  onPerfCurrentScrollOffsetChange: (offset: number) => void
+  onPerfPastScrollOffsetChange: (offset: number) => void
+  onPerfDailyDetailScrollOffsetChange: (offset: number) => void
 }
 
 function renderPage(
   page: Page,
   settingsEditor: SettingsEditorState,
   feedScrollOffset: number,
+  onFeedScrollOffsetChange: (offset: number) => void,
   signalsScrollOffset: number,
+  onSignalsScrollOffsetChange: (offset: number) => void,
   signalsHorizontalOffset: number,
+  onSignalsHorizontalOffsetChange: (offset: number) => void,
   perfCurrentScrollOffset: number,
   perfPastScrollOffset: number,
   perfActivePane: PerfPane,
   perfSelectedBox: PerfBox,
   perfDailyDetailOpen: boolean,
   perfDailyDetailScrollOffset: number,
+  onPerfCurrentScrollOffsetChange: (offset: number) => void,
+  onPerfPastScrollOffsetChange: (offset: number) => void,
+  onPerfDailyDetailScrollOffsetChange: (offset: number) => void,
   modelSelectionIndex: number,
   modelDetailOpen: boolean,
   modelSettingSelectionIndex: number,
@@ -99,9 +111,16 @@ function renderPage(
 ) {
   switch (page) {
     case 1:
-      return <LiveFeed scrollOffset={feedScrollOffset} />
+      return <LiveFeed scrollOffset={feedScrollOffset} onScrollOffsetChange={onFeedScrollOffsetChange} />
     case 2:
-      return <Signals scrollOffset={signalsScrollOffset} horizontalOffset={signalsHorizontalOffset} />
+      return (
+        <Signals
+          scrollOffset={signalsScrollOffset}
+          horizontalOffset={signalsHorizontalOffset}
+          onScrollOffsetChange={onSignalsScrollOffsetChange}
+          onHorizontalOffsetChange={onSignalsHorizontalOffsetChange}
+        />
+      )
     case 3:
       return (
         <Performance
@@ -111,6 +130,9 @@ function renderPage(
           selectedBox={perfSelectedBox}
           dailyDetailOpen={perfDailyDetailOpen}
           dailyDetailScrollOffset={perfDailyDetailScrollOffset}
+          onCurrentScrollOffsetChange={onPerfCurrentScrollOffsetChange}
+          onPastScrollOffsetChange={onPerfPastScrollOffsetChange}
+          onDailyDetailScrollOffsetChange={onPerfDailyDetailScrollOffsetChange}
         />
       )
     case 4:
@@ -142,8 +164,11 @@ function AppContent({
   isRefreshing,
   settingsEditor,
   feedScrollOffset,
+  onFeedScrollOffsetChange,
   signalsScrollOffset,
+  onSignalsScrollOffsetChange,
   signalsHorizontalOffset,
+  onSignalsHorizontalOffsetChange,
   perfCurrentScrollOffset,
   perfPastScrollOffset,
   perfActivePane,
@@ -157,7 +182,10 @@ function AppContent({
   walletTrackedSelectionIndex,
   walletDroppedSelectionIndex,
   walletDetailOpen,
-  onWalletMetaChange
+  onWalletMetaChange,
+  onPerfCurrentScrollOffsetChange,
+  onPerfPastScrollOffsetChange,
+  onPerfDailyDetailScrollOffsetChange
 }: AppContentProps) {
   const terminal = useTerminalSize()
   const botState = useBotState()
@@ -249,14 +277,20 @@ function AppContent({
           page,
           settingsEditor,
           feedScrollOffset,
+          onFeedScrollOffsetChange,
           signalsScrollOffset,
+          onSignalsScrollOffsetChange,
           signalsHorizontalOffset,
+          onSignalsHorizontalOffsetChange,
           perfCurrentScrollOffset,
           perfPastScrollOffset,
           perfActivePane,
           perfSelectedBox,
           perfDailyDetailOpen,
           perfDailyDetailScrollOffset,
+          onPerfCurrentScrollOffsetChange,
+          onPerfPastScrollOffsetChange,
+          onPerfDailyDetailScrollOffsetChange,
           modelSelectionIndex,
           modelDetailOpen,
           modelSettingSelectionIndex,
@@ -986,8 +1020,11 @@ function App() {
           isRefreshing={isRefreshing}
           settingsEditor={settingsEditor}
           feedScrollOffset={feedScrollOffset}
+          onFeedScrollOffsetChange={setFeedScrollOffset}
           signalsScrollOffset={signalsScrollOffset}
+          onSignalsScrollOffsetChange={setSignalsScrollOffset}
           signalsHorizontalOffset={signalsHorizontalOffset}
+          onSignalsHorizontalOffsetChange={setSignalsHorizontalOffset}
           perfCurrentScrollOffset={perfCurrentScrollOffset}
           perfPastScrollOffset={perfPastScrollOffset}
           perfActivePane={perfActivePane}
@@ -1002,6 +1039,9 @@ function App() {
           walletDroppedSelectionIndex={walletDroppedSelectionIndex}
           walletDetailOpen={walletDetailOpen}
           onWalletMetaChange={setWalletMeta}
+          onPerfCurrentScrollOffsetChange={setPerfCurrentScrollOffset}
+          onPerfPastScrollOffsetChange={setPerfPastScrollOffset}
+          onPerfDailyDetailScrollOffsetChange={setPerfDailyDetailScrollOffset}
         />
       </ManualRefreshProvider>
     </TerminalSizeProvider>

@@ -1,4 +1,4 @@
-import React from 'react'
+import React, {useEffect} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
 import {TradeRow} from '../components/TradeRow.js'
@@ -11,17 +11,24 @@ import {useTradeIdIndex} from '../useTradeIdIndex.js'
 
 interface LiveFeedProps {
   scrollOffset?: number
+  onScrollOffsetChange?: (offset: number) => void
 }
 
-export function LiveFeed({scrollOffset = 0}: LiveFeedProps) {
+export function LiveFeed({scrollOffset = 0, onScrollOffsetChange}: LiveFeedProps) {
   const terminal = useTerminalSize()
   const rowCount = rowsForHeight(terminal.height, 10, 4)
   const tableWidth = Math.max(56, terminal.width - 8)
   const {lookup: tradeIdLookup} = useTradeIdIndex()
   const allIncoming = useEventStream(1000).filter((event) => event.type === 'incoming').reverse()
   const maxOffset = Math.max(0, allIncoming.length - rowCount)
-  const effectiveOffset = Math.min(scrollOffset, maxOffset)
+  const effectiveOffset = Math.max(0, Math.min(scrollOffset, maxOffset))
   const events = allIncoming.slice(effectiveOffset, effectiveOffset + rowCount)
+
+  useEffect(() => {
+    if (scrollOffset !== effectiveOffset) {
+      onScrollOffsetChange?.(effectiveOffset)
+    }
+  }, [effectiveOffset, onScrollOffsetChange, scrollOffset])
 
   return (
     <Box height="100%">

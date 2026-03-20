@@ -1,4 +1,4 @@
-import React, {useMemo} from 'react'
+import React, {useEffect, useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
 import {TradeRow} from '../components/TradeRow.js'
@@ -13,9 +13,16 @@ import {useTradeIdIndex} from '../useTradeIdIndex.js'
 interface SignalsProps {
   scrollOffset?: number
   horizontalOffset?: number
+  onScrollOffsetChange?: (offset: number) => void
+  onHorizontalOffsetChange?: (offset: number) => void
 }
 
-export function Signals({scrollOffset = 0, horizontalOffset = 0}: SignalsProps) {
+export function Signals({
+  scrollOffset = 0,
+  horizontalOffset = 0,
+  onScrollOffsetChange,
+  onHorizontalOffsetChange
+}: SignalsProps) {
   const terminal = useTerminalSize()
   const lineBudget = rowsForHeight(terminal.height, 10, 4)
   const visibleWidth = Math.max(56, terminal.width - 8)
@@ -43,14 +50,27 @@ export function Signals({scrollOffset = 0, horizontalOffset = 0}: SignalsProps) 
     [allSignals]
   )
   const layout = useMemo(() => getSignalsLayout(visibleWidth), [visibleWidth])
-  const effectiveOffset = Math.min(scrollOffset, Math.max(0, allSignals.length - 1))
+  const maxOffset = Math.max(0, allSignals.length - lineBudget)
+  const effectiveOffset = Math.max(0, Math.min(scrollOffset, maxOffset))
   const maxHorizontalOffset = Math.max(0, maxReasonLength - layout.reasonWidth)
-  const effectiveHorizontalOffset = Math.min(horizontalOffset, maxHorizontalOffset)
+  const effectiveHorizontalOffset = Math.max(0, Math.min(horizontalOffset, maxHorizontalOffset))
   const signals = useMemo(
     () => allSignals.slice(effectiveOffset, effectiveOffset + lineBudget),
     [allSignals, effectiveOffset, lineBudget]
   )
   const headerText = useMemo(() => signalsHeader(visibleWidth), [visibleWidth])
+
+  useEffect(() => {
+    if (scrollOffset !== effectiveOffset) {
+      onScrollOffsetChange?.(effectiveOffset)
+    }
+  }, [effectiveOffset, onScrollOffsetChange, scrollOffset])
+
+  useEffect(() => {
+    if (horizontalOffset !== effectiveHorizontalOffset) {
+      onHorizontalOffsetChange?.(effectiveHorizontalOffset)
+    }
+  }, [effectiveHorizontalOffset, horizontalOffset, onHorizontalOffsetChange])
 
   return (
     <Box height="100%">

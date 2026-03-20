@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Box as InkBox, Text } from 'ink';
 import { BarSparkline } from '../components/BarSparkline.js';
 import { Box } from '../components/Box.js';
@@ -406,7 +406,7 @@ function getDailyPnlLayout(terminalWidth, stacked, valueWidth) {
         barWidth: Math.max(minBarWidth, panelContentWidth - dateWidth - valueWidth - 2)
     };
 }
-export function Performance({ currentScrollOffset, pastScrollOffset, activePane }) {
+export function Performance({ currentScrollOffset, pastScrollOffset, activePane, onCurrentScrollOffsetChange, onPastScrollOffsetChange }) {
     const terminal = useTerminalSize();
     const stacked = stackPanels(terminal.width);
     const rows = useQuery(SUMMARY_SQL);
@@ -475,6 +475,16 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane 
     const shadowBalance = botState.mode === 'shadow' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const liveBalance = botState.mode === 'live' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const activeBalance = activeMode === 'live' ? liveBalance : shadowBalance;
+    useEffect(() => {
+        if (currentScrollOffset !== effectiveCurrentScrollOffset) {
+            onCurrentScrollOffsetChange?.(effectiveCurrentScrollOffset);
+        }
+    }, [currentScrollOffset, effectiveCurrentScrollOffset, onCurrentScrollOffsetChange]);
+    useEffect(() => {
+        if (pastScrollOffset !== effectivePastScrollOffset) {
+            onPastScrollOffsetChange?.(effectivePastScrollOffset);
+        }
+    }, [pastScrollOffset, effectivePastScrollOffset, onPastScrollOffsetChange]);
     const getPositionProfit = (row) => {
         const shares = row.entry_price > 0 ? row.size_usd / row.entry_price : null;
         const toWin = row.status === 'exit'

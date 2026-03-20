@@ -1,4 +1,4 @@
-import React, {useMemo} from 'react'
+import React, {useEffect, useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {BarSparkline} from '../components/BarSparkline.js'
 import {Box} from '../components/Box.js'
@@ -425,6 +425,9 @@ interface PerformanceProps {
   selectedBox: PerfBox
   dailyDetailOpen: boolean
   dailyDetailScrollOffset: number
+  onCurrentScrollOffsetChange?: (offset: number) => void
+  onPastScrollOffsetChange?: (offset: number) => void
+  onDailyDetailScrollOffsetChange?: (offset: number) => void
 }
 
 interface DailyPnlEntry {
@@ -609,7 +612,10 @@ export function Performance({
   activePane,
   selectedBox,
   dailyDetailOpen,
-  dailyDetailScrollOffset
+  dailyDetailScrollOffset,
+  onCurrentScrollOffsetChange,
+  onPastScrollOffsetChange,
+  onDailyDetailScrollOffsetChange
 }: PerformanceProps) {
   const terminal = useTerminalSize()
   const stacked = stackPanels(terminal.width)
@@ -746,6 +752,24 @@ export function Performance({
   const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows)
   const detailOffset = Math.min(dailyDetailScrollOffset, detailMaxOffset)
   const visibleDetailEntries = dailyEntries.slice(detailOffset, detailOffset + detailVisibleRows)
+
+  useEffect(() => {
+    if (currentScrollOffset !== effectiveCurrentScrollOffset) {
+      onCurrentScrollOffsetChange?.(effectiveCurrentScrollOffset)
+    }
+  }, [currentScrollOffset, effectiveCurrentScrollOffset, onCurrentScrollOffsetChange])
+
+  useEffect(() => {
+    if (pastScrollOffset !== effectivePastScrollOffset) {
+      onPastScrollOffsetChange?.(effectivePastScrollOffset)
+    }
+  }, [pastScrollOffset, effectivePastScrollOffset, onPastScrollOffsetChange])
+
+  useEffect(() => {
+    if (dailyDetailScrollOffset !== detailOffset) {
+      onDailyDetailScrollOffsetChange?.(detailOffset)
+    }
+  }, [dailyDetailScrollOffset, detailOffset, onDailyDetailScrollOffsetChange])
   const paddedDetailEntries = useMemo(
     () =>
       Array.from({length: detailVisibleRows}, (_, index) => visibleDetailEntries[index] ?? null),

@@ -247,7 +247,6 @@ interface ConfusionCellProps {
   label: string
   value: number
   width: number
-  height: number
   kind: ConfusionHeatKind
   scale: number
 }
@@ -420,12 +419,12 @@ function confusionHeatColor(value: number, scale: number, kind: ConfusionHeatKin
     : negativeHeatColor(safeValue, safeScale)
 }
 
-function ConfusionMatrixCell({label, value, width, height, kind, scale}: ConfusionCellProps) {
+function ConfusionMatrixCell({label, value, width, kind, scale}: ConfusionCellProps) {
   const borderColor = confusionHeatColor(value, scale, kind)
   const innerWidth = Math.max(1, width - 2)
 
   return (
-    <InkBox width={width} height={height} borderStyle="round" borderColor={borderColor} flexDirection="column">
+    <InkBox width={width} height={6} borderStyle="round" borderColor={borderColor} flexDirection="column">
       <Text color={theme.modalBackground} backgroundColor={borderColor}>
         {centerLine(label, innerWidth)}
       </Text>
@@ -623,7 +622,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     : Math.max(34, Math.floor((terminal.width - 18) / 2))
   const secondaryThreeAcross = !stacked && terminal.width >= 150
   const secondaryWideBudget = Math.max(96, terminal.width - 20)
-  const confusionBoxWidth = terminal.compact ? 15 : 17
+  const confusionBoxWidth = Math.max(13, Math.min(23, terminal.width - 12))
   const secondaryMetricPanelWidth = secondaryThreeAcross
     ? Math.max(30, Math.floor((secondaryWideBudget - confusionBoxWidth - 2) / 2))
     : undefined
@@ -632,8 +631,8 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     : twoColumnPanelContentWidth
   const signalModePanelContentWidth = calibrationPanelContentWidth
   const retrainPanelContentWidth = twoColumnPanelContentWidth
-  const confusionCellWidth = Math.max(5, Math.floor((confusionBoxWidth - 5) / 2))
-  const confusionCellHeight = Math.max(6, Math.floor((confusionBoxWidth - 3) / 2))
+  const confusionPanelContentWidth = Math.max(9, confusionBoxWidth - 4)
+  const confusionCellWidth = Math.max(4, Math.floor((confusionPanelContentWidth - 1) / 2))
   const calibrationWidths = useMemo(() => {
     const rangeWidth = 8
     const nWidth = 5
@@ -790,7 +789,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             label={confusionCells[0].label}
             value={confusionCells[0].value}
             width={confusionCellWidth}
-            height={confusionCellHeight}
             kind={confusionCells[0].kind}
             scale={confusionScale}
           />
@@ -799,7 +797,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             label={confusionCells[1].label}
             value={confusionCells[1].value}
             width={confusionCellWidth}
-            height={confusionCellHeight}
             kind={confusionCells[1].kind}
             scale={confusionScale}
           />
@@ -810,7 +807,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             label={confusionCells[2].label}
             value={confusionCells[2].value}
             width={confusionCellWidth}
-            height={confusionCellHeight}
             kind={confusionCells[2].kind}
             scale={confusionScale}
           />
@@ -819,7 +815,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             label={confusionCells[3].label}
             value={confusionCells[3].value}
             width={confusionCellWidth}
-            height={confusionCellHeight}
             kind={confusionCells[3].kind}
             scale={confusionScale}
           />

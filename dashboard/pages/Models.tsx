@@ -420,18 +420,21 @@ function confusionHeatColor(value: number, scale: number, kind: ConfusionHeatKin
 }
 
 function ConfusionMatrixCell({label, value, width, kind, scale}: ConfusionCellProps) {
-  const borderColor = confusionHeatColor(value, scale, kind)
+  const fillColor = confusionHeatColor(value, scale, kind)
   const innerWidth = Math.max(1, width - 2)
 
   return (
-    <InkBox width={width} height={6} borderStyle="round" borderColor={borderColor} flexDirection="column">
-      <Text color={theme.modalBackground} backgroundColor={borderColor}>
-        {centerLine(label, innerWidth)}
-      </Text>
-      <Text color={theme.modalBackground} backgroundColor={borderColor}>
+    <InkBox width={width} height={6} borderStyle="round" borderColor={fillColor} flexDirection="column">
+      <Text color={theme.modalBackground} backgroundColor={fillColor}>
         {' '.repeat(innerWidth)}
       </Text>
-      <Text color={theme.modalBackground} backgroundColor={borderColor} bold>
+      <Text color={theme.modalBackground} backgroundColor={fillColor} bold>
+        {centerLine(label, innerWidth)}
+      </Text>
+      <Text color={theme.modalBackground} backgroundColor={fillColor}>
+        {' '.repeat(innerWidth)}
+      </Text>
+      <Text color={theme.modalBackground} backgroundColor={fillColor} bold>
         {centerLine(formatCount(value), innerWidth)}
       </Text>
     </InkBox>
@@ -622,20 +625,26 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     : Math.max(34, Math.floor((terminal.width - 18) / 2))
   const secondaryRowGap = 1
   const secondaryThreeAcross = !stacked && terminal.width >= 150
-  const secondaryWideBudget = Math.max(96, terminal.width - 16)
+  const secondaryRowWidth = Math.max(96, terminal.width - 8)
   const confusionBoxWidth = secondaryThreeAcross
-    ? Math.max(18, Math.floor(secondaryWideBudget * 0.18))
+    ? Math.max(18, Math.floor(secondaryRowWidth * 0.17))
     : Math.max(13, Math.min(23, terminal.width - 12))
   const combinedSectionGap = 3
-  const combinedMetricsBoxWidth: string | number = secondaryThreeAcross
-    ? Math.max(60, secondaryWideBudget - confusionBoxWidth - secondaryRowGap)
-    : '100%'
+  const combinedMetricsBoxWidth = secondaryThreeAcross
+    ? Math.max(60, secondaryRowWidth - confusionBoxWidth - secondaryRowGap)
+    : undefined
   const combinedMetricsContentWidth = secondaryThreeAcross
     ? Math.max(56, Number(combinedMetricsBoxWidth) - 4)
     : twoColumnPanelContentWidth
   const combinedPanelsWide = secondaryThreeAcross && combinedMetricsContentWidth >= 68
-  const combinedSectionContentWidth = combinedPanelsWide
-    ? Math.max(24, Math.floor((combinedMetricsContentWidth - combinedSectionGap) / 2))
+  const combinedSectionWideBudget = combinedPanelsWide
+    ? Math.max(48, combinedMetricsContentWidth - combinedSectionGap)
+    : combinedMetricsContentWidth
+  const confidenceSectionContentWidth = combinedPanelsWide
+    ? Math.max(24, Math.floor(combinedSectionWideBudget / 2))
+    : combinedMetricsContentWidth
+  const signalModesSectionContentWidth = combinedPanelsWide
+    ? Math.max(24, combinedSectionWideBudget - confidenceSectionContentWidth)
     : combinedMetricsContentWidth
   const retrainPanelContentWidth = twoColumnPanelContentWidth
   const confusionPanelContentWidth = Math.max(9, confusionBoxWidth - 4)
@@ -644,28 +653,28 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     const rangeWidth = 8
     const nWidth = 5
     const gapCount = 4
-    const metricWidth = Math.max(7, Math.floor((combinedSectionContentWidth - rangeWidth - nWidth - gapCount) / 3))
+    const metricWidth = Math.max(7, Math.floor((confidenceSectionContentWidth - rangeWidth - nWidth - gapCount) / 3))
     const used = rangeWidth + nWidth + gapCount + metricWidth * 3
     return {
-      rangeWidth: rangeWidth + Math.max(0, combinedSectionContentWidth - used),
+      rangeWidth: rangeWidth + Math.max(0, confidenceSectionContentWidth - used),
       metricWidth,
       nWidth
     }
-  }, [combinedSectionContentWidth])
+  }, [confidenceSectionContentWidth])
   const signalModeWidths = useMemo(() => {
     const useWidth = 7
     const winWidth = 7
     const edgeWidth = 7
-    const pnlWidth = Math.max(12, Math.min(14, Math.floor(combinedSectionContentWidth * 0.22)))
+    const pnlWidth = Math.max(12, Math.min(14, Math.floor(signalModesSectionContentWidth * 0.22)))
     const gapCount = 4
     return {
-      modeWidth: Math.max(10, combinedSectionContentWidth - useWidth - winWidth - edgeWidth - pnlWidth - gapCount),
+      modeWidth: Math.max(10, signalModesSectionContentWidth - useWidth - winWidth - edgeWidth - pnlWidth - gapCount),
       useWidth,
       winWidth,
       edgeWidth,
       pnlWidth
     }
-  }, [combinedSectionContentWidth])
+  }, [signalModesSectionContentWidth])
   const retrainWidths = useMemo(() => {
     const sampleWidth = 8
     const brierWidth = 7
@@ -918,13 +927,18 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
         {secondaryThreeAcross ? <InkBox width={secondaryRowGap} /> : <InkBox height={1} />}
 
-        <Box
-          title="Confidence + Modes"
-          width={combinedMetricsBoxWidth}
-          accent={clampedSelectedPanelIndex === 2 || clampedSelectedPanelIndex === 3}
-        >
-          <InkBox width="100%" flexDirection={combinedPanelsWide ? 'row' : 'column'}>
-            <InkBox flexDirection="column" width={combinedPanelsWide ? combinedSectionContentWidth : '100%'}>
+        <InkBox width={secondaryThreeAcross ? 0 : '100%'} flexGrow={1}>
+          <Box
+            title="Confidence + Modes"
+            width="100%"
+            accent={clampedSelectedPanelIndex === 2 || clampedSelectedPanelIndex === 3}
+          >
+            <InkBox width="100%" flexDirection={combinedPanelsWide ? 'row' : 'column'}>
+              <InkBox
+                flexDirection="column"
+                width={combinedPanelsWide ? confidenceSectionContentWidth : '100%'}
+                flexGrow={combinedPanelsWide ? 1 : 0}
+              >
               <Text color={theme.accent} bold>Confidence Check</Text>
               <StatRow label="Resolved bets" value={formatCount(calibration?.resolved)} />
               <StatRow
@@ -978,11 +992,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
               ) : (
                 <Text color={theme.dim}>Need a few resolved tracker bets to grade calibration.</Text>
               )}
-            </InkBox>
+              </InkBox>
 
-            {combinedPanelsWide ? <InkBox width={combinedSectionGap} /> : <InkBox height={1} />}
+              {combinedPanelsWide ? <InkBox width={combinedSectionGap} /> : <InkBox height={1} />}
 
-            <InkBox flexDirection="column" width={combinedPanelsWide ? combinedSectionContentWidth : '100%'}>
+              <InkBox
+                flexDirection="column"
+                width={combinedPanelsWide ? signalModesSectionContentWidth : '100%'}
+                flexGrow={combinedPanelsWide ? 1 : 0}
+              >
               <Text color={theme.accent} bold>Signal Modes</Text>
               {signalModes.length ? (
                 <>
@@ -1027,8 +1045,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                 <Text color={theme.dim}>No tracker signals yet.</Text>
               )}
             </InkBox>
-          </InkBox>
-        </Box>
+            </InkBox>
+          </Box>
+        </InkBox>
       </InkBox>
 
       <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'}>

@@ -6,7 +6,7 @@ import {editableConfigFields, formatEditableConfigValue, type EditableConfigValu
 import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil} from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
-import {positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
+import {negativeHeatColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
 import {useQuery} from '../useDb.js'
 
 interface ModelRow {
@@ -241,6 +241,16 @@ interface CompactStatItem {
   color?: string
 }
 
+type ConfusionHeatKind = 'good' | 'bad'
+
+interface ConfusionCellProps {
+  label: string
+  value: number
+  width: number
+  kind: ConfusionHeatKind
+  scale: number
+}
+
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
 AND COALESCE(source_action, 'buy')='buy'
@@ -390,6 +400,42 @@ FROM model_history
 function formatCount(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '0'
   return Math.round(value).toLocaleString()
+}
+
+function centerLine(text: string, width: number): string {
+  const safeWidth = Math.max(1, width)
+  const clipped = text.length > safeWidth ? text.slice(0, safeWidth) : text
+  const remaining = Math.max(0, safeWidth - clipped.length)
+  const left = Math.floor(remaining / 2)
+  const right = remaining - left
+  return `${' '.repeat(left)}${clipped}${' '.repeat(right)}`
+}
+
+function confusionHeatColor(value: number, scale: number, kind: ConfusionHeatKind): string {
+  const safeValue = Math.max(0, value)
+  const safeScale = Math.max(1, scale)
+  return kind === 'good'
+    ? positiveDollarColor(safeValue, safeScale)
+    : negativeHeatColor(safeValue, safeScale)
+}
+
+function ConfusionMatrixCell({label, value, width, kind, scale}: ConfusionCellProps) {
+  const borderColor = confusionHeatColor(value, scale, kind)
+  const innerWidth = Math.max(1, width - 2)
+
+  return (
+    <InkBox width={width} height={5} borderStyle="round" borderColor={borderColor} flexDirection="column">
+      <Text color={theme.modalBackground} backgroundColor={borderColor}>
+        {centerLine(label, innerWidth)}
+      </Text>
+      <Text color={theme.modalBackground} backgroundColor={borderColor}>
+        {' '.repeat(innerWidth)}
+      </Text>
+      <Text color={theme.modalBackground} backgroundColor={borderColor} bold>
+        {centerLine(formatCount(value), innerWidth)}
+      </Text>
+    </InkBox>
+  )
 }
 
 function ratio(numerator: number | null | undefined, denominator: number | null | undefined): number | null {
@@ -571,43 +617,60 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       : null
   const calibrationLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 5
   const historyLimit = terminal.compact ? 3 : 4
-  const panelContentWidth = stacked
+  const twoColumnPanelContentWidth = stacked
     ? Math.max(46, terminal.width - 12)
     : Math.max(34, Math.floor((terminal.width - 18) / 2))
+  const secondaryThreeAcross = !stacked && terminal.width >= 150
+  const secondaryWideBudget = Math.max(96, terminal.width - 20)
+  const confusionPanelWidth = secondaryThreeAcross
+    ? Math.max(24, Math.floor(secondaryWideBudget * 0.24))
+    : undefined
+  const secondaryMetricPanelWidth = secondaryThreeAcross
+    ? Math.max(30, Math.floor((secondaryWideBudget - (confusionPanelWidth ?? 0) - 2) / 2))
+    : undefined
+  const calibrationPanelContentWidth = secondaryThreeAcross
+    ? Math.max(24, (secondaryMetricPanelWidth ?? twoColumnPanelContentWidth + 4) - 4)
+    : twoColumnPanelContentWidth
+  const signalModePanelContentWidth = calibrationPanelContentWidth
+  const retrainPanelContentWidth = twoColumnPanelContentWidth
+  const confusionPanelContentWidth = secondaryThreeAcross
+    ? Math.max(20, (confusionPanelWidth ?? twoColumnPanelContentWidth + 4) - 4)
+    : twoColumnPanelContentWidth
+  const confusionCellWidth = Math.max(12, Math.floor((confusionPanelContentWidth - 1) / 2))
   const calibrationWidths = useMemo(() => {
     const rangeWidth = 8
     const nWidth = 5
     const gapCount = 4
-    const metricWidth = Math.max(7, Math.floor((panelContentWidth - rangeWidth - nWidth - gapCount) / 3))
+    const metricWidth = Math.max(7, Math.floor((calibrationPanelContentWidth - rangeWidth - nWidth - gapCount) / 3))
     const used = rangeWidth + nWidth + gapCount + metricWidth * 3
     return {
-      rangeWidth: rangeWidth + Math.max(0, panelContentWidth - used),
+      rangeWidth: rangeWidth + Math.max(0, calibrationPanelContentWidth - used),
       metricWidth,
       nWidth
     }
-  }, [panelContentWidth])
+  }, [calibrationPanelContentWidth])
   const signalModeWidths = useMemo(() => {
     const useWidth = 7
     const winWidth = 7
     const edgeWidth = 7
-    const pnlWidth = Math.max(12, Math.min(14, Math.floor(panelContentWidth * 0.22)))
+    const pnlWidth = Math.max(12, Math.min(14, Math.floor(signalModePanelContentWidth * 0.22)))
     const gapCount = 4
     return {
-      modeWidth: Math.max(10, panelContentWidth - useWidth - winWidth - edgeWidth - pnlWidth - gapCount),
+      modeWidth: Math.max(10, signalModePanelContentWidth - useWidth - winWidth - edgeWidth - pnlWidth - gapCount),
       useWidth,
       winWidth,
       edgeWidth,
       pnlWidth
     }
-  }, [panelContentWidth])
+  }, [signalModePanelContentWidth])
   const retrainWidths = useMemo(() => {
     const sampleWidth = 8
     const brierWidth = 7
     const lossWidth = 7
     const gapCount = 4
     const minTimeWidth = 13
-    let stateWidth = Math.max(8, Math.min(12, Math.floor(panelContentWidth * 0.2)))
-    let timeWidth = panelContentWidth - gapCount - sampleWidth - brierWidth - lossWidth - stateWidth
+    let stateWidth = Math.max(8, Math.min(12, Math.floor(retrainPanelContentWidth * 0.2)))
+    let timeWidth = retrainPanelContentWidth - gapCount - sampleWidth - brierWidth - lossWidth - stateWidth
 
     if (timeWidth < minTimeWidth) {
       const reclaimed = Math.min(minTimeWidth - timeWidth, Math.max(0, stateWidth - 8))
@@ -617,7 +680,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
     if (timeWidth < minTimeWidth) {
       timeWidth = minTimeWidth
-      stateWidth = Math.max(8, panelContentWidth - gapCount - sampleWidth - brierWidth - lossWidth - timeWidth)
+      stateWidth = Math.max(8, retrainPanelContentWidth - gapCount - sampleWidth - brierWidth - lossWidth - timeWidth)
     }
 
     return {
@@ -627,7 +690,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       lossWidth,
       stateWidth
     }
-  }, [panelContentWidth])
+  }, [retrainPanelContentWidth])
   const clampedSelectedPanelIndex = Math.max(0, Math.min(selectedPanelIndex, MODEL_PANEL_DEFS.length - 1))
   const selectedPanel = MODEL_PANEL_DEFS[clampedSelectedPanelIndex]
   const relatedSettings = useMemo(
@@ -707,11 +770,27 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => splitIntoColumns(trackerHealthStats, 2),
     [trackerHealthStats]
   )
+  const confusionCells = useMemo(
+    () => [
+      {label: 'TP', value: Math.max(0, Number(confusion?.true_positive || 0)), kind: 'good' as const},
+      {label: 'FP', value: Math.max(0, Number(confusion?.false_positive || 0)), kind: 'bad' as const},
+      {label: 'TN', value: Math.max(0, Number(confusion?.true_negative || 0)), kind: 'good' as const},
+      {label: 'FN', value: Math.max(0, Number(confusion?.false_negative || 0)), kind: 'bad' as const}
+    ],
+    [confusion]
+  )
+  const confusionScale = useMemo(
+    () => Math.max(1, ...confusionCells.map((cell) => cell.value)),
+    [confusionCells]
+  )
+  const topRowBoxWidth: string | number = stacked ? '100%' : '50%'
+  const calibrationRowBoxWidth: string | number = secondaryThreeAcross && secondaryMetricPanelWidth ? secondaryMetricPanelWidth : '100%'
+  const confusionBoxWidth: string | number = secondaryThreeAcross && confusionPanelWidth ? confusionPanelWidth : '100%'
 
   return (
     <InkBox flexDirection="column" width="100%">
       <InkBox flexDirection={stacked ? 'column' : 'row'}>
-        <Box title="Prediction Quality" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 0}>
+        <Box title="Prediction Quality" width={topRowBoxWidth} accent={clampedSelectedPanelIndex === 0}>
           <StatRow
             label="Active path"
             value={latest?.deployed ? 'XGBoost' : 'Heuristic score'}
@@ -737,7 +816,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
 
-        <Box title="Tracker Health" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 1}>
+        <Box title="Tracker Health" width={topRowBoxWidth} accent={clampedSelectedPanelIndex === 1}>
           <InkBox width="100%">
             {trackerHealthColumns.map((column, columnIndex) => (
               <React.Fragment key={`tracker-health-column-${columnIndex}`}>
@@ -760,8 +839,50 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         </Box>
       </InkBox>
 
-      <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'}>
-        <Box title="Confidence Check" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 2}>
+      <InkBox marginTop={1} flexDirection={secondaryThreeAcross ? 'row' : 'column'}>
+        <Box title="Confusion Matrix" width={confusionBoxWidth} accent={clampedSelectedPanelIndex === 2}>
+          <InkBox width="100%" flexDirection="column">
+            <InkBox>
+              <ConfusionMatrixCell
+                label={confusionCells[0].label}
+                value={confusionCells[0].value}
+                width={confusionCellWidth}
+                kind={confusionCells[0].kind}
+                scale={confusionScale}
+              />
+              <InkBox width={1} />
+              <ConfusionMatrixCell
+                label={confusionCells[1].label}
+                value={confusionCells[1].value}
+                width={confusionCellWidth}
+                kind={confusionCells[1].kind}
+                scale={confusionScale}
+              />
+            </InkBox>
+            <InkBox height={1} />
+            <InkBox>
+              <ConfusionMatrixCell
+                label={confusionCells[2].label}
+                value={confusionCells[2].value}
+                width={confusionCellWidth}
+                kind={confusionCells[2].kind}
+                scale={confusionScale}
+              />
+              <InkBox width={1} />
+              <ConfusionMatrixCell
+                label={confusionCells[3].label}
+                value={confusionCells[3].value}
+                width={confusionCellWidth}
+                kind={confusionCells[3].kind}
+                scale={confusionScale}
+              />
+            </InkBox>
+          </InkBox>
+        </Box>
+
+        {secondaryThreeAcross ? <InkBox width={1} /> : <InkBox height={1} />}
+
+        <Box title="Confidence Check" width={calibrationRowBoxWidth} accent={clampedSelectedPanelIndex === 2}>
           <StatRow label="Resolved bets" value={formatCount(calibration?.resolved)} />
           <StatRow
             label="Avg confidence"
@@ -778,10 +899,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={formatPct(calibration?.avg_gap, 1)}
             color={lowerIsBetterColor(calibration?.avg_gap, 0.12, 0.2)}
           />
-          <StatRow label="True positive" value={formatCount(confusion?.true_positive)} color={theme.green} />
-          <StatRow label="False positive" value={formatCount(confusion?.false_positive)} color={theme.red} />
-          <StatRow label="True negative" value={formatCount(confusion?.true_negative)} color={theme.green} />
-          <StatRow label="False negative" value={formatCount(confusion?.false_negative)} color={theme.red} />
           {calibrationRows.length ? (
             <>
               <InkBox width="100%" marginTop={1}>
@@ -820,9 +937,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           )}
         </Box>
 
-        {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
+        {secondaryThreeAcross ? <InkBox width={1} /> : <InkBox height={1} />}
 
-        <Box title="Signal Modes" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 3}>
+        <Box title="Signal Modes" width={calibrationRowBoxWidth} accent={clampedSelectedPanelIndex === 3}>
           {signalModes.length ? (
             <>
               <InkBox width="100%">

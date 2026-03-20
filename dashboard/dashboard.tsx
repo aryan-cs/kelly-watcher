@@ -52,6 +52,21 @@ function formatCurrentPollElapsedSeconds(nowSeconds: number, startedAtSeconds?: 
   return `${Math.max(0, Math.floor(nowSeconds - startedAtSeconds))}s`
 }
 
+function formatRetrainStatus(status?: string): string | null {
+  const value = String(status || '').trim().toLowerCase()
+  if (!value) {
+    return null
+  }
+  if (value === 'deployed') return 'train deployed'
+  if (value === 'completed_not_deployed') return 'train no deploy'
+  if (value === 'skipped_not_enough_samples') return 'train waiting'
+  if (value === 'already_running') return 'train busy'
+  if (value === 'failed') return 'train failed'
+  if (value.startsWith('skipped_')) return 'train skipped'
+  if (value === 'running') return 'training'
+  return `train ${value.replace(/_/g, ' ')}`
+}
+
 interface AppContentProps {
   page: Page
   isRefreshing: boolean
@@ -199,6 +214,11 @@ function AppContent({
   const lastActivityAt = botState.last_activity_at ?? 0
   const currentLoopStartedAt = botState.last_loop_started_at ?? 0
   const loopInProgress = botState.loop_in_progress ?? false
+  const retrainInProgress = botState.retrain_in_progress ?? false
+  const retrainStartedAt = botState.retrain_started_at ?? 0
+  const lastRetrainFinishedAt = botState.last_retrain_finished_at ?? 0
+  const retrainElapsedText = formatCurrentPollElapsedSeconds(now, retrainStartedAt)
+  const retrainStatusText = formatRetrainStatus(botState.last_retrain_status)
   const pollIsFresh = lastPollAt > 0 && (now - lastPollAt) <= heartbeatWindow
   const activityIsFresh = lastActivityAt > 0 && (now - lastActivityAt) <= activityWindow
   const backendDotColor = pollIsFresh
@@ -216,6 +236,18 @@ function AppContent({
   const lastPollText = loopInProgress
     ? `polling...${currentPollElapsedText ? ` ${currentPollElapsedText}` : ''} | last poll: ${secondsAgo(botState.last_poll_at)}`
     : `last poll: ${secondsAgo(botState.last_poll_at)}`
+  const recentRetrainText =
+    !retrainInProgress && retrainStatusText && lastRetrainFinishedAt > 0 && (now - lastRetrainFinishedAt) <= 600
+      ? `${retrainStatusText}: ${secondsAgo(lastRetrainFinishedAt)}`
+      : null
+  const footerStatusText = isRefreshing
+    ? 'refreshing...'
+    : retrainInProgress
+      ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
+      : recentRetrainText
+        ? `${recentRetrainText} | ${lastPollText}`
+        : lastPollText
+  const footerStatusColor = isRefreshing ? theme.accent : retrainInProgress ? theme.yellow : theme.dim
   const footerControls =
     page === 1
       ? terminal.compact
@@ -269,6 +301,15 @@ function AppContent({
           )
         })}
         <Spacer />
+        {retrainInProgress ? (
+          <>
+            <Text color={theme.yellow} bold>
+              [{terminal.compact ? 'TRN' : 'TRAIN'}
+              {retrainElapsedText ? ` ${retrainElapsedText}` : ''}]
+            </Text>
+            <Text>  </Text>
+          </>
+        ) : null}
         <Text color={modeColor} bold>{mode}</Text>
       </Box>
 
@@ -308,13 +349,13 @@ function AppContent({
           <>
             <Text color={theme.dim}>{footerControls}</Text>
             <Spacer />
-            <Text color={isRefreshing ? theme.accent : theme.dim}>{isRefreshing ? 'refreshing...' : lastPollText}</Text>
+            <Text color={footerStatusColor}>{footerStatusText}</Text>
           </>
         ) : (
           <>
             <Text color={theme.dim}>{footerControls}</Text>
             <Spacer />
-            <Text color={isRefreshing ? theme.accent : theme.dim}>{isRefreshing ? 'refreshing...' : lastPollText}</Text>
+            <Text color={footerStatusColor}>{footerStatusText}</Text>
           </>
         )}
       </Box>
@@ -849,7 +890,6 @@ function App() {
       if (normalized === 'a' && walletPane === 'dropped' && selectedDroppedWalletAddress) {
         if (reactivateDroppedWallet(selectedDroppedWalletAddress)) {
           setWalletDetailOpen(false)
-          setWalletPane('tracked')
           setRefreshToken((current) => current + 1)
         }
         return

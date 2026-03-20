@@ -452,6 +452,81 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_positive_best_wallet_is_protected_from_auto_drop(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xbest", 0.20, 80, -0.5, 0.0, 20.0, 10, 10, 16, 0, -250.0, -0.08, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xweak", 0.18, 80, -0.5, 0.0, 20.0, 10, 10, 14, 0, -300.0, -0.09, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    (
+                        ("0xbest", 1_699_970_000, 1_699_970_000),
+                        ("0xweak", 1_699_970_000, 1_699_970_000),
+                    ),
+                )
+                insert_logged_trade(
+                    conn,
+                    "0xbest",
+                    1_699_990_000,
+                    actual_entry_price=0.55,
+                    actual_entry_shares=1.818,
+                    actual_entry_size_usd=1.0,
+                    shadow_pnl_usd=2.50,
+                )
+                insert_logged_trade(conn, "0xweak", 1_699_990_000)
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
+                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=40), patch(
+                    "watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40
+                ), patch("watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03), patch(
+                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                    manager = WatchlistManager(["0xbest", "0xweak"])
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.hot, ("0xbest",))
+                self.assertEqual(snapshot.dropped, ("0xweak",))
+
+                conn = db.get_conn()
+                best_row = conn.execute(
+                    "SELECT status FROM wallet_watch_state WHERE wallet_address=?",
+                    ("0xbest",),
+                ).fetchone()
+                weak_row = conn.execute(
+                    "SELECT status, status_reason FROM wallet_watch_state WHERE wallet_address=?",
+                    ("0xweak",),
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(best_row["status"], "active")
+                self.assertEqual(weak_row["status"], "dropped")
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_raw_cursor_activity_does_not_prevent_inactivity_drop_without_logged_trades(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -654,6 +729,16 @@ class WatchlistManagerTest(unittest.TestCase):
                         actual_entry_shares=2.0,
                         actual_entry_size_usd=1.0,
                         shadow_pnl_usd=0.05,
+                    )
+                for index in range(5):
+                    insert_logged_trade(
+                        conn,
+                        f"0xchamp{index}",
+                        1_700_000_050 + index,
+                        actual_entry_price=0.50,
+                        actual_entry_shares=2.0,
+                        actual_entry_size_usd=1.0,
+                        shadow_pnl_usd=1.0 + index,
                     )
                 conn.commit()
                 conn.close()

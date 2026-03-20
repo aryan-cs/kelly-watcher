@@ -66,6 +66,7 @@ class PollBatch:
 HOT_WALLET_TRADE_FETCH_LIMIT = 30
 WARM_WALLET_TRADE_FETCH_LIMIT = 20
 DISCOVERY_WALLET_TRADE_FETCH_LIMIT = 12
+_BEST_WALLET_DROP_PROTECTION_LIMIT = 5
 _RESOLVED_COPIED_BUY_SQL = """
 skipped=0
 AND COALESCE(source_action, 'buy')='buy'
@@ -317,6 +318,52 @@ def _wallet_skip_metrics_map(wallet_addresses: list[str]) -> dict[str, WalletSki
     return metrics
 
 
+def _protected_best_wallets(wallet_addresses: list[str] | None = None) -> set[str]:
+    wallets = _normalize_wallets(wallet_addresses or [])
+    conn = get_conn()
+    try:
+        params: tuple[str, ...] = ()
+        wallet_where = ""
+        if wallets:
+            placeholders = ",".join("?" for _ in wallets)
+            wallet_where = f"AND LOWER(trader_address) IN ({placeholders})"
+            params = tuple(wallets)
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                LOWER(trader_address) AS trader_address,
+                ROUND(
+                    SUM(
+                        CASE
+                            WHEN real_money=0 AND {_RESOLVED_COPIED_BUY_SQL} THEN COALESCE(shadow_pnl_usd, 0)
+                            ELSE 0
+                        END
+                    ),
+                    3
+                ) AS pnl
+            FROM trade_log
+            WHERE real_money=0
+              {wallet_where}
+            GROUP BY LOWER(trader_address)
+            HAVING SUM(CASE WHEN real_money=0 AND {_RESOLVED_COPIED_BUY_SQL} THEN 1 ELSE 0 END) > 0
+            ORDER BY pnl DESC, trader_address ASC
+            LIMIT {_BEST_WALLET_DROP_PROTECTION_LIMIT}
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    protected: set[str] = set()
+    for row in rows:
+        wallet = str(row["trader_address"] or "").strip().lower()
+        pnl = float(row["pnl"] or 0.0)
+        if wallet and pnl > 0:
+            protected.add(wallet)
+    return protected
+
+
 def _drop_wallets(wallet_updates: list[tuple[str, str, int, int]]) -> None:
     if not wallet_updates:
         return
@@ -428,7 +475,7 @@ def _ensure_tracking_started(wallet_addresses: list[str]) -> None:
         conn.close()
 
 
-def _auto_drop_underperforming_wallets(wallet_addresses: list[str]) -> None:
+def _auto_drop_underperforming_wallets(wallet_addresses: list[str], protected_wallets: set[str] | None = None) -> None:
     minimum_trades = wallet_performance_drop_min_trades()
     if minimum_trades <= 0:
         return
@@ -438,6 +485,7 @@ def _auto_drop_underperforming_wallets(wallet_addresses: list[str]) -> None:
     wallets = _normalize_wallets(wallet_addresses)
     if not wallets:
         return
+    protected = protected_wallets or set()
 
     status_rows = _wallet_status_rows(wallets)
     logged_activity_map = _wallet_logged_activity_map(wallets)
@@ -463,6 +511,8 @@ def _auto_drop_underperforming_wallets(wallet_addresses: list[str]) -> None:
     to_drop: list[tuple[str, str, int, int]] = []
 
     for wallet in wallets:
+        if wallet in protected:
+            continue
         status_row = status_rows.get(wallet, {})
         if status_row.get("status") == "dropped":
             continue
@@ -490,7 +540,7 @@ def _auto_drop_underperforming_wallets(wallet_addresses: list[str]) -> None:
     _drop_wallets(to_drop)
 
 
-def _auto_drop_uncopyable_wallets(wallet_addresses: list[str]) -> None:
+def _auto_drop_uncopyable_wallets(wallet_addresses: list[str], protected_wallets: set[str] | None = None) -> None:
     minimum_buys = wallet_uncopyable_drop_min_buys()
     max_skip_rate = wallet_uncopyable_drop_max_skip_rate()
     max_resolved_copied = wallet_uncopyable_drop_max_resolved_copied()
@@ -500,6 +550,7 @@ def _auto_drop_uncopyable_wallets(wallet_addresses: list[str]) -> None:
     wallets = _normalize_wallets(wallet_addresses)
     if not wallets:
         return
+    protected = protected_wallets or set()
 
     status_rows = _wallet_status_rows(wallets)
     logged_activity_map = _wallet_logged_activity_map(wallets)
@@ -508,6 +559,8 @@ def _auto_drop_uncopyable_wallets(wallet_addresses: list[str]) -> None:
     to_drop: list[tuple[str, str, int, int]] = []
 
     for wallet in wallets:
+        if wallet in protected:
+            continue
         status_row = status_rows.get(wallet, {})
         if status_row.get("status") == "dropped":
             continue
@@ -571,7 +624,7 @@ def reactivate_wallet(wallet_address: str) -> bool:
         conn.close()
 
 
-def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
+def _auto_drop_inactive_wallets(wallet_addresses: list[str], protected_wallets: set[str] | None = None) -> None:
     inactivity_limit = wallet_inactivity_limit_seconds()
     if not math.isfinite(inactivity_limit):
         return
@@ -579,6 +632,7 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
     wallets = _normalize_wallets(wallet_addresses)
     if not wallets:
         return
+    protected = protected_wallets or set()
 
     status_rows = _wallet_status_rows(wallets)
     logged_activity_map = _wallet_logged_activity_map(wallets)
@@ -587,6 +641,8 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
     to_drop: list[tuple[str, str, int, int]] = []
 
     for wallet in wallets:
+        if wallet in protected:
+            continue
         status_row = status_rows.get(wallet, {})
         if status_row.get("status") == "dropped":
             continue
@@ -607,10 +663,12 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str]) -> None:
 def _slow_wallet_drop_updates(
     discovery_wallets: tuple[str, ...],
     status_rows: dict[str, dict[str, int | str | None]],
+    protected_wallets: set[str] | None = None,
 ) -> list[tuple[str, str, int, int]]:
     max_tracking_age = wallet_slow_drop_max_tracking_age_seconds()
     if not math.isfinite(max_tracking_age) or not discovery_wallets:
         return []
+    protected = protected_wallets or set()
 
     logged_activity_map = _wallet_logged_activity_map(list(discovery_wallets))
     now_ts = int(time.time())
@@ -618,6 +676,8 @@ def _slow_wallet_drop_updates(
     to_drop: list[tuple[str, str, int, int]] = []
 
     for wallet in discovery_wallets:
+        if wallet in protected:
+            continue
         status_row = status_rows.get(wallet, {})
         if status_row.get("status") == "dropped":
             continue
@@ -737,11 +797,13 @@ class WatchlistManager:
         self._loop_count = 0
         self._snapshot = self._build_snapshot()
 
-    def _build_snapshot(self) -> WatchTierSnapshot:
+    def _build_snapshot(self, *, run_auto_drop: bool = True) -> WatchTierSnapshot:
         _ensure_tracking_started(self.wallets)
-        _auto_drop_inactive_wallets(self.wallets)
-        _auto_drop_underperforming_wallets(self.wallets)
-        _auto_drop_uncopyable_wallets(self.wallets)
+        protected_wallets = _protected_best_wallets()
+        if run_auto_drop:
+            _auto_drop_inactive_wallets(self.wallets, protected_wallets)
+            _auto_drop_underperforming_wallets(self.wallets, protected_wallets)
+            _auto_drop_uncopyable_wallets(self.wallets, protected_wallets)
         status_rows = _wallet_status_rows(self.wallets)
         dropped_wallets = tuple(
             wallet for wallet in self.wallets if status_rows.get(wallet, {}).get("status") == "dropped"
@@ -755,7 +817,7 @@ class WatchlistManager:
         warm = tuple(row.wallet for row in ranked[hot_count:hot_count + warm_count])
         discovery = tuple(row.wallet for row in ranked[hot_count + warm_count:])
 
-        slow_drop_updates = _slow_wallet_drop_updates(discovery, status_rows)
+        slow_drop_updates = _slow_wallet_drop_updates(discovery, status_rows, protected_wallets) if run_auto_drop else {}
         if slow_drop_updates:
             _drop_wallets(slow_drop_updates)
             status_rows = _wallet_status_rows(self.wallets)
@@ -780,8 +842,8 @@ class WatchlistManager:
             refreshed_at=int(time.time()),
         )
 
-    def refresh(self) -> WatchTierSnapshot:
-        snapshot = self._build_snapshot()
+    def refresh(self, *, run_auto_drop: bool = True) -> WatchTierSnapshot:
+        snapshot = self._build_snapshot(run_auto_drop=run_auto_drop)
         with self._lock:
             self._snapshot = snapshot
         return snapshot

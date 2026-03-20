@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import auto_retrain
 import beliefs
+import config
 import dedup
 import db
 import evaluator
@@ -88,6 +89,42 @@ class RuntimeFixesTest(unittest.TestCase):
 
         with patch("executor.use_real_money", return_value=True):
             self.assertEqual(executor.get_account_equity_usd(), 117.5)
+
+    def test_max_daily_loss_pct_reloads_from_env_file(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text("MAX_DAILY_LOSS_PCT=0.12\n", encoding="utf-8")
+            with patch.object(config, "ENV_PATH", env_path), patch.dict(
+                "os.environ",
+                {"MAX_DAILY_LOSS_PCT": "0.05"},
+                clear=False,
+            ):
+                self.assertAlmostEqual(config.max_daily_loss_pct(), 0.12)
+                env_path.write_text("MAX_DAILY_LOSS_PCT=0.07\n", encoding="utf-8")
+                self.assertAlmostEqual(config.max_daily_loss_pct(), 0.07)
+
+    def test_entry_pause_reason_refreshes_daily_loss_guard_from_config(self) -> None:
+        now_ts = int(time.time())
+        guard = main.DailyLossGuard(
+            start_equity=100.0,
+            loss_limit_pct=0.10,
+            day_key=time.strftime("%Y-%m-%d", time.localtime(now_ts)),
+            _equity_locked=True,
+        )
+        tracker_stub = SimpleNamespace(trade_feed_health=lambda: (now_ts, 0))
+        executor_stub = SimpleNamespace(live_entry_health_reason=lambda: None)
+
+        with patch("main.max_daily_loss_pct", return_value=0.0), patch("main.use_real_money", return_value=False):
+            reason = main._entry_pause_reason(
+                tracker_stub,
+                executor_stub,
+                None,
+                guard,
+                89.0,
+            )
+
+        self.assertIsNone(reason)
+        self.assertEqual(guard.loss_limit_pct, 0.0)
 
     def test_resolve_shadow_trades_labels_exited_rows_without_overwriting_realized_pnl(self) -> None:
         with TemporaryDirectory() as tmpdir:

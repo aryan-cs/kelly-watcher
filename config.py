@@ -90,6 +90,25 @@ def _get_env_file_value(name: str) -> str | None:
     return str(value).strip()
 
 
+def _get_env_file_bounded_float(
+    name: str,
+    default: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    raw = _get_env_file_value(name) or _get(name, default)
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be numeric, got {raw!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{name} must be >= {minimum}, got {value}")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{name} must be <= {maximum}, got {value}")
+    return value
+
+
 def use_real_money() -> bool:
     return _get_bool("USE_REAL_MONEY", "false")
 
@@ -353,7 +372,7 @@ def max_live_drawdown_pct() -> float:
 
 
 def max_daily_loss_pct() -> float:
-    return _get_bounded_float("MAX_DAILY_LOSS_PCT", "0.08", minimum=0.0, maximum=1.0)
+    return _get_env_file_bounded_float("MAX_DAILY_LOSS_PCT", "0.08", minimum=0.0, maximum=1.0)
 
 
 def max_total_open_exposure_fraction() -> float:

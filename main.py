@@ -1051,6 +1051,7 @@ def _entry_pause_reason(
         if reason:
             return reason
 
+    daily_loss_guard.loss_limit_pct = max_daily_loss_pct()
     reason = daily_loss_guard.block_reason(account_equity, now_ts)
     if reason:
         return reason

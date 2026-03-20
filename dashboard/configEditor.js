@@ -104,6 +104,14 @@ export const editableConfigFields = [
         liveApplies: false
     },
     {
+        key: 'MAX_DAILY_LOSS_PCT',
+        label: 'Daily Loss Drawdown',
+        kind: 'float',
+        description: 'Blocks new entries after this intraday drawdown. Enter 0 to disable the guard or any percent from 1 through 100. Applies live on the next loop.',
+        defaultValue: '5',
+        liveApplies: true
+    },
+    {
         key: 'USE_REAL_MONEY',
         label: 'Live Trading',
         kind: 'bool',
@@ -113,6 +121,39 @@ export const editableConfigFields = [
     }
 ];
 const durationPattern = /^(\d+(\.\d+)?)([smhdw])$/i;
+const percentEditableFieldKeys = new Set(['MAX_DAILY_LOSS_PCT']);
+function isPercentEditableField(field) {
+    return percentEditableFieldKeys.has(field.key);
+}
+function serializeNumericValue(value) {
+    return String(Number(value.toFixed(6)));
+}
+function normalizePercentEditableValue(raw) {
+    const value = raw.trim();
+    return value.endsWith('%') ? value.slice(0, -1).trim() : value;
+}
+function editableValueFromStoredValue(field, raw) {
+    const value = raw.trim();
+    if (!value || !isPercentEditableField(field)) {
+        return value;
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        return value;
+    }
+    return serializeNumericValue(numeric <= 1 ? numeric * 100 : numeric);
+}
+function storedValueFromEditableValue(field, raw) {
+    const value = isPercentEditableField(field) ? normalizePercentEditableValue(raw) : raw.trim();
+    if (!value || !isPercentEditableField(field)) {
+        return value;
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        return value;
+    }
+    return serializeNumericValue(numeric / 100);
+}
 function sourcePath() {
     return fs.existsSync(envPath) ? envPath : envExamplePath;
 }
@@ -139,11 +180,14 @@ export function readEnvValues() {
 export function readEditableConfigValues() {
     const envValues = readEnvValues();
     return editableConfigFields.reduce((acc, field) => {
-        acc[field.key] = envValues[field.key] || field.defaultValue;
+        const rawValue = envValues[field.key] || field.defaultValue;
+        acc[field.key] = editableValueFromStoredValue(field, rawValue);
         return acc;
     }, {});
 }
 export function writeEditableConfigValue(key, value) {
+    const field = editableConfigFields.find((candidate) => candidate.key === key);
+    const storedValue = field ? storedValueFromEditableValue(field, value) : value;
     const basePath = sourcePath();
     const lines = fs.existsSync(basePath) ? fs.readFileSync(basePath, 'utf8').split(/\r?\n/) : [];
     const pattern = new RegExp(`^${escapeRegExp(key)}\\s*=`);
@@ -151,7 +195,7 @@ export function writeEditableConfigValue(key, value) {
     const updated = lines.map((line) => {
         if (pattern.test(line.trim())) {
             found = true;
-            return `${key}=${value}`;
+            return `${key}=${storedValue}`;
         }
         return line;
     });
@@ -159,13 +203,14 @@ export function writeEditableConfigValue(key, value) {
         if (updated.length && updated[updated.length - 1] !== '') {
             updated.push('');
         }
-        updated.push(`${key}=${value}`);
+        updated.push(`${key}=${storedValue}`);
     }
     fs.writeFileSync(envPath, updated.join('\n'));
 }
 export function validateEditableConfigValue(field, raw) {
     const value = raw.trim();
-    if (!value) {
+    const normalizedPercentValue = isPercentEditableField(field) ? normalizePercentEditableValue(value) : value;
+    if (!normalizedPercentValue) {
         return { ok: false, error: `${field.label} cannot be empty.` };
     }
     if (field.kind === 'bool') {
@@ -190,7 +235,7 @@ export function validateEditableConfigValue(field, raw) {
         }
         return { ok: true, value: `${match[1]}${match[3].toLowerCase()}` };
     }
-    const numeric = Number(value);
+    const numeric = Number(normalizedPercentValue);
     if (!Number.isFinite(numeric)) {
         return { ok: false, error: `${field.label} must be a valid number.` };
     }
@@ -212,10 +257,13 @@ export function validateEditableConfigValue(field, raw) {
     if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN' && (numeric < -1 || numeric > 1)) {
         return { ok: false, error: `${field.label} must be between -1 and 1.` };
     }
+    if (field.key === 'MAX_DAILY_LOSS_PCT' && (numeric < 0 || numeric > 100)) {
+        return { ok: false, error: `${field.label} must be between 0 and 100.` };
+    }
     if ((field.key === 'MIN_BET_USD' || field.key === 'SHADOW_BANKROLL_USD') && numeric <= 0) {
         return { ok: false, error: `${field.label} must be greater than 0.` };
     }
-    return { ok: true, value };
+    return { ok: true, value: normalizedPercentValue };
 }
 export function formatEditableConfigValue(field, value) {
     const normalized = value.trim();
@@ -233,6 +281,9 @@ export function formatEditableConfigValue(field, value) {
     }
     if (field.key === 'SHADOW_BANKROLL_USD' || field.key === 'MIN_BET_USD') {
         return `$${normalized}`;
+    }
+    if (isPercentEditableField(field)) {
+        return `${normalized}%`;
     }
     return normalized;
 }

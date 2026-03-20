@@ -1271,101 +1271,107 @@ export function Wallets({
     const boxIsSelected = activePane === pane
 
     return (
-    <Box title={title} width={shadowPanelsWide ? shadowPanelWidth : '100%'} height={shadowPanelHeight} accent={boxIsSelected}>
-      <InkBox width="100%">
-        <Text color={theme.dim}>{fit('WALLET', shadowNameWidth)}</Text>
-        <Text color={theme.dim}> </Text>
-        <Text color={theme.dim}>{fitRight('COPY WR%', shadowCopyWrWidth)}</Text>
-        <Text color={theme.dim}> </Text>
-        <Text color={theme.dim}>{fitRight('SKIP %', shadowSkipWidth)}</Text>
-        <Text color={theme.dim}> </Text>
-        <Text color={theme.dim}>{fitRight('COPY P&L', shadowCopyPnlWidth)}</Text>
-      </InkBox>
-      <InkBox flexDirection="column">
-        {shadowWallets.length ? (
-          paddedRows.map((wallet, index) => {
-            if (!wallet) {
-              return (
-                <InkBox key={`${title}-empty-${index}`} width="100%">
-                  <Text color={theme.dim}>{fit('', shadowNameWidth)}</Text>
-                  <Text> </Text>
-                  <Text color={theme.dim}>{fitRight('', shadowCopyWrWidth)}</Text>
-                  <Text> </Text>
-                  <Text color={theme.dim}>{fitRight('', shadowSkipWidth)}</Text>
-                  <Text> </Text>
-                  <Text color={theme.dim}>{fitRight('', shadowCopyPnlWidth)}</Text>
-                </InkBox>
-              )
-            }
-
-            const username = usernames.get(wallet.trader_address.toLowerCase())
-            const label = username || shortAddress(wallet.trader_address)
-            const linkedWallet = walletByAddress.get(wallet.trader_address.toLowerCase())
-            const isDroppedWallet = linkedWallet?.status === 'dropped'
-            const copyWinRate = wallet.resolved > 0 ? wallet.wins / wallet.resolved : null
-            const skipRate = wallet.seen_trades > 0 ? wallet.skipped_trades / wallet.seen_trades : null
-            const copyWinRateColor =
-              copyWinRate == null ? theme.dim : probabilityColor(copyWinRate)
-            const skipRateColor =
-              skipRate == null ? theme.dim : negativeHeatColor(skipRate * 100, 100)
-            const pnlColor =
-              wallet.pnl == null
-                ? theme.dim
-                : centeredGradientColor(wallet.pnl, maxAbsShadowPnl)
-
-            return (
-              <InkBox key={`${title}-${wallet.trader_address}`} width="100%">
-                {(() => {
-                  const isSelected = boxIsSelected && wallet.trader_address.toLowerCase() === activeShadowAddress
-                  const rowBackground = isSelected ? selectedRowBackground : undefined
-                  const displayLabel = `${isSelected ? '> ' : '  '}${label}`
-
+      <InkBox
+        width={shadowPanelsWide ? undefined : '100%'}
+        flexGrow={shadowPanelsWide ? 1 : 0}
+        flexBasis={shadowPanelsWide ? 0 : undefined}
+      >
+        <Box title={title} width="100%" height={shadowPanelHeight} accent={boxIsSelected}>
+          <InkBox width="100%">
+            <Text color={theme.dim}>{fit('WALLET', shadowNameWidth)}</Text>
+            <Text color={theme.dim}> </Text>
+            <Text color={theme.dim}>{fitRight('COPY WR%', shadowCopyWrWidth)}</Text>
+            <Text color={theme.dim}> </Text>
+            <Text color={theme.dim}>{fitRight('SKIP %', shadowSkipWidth)}</Text>
+            <Text color={theme.dim}> </Text>
+            <Text color={theme.dim}>{fitRight('COPY P&L', shadowCopyPnlWidth)}</Text>
+          </InkBox>
+          <InkBox flexDirection="column">
+            {shadowWallets.length ? (
+              paddedRows.map((wallet, index) => {
+                if (!wallet) {
                   return (
-                    <>
-                      <Text
-                        color={
-                          isSelected
-                            ? theme.accent
-                            : isDroppedWallet
-                              ? theme.red
-                              : username
-                                ? theme.white
-                                : theme.dim
-                        }
-                        backgroundColor={rowBackground}
-                        bold={isSelected}
-                      >
-                        {fit(displayLabel, shadowNameWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={isSelected ? theme.accent : copyWinRateColor} backgroundColor={rowBackground} bold={isSelected}>
-                  {fitRight(copyWinRate == null ? '-' : formatPct(copyWinRate, 1), shadowCopyWrWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={isSelected ? theme.accent : skipRateColor} backgroundColor={rowBackground} bold={isSelected}>
-                  {fitRight(skipRate == null ? '-' : formatPct(skipRate, 0), shadowSkipWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={isSelected ? theme.accent : pnlColor} backgroundColor={rowBackground} bold={isSelected}>
-                  {fitRight(formatSignedMoney(wallet.pnl, shadowCopyPnlWidth), shadowCopyPnlWidth)}
-                      </Text>
-                    </>
+                    <InkBox key={`${title}-empty-${index}`} width="100%">
+                      <Text color={theme.dim}>{fit('', shadowNameWidth)}</Text>
+                      <Text> </Text>
+                      <Text color={theme.dim}>{fitRight('', shadowCopyWrWidth)}</Text>
+                      <Text> </Text>
+                      <Text color={theme.dim}>{fitRight('', shadowSkipWidth)}</Text>
+                      <Text> </Text>
+                      <Text color={theme.dim}>{fitRight('', shadowCopyPnlWidth)}</Text>
+                    </InkBox>
                   )
-                })()}
-              </InkBox>
-            )
-          })
-        ) : (
-          <Text color={theme.dim}>No wallet performance yet.</Text>
-        )}
+                }
+
+                const username = usernames.get(wallet.trader_address.toLowerCase())
+                const label = username || shortAddress(wallet.trader_address)
+                const linkedWallet = walletByAddress.get(wallet.trader_address.toLowerCase())
+                const isDroppedWallet = linkedWallet?.status === 'dropped'
+                const copyWinRate = wallet.resolved > 0 ? wallet.wins / wallet.resolved : null
+                const skipRate = wallet.seen_trades > 0 ? wallet.skipped_trades / wallet.seen_trades : null
+                const copyWinRateColor =
+                  copyWinRate == null ? theme.dim : probabilityColor(copyWinRate)
+                const skipRateColor =
+                  skipRate == null ? theme.dim : negativeHeatColor(skipRate * 100, 100)
+                const pnlColor =
+                  wallet.pnl == null
+                    ? theme.dim
+                    : centeredGradientColor(wallet.pnl, maxAbsShadowPnl)
+
+                return (
+                  <InkBox key={`${title}-${wallet.trader_address}`} width="100%">
+                    {(() => {
+                      const isSelected = boxIsSelected && wallet.trader_address.toLowerCase() === activeShadowAddress
+                      const rowBackground = isSelected ? selectedRowBackground : undefined
+                      const displayLabel = `${isSelected ? '> ' : '  '}${label}`
+
+                      return (
+                        <>
+                          <Text
+                            color={
+                              isSelected
+                                ? theme.accent
+                                : isDroppedWallet
+                                  ? theme.red
+                                  : username
+                                    ? theme.white
+                                    : theme.dim
+                            }
+                            backgroundColor={rowBackground}
+                            bold={isSelected}
+                          >
+                            {fit(displayLabel, shadowNameWidth)}
+                          </Text>
+                          <Text backgroundColor={rowBackground}> </Text>
+                          <Text color={isSelected ? theme.accent : copyWinRateColor} backgroundColor={rowBackground} bold={isSelected}>
+                            {fitRight(copyWinRate == null ? '-' : formatPct(copyWinRate, 1), shadowCopyWrWidth)}
+                          </Text>
+                          <Text backgroundColor={rowBackground}> </Text>
+                          <Text color={isSelected ? theme.accent : skipRateColor} backgroundColor={rowBackground} bold={isSelected}>
+                            {fitRight(skipRate == null ? '-' : formatPct(skipRate, 0), shadowSkipWidth)}
+                          </Text>
+                          <Text backgroundColor={rowBackground}> </Text>
+                          <Text color={isSelected ? theme.accent : pnlColor} backgroundColor={rowBackground} bold={isSelected}>
+                            {fitRight(formatSignedMoney(wallet.pnl, shadowCopyPnlWidth), shadowCopyPnlWidth)}
+                          </Text>
+                        </>
+                      )
+                    })()}
+                  </InkBox>
+                )
+              })
+            ) : (
+              <Text color={theme.dim}>No wallet performance yet.</Text>
+            )}
+          </InkBox>
+        </Box>
       </InkBox>
-    </Box>
     )
   }
 
   return (
     <InkBox flexDirection="column" width="100%" height="100%">
-      <InkBox flexDirection={shadowPanelsWide ? 'row' : 'column'} columnGap={1} rowGap={1} flexShrink={0}>
+      <InkBox width="100%" flexDirection={shadowPanelsWide ? 'row' : 'column'} columnGap={1} rowGap={1} flexShrink={0}>
         {renderShadowWalletBox('Best Wallets', 'best', bestShadowWallets)}
         {renderShadowWalletBox('Worst Wallets', 'worst', worstShadowWallets)}
       </InkBox>

@@ -620,11 +620,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const twoColumnPanelContentWidth = stacked
     ? Math.max(46, terminal.width - 12)
     : Math.max(34, Math.floor((terminal.width - 18) / 2))
+  const secondaryRowGap = 1
   const secondaryThreeAcross = !stacked && terminal.width >= 150
-  const secondaryWideBudget = Math.max(96, terminal.width - 20)
-  const confusionBoxWidth = Math.max(13, Math.min(23, terminal.width - 12))
+  const secondaryWideBudget = Math.max(96, terminal.width - 16)
+  const confusionBoxWidth = secondaryThreeAcross
+    ? Math.max(18, Math.floor(secondaryWideBudget * 0.18))
+    : Math.max(13, Math.min(23, terminal.width - 12))
   const secondaryMetricPanelWidth = secondaryThreeAcross
-    ? Math.max(30, Math.floor((secondaryWideBudget - confusionBoxWidth - 2) / 2))
+    ? Math.max(30, Math.floor((secondaryWideBudget - confusionBoxWidth - secondaryRowGap * 2) / 2))
     : undefined
   const calibrationPanelContentWidth = secondaryThreeAcross
     ? Math.max(24, (secondaryMetricPanelWidth ?? twoColumnPanelContentWidth + 4) - 4)
@@ -875,11 +878,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         marginTop={1}
         flexDirection={secondaryThreeAcross ? 'row' : 'column'}
         width="100%"
-        justifyContent={secondaryThreeAcross ? 'space-between' : undefined}
       >
         {secondaryThreeAcross ? confusionMatrixBox : <InkBox width="100%" justifyContent="center">{confusionMatrixBox}</InkBox>}
 
-        {secondaryThreeAcross ? null : <InkBox height={1} />}
+        {secondaryThreeAcross ? <InkBox width={secondaryRowGap} /> : <InkBox height={1} />}
 
         <Box title="Confidence Check" width={calibrationRowBoxWidth} accent={clampedSelectedPanelIndex === 2}>
           <StatRow label="Resolved bets" value={formatCount(calibration?.resolved)} />
@@ -936,7 +938,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           )}
         </Box>
 
-        {secondaryThreeAcross ? null : <InkBox height={1} />}
+        {secondaryThreeAcross ? <InkBox width={secondaryRowGap} /> : <InkBox height={1} />}
 
         <Box title="Signal Modes" width={calibrationRowBoxWidth} accent={clampedSelectedPanelIndex === 3}>
           {signalModes.length ? (

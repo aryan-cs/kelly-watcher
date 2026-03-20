@@ -121,7 +121,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       'Lower loss numbers mean the probabilities are closer to what actually happened.'
     ],
     rows: [
-      {label: 'Active path', text: 'Which scorer is currently making decisions: XGBoost or the heuristic score.'},
+      {label: 'Active path', text: 'Which scorer is currently making decisions: XGBoost or Heuristic.'},
       {label: 'Trained', text: 'When the latest deployed model was built.'},
       {label: 'Model age', text: 'How long the active deployed model has been running without a retrain.'},
       {label: 'Samples', text: 'How many resolved trades were available to train on.'},
@@ -424,7 +424,7 @@ function ConfusionMatrixCell({label, value, width, kind, scale}: ConfusionCellPr
   const innerWidth = Math.max(1, width - 2)
 
   return (
-    <InkBox width={width} height={5} borderStyle="round" borderColor={borderColor} flexDirection="column">
+    <InkBox width={width} height={6} borderStyle="round" borderColor={borderColor} flexDirection="column">
       <Text color={theme.modalBackground} backgroundColor={borderColor}>
         {centerLine(label, innerWidth)}
       </Text>
@@ -549,7 +549,7 @@ function useNow(intervalMs = 30000): number {
 function modeLabel(mode: string): string {
   const normalized = mode.trim().toLowerCase()
   if (normalized === 'model') return 'XGBoost'
-  if (normalized === 'heuristic') return 'Heuristic score'
+  if (normalized === 'heuristic') return 'Heuristic'
   if (normalized === 'shadow') return 'Tracker'
   if (normalized === 'live') return 'Live'
   return mode || 'Unknown'
@@ -622,20 +622,16 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     : Math.max(34, Math.floor((terminal.width - 18) / 2))
   const secondaryThreeAcross = !stacked && terminal.width >= 150
   const secondaryWideBudget = Math.max(96, terminal.width - 20)
-  const confusionPanelWidth = secondaryThreeAcross
-    ? Math.max(24, Math.floor(secondaryWideBudget * 0.24))
-    : undefined
+  const confusionBoxWidth = Math.min(17, Math.max(13, terminal.width - 12))
   const secondaryMetricPanelWidth = secondaryThreeAcross
-    ? Math.max(30, Math.floor((secondaryWideBudget - (confusionPanelWidth ?? 0) - 2) / 2))
+    ? Math.max(30, Math.floor((secondaryWideBudget - confusionBoxWidth - 2) / 2))
     : undefined
   const calibrationPanelContentWidth = secondaryThreeAcross
     ? Math.max(24, (secondaryMetricPanelWidth ?? twoColumnPanelContentWidth + 4) - 4)
     : twoColumnPanelContentWidth
   const signalModePanelContentWidth = calibrationPanelContentWidth
   const retrainPanelContentWidth = twoColumnPanelContentWidth
-  const confusionPanelContentWidth = secondaryThreeAcross
-    ? Math.max(20, (confusionPanelWidth ?? twoColumnPanelContentWidth + 4) - 4)
-    : twoColumnPanelContentWidth
+  const confusionPanelContentWidth = Math.max(9, confusionBoxWidth - 4)
   const confusionCellWidth = Math.max(12, Math.floor((confusionPanelContentWidth - 1) / 2))
   const calibrationWidths = useMemo(() => {
     const rangeWidth = 8
@@ -785,7 +781,47 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   )
   const topRowBoxWidth: string | number = stacked ? '100%' : '50%'
   const calibrationRowBoxWidth: string | number = secondaryThreeAcross && secondaryMetricPanelWidth ? secondaryMetricPanelWidth : '100%'
-  const confusionBoxWidth: string | number = secondaryThreeAcross && confusionPanelWidth ? confusionPanelWidth : '100%'
+  const confusionMatrixBox = (
+    <Box width={confusionBoxWidth} accent={clampedSelectedPanelIndex === 2}>
+      <InkBox width="100%" flexDirection="column">
+        <InkBox>
+          <ConfusionMatrixCell
+            label={confusionCells[0].label}
+            value={confusionCells[0].value}
+            width={confusionCellWidth}
+            kind={confusionCells[0].kind}
+            scale={confusionScale}
+          />
+          <InkBox width={1} />
+          <ConfusionMatrixCell
+            label={confusionCells[1].label}
+            value={confusionCells[1].value}
+            width={confusionCellWidth}
+            kind={confusionCells[1].kind}
+            scale={confusionScale}
+          />
+        </InkBox>
+        <InkBox height={1} />
+        <InkBox>
+          <ConfusionMatrixCell
+            label={confusionCells[2].label}
+            value={confusionCells[2].value}
+            width={confusionCellWidth}
+            kind={confusionCells[2].kind}
+            scale={confusionScale}
+          />
+          <InkBox width={1} />
+          <ConfusionMatrixCell
+            label={confusionCells[3].label}
+            value={confusionCells[3].value}
+            width={confusionCellWidth}
+            kind={confusionCells[3].kind}
+            scale={confusionScale}
+          />
+        </InkBox>
+      </InkBox>
+    </Box>
+  )
 
   return (
     <InkBox flexDirection="column" width="100%">
@@ -793,7 +829,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <Box title="Prediction Quality" width={topRowBoxWidth} accent={clampedSelectedPanelIndex === 0}>
           <StatRow
             label="Active path"
-            value={latest?.deployed ? 'XGBoost' : 'Heuristic score'}
+            value={latest?.deployed ? 'XGBoost' : 'Heuristic'}
             color={latest?.deployed ? theme.green : theme.yellow}
           />
           <StatRow label="Trained" value={latest ? formatShortDateTime(latest.trained_at) : '-'} />
@@ -810,8 +846,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={formatNumber(latest?.log_loss, 4)}
             color={lowerIsBetterColor(latest?.log_loss, 0.55, 0.69)}
           />
-          <Text color={theme.dim}>Brier measures average probability error.</Text>
-          <Text color={theme.dim}>Log loss hits confident mistakes harder.</Text>
         </Box>
 
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
@@ -834,53 +868,18 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
               </React.Fragment>
             ))}
           </InkBox>
-          <Text color={theme.dim}>Sharpe compares return to volatility.</Text>
-          <Text color={theme.dim}>Above 1 is solid; below 0 is rough.</Text>
         </Box>
       </InkBox>
 
-      <InkBox marginTop={1} flexDirection={secondaryThreeAcross ? 'row' : 'column'}>
-        <Box title="Confusion Matrix" width={confusionBoxWidth} accent={clampedSelectedPanelIndex === 2}>
-          <InkBox width="100%" flexDirection="column">
-            <InkBox>
-              <ConfusionMatrixCell
-                label={confusionCells[0].label}
-                value={confusionCells[0].value}
-                width={confusionCellWidth}
-                kind={confusionCells[0].kind}
-                scale={confusionScale}
-              />
-              <InkBox width={1} />
-              <ConfusionMatrixCell
-                label={confusionCells[1].label}
-                value={confusionCells[1].value}
-                width={confusionCellWidth}
-                kind={confusionCells[1].kind}
-                scale={confusionScale}
-              />
-            </InkBox>
-            <InkBox height={1} />
-            <InkBox>
-              <ConfusionMatrixCell
-                label={confusionCells[2].label}
-                value={confusionCells[2].value}
-                width={confusionCellWidth}
-                kind={confusionCells[2].kind}
-                scale={confusionScale}
-              />
-              <InkBox width={1} />
-              <ConfusionMatrixCell
-                label={confusionCells[3].label}
-                value={confusionCells[3].value}
-                width={confusionCellWidth}
-                kind={confusionCells[3].kind}
-                scale={confusionScale}
-              />
-            </InkBox>
-          </InkBox>
-        </Box>
+      <InkBox
+        marginTop={1}
+        flexDirection={secondaryThreeAcross ? 'row' : 'column'}
+        width="100%"
+        justifyContent={secondaryThreeAcross ? 'space-between' : undefined}
+      >
+        {secondaryThreeAcross ? confusionMatrixBox : <InkBox width="100%" justifyContent="center">{confusionMatrixBox}</InkBox>}
 
-        {secondaryThreeAcross ? <InkBox width={1} /> : <InkBox height={1} />}
+        {secondaryThreeAcross ? null : <InkBox height={1} />}
 
         <Box title="Confidence Check" width={calibrationRowBoxWidth} accent={clampedSelectedPanelIndex === 2}>
           <StatRow label="Resolved bets" value={formatCount(calibration?.resolved)} />
@@ -937,7 +936,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           )}
         </Box>
 
-        {secondaryThreeAcross ? <InkBox width={1} /> : <InkBox height={1} />}
+        {secondaryThreeAcross ? null : <InkBox height={1} />}
 
         <Box title="Signal Modes" width={calibrationRowBoxWidth} accent={clampedSelectedPanelIndex === 3}>
           {signalModes.length ? (
@@ -982,7 +981,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           ) : (
             <Text color={theme.dim}>No tracker signals yet.</Text>
           )}
-          <Text color={theme.dim}>Use rate = share of signals that became bets.</Text>
         </Box>
       </InkBox>
 
@@ -1009,10 +1007,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             color={flow?.belief_blend != null ? probabilityColor(flow.belief_blend) : theme.dim}
           />
           <StatRow label="Avg evidence" value={formatNumber(flow?.belief_evidence, 0)} />
-          <Text color={theme.dim}>Shown values are averages, not pieces that add to 100%.</Text>
-          <Text color={theme.dim}>Base = trader^0.60 * market^0.40</Text>
-          <Text color={theme.dim}>Final = (1 - blend) * base + blend * prior</Text>
-          <Text color={theme.dim}>Signals still need edge, and bad books get vetoed.</Text>
         </Box>
 
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
@@ -1030,9 +1024,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           <StatRow label="Avg gap" value={formatInterval(averageRetrainGap)} />
           <StatRow label="Runs 7d" value={formatCount(trainingSummary?.runs_7d)} />
           <StatRow label="Runs 30d" value={formatCount(trainingSummary?.runs_30d)} />
-          <Text color={theme.dim}>No online fine-tuning. Each update rebuilds the model from resolved trades.</Text>
-          <Text color={theme.dim}>Scheduled next uses the configured cadence and local hour; early retrains can still happen sooner.</Text>
-          <Text color={theme.dim}>A retrain only deploys if it beats baseline checks and validation P&L gates.</Text>
           <InkBox width="100%" marginTop={1}>
             <Text color={theme.dim}>{fit('TIME', retrainWidths.timeWidth)}</Text>
             <Text> </Text>

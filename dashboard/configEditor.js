@@ -10,14 +10,16 @@ export const maxMarketHorizonPresets = [
     '365d',
     'unlimited'
 ];
+export const retrainCadencePresets = ['daily', 'weekly'];
+export const retrainEarlyCheckPresets = ['6h', '12h', '24h', '48h'];
 export const walletInactivityPresets = ['1h', '3h', '5h', '8h', '24h', '7d', 'unlimited'];
-export const walletSlowDropPresets = ['24h', '3d', '7d', '14d', '30d', 'unlimited'];
+export const walletSlowDropPresets = ['1h', '5h', '8h', '24h', '3d', '7d', '14d', '30d', 'unlimited'];
 export const editableConfigFields = [
     {
         key: 'POLL_INTERVAL_SECONDS',
         label: 'Poll Interval',
         kind: 'float',
-        description: 'How Many Seconds Between Wallet Polls. Applies Live On The Next Loop.',
+        description: 'How many seconds between wallet polls. Applies live on the next loop.',
         defaultValue: '45',
         liveApplies: true
     },
@@ -25,15 +27,16 @@ export const editableConfigFields = [
         key: 'MAX_MARKET_HORIZON',
         label: 'Max Market Horizon',
         kind: 'duration',
-        description: 'Longest Time To Resolution The Bot Will Allow. Edit With Left/Right To Toggle 5m, 1h, 24h, 7d, 30d, 180d, 365d, Or Unlimited.',
+        description: 'Longest time to resolution the bot will allow. Edit this field to type a value or cycle 5m, 1h, 24h, 7d, 30d, 180d, 365d, or unlimited.',
         defaultValue: '365d',
-        liveApplies: true
+        liveApplies: true,
+        options: maxMarketHorizonPresets
     },
     {
         key: 'WALLET_INACTIVITY_LIMIT',
         label: 'Wallet Inactivity',
         kind: 'duration',
-        description: 'Auto-Drop A Wallet After This Much Time Without A New Source Trade, Even If It Never Traded After Tracking Began. Edit With Left/Right To Toggle 1h, 3h, 5h, 8h, 24h, 7d, Or Unlimited. Applies Live On The Next Loop.',
+        description: 'Auto-drop a wallet after this much time without a new source trade, even if it never traded after tracking began. Edit this field to type a value or cycle 1h, 3h, 5h, 8h, 24h, 7d, or unlimited. Applies live on the next loop.',
         defaultValue: 'unlimited',
         liveApplies: true,
         options: walletInactivityPresets
@@ -42,7 +45,7 @@ export const editableConfigFields = [
         key: 'WALLET_SLOW_DROP_MAX_TRACKING_AGE',
         label: 'Slow Wallet Max Age',
         kind: 'duration',
-        description: 'Auto-Drop A Wallet If It Stays In The Slow Tier Longer Than This Current Tracking Stint. Edit With Left/Right To Toggle 24h, 3d, 7d, 14d, 30d, Or Unlimited. Applies Live On The Next Loop.',
+        description: 'Auto-drop a wallet if it stays in the slow tier longer than this current tracking stint. Edit this field to type a value or cycle 1h, 5h, 8h, 24h, 3d, 7d, 14d, 30d, or unlimited. Applies live on the next loop.',
         defaultValue: 'unlimited',
         liveApplies: true,
         options: walletSlowDropPresets
@@ -51,7 +54,7 @@ export const editableConfigFields = [
         key: 'WALLET_PERFORMANCE_DROP_MIN_TRADES',
         label: 'Wallet Drop Min Trades',
         kind: 'int',
-        description: 'Minimum Closed Profile Trades Required Before Poor Performance Can Auto-Drop A Wallet. Set To 0 To Disable. Applies Live On The Next Loop.',
+        description: 'Minimum closed profile trades required before poor performance can auto-drop a wallet. Set to 0 to disable. Applies live on the next loop.',
         defaultValue: '40',
         liveApplies: true
     },
@@ -59,7 +62,7 @@ export const editableConfigFields = [
         key: 'WALLET_PERFORMANCE_DROP_MAX_WIN_RATE',
         label: 'Wallet Drop Max Win Rate',
         kind: 'float',
-        description: 'Auto-Drop A Wallet If Its Profile Win Rate Is At Or Below This Level After The Minimum Trade Count Is Reached. Applies Live On The Next Loop.',
+        description: 'Auto-drop a wallet if its profile win rate is at or below this level after the minimum trade count is reached. Applies live on the next loop.',
         defaultValue: '0.40',
         liveApplies: true
     },
@@ -67,15 +70,31 @@ export const editableConfigFields = [
         key: 'WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN',
         label: 'Wallet Drop Max Avg Return',
         kind: 'float',
-        description: 'Auto-Drop A Wallet If Its Profile Average Return Is At Or Below This Level After The Minimum Trade Count Is Reached. Applies Live On The Next Loop.',
+        description: 'Auto-drop a wallet if its profile average return is at or below this level after the minimum trade count is reached. Applies live on the next loop.',
         defaultValue: '-0.03',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_QUALITY_SIZE_MIN_MULTIPLIER',
+        label: 'Wallet Quality Min Multiplier',
+        kind: 'float',
+        description: 'Lowest sizing multiplier applied to lower-quality wallets after trust gating. A score near 0 maps toward this floor. Applies live on the next loop.',
+        defaultValue: '0.75',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_QUALITY_SIZE_MAX_MULTIPLIER',
+        label: 'Wallet Quality Max Multiplier',
+        kind: 'float',
+        description: 'Highest sizing multiplier applied to stronger wallets after trust gating. A score near 1 maps toward this ceiling. Applies live on the next loop.',
+        defaultValue: '1.25',
         liveApplies: true
     },
     {
         key: 'MIN_CONFIDENCE',
         label: 'Min Confidence',
         kind: 'float',
-        description: 'Minimum Confidence Needed To Accept A Copied Trade. Restart Bot To Apply.',
+        description: 'Minimum confidence needed to accept a copied trade. Restart bot to apply.',
         defaultValue: '0.60',
         liveApplies: false
     },
@@ -83,7 +102,7 @@ export const editableConfigFields = [
         key: 'MIN_BET_USD',
         label: 'Min Bet USD',
         kind: 'float',
-        description: 'Lowest Order Size The Bot Will Place. Restart Bot To Apply.',
+        description: 'Lowest order size the bot will place. Restart bot to apply.',
         defaultValue: '1.00',
         liveApplies: false
     },
@@ -91,15 +110,15 @@ export const editableConfigFields = [
         key: 'MAX_BET_FRACTION',
         label: 'Max Bet Fraction',
         kind: 'float',
-        description: 'Kelly Sizing Cap As A Fraction Of Bankroll. Restart Bot To Apply.',
+        description: 'Kelly sizing cap as a fraction of bankroll. Restart bot to apply.',
         defaultValue: '0.05',
         liveApplies: false
     },
     {
         key: 'SHADOW_BANKROLL_USD',
-        label: 'Shadow Bankroll',
+        label: 'Tracker Bankroll',
         kind: 'float',
-        description: 'Paper Bankroll Used In Shadow Mode. Restart Bot To Apply.',
+        description: 'Paper bankroll used in tracker mode. Restart bot to apply.',
         defaultValue: '1000',
         liveApplies: false
     },
@@ -112,11 +131,45 @@ export const editableConfigFields = [
         liveApplies: true
     },
     {
-        key: 'USE_REAL_MONEY',
-        label: 'Live Trading',
-        kind: 'bool',
-        description: 'Toggle Between Shadow And Live Mode. Restart Bot To Apply Safely.',
-        defaultValue: 'false',
+        key: 'RETRAIN_BASE_CADENCE',
+        label: 'Retrain Cadence',
+        kind: 'choice',
+        description: 'How often the bot attempts a scheduled full retrain. Edit this field to type a value or cycle daily and weekly. Restart bot to apply.',
+        defaultValue: 'daily',
+        liveApplies: false,
+        options: retrainCadencePresets
+    },
+    {
+        key: 'RETRAIN_HOUR_LOCAL',
+        label: 'Retrain Hour',
+        kind: 'int',
+        description: 'Local hour for the scheduled retrain window, from 0 through 23. Restart bot to apply.',
+        defaultValue: '3',
+        liveApplies: false
+    },
+    {
+        key: 'RETRAIN_EARLY_CHECK_INTERVAL',
+        label: 'Early Check',
+        kind: 'duration',
+        description: 'How often the bot checks whether enough new labels exist to retrain early. Edit this field to type a value or cycle 6h, 12h, 24h, or 48h. Restart bot to apply.',
+        defaultValue: '24h',
+        liveApplies: false,
+        options: retrainEarlyCheckPresets
+    },
+    {
+        key: 'RETRAIN_MIN_NEW_LABELS',
+        label: 'Early Label Gate',
+        kind: 'int',
+        description: 'Minimum new resolved trades required before an unscheduled early retrain can fire. Restart bot to apply.',
+        defaultValue: '100',
+        liveApplies: false
+    },
+    {
+        key: 'RETRAIN_MIN_SAMPLES',
+        label: 'Train Min Samples',
+        kind: 'int',
+        description: 'Minimum labeled samples required before a retrain can run. Restart bot to apply.',
+        defaultValue: '200',
         liveApplies: false
     }
 ];
@@ -235,6 +288,14 @@ export function validateEditableConfigValue(field, raw) {
         }
         return { ok: true, value: `${match[1]}${match[3].toLowerCase()}` };
     }
+    if (field.kind === 'choice') {
+        const normalized = value.toLowerCase();
+        const options = (field.options || []).map((option) => option.toLowerCase());
+        if (!options.length || !options.includes(normalized)) {
+            return { ok: false, error: `${field.label} must be one of: ${(field.options || []).join(', ')}.` };
+        }
+        return { ok: true, value: normalized };
+    }
     const numeric = Number(normalizedPercentValue);
     if (!Number.isFinite(numeric)) {
         return { ok: false, error: `${field.label} must be a valid number.` };
@@ -263,6 +324,15 @@ export function validateEditableConfigValue(field, raw) {
     if ((field.key === 'MIN_BET_USD' || field.key === 'SHADOW_BANKROLL_USD') && numeric <= 0) {
         return { ok: false, error: `${field.label} must be greater than 0.` };
     }
+    if (field.key === 'RETRAIN_HOUR_LOCAL' && (numeric < 0 || numeric > 23)) {
+        return { ok: false, error: 'Retrain hour must be between 0 and 23.' };
+    }
+    if (field.key === 'RETRAIN_MIN_NEW_LABELS' && numeric < 1) {
+        return { ok: false, error: 'Early label gate must be at least 1.' };
+    }
+    if (field.key === 'RETRAIN_MIN_SAMPLES' && numeric < 1) {
+        return { ok: false, error: 'Train min samples must be at least 1.' };
+    }
     return { ok: true, value: normalizedPercentValue };
 }
 export function formatEditableConfigValue(field, value) {
@@ -279,6 +349,22 @@ export function formatEditableConfigValue(field, value) {
     if (field.kind === 'duration') {
         return normalized.toLowerCase();
     }
+    if (field.key === 'RETRAIN_BASE_CADENCE') {
+        return normalized.toLowerCase();
+    }
+    if (field.key === 'RETRAIN_HOUR_LOCAL') {
+        const hour = Math.min(Math.max(Number.parseInt(normalized, 10) || 0, 0), 23);
+        return `${String(hour).padStart(2, '0')}:00 local`;
+    }
+    if (field.key === 'RETRAIN_EARLY_CHECK_INTERVAL') {
+        return normalized.toLowerCase();
+    }
+    if (field.key === 'RETRAIN_MIN_NEW_LABELS') {
+        return `${normalized} labels`;
+    }
+    if (field.key === 'RETRAIN_MIN_SAMPLES') {
+        return `${normalized} samples`;
+    }
     if (field.key === 'SHADOW_BANKROLL_USD' || field.key === 'MIN_BET_USD') {
         return `$${normalized}`;
     }
@@ -287,19 +373,24 @@ export function formatEditableConfigValue(field, value) {
     }
     return normalized;
 }
-export function isPresetDurationField(field) {
+export function hasCyclableOptions(field) {
     return Array.isArray(field.options) && field.options.length > 0;
 }
-export function cycleDurationPreset(field, currentValue, direction) {
-    if (!isPresetDurationField(field)) {
+export function cycleFieldOption(field, currentValue, direction) {
+    if (!hasCyclableOptions(field)) {
         return null;
     }
-    const normalized = (currentValue || field.defaultValue).trim().toLowerCase();
     const values = (field.options || []).map((option) => option.toLowerCase());
-    const currentIndex = values.indexOf(values.includes(normalized)
-        ? normalized
-        : field.defaultValue.toLowerCase());
-    const step = direction === 'right' ? 1 : -1;
+    const normalized = (currentValue || field.defaultValue).trim().toLowerCase();
+    const fallback = field.defaultValue.toLowerCase();
+    const currentIndex = values.indexOf(values.includes(normalized) ? normalized : fallback);
+    const step = direction === 'next' ? 1 : -1;
     const nextIndex = (currentIndex + step + values.length) % values.length;
     return values[nextIndex];
+}
+export function isPresetDurationField(field) {
+    return hasCyclableOptions(field);
+}
+export function cycleDurationPreset(field, currentValue, direction) {
+    return cycleFieldOption(field, currentValue, direction);
 }

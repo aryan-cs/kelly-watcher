@@ -35,9 +35,9 @@ export function LiveFeed({scrollOffset = 0, onScrollOffsetChange}: LiveFeedProps
       <Text color={theme.dim}>{feedHeader(tableWidth)}</Text>
       <InkBox flexDirection="column" marginTop={1}>
         {events.length ? (
-          events.map((event) => (
+          events.map((event, index) => (
             <TradeRow
-              key={`${event.trade_id}-${event.ts}`}
+              key={`incoming-${effectiveOffset + index}-${event.trade_id}-${event.ts}`}
               layout="feed"
               maxWidth={tableWidth}
               displayId={tradeIdLookup.get(event.trade_id)}

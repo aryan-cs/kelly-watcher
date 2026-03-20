@@ -15,6 +15,16 @@ export interface BotState {
   last_poll_duration_s?: number
   bankroll_usd?: number
   last_event_count?: number
+  retrain_in_progress?: boolean
+  retrain_started_at?: number
+  last_retrain_started_at?: number
+  last_retrain_finished_at?: number
+  last_retrain_status?: string
+  last_retrain_message?: string
+  last_retrain_sample_count?: number
+  last_retrain_min_samples?: number
+  last_retrain_trigger?: string
+  last_retrain_deployed?: boolean
 }
 
 export function useBotState(intervalMs = 2000): BotState {

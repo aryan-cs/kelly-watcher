@@ -26,6 +26,10 @@ export interface LiveEvent {
   ts: number
 }
 
+function eventIdentity(event: LiveEvent): string {
+  return `${event.type}|${event.trade_id}|${event.ts}`
+}
+
 export function useEventStream(maxEvents = 50): LiveEvent[] {
   const [events, setEvents] = useState<LiveEvent[]>([])
   const refreshToken = useRefreshToken()
@@ -51,7 +55,15 @@ export function useEventStream(maxEvents = 50): LiveEvent[] {
           }
           return event
         })
-        setEvents(parsed.slice(-maxEvents))
+        const deduped: LiveEvent[] = []
+        const seen = new Set<string>()
+        for (const event of parsed) {
+          const key = eventIdentity(event)
+          if (seen.has(key)) continue
+          seen.add(key)
+          deduped.push(event)
+        }
+        setEvents(deduped.slice(-maxEvents))
       } catch {
         setEvents([])
       }

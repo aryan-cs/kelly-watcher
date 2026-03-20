@@ -103,11 +103,11 @@ class DedupeCache:
 
         return None
 
-    def load_from_db(self) -> None:
+    def load_from_db(self, *, rebuild_shadow_positions: bool = False) -> None:
         cutoff = int(time.time()) - SEEN_WINDOW
         real_money = 1 if use_real_money() else 0
         conn = get_conn()
-        if real_money == 0:
+        if real_money == 0 and rebuild_shadow_positions:
             self._rebuild_shadow_positions(conn)
         seen_rows = conn.execute(
             "SELECT trade_id FROM seen_trades WHERE seen_at > ?",

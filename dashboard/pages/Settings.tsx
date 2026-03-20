@@ -6,12 +6,18 @@ import {StatRow} from '../components/StatRow.js'
 import {
   editableConfigFields,
   formatEditableConfigValue,
+  readEnvValues,
   type EditableConfigValues
 } from '../configEditor.js'
 import {fit, fitRight, formatNumber, shortAddress, truncate, wrapText} from '../format.js'
 import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
 import {envExamplePath, envPath} from '../paths.js'
 import {rowsForHeight, stackPanels} from '../responsive.js'
+import {
+  dangerActions,
+  isLiveTradingEnabled,
+  type DangerConfirmState
+} from '../settingsDanger.js'
 import {useTerminalSize} from '../terminal.js'
 import {selectionBackgroundColor, theme} from '../theme.js'
 import {useBotState} from '../useBotState.js'
@@ -30,6 +36,9 @@ export interface SettingsEditorState {
   replaceDraftOnInput?: boolean
   statusMessage?: string
   statusTone?: 'info' | 'success' | 'error'
+  focusArea: 'config' | 'danger'
+  dangerSelectedIndex: number
+  dangerConfirm: DangerConfirmState | null
 }
 
 interface SettingsProps {
@@ -41,10 +50,12 @@ const COUNT_SQL = `SELECT COUNT(*) AS n FROM trade_log`
 interface EnvData {
   rows: Array<{key: string; value: string}>
   watchedWallets: string[]
+  rawValues: Record<string, string>
 }
 
 function readEnvData(): EnvData {
   const path = fs.existsSync(envPath) ? envPath : envExamplePath
+  const rawValues = readEnvValues()
   try {
     return fs
       .readFileSync(path, 'utf8')
@@ -64,10 +75,29 @@ function readEnvData(): EnvData {
         const redacted = /(KEY|TOKEN|PRIVATE)/.test(key) ? '************' : (value || 'unset')
         acc.rows.push({key, value: redacted})
         return acc
-      }, {rows: [], watchedWallets: []})
+      }, {rows: [], watchedWallets: [], rawValues})
   } catch {
-    return {rows: [], watchedWallets: []}
+    return {rows: [], watchedWallets: [], rawValues}
   }
+}
+
+function splitIntoColumns<T>(items: T[], columnCount: number): T[][] {
+  if (columnCount <= 1 || items.length <= 1) {
+    return [items]
+  }
+
+  const perColumn = Math.ceil(items.length / columnCount)
+  const columns: T[][] = []
+  for (let index = 0; index < items.length; index += perColumn) {
+    columns.push(items.slice(index, index + perColumn))
+  }
+  return columns
+}
+
+function dangerToneColor(tone: SettingsEditorState['statusTone']): string {
+  if (tone === 'error') return theme.red
+  if (tone === 'success') return theme.green
+  return theme.dim
 }
 
 export function Settings({editor}: SettingsProps) {
@@ -77,7 +107,7 @@ export function Settings({editor}: SettingsProps) {
   const counts = useQuery<CountRow>(COUNT_SQL)
   const events = useEventStream(1000)
   const envData = readEnvData()
-  const environmentBudget = rowsForHeight(terminal.height, stacked ? 28 : 22, 6, 14)
+  const environmentBudget = rowsForHeight(terminal.height, stacked ? 40 : 30, 6, 14)
   const walletSectionHeaderRows = envData.watchedWallets.length ? 2 : 0
   const maxWalletLines = envData.watchedWallets.length ? Math.max(2, Math.min(6, Math.floor(environmentBudget / 2))) : 0
   const walletSectionRows = envData.watchedWallets.length
@@ -86,22 +116,57 @@ export function Settings({editor}: SettingsProps) {
   const envRows = envData.rows.slice(0, Math.max(0, environmentBudget - walletSectionRows))
   const visibleWallets = envData.watchedWallets.slice(0, maxWalletLines)
   const hiddenWalletCount = Math.max(0, envData.watchedWallets.length - visibleWallets.length)
-  const selectedField = editableConfigFields[editor.selectedIndex]
+  const safeSelectedIndex = Math.max(0, Math.min(editor.selectedIndex, Math.max(editableConfigFields.length - 1, 0)))
+  const selectedField = editableConfigFields[safeSelectedIndex]
+  const safeDangerIndex = Math.max(0, Math.min(editor.dangerSelectedIndex, Math.max(dangerActions.length - 1, 0)))
+  const selectedDangerAction = dangerActions[safeDangerIndex]
   const panelContentWidth = Math.max(24, terminal.width - 10)
-  const helperWidth = panelContentWidth
-  const statusColor =
-    editor.statusTone === 'error' ? theme.red : editor.statusTone === 'success' ? theme.green : theme.dim
-  const defaultStatusMessage = editor.isEditing
-    ? 'Type a value, then press Enter to save or Esc to cancel.'
-    : 'Use j/k or arrows to select. Press e or Enter to edit.'
-  const selectedDescription = `${selectedField.key} - ${selectedField.description}`
-  const rawStatusMessage = (editor.statusMessage || '').trim()
-  const effectiveStatusMessage =
-    rawStatusMessage && rawStatusMessage !== selectedField.description && rawStatusMessage !== selectedDescription
-      ? rawStatusMessage
-      : defaultStatusMessage
-  const descriptionLines = wrapText(selectedDescription, helperWidth)
-  const statusLines = wrapText(effectiveStatusMessage, helperWidth)
+  const middleRowGap = stacked ? 0 : 2
+  const middleRowWidth = Math.max(24, terminal.width - 4)
+  const configBoxWidth = stacked ? middleRowWidth : Math.max(56, Math.floor((middleRowWidth - middleRowGap) * 0.68))
+  const dangerBoxWidth = stacked ? middleRowWidth : Math.max(28, middleRowWidth - configBoxWidth - middleRowGap)
+  const configContentWidth = Math.max(28, configBoxWidth - 4)
+  const dangerContentWidth = Math.max(24, dangerBoxWidth - 4)
+  const configColumnCount = configContentWidth >= 78 ? 2 : 1
+  const configColumns = useMemo(
+    () => splitIntoColumns(editableConfigFields.map((field, index) => ({field, index})), configColumnCount),
+    [configColumnCount]
+  )
+  const configColumnWidth = configColumnCount === 1
+    ? configContentWidth
+    : Math.max(24, Math.floor((configContentWidth - 2) / configColumnCount))
+  const configValueWidth = Math.max(10, Math.min(18, Math.floor(configColumnWidth * 0.36)))
+  const configLabelWidth = Math.max(12, configColumnWidth - configValueWidth - 1)
+  const dangerValueWidth = Math.max(8, Math.min(12, Math.floor(dangerContentWidth * 0.28)))
+  const dangerLabelWidth = Math.max(12, dangerContentWidth - dangerValueWidth - 1)
+  const helperWidth = Math.max(24, configContentWidth)
+  const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
+  const statusColor = dangerToneColor(editor.statusTone)
+  const configDefaultStatusMessage = editor.isEditing
+    ? 'Type a value. Up/down cycles preset fields. Enter saves. Esc cancels.'
+    : 'Use left/right to switch boxes. Use up/down to move. Enter edits config.'
+  const dangerDefaultStatusMessage = editor.dangerConfirm
+    ? 'Use up/down to choose an action. Enter confirms. Esc cancels.'
+    : 'Use left/right to switch boxes. Use up/down to choose an action. Enter opens it.'
+  const configDescription = selectedField ? `${selectedField.key} - ${selectedField.description}` : ''
+  const configStatusMessage =
+    editor.focusArea === 'config' || editor.isEditing
+      ? (editor.statusMessage || '').trim() || configDefaultStatusMessage
+      : configDefaultStatusMessage
+  const configDescriptionLines = wrapText(configDescription, helperWidth)
+  const configStatusLines = wrapText(configStatusMessage, helperWidth)
+  const dangerHeaderText = editor.dangerConfirm
+    ? editor.dangerConfirm.title
+    : selectedDangerAction?.label || 'Danger Zone'
+  const dangerDescription = editor.dangerConfirm
+    ? editor.dangerConfirm.message
+    : selectedDangerAction?.description || ''
+  const dangerStatusMessage =
+    editor.focusArea === 'danger' || editor.dangerConfirm
+      ? (editor.statusMessage || '').trim() || dangerDefaultStatusMessage
+      : dangerDefaultStatusMessage
+  const dangerDescriptionLines = wrapText(dangerDescription, dangerContentWidth)
+  const dangerStatusLines = wrapText(dangerStatusMessage, dangerContentWidth)
   const usernames = useMemo(() => {
     const lookup = readIdentityMap()
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -119,10 +184,7 @@ export function Settings({editor}: SettingsProps) {
   const walletIndexWidth = Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1)
   const walletAddressWidth = Math.max(18, Math.min(42, Math.floor(walletTableWidth * 0.62)))
   const walletUsernameWidth = Math.max(8, walletTableWidth - walletIndexWidth - walletAddressWidth - 2)
-  const configRowWidth = Math.max(30, panelContentWidth)
-  const configValueWidth = Math.max(12, Math.min(30, Math.floor(configRowWidth * 0.42)))
-  const configLabelWidth = Math.max(10, configRowWidth - configValueWidth - 1)
-  const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
+  const liveTradingEnabled = isLiveTradingEnabled(envData.rawValues)
 
   return (
     <InkBox flexDirection="column" width="100%">
@@ -142,51 +204,138 @@ export function Settings({editor}: SettingsProps) {
         </Box>
       </InkBox>
 
-      <InkBox marginTop={1}>
-        <Box title="Editable Config" accent>
-          {editableConfigFields.map((field, index) => {
-            const selected = index === editor.selectedIndex
-            const currentValue = editor.values[field.key] || field.defaultValue
-            const shownValue =
-              selected && editor.isEditing
-                ? `${editor.draft || ''}_`
-                : formatEditableConfigValue(field, currentValue)
-            const label = `${selected ? '>' : ' '} ${field.label}`
-            const labelColor = selected ? theme.accent : theme.dim
-            const valueColor =
-              selected && editor.isEditing
-                ? theme.accent
-                : field.kind === 'bool' && currentValue.toLowerCase() === 'true'
-                  ? theme.green
-                  : theme.white
-            const rowBackground = selected ? selectedRowBackground : undefined
+      <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'} width="100%">
+        <Box title="Editable Config" width={stacked ? '100%' : configBoxWidth} accent>
+          <InkBox width="100%">
+            {configColumns.map((column, columnIndex) => (
+              <React.Fragment key={`config-column-${columnIndex}`}>
+                <InkBox flexDirection="column" flexGrow={1}>
+                  {column.map(({field, index}) => {
+                    const selected = editor.focusArea === 'config' && index === safeSelectedIndex
+                    const currentValue = editor.values[field.key] || field.defaultValue
+                    const shownValue =
+                      selected && editor.isEditing
+                        ? `${editor.draft || ''}_`
+                        : formatEditableConfigValue(field, currentValue)
+                    const label = `${selected ? '>' : ' '} ${field.label}`
+                    const labelColor = selected ? theme.accent : theme.dim
+                    const valueColor =
+                      selected && editor.isEditing
+                        ? theme.accent
+                        : field.kind === 'bool' && currentValue.toLowerCase() === 'true'
+                          ? theme.green
+                          : theme.white
+                    const rowBackground = selected ? selectedRowBackground : undefined
 
-            return (
-              <InkBox key={field.key} width="100%">
-                <Text color={labelColor} backgroundColor={rowBackground} bold={selected}>
-                  {fit(label, configLabelWidth)}
-                </Text>
-                <Text backgroundColor={rowBackground}> </Text>
-                <Text color={valueColor} backgroundColor={rowBackground} bold={selected}>
-                  {fitRight(truncate(shownValue, configValueWidth), configValueWidth)}
-                </Text>
-              </InkBox>
-            )
-          })}
+                    return (
+                      <InkBox key={field.key} width={configColumnWidth}>
+                        <Text color={labelColor} backgroundColor={rowBackground} bold={selected}>
+                          {fit(label, configLabelWidth)}
+                        </Text>
+                        <Text backgroundColor={rowBackground}> </Text>
+                        <Text color={valueColor} backgroundColor={rowBackground} bold={selected}>
+                          {fitRight(truncate(shownValue, configValueWidth), configValueWidth)}
+                        </Text>
+                      </InkBox>
+                    )
+                  })}
+                </InkBox>
+                {columnIndex < configColumns.length - 1 ? <InkBox width={2} /> : null}
+              </React.Fragment>
+            ))}
+          </InkBox>
 
           <InkBox flexDirection="column" marginTop={1}>
-            {descriptionLines.map((line, index) => (
-              <Text key={`desc-${index}`} color={theme.dim}>
+            {configDescriptionLines.map((line, index) => (
+              <Text key={`config-desc-${index}`} color={theme.dim}>
                 {line}
               </Text>
             ))}
-            {statusLines.map((line, index) => (
-              <Text key={`status-${index}`} color={statusColor}>
+            {configStatusLines.map((line, index) => (
+              <Text key={`config-status-${index}`} color={statusColor}>
                 {line}
               </Text>
             ))}
           </InkBox>
         </Box>
+
+        {!stacked ? <InkBox width={middleRowGap} /> : <InkBox height={1} />}
+
+        <InkBox
+          borderStyle="round"
+          borderColor={theme.red}
+          flexDirection="column"
+          width={stacked ? '100%' : undefined}
+          flexGrow={stacked ? 0 : 1}
+          flexShrink={1}
+          paddingX={1}
+        >
+          <InkBox>
+            <Text color={theme.red} bold>Danger Zone</Text>
+          </InkBox>
+
+          {editor.dangerConfirm ? (
+            <>
+              <Text color={theme.yellow} bold>{truncate(dangerHeaderText, dangerContentWidth)}</Text>
+              {dangerDescriptionLines.map((line, index) => (
+                <Text key={`danger-desc-${index}`} color={theme.dim}>
+                  {line}
+                </Text>
+              ))}
+              <InkBox flexDirection="column" marginTop={1}>
+                {editor.dangerConfirm.options.map((option, index) => {
+                  const selected = index === editor.dangerConfirm?.selectedIndex
+                  const rowBackground = selected ? selectedRowBackground : undefined
+                  const label = `${selected ? '>' : ' '} ${option.label}`
+                  return (
+                    <InkBox key={`${editor.dangerConfirm?.actionId}-${option.id}`} width="100%">
+                      <Text color={selected ? theme.accent : theme.white} backgroundColor={rowBackground} bold={selected}>
+                        {fit(label, dangerContentWidth)}
+                      </Text>
+                    </InkBox>
+                  )
+                })}
+              </InkBox>
+            </>
+          ) : (
+            <>
+              {dangerActions.map((action, index) => {
+                const selected = editor.focusArea === 'danger' && index === safeDangerIndex
+                const rowBackground = selected ? selectedRowBackground : undefined
+                const value = action.value(envData.rawValues)
+                const valueColor =
+                  action.id === 'live_trading'
+                    ? liveTradingEnabled ? theme.green : theme.red
+                    : theme.yellow
+
+                return (
+                  <InkBox key={action.id} width="100%">
+                    <Text color={selected ? theme.accent : theme.dim} backgroundColor={rowBackground} bold={selected}>
+                      {fit(`${selected ? '>' : ' '} ${action.label}`, dangerLabelWidth)}
+                    </Text>
+                    <Text backgroundColor={rowBackground}> </Text>
+                    <Text color={valueColor} backgroundColor={rowBackground} bold={selected}>
+                      {fitRight(truncate(value, dangerValueWidth), dangerValueWidth)}
+                    </Text>
+                  </InkBox>
+                )
+              })}
+            </>
+          )}
+
+          <InkBox flexDirection="column" marginTop={1}>
+            {editor.dangerConfirm ? null : dangerDescriptionLines.map((line, index) => (
+              <Text key={`danger-help-${index}`} color={theme.dim}>
+                {line}
+              </Text>
+            ))}
+            {dangerStatusLines.map((line, index) => (
+              <Text key={`danger-status-${index}`} color={statusColor}>
+                {line}
+              </Text>
+            ))}
+          </InkBox>
+        </InkBox>
       </InkBox>
 
       <InkBox marginTop={1}>

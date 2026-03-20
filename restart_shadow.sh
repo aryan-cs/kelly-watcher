@@ -36,13 +36,21 @@ PRESERVED_FILES=(
   "logs/"
 )
 
-mapfile -t BOT_PIDS < <(pgrep -f "python main.py" || true)
+load_bot_pids() {
+  BOT_PIDS=()
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    BOT_PIDS+=("$pid")
+  done < <(pgrep -f "python main.py" || true)
+}
+
+load_bot_pids
 if [ "${#BOT_PIDS[@]}" -gt 0 ]; then
   echo "Stopping existing bot process(es): ${BOT_PIDS[*]}"
   kill "${BOT_PIDS[@]}" || true
   sleep 2
 
-  mapfile -t BOT_PIDS < <(pgrep -f "python main.py" || true)
+  load_bot_pids
   if [ "${#BOT_PIDS[@]}" -gt 0 ]; then
     echo "Force-stopping remaining bot process(es): ${BOT_PIDS[*]}"
     kill -9 "${BOT_PIDS[@]}" || true

@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import auto_retrain
+import alerter
 import beliefs
 import config
 import dedup
@@ -25,6 +26,45 @@ from trader_scorer import TraderScorer
 
 
 class RuntimeFixesTest(unittest.TestCase):
+    def test_send_alert_suppresses_non_trade_notifications(self) -> None:
+        client = Mock()
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=False)
+
+        with patch("alerter.telegram_bot_token", return_value="token"), patch(
+            "alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("alerter.httpx.Client", return_value=client_context):
+            alerter.send_alert("Bot started")
+
+        client.post.assert_not_called()
+
+    def test_send_alert_allows_buy_notifications(self) -> None:
+        client = Mock()
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=False)
+
+        with patch("alerter.telegram_bot_token", return_value="token"), patch(
+            "alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("alerter.httpx.Client", return_value=client_context):
+            alerter.send_alert("Bought", kind="buy")
+
+        client.post.assert_called_once()
+
+    def test_send_alert_allows_retrain_notifications(self) -> None:
+        client = Mock()
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=False)
+
+        with patch("alerter.telegram_bot_token", return_value="token"), patch(
+            "alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("alerter.httpx.Client", return_value=client_context):
+            alerter.send_alert("Retrain accepted", kind="retrain")
+
+        client.post.assert_called_once()
+
     def test_resolve_wallet_for_username_returns_wallet_and_caches_identity(self) -> None:
         class _Response:
             def __init__(self, text: str, status_code: int = 200) -> None:
@@ -203,6 +243,36 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertGreater(int(row["label_applied_at"]), 0)
             finally:
                 db.DB_PATH = original_db_path
+
+    def test_send_resolution_alerts_only_notifies_executed_positions(self) -> None:
+        resolved_rows = [
+            {
+                "executed": True,
+                "real_money": 0,
+                "won": True,
+                "side": "yes",
+                "pnl": 3.5,
+                "question": "Will it happen?",
+                "market_resolved_outcome": "yes",
+                "market_url": "https://polymarket.com/event/will-it-happen",
+            },
+            {
+                "executed": False,
+                "real_money": 0,
+                "won": False,
+                "side": "no",
+                "pnl": 0.0,
+                "question": "Skipped trade",
+            },
+        ]
+
+        with patch("main.send_alert") as alert_mock:
+            main._send_resolution_alerts(resolved_rows)
+
+        alert_mock.assert_called_once()
+        self.assertIn("[SHADOW WIN]", alert_mock.call_args.args[0])
+        self.assertIn("resolved outcome: yes", alert_mock.call_args.args[0])
+        self.assertEqual(alert_mock.call_args.kwargs["kind"], "resolution")
 
     def test_resolve_shadow_trades_does_not_resolve_open_markets_from_prices(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -468,6 +538,178 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertIsNone(row["market_resolved_outcome"])
                 self.assertIsNone(row["resolved_at"])
                 self.assertIsNone(row["label_applied_at"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_resolve_shadow_trades_falls_back_to_sports_page_for_team_market(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, market_url, trader_address, side, token_id,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-sports-page-team",
+                        "0x00342368bcca5a5b6e21d837edaebc7efaab6e48ce9041c6a215ddc7d22420d6",
+                        "High Point Panthers vs. Wisconsin Badgers",
+                        "https://polymarket.com/event/cbb-hpnt-wisc-2026-03-19",
+                        "0xabc",
+                        "high point panthers",
+                        "token-team",
+                        "buy",
+                        0.45,
+                        10.0,
+                        0.64,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                sports_snapshot = {
+                    "ended": True,
+                    "score": "83-82",
+                    "canonicalUrl": "https://polymarket.com/sports/cbb/cbb-hpnt-wisc-2026-03-19",
+                    "event": {
+                        "slug": "cbb-hpnt-wisc-2026-03-19",
+                        "markets": [
+                            {
+                                "conditionId": "0x00342368bcca5a5b6e21d837edaebc7efaab6e48ce9041c6a215ddc7d22420d6",
+                                "question": "High Point Panthers vs. Wisconsin Badgers",
+                                "sportsMarketType": "moneyline",
+                                "outcomes": ["High Point Panthers", "Wisconsin Badgers"],
+                                "teams": [
+                                    {"name": "High Point Panthers", "score": 83},
+                                    {"name": "Wisconsin Badgers", "score": 82},
+                                ],
+                            }
+                        ],
+                    },
+                }
+                with patch("evaluator._fetch_market", return_value=None) as fetch_market_mock, patch(
+                    "evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot
+                ), patch("evaluator.sync_belief_priors", return_value=0):
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual(len(resolved), 1)
+                fetch_market_mock.assert_not_called()
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, resolution_json
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-sports-page-team",),
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(int(row["outcome"]), 1)
+                self.assertEqual(row["market_resolved_outcome"], "high point panthers")
+                resolution_payload = json.loads(row["resolution_json"])
+                self.assertEqual(resolution_payload["source"], "sports_page")
+                self.assertEqual(resolution_payload["score"], "83-82")
+                self.assertTrue(resolution_payload["closed"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_resolve_shadow_trades_falls_back_to_sports_page_for_yes_no_team_win_market(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, market_url, trader_address, side, token_id,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-sports-page-yes-no",
+                        "market-yes-no",
+                        "Will High Point Panthers win on 2026-03-19?",
+                        "https://polymarket.com/event/cbb-hpnt-wisc-2026-03-19",
+                        "0xabc",
+                        "yes",
+                        "token-yes-no",
+                        "buy",
+                        0.44,
+                        10.0,
+                        0.64,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                sports_snapshot = {
+                    "ended": True,
+                    "score": "83-82",
+                    "canonicalUrl": "https://polymarket.com/sports/cbb/cbb-hpnt-wisc-2026-03-19",
+                    "event": {
+                        "slug": "cbb-hpnt-wisc-2026-03-19",
+                        "markets": [
+                            {
+                                "conditionId": "different-condition-id",
+                                "question": "High Point Panthers vs. Wisconsin Badgers",
+                                "sportsMarketType": "moneyline",
+                                "outcomes": ["High Point Panthers", "Wisconsin Badgers"],
+                                "teams": [
+                                    {"name": "High Point Panthers", "score": 83},
+                                    {"name": "Wisconsin Badgers", "score": 82},
+                                ],
+                            }
+                        ],
+                    },
+                }
+                with patch(
+                    "evaluator._fetch_market",
+                    return_value={
+                        "closed": False,
+                        "tokens": [
+                            {"outcome": "Yes", "winner": False},
+                            {"outcome": "No", "winner": False},
+                        ],
+                    },
+                ), patch("evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot), patch(
+                    "evaluator.sync_belief_priors", return_value=0
+                ):
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual(len(resolved), 1)
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-sports-page-yes-no",),
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(int(row["outcome"]), 1)
+                self.assertEqual(row["market_resolved_outcome"], "yes")
             finally:
                 db.DB_PATH = original_db_path
 
@@ -821,6 +1063,17 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_early_retrain_without_deployed_model_uses_configured_min_samples(self) -> None:
+        with patch("auto_retrain.load_training_data", return_value=[object()] * 149), patch(
+            "auto_retrain.min_samples_required", return_value=150
+        ):
+            self.assertFalse(auto_retrain.should_retrain_early(None))
+
+        with patch("auto_retrain.load_training_data", return_value=[object()] * 150), patch(
+            "auto_retrain.min_samples_required", return_value=150
+        ):
+            self.assertTrue(auto_retrain.should_retrain_early(None))
+
     def test_live_order_response_fill_overrides_book_estimate_for_entries(self) -> None:
         executor = object.__new__(PolymarketExecutor)
         executor._clob = SimpleNamespace(
@@ -833,6 +1086,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 "takingAmount": "20.0",
             },
         )
+        executor._ensure_live_token_allowance = lambda token_id: None
         executor.get_usdc_balance = lambda: 100.0
         executor._measure_live_balance_change = lambda before, expect_increase=False: (before, 0.0)
         executor._sync_live_positions = lambda *args, **kwargs: None
@@ -1123,7 +1377,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 conn.close()
 
                 cache = dedup.DedupeCache()
-                cache.load_from_db()
+                cache.load_from_db(rebuild_shadow_positions=True)
                 executor = object.__new__(PolymarketExecutor)
                 shares, exit_notional, pnl = executor._finalize_exit(
                     entries=[dict(entry_row)],

@@ -77,9 +77,9 @@ export function Signals({
       <Text color={theme.dim}>{headerText}</Text>
       <InkBox flexDirection="column" marginTop={1}>
         {signals.length ? (
-          signals.map((event) => (
+          signals.map((event, index) => (
             <TradeRow
-              key={`${event.trade_id}-${event.ts}`}
+              key={`signal-${effectiveOffset + index}-${event.trade_id}-${event.ts}`}
               layout="signals"
               maxWidth={visibleWidth}
               viewportOffset={effectiveHorizontalOffset}

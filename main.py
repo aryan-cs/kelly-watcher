@@ -15,7 +15,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 from alerter import send_alert
-from auto_retrain import retrain_cycle, should_retrain_early
+from auto_retrain import retrain_cycle_report, should_retrain_early
 from beliefs import sync_belief_priors
 from config import (
     ConfigError,
@@ -41,6 +41,7 @@ from config import (
     retrain_base_cadence,
     retrain_early_check_seconds,
     retrain_hour_local,
+    retrain_min_samples,
     use_real_money,
     wallet_inactivity_limit_seconds,
     wallet_slow_drop_max_tracking_age_seconds,
@@ -66,6 +67,7 @@ from evaluator import daily_report, resolve_shadow_trades
 from executor import PolymarketExecutor
 from kelly import size_signal
 from market_scorer import build_market_features
+from market_urls import market_url_from_metadata
 from signal_engine import SignalEngine
 from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
 from tracker import PolymarketTracker
@@ -91,6 +93,7 @@ logger = logging.getLogger(__name__)
 EVENT_FILE = Path("data/events.jsonl")
 BOT_STATE_FILE = Path("data/bot_state.json")
 _emit_count = 0
+_event_lock = threading.Lock()
 WATCHED_WALLETS = watched_wallets()
 _HEURISTIC_CONF_RE = re.compile(r"heuristic conf ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
 _MODEL_EDGE_RE = re.compile(r"model edge (-?[0-9.]+) < threshold ([0-9.]+)", re.IGNORECASE)
@@ -129,15 +132,17 @@ class DailyLossGuard:
     start_equity: float
     loss_limit_pct: float
     day_key: str
+    _equity_locked: bool = False
 
     def block_reason(self, account_equity: float, now_ts: int) -> str | None:
         current_day = time.strftime("%Y-%m-%d", time.localtime(now_ts))
         if current_day != self.day_key:
             self.day_key = current_day
-            self.start_equity = max(account_equity, 0.0)
+            self._equity_locked = False
 
-        if self.start_equity <= 0 and account_equity > 0:
+        if not self._equity_locked and account_equity > 0:
             self.start_equity = account_equity
+            self._equity_locked = True
         if self.loss_limit_pct <= 0 or self.start_equity <= 0:
             return None
 
@@ -153,46 +158,86 @@ class DailyLossGuard:
 def _emit_event(payload: dict) -> None:
     global _emit_count
     EVENT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with EVENT_FILE.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload) + "\n")
-    _emit_count += 1
-    if _emit_count % 100 == 0:
-        try:
-            lines = EVENT_FILE.read_text(encoding="utf-8").splitlines(True)
-            if len(lines) > 1000:
-                EVENT_FILE.write_text("".join(lines[-1000:]), encoding="utf-8")
-        except Exception:
-            pass
+    with _event_lock:
+        with EVENT_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+        _emit_count += 1
+        if _emit_count % 100 == 0:
+            try:
+                lines = EVENT_FILE.read_text(encoding="utf-8").splitlines(True)
+                if len(lines) > 1000:
+                    EVENT_FILE.write_text("".join(lines[-1000:]), encoding="utf-8")
+            except Exception:
+                pass
 
 
 def _market_url_for_event(event) -> str | None:
-    meta = getattr(event, "raw_market_metadata", None)
-    if not isinstance(meta, dict):
-        return None
-
-    candidates = [meta]
-    nested_event = meta.get("event")
-    if isinstance(nested_event, dict):
-        candidates.append(nested_event)
-
-    for candidate in candidates:
-        direct_url = str(candidate.get("url") or candidate.get("marketUrl") or "").strip()
-        if (
-            (direct_url.startswith("https://") or direct_url.startswith("http://"))
-            and "polymarket.com/" in direct_url.lower()
-        ):
-            return direct_url
-
-        slug = str(candidate.get("slug") or candidate.get("marketSlug") or "").strip().strip("/")
-        if slug:
-            return f"https://polymarket.com/event/{slug}"
-
-    return None
+    return market_url_from_metadata(getattr(event, "raw_market_metadata", None))
 
 
 def _event_market_payload(event) -> dict[str, str]:
     market_url = _market_url_for_event(event)
     return {"market_url": market_url} if market_url else {}
+
+
+def _repair_event_file_market_urls() -> None:
+    if not EVENT_FILE.exists():
+        return
+
+    try:
+        lines = EVENT_FILE.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+
+    trade_ids: list[str] = []
+    parsed_rows: list[dict[str, object] | None] = []
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except Exception:
+            parsed_rows.append(None)
+            continue
+        if not isinstance(payload, dict):
+            parsed_rows.append(None)
+            continue
+        parsed_rows.append(payload)
+        trade_id = str(payload.get("trade_id") or "").strip()
+        if trade_id:
+            trade_ids.append(trade_id)
+
+    if not trade_ids:
+        return
+
+    conn = get_conn()
+    placeholders = ",".join("?" for _ in trade_ids)
+    rows = conn.execute(
+        f"SELECT trade_id, market_url FROM trade_log WHERE trade_id IN ({placeholders})",
+        tuple(trade_ids),
+    ).fetchall()
+    conn.close()
+    market_url_by_trade_id = {
+        str(row["trade_id"] or "").strip(): str(row["market_url"] or "").strip()
+        for row in rows
+        if str(row["trade_id"] or "").strip() and str(row["market_url"] or "").strip()
+    }
+
+    updated = False
+    repaired_lines: list[str] = []
+    for original_line, payload in zip(lines, parsed_rows):
+        if payload is None:
+            repaired_lines.append(original_line)
+            continue
+        trade_id = str(payload.get("trade_id") or "").strip()
+        canonical_url = market_url_by_trade_id.get(trade_id)
+        if canonical_url and str(payload.get("market_url") or "").strip() != canonical_url:
+            payload["market_url"] = canonical_url
+            repaired_lines.append(json.dumps(payload, separators=(",", ":"), default=str))
+            updated = True
+            continue
+        repaired_lines.append(original_line)
+
+    if updated:
+        EVENT_FILE.write_text("\n".join(repaired_lines) + "\n", encoding="utf-8")
 
 
 def _write_bot_state(**extra) -> None:
@@ -216,6 +261,36 @@ def _write_bot_state(**extra) -> None:
     )
     state.update(extra)
     BOT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _send_resolution_alerts(resolved_rows: list[dict[str, object]]) -> None:
+    for row in resolved_rows:
+        if not bool(row.get("executed")):
+            continue
+
+        mode = "LIVE" if bool(row.get("real_money")) else "SHADOW"
+        outcome_label = "WIN" if bool(row.get("won")) else "LOSS"
+        side = str(row.get("side") or "").strip().upper() or "UNKNOWN"
+        pnl = float(row.get("pnl") or 0.0)
+        question = str(row.get("question") or row.get("market_id") or "").strip()
+        resolved_outcome = str(row.get("market_resolved_outcome") or "").strip().lower()
+        market_url = str(row.get("market_url") or "").strip()
+
+        lines = [
+            f"[{mode} {outcome_label}] {side} | pnl={pnl:+.2f}",
+            question[:80],
+        ]
+        if resolved_outcome:
+            lines.append(f"resolved outcome: {resolved_outcome}")
+        if market_url:
+            lines.append(market_url)
+        send_alert("\n".join(lines), kind="resolution")
+
+
+def _resolve_trades_and_alert() -> list[dict[str, object]]:
+    resolved_rows = resolve_shadow_trades()
+    _send_resolution_alerts(resolved_rows)
+    return resolved_rows
 
 
 def _format_percent_text(value: str) -> str:
@@ -900,6 +975,7 @@ def _validate_startup() -> None:
     min_window_seconds = _capture_config(min_execution_window_seconds)
     max_horizon_seconds = _capture_config(max_market_horizon_seconds)
     _capture_config(max_source_trade_age_seconds)
+    _capture_config(retrain_min_samples)
 
     if (
         cold_start_min_observed is not None
@@ -1083,6 +1159,7 @@ def main() -> None:
     init_db()
     _validate_startup()
     EVENT_FILE.touch(exist_ok=True)
+    _repair_event_file_market_urls()
     start_ts = int(time.time())
     watchlist = WatchlistManager(WATCHED_WALLETS)
     bot_state_snapshot: dict[str, object] = {
@@ -1095,10 +1172,21 @@ def main() -> None:
         "bankroll_usd": None,
         "last_event_count": 0,
         "polled_wallet_count": 0,
+        "retrain_in_progress": False,
+        "retrain_started_at": 0,
+        "last_retrain_started_at": 0,
+        "last_retrain_finished_at": 0,
+        "last_retrain_status": "",
+        "last_retrain_message": "",
+        "last_retrain_sample_count": 0,
+        "last_retrain_min_samples": 0,
+        "last_retrain_trigger": "",
+        "last_retrain_deployed": False,
     }
     last_activity_write_at = 0.0
     current_loop_started_at = 0
     bot_state_lock = threading.Lock()
+    retrain_lock = threading.Lock()
 
     def _persist_bot_state(**updates: object) -> None:
         with bot_state_lock:
@@ -1119,6 +1207,60 @@ def main() -> None:
             updates["last_loop_started_at"] = current_loop_started_at
         _persist_bot_state(**updates)
 
+    def _run_retrain_job(trigger: str) -> bool:
+        if not retrain_lock.acquire(blocking=False):
+            message = f"Retrain request ignored: already running ({trigger})"
+            logger.info(message)
+            _persist_bot_state(
+                last_retrain_status="already_running",
+                last_retrain_message=message,
+                last_retrain_trigger=trigger,
+            )
+            return False
+
+        started_at = int(time.time())
+        _persist_bot_state(
+            retrain_in_progress=True,
+            retrain_started_at=started_at,
+            last_retrain_started_at=started_at,
+            last_retrain_status="running",
+            last_retrain_message=f"Retrain running ({trigger})",
+            last_retrain_trigger=trigger,
+        )
+        _heartbeat(force=True)
+        try:
+            report = retrain_cycle_report(engine, trigger=trigger, started_at=started_at)
+            finished_at = int(time.time())
+            _persist_bot_state(
+                retrain_in_progress=False,
+                retrain_started_at=0,
+                last_retrain_finished_at=finished_at,
+                last_retrain_status=str(report.get("status") or ""),
+                last_retrain_message=str(report.get("message") or ""),
+                last_retrain_sample_count=int(report.get("sample_count") or 0),
+                last_retrain_min_samples=int(report.get("min_samples") or 0),
+                last_retrain_trigger=trigger,
+                last_retrain_deployed=bool(report.get("deployed")),
+            )
+            return bool(report.get("ok"))
+        except Exception as exc:
+            finished_at = int(time.time())
+            message = f"Retrain failed: {exc}"
+            logger.exception(message)
+            _persist_bot_state(
+                retrain_in_progress=False,
+                retrain_started_at=0,
+                last_retrain_finished_at=finished_at,
+                last_retrain_status="failed",
+                last_retrain_message=message,
+                last_retrain_trigger=trigger,
+                last_retrain_deployed=False,
+            )
+            raise
+        finally:
+            _heartbeat(force=True)
+            retrain_lock.release()
+
     _persist_bot_state(**watchlist.state_fields())
     sync_belief_priors()
 
@@ -1131,26 +1273,26 @@ def main() -> None:
     daily_loss_guard = _init_daily_loss_guard(executor)
     engine = SignalEngine()
     dedup = DedupeCache()
-    dedup.load_from_db()
+    dedup.load_from_db(rebuild_shadow_positions=True)
     tracker.seen_ids.update(dedup.seen_ids)
     initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
     if use_real_money() and not initial_live_sync_ok:
         raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
     refresh_trader_cache(watchlist.startup_wallets())
-    watchlist.refresh()
+    watchlist.refresh(run_auto_drop=True)
     _persist_bot_state(**watchlist.state_fields())
-    resolve_shadow_trades()
-    dedup.load_from_db()
+    _resolve_trades_and_alert()
+    dedup.load_from_db(rebuild_shadow_positions=False)
     tracker.seen_ids.update(dedup.seen_ids)
 
     def _refresh_watchlist() -> None:
         refresh_trader_cache(watchlist.active_wallets())
-        watchlist.refresh()
+        watchlist.refresh(run_auto_drop=True)
         _persist_bot_state(**watchlist.state_fields())
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(
-        lambda: (resolve_shadow_trades(), dedup.load_from_db()),
+        lambda: (_resolve_trades_and_alert(), dedup.load_from_db(rebuild_shadow_positions=False)),
         "interval",
         minutes=2,
         id="resolve_trades",
@@ -1167,19 +1309,19 @@ def main() -> None:
     retrain_trigger = {"hour": retrain_hour, "minute": 0, "id": "scheduled_retrain"}
     if retrain_cadence == "weekly":
         scheduler.add_job(
-            lambda: retrain_cycle(engine),
+            lambda: _run_retrain_job("scheduled"),
             "cron",
             day_of_week="mon",
             **retrain_trigger,
         )
     else:
         scheduler.add_job(
-            lambda: retrain_cycle(engine),
+            lambda: _run_retrain_job("scheduled"),
             "cron",
             **retrain_trigger,
         )
     scheduler.add_job(
-        lambda: should_retrain_early(engine) and retrain_cycle(engine),
+        lambda: should_retrain_early(engine) and _run_retrain_job("early"),
         "interval",
         seconds=retrain_early_check_seconds(),
         id="early_retrain_check",
@@ -1202,6 +1344,8 @@ def main() -> None:
         hour=4,
         id="db_backup",
     )
+    if should_retrain_early(engine):
+        _run_retrain_job("startup")
     scheduler.start()
 
     mode_str = "LIVE" if use_real_money() else "SHADOW"
@@ -1232,7 +1376,7 @@ def main() -> None:
                     logger.warning("Low balance: $%.2f - skipping poll", bankroll)
                 else:
                     _heartbeat()
-                    watchlist.refresh()
+                    watchlist.refresh(run_auto_drop=False)
                     poll_batches = watchlist.poll_batches()
                     polled_wallet_count = sum(len(batch.wallets) for batch in poll_batches)
                     _persist_bot_state(

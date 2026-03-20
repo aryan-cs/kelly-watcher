@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import joblib
+import numpy as np
+
+import signal_engine
+from economic_model import expected_return_to_confidence, inverse_return_target, transform_return_target
+from features import FEATURE_COLS
+from trade_contract import DATA_CONTRACT_VERSION, MODEL_LABEL_MODE
+
+
+class ConstantReturnModel:
+    def __init__(self, target_value: float):
+        self.target_value = float(target_value)
+
+    def predict(self, X):
+        return np.full(len(X), self.target_value, dtype=float)
+
+
+class IdentityCalibrator:
+    def predict(self, values):
+        return np.asarray(values, dtype=float)
+
+
+class ExpectedReturnModelTest(unittest.TestCase):
+    def test_return_target_transform_round_trips(self) -> None:
+        values = [-1.0, -0.25, 0.0, 0.4, 1.75]
+        restored = [inverse_return_target(transform_return_target(value)) for value in values]
+        for original, recovered in zip(values, restored):
+            self.assertAlmostEqual(original, recovered, places=6)
+
+    def test_signal_engine_scores_expected_return_artifact(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.35)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.01},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            market_features = SimpleNamespace(execution_price=0.4, mid=0.4)
+            expected_confidence = float(expected_return_to_confidence(0.35, 0.4))
+            with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch.object(
+                engine.market_scorer,
+                "score",
+                return_value={"score": 0.7, "veto": None},
+            ), patch(
+                "signal_engine.build_feature_map",
+                return_value={column: 0.5 for column in FEATURE_COLS[:3]},
+            ):
+                result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
+
+            self.assertAlmostEqual(result["confidence"], round(expected_confidence, 4), places=4)
+            self.assertAlmostEqual(result["raw_confidence"], round(expected_confidence, 4), places=4)
+            self.assertAlmostEqual(result["expected_return"], 0.35, places=4)
+            self.assertTrue(result["passed"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -19,6 +19,7 @@ from config import (
     wallet_address,
 )
 from db import get_conn
+from market_urls import market_url_from_metadata
 from trade_contract import (
     OPEN_EXECUTED_ENTRY_SQL,
     remaining_entry_shares_expr,
@@ -75,27 +76,7 @@ def _to_float(value: Any) -> float:
 
 
 def _market_url_from_metadata(meta: Any) -> str | None:
-    if not isinstance(meta, dict):
-        return None
-
-    candidates = [meta]
-    nested_event = meta.get("event")
-    if isinstance(nested_event, dict):
-        candidates.append(nested_event)
-
-    for candidate in candidates:
-        direct_url = str(candidate.get("url") or candidate.get("marketUrl") or "").strip()
-        if (
-            (direct_url.startswith("https://") or direct_url.startswith("http://"))
-            and "polymarket.com/" in direct_url.lower()
-        ):
-            return direct_url
-
-        slug = str(candidate.get("slug") or candidate.get("marketSlug") or "").strip().strip("/")
-        if slug:
-            return f"https://polymarket.com/event/{slug}"
-
-    return None
+    return market_url_from_metadata(meta)
 
 
 class PolymarketExecutor:
@@ -584,6 +565,15 @@ class PolymarketExecutor:
         )
 
     @staticmethod
+    def _is_unfilled_fok_response(payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        status = str(payload.get("status") or "").strip().lower()
+        if status in {"cancelled", "canceled", "unfilled"}:
+            return True
+        return bool(payload.get("success")) is False and status in {"", "pending"}
+
+    @staticmethod
     def _parse_live_trade_fill(
         rows: list[dict[str, Any]],
     ) -> LiveExchangeFill | None:
@@ -873,7 +863,8 @@ class PolymarketExecutor:
         send_alert(
             f"[SHADOW] {side.upper()} ${fill.spent_usd:.2f}\n"
             f"{event.question[:80]}\n"
-            f"conf={confidence:.3f} | fill={fill.shares:.3f} @ {fill.avg_price:.3f} | kelly_f={kelly_f:.4f}"
+            f"conf={confidence:.3f} | fill={fill.shares:.3f} @ {fill.avg_price:.3f} | kelly_f={kelly_f:.4f}",
+            kind="buy",
         )
         return ExecutionResult(True, True, None, fill.spent_usd, "ok", shares=fill.shares, action="entry")
 
@@ -896,6 +887,8 @@ class PolymarketExecutor:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
             from py_clob_client.order_builder.constants import BUY
 
+            # Refuse the entry if we cannot guarantee that a later exit can be approved.
+            self._ensure_live_token_allowance(token_id)
             balance_before = self.get_usdc_balance()
             # token_id already identifies the YES or NO outcome token we want.
             order = MarketOrderArgs(
@@ -906,6 +899,20 @@ class PolymarketExecutor:
             signed = self._clob.create_market_order(order)
             response = self._clob.post_order(signed, OrderType.FOK)
             order_id = self._extract_order_id(response)
+            if self._is_unfilled_fok_response(response):
+                dedup.release(market_id, token_id, side)
+                logger.info(
+                    "[LIVE] FOK order cancelled for %s at %s; no fill recorded",
+                    market_id[:12],
+                    token_id[:12],
+                )
+                return ExecutionResult(
+                    False,
+                    False,
+                    order_id if order_id != "unknown" else None,
+                    0.0,
+                    "FOK order cancelled - order book too thin",
+                )
             reconciled_fill = self._reconcile_live_order_fill(
                 order_id=order_id,
                 response=response,
@@ -987,16 +994,9 @@ class PolymarketExecutor:
             send_alert(
                 f"[LIVE] {side.upper()} ${actual_spend:.2f}\n"
                 f"{event.question[:80]}\n"
-                f"conf={confidence:.3f} | fill={actual_shares:.3f} @ {actual_price:.3f} | order={order_id}"
+                f"conf={confidence:.3f} | fill={actual_shares:.3f} @ {actual_price:.3f} | order={order_id}",
+                kind="buy",
             )
-            try:
-                self._ensure_live_token_allowance(token_id)
-            except Exception as exc:
-                logger.warning("Live buy succeeded but token allowance arming failed for %s: %s", token_id[:16], exc)
-                send_alert(
-                    f"[LIVE WARNING] Buy filled but exit allowance setup failed\n"
-                    f"{event.question[:80]}\n{exc}"
-                )
             return ExecutionResult(True, False, order_id, actual_spend, "ok", shares=actual_shares, action="entry")
         except Exception as exc:
             dedup.release(market_id, token_id, side)
@@ -1226,7 +1226,8 @@ class PolymarketExecutor:
             return 0.0, 0.0, 0.0, 0.0
 
         if observed_source_shares > 0 and total_source_shares > 0:
-            exit_fraction = min(observed_source_shares / total_source_shares, 1.0)
+            raw_fraction = observed_source_shares / total_source_shares
+            exit_fraction = 1.0 if raw_fraction >= 0.90 else min(raw_fraction, 1.0)
         else:
             exit_fraction = 1.0
 
@@ -1482,7 +1483,7 @@ class PolymarketExecutor:
         conn.commit()
         conn.close()
         if refresh_position_from_trade_log:
-            dedup.load_from_db()
+            dedup.load_from_db(rebuild_shadow_positions=False)
         else:
             dedup.release(
                 market_id,
@@ -1618,11 +1619,34 @@ class PolymarketExecutor:
                 if attempt < LIVE_SYNC_ATTEMPTS - 1:
                     time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
             else:
-                if expected_remaining_shares <= 1e-6:
-                    raise RuntimeError("live exit order posted but the position still appeared open after sync")
-                raise RuntimeError(
-                    f"live exit order posted but remaining shares were {remaining_shares:.3f}, "
-                    f"expected about {expected_remaining_shares:.3f}"
+                if reconciled_fill is None:
+                    logger.error(
+                        "[LIVE EXIT] ambiguous exit state for %s: remaining_shares=%.3f expected=%.3f",
+                        market_id[:12],
+                        remaining_shares,
+                        expected_remaining_shares,
+                    )
+                    send_alert(
+                        f"[LIVE EXIT WARNING] Ambiguous exit state\n"
+                        f"{event.question[:80]}\n"
+                        f"remaining={remaining_shares:.3f} expected={expected_remaining_shares:.3f}"
+                    )
+                    dedup.release(
+                        market_id,
+                        str(position.get("token_id") or token_id or ""),
+                        str(position.get("side") or ""),
+                    )
+                    return ExecutionResult(
+                        False,
+                        False,
+                        order_id if order_id != "unknown" else None,
+                        0.0,
+                        "exit state ambiguous after sync timeout",
+                        action="exit",
+                    )
+                logger.warning(
+                    "[LIVE EXIT] position sync timed out for %s but fill reconciliation succeeded; committing exit",
+                    market_id[:12],
                 )
 
             actual_exit_shares = (

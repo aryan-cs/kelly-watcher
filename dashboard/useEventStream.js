@@ -1,22 +1,10 @@
 import fs from 'fs';
 import { useEffect, useState } from 'react';
+import { readIdentityMap } from './identities.js';
 import { eventsPath, identityPath } from './paths.js';
 import { useRefreshToken } from './refresh.js';
-function readIdentityMap() {
-    try {
-        const payload = JSON.parse(fs.readFileSync(identityPath, 'utf8'));
-        const lookup = new Map();
-        for (const [wallet, entry] of Object.entries(payload.wallets || {})) {
-            const username = (entry?.username || '').trim();
-            if (wallet && username) {
-                lookup.set(wallet.toLowerCase(), username);
-            }
-        }
-        return lookup;
-    }
-    catch {
-        return new Map();
-    }
+function eventIdentity(event) {
+    return `${event.type}|${event.trade_id}|${event.ts}`;
 }
 export function useEventStream(maxEvents = 50) {
     const [events, setEvents] = useState([]);
@@ -42,7 +30,16 @@ export function useEventStream(maxEvents = 50) {
                     }
                     return event;
                 });
-                setEvents(parsed.slice(-maxEvents));
+                const deduped = [];
+                const seen = new Set();
+                for (const event of parsed) {
+                    const key = eventIdentity(event);
+                    if (seen.has(key))
+                        continue;
+                    seen.add(key);
+                    deduped.push(event);
+                }
+                setEvents(deduped.slice(-maxEvents));
             }
             catch {
                 setEvents([]);

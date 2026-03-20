@@ -18,6 +18,7 @@ AND actual_entry_price IS NOT NULL
 AND actual_entry_shares IS NOT NULL
 AND actual_entry_size_usd IS NOT NULL
 `;
+const REALIZED_CLOSE_TS_SQL = `COALESCE(exited_at, resolved_at, placed_at)`;
 const OPEN_EXECUTED_ENTRY_WHERE = `
 ${EXECUTED_ENTRY_WHERE}
 AND COALESCE(remaining_entry_shares, actual_entry_shares, source_shares, 0) > 1e-9
@@ -40,7 +41,7 @@ GROUP BY real_money
 const DAILY_SQL = `
 SELECT
   real_money,
-  strftime('%Y-%m-%d', datetime(COALESCE(resolved_at, placed_at), 'unixepoch')) AS day,
+  strftime('%Y-%m-%d %H:00', datetime(${REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
   ROUND(
     SUM(
       CASE
@@ -325,7 +326,6 @@ WHERE ${EXECUTED_ENTRY_WHERE}
   AND (CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END) IS NOT NULL
 ORDER BY COALESCE(NULLIF(tl.exited_at, 0), NULLIF(tl.resolved_at, 0), NULLIF(tl.market_close_ts, 0), tl.placed_at) DESC, tl.id DESC
 `;
-const DAILY_PNL_BAR_SCALE = 500;
 function getPositionsLayout(width) {
     const showId = width >= 132;
     const showUser = width >= 110;
@@ -382,10 +382,10 @@ function getPositionsLayout(width) {
         showUser
     };
 }
-function getPositionPaneMetrics(terminalHeight, stacked, dailyCount) {
+function getPositionPaneMetrics(terminalHeight, stacked) {
     const outerReserve = 10;
     const statsHeight = 9;
-    const dailyHeight = 3 + Math.max(1, dailyCount);
+    const dailyHeight = 9;
     const topRowHeight = stacked ? statsHeight + 1 + dailyHeight : Math.max(statsHeight, dailyHeight);
     const sectionGaps = stacked ? 3 : 2;
     const availableHeight = Math.max(12, terminalHeight - outerReserve - topRowHeight - sectionGaps);
@@ -393,20 +393,94 @@ function getPositionPaneMetrics(terminalHeight, stacked, dailyCount) {
     const visibleRows = Math.max(1, paneHeight - 5);
     return { paneHeight, visibleRows };
 }
-function getDailyPnlLayout(terminalWidth, stacked, valueWidth) {
-    const dateWidth = 10;
+function getDailyPanelContentWidth(terminalWidth, stacked) {
+    const minContentWidth = 24;
+    return stacked
+        ? Math.max(minContentWidth, terminalWidth - 10)
+        : Math.max(minContentWidth, Math.floor((terminalWidth - 15) / 2));
+}
+function getDailyQueueLayout(contentWidth, valueWidth) {
+    const dateWidth = 14;
+    const resolvedValueWidth = Math.max(12, valueWidth);
     const minBarWidth = 9;
-    const minTotalWidth = dateWidth + valueWidth + minBarWidth + 2;
-    const panelContentWidth = stacked
-        ? Math.max(minTotalWidth, terminalWidth - 10)
-        : Math.max(minTotalWidth, Math.floor((terminalWidth - 15) / 2));
+    const rawBarWidth = Math.max(minBarWidth, contentWidth - dateWidth - resolvedValueWidth - 2);
+    const centeredBarWidth = rawBarWidth % 2 === 0 ? rawBarWidth - 1 : rawBarWidth;
     return {
         dateWidth,
-        valueWidth,
-        barWidth: Math.max(minBarWidth, panelContentWidth - dateWidth - valueWidth - 2)
+        barWidth: Math.max(minBarWidth, centeredBarWidth),
+        valueWidth: resolvedValueWidth
     };
 }
-export function Performance({ currentScrollOffset, pastScrollOffset, activePane, onCurrentScrollOffsetChange, onPastScrollOffsetChange }) {
+function parseHourlyBucket(bucket) {
+    const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):00$/.exec(String(bucket || '').trim());
+    if (!match) {
+        return null;
+    }
+    const [, year, month, day, hour] = match;
+    return new Date(Number.parseInt(year, 10), Number.parseInt(month, 10) - 1, Number.parseInt(day, 10), Number.parseInt(hour, 10), 0, 0, 0);
+}
+function formatHourlyBucketKey(date) {
+    const year = String(date.getFullYear()).padStart(4, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hour = String(date.getHours()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hour}:00`;
+}
+function formatHourlyBucketLabel(bucket, compact = false) {
+    const bucketDate = parseHourlyBucket(bucket);
+    if (!bucketDate) {
+        const [datePart, timePart = ''] = String(bucket || '').split(' ');
+        const shortDate = datePart.length >= 10 ? datePart.slice(5) : datePart;
+        const shortTime = timePart.slice(0, 5);
+        if (compact) {
+            return shortTime || shortDate;
+        }
+        if (shortDate && shortTime) {
+            return `${shortDate} ${shortTime}`;
+        }
+        return shortDate || shortTime || bucket;
+    }
+    const shortDate = `${String(bucketDate.getMonth() + 1).padStart(2, '0')}-${String(bucketDate.getDate()).padStart(2, '0')}`;
+    const hour24 = bucketDate.getHours();
+    const suffix = hour24 >= 12 ? 'PM' : 'AM';
+    const hour12 = hour24 % 12 || 12;
+    const timeText = `${hour12}:00 ${suffix}`;
+    return compact ? timeText : `${shortDate} ${timeText}`;
+}
+function DailyPnlPreviewChart({ entries, width }) {
+    const levelCount = 4;
+    const gapWidth = 0;
+    const columnWidth = 2;
+    const chartWidth = Math.max(1, width);
+    const leftPaddingWidth = Math.max(0, chartWidth - (entries.length * columnWidth));
+    const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)));
+    const heights = entries.map((entry) => {
+        const magnitude = Math.abs(entry.pnl);
+        if (magnitude <= 0) {
+            return 0;
+        }
+        return Math.max(1, Math.min(levelCount, Math.round((magnitude / maxAbsPnl) * levelCount)));
+    });
+    const renderRow = (rowIndex, negative) => (React.createElement(InkBox, { width: "100%" },
+        leftPaddingWidth > 0 ? (React.createElement(InkBox, { width: leftPaddingWidth },
+            React.createElement(Text, null, ' '.repeat(leftPaddingWidth)))) : null,
+        entries.map((entry, index) => {
+            const filled = negative
+                ? entry.pnl < 0 && heights[index] >= rowIndex
+                : entry.pnl > 0 && heights[index] >= rowIndex;
+            const color = negative ? theme.red : theme.green;
+            return (React.createElement(React.Fragment, { key: `${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}` },
+                React.createElement(InkBox, { width: columnWidth },
+                    React.createElement(Text, { color: filled ? color : undefined }, filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth))),
+                index < entries.length - 1 ? React.createElement(Text, null, ' '.repeat(gapWidth)) : null));
+        })));
+    return (React.createElement(InkBox, { flexDirection: "column" },
+        Array.from({ length: levelCount }, (_, index) => renderRow(levelCount - index, false)),
+        React.createElement(InkBox, { width: "100%" },
+            React.createElement(Text, { color: theme.dim }, '─'.repeat(chartWidth))),
+        Array.from({ length: levelCount }, (_, index) => renderRow(index + 1, true))));
+}
+export function Performance({ currentScrollOffset, pastScrollOffset, activePane, selectedBox, dailyDetailOpen, dailyDetailScrollOffset, onCurrentScrollOffsetChange, onPastScrollOffsetChange, onDailyDetailScrollOffsetChange }) {
     const terminal = useTerminalSize();
     const stacked = stackPanels(terminal.width);
     const rows = useQuery(SUMMARY_SQL);
@@ -425,7 +499,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const shadow = rows.find((row) => row.real_money === 0);
     const live = rows.find((row) => row.real_money === 1);
     const activeSummary = activeMode === 'live' ? live : shadow;
-    const activeTitle = activeMode === 'live' ? 'Live' : 'Shadow';
+    const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker';
     const usernames = useMemo(() => {
         const lookup = new Map();
         for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -453,19 +527,57 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const waitingPositionsTotal = useMemo(() => waitingPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0), [waitingPositions]);
     const pastPositions = useMemo(() => [...activeResolvedPositions, ...waitingPositions].sort((a, b) => Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
         Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)), [activeResolvedPositions, waitingPositions]);
-    const activeDaily = useMemo(() => daily.filter((row) => row.real_money === activeRealMoney).slice(0, 7), [activeRealMoney, daily]);
-    const dailyEntries = useMemo(() => activeDaily.slice().reverse().map((row) => {
-        const pnl = Number(row.pnl || 0);
-        return {
-            day: row.day,
-            pnl,
-            label: formatDollar(pnl),
-            normalized: Math.min(1, Math.abs(pnl) / DAILY_PNL_BAR_SCALE)
-        };
-    }), [activeDaily]);
+    const activeDailyRows = useMemo(() => daily.filter((row) => row.real_money === activeRealMoney), [activeRealMoney, daily]);
+    const dailyEntries = useMemo(() => {
+        const parsedEntries = activeDailyRows
+            .map((row) => {
+            const bucketDate = parseHourlyBucket(row.day);
+            if (!bucketDate) {
+                return null;
+            }
+            const pnl = Number(row.pnl || 0);
+            return {
+                day: row.day,
+                pnl,
+                label: formatDollar(pnl),
+                bucketDate
+            };
+        })
+            .filter((row) => row != null)
+            .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime());
+        if (!parsedEntries.length) {
+            return activeDailyRows.map((row) => {
+                const pnl = Number(row.pnl || 0);
+                return {
+                    day: row.day,
+                    pnl,
+                    label: formatDollar(pnl)
+                };
+            });
+        }
+        const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]));
+        const newest = new Date(parsedEntries[0].bucketDate.getTime());
+        const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime());
+        const filledEntries = [];
+        for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
+            const bucketKey = formatHourlyBucketKey(cursor);
+            const existing = entryByBucket.get(bucketKey);
+            filledEntries.push(existing
+                ? { day: existing.day, pnl: existing.pnl, label: existing.label }
+                : { day: bucketKey, pnl: 0, label: formatDollar(0) });
+            const nextCursor = new Date(cursor.getTime());
+            nextCursor.setHours(nextCursor.getHours() - 1);
+            cursor = nextCursor;
+        }
+        return filledEntries;
+    }, [activeDailyRows]);
+    const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
+    const dailyPreviewCapacity = useMemo(() => dailyEntries.length
+        ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
+        : 0, [dailyEntries.length, dailyPanelContentWidth]);
+    const dailyPreviewEntries = useMemo(() => dailyEntries.slice(0, dailyPreviewCapacity).reverse(), [dailyEntries, dailyPreviewCapacity]);
     const dailyValueWidth = useMemo(() => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10), [dailyEntries]);
-    const dailyLayout = useMemo(() => getDailyPnlLayout(terminal.width, stacked, dailyValueWidth), [dailyValueWidth, stacked, terminal.width]);
-    const paneMetrics = getPositionPaneMetrics(terminal.height, stacked, activeDaily.length);
+    const paneMetrics = getPositionPaneMetrics(terminal.height, stacked);
     const currentMaxOffset = Math.max(0, currentPositions.length - paneMetrics.visibleRows);
     const pastMaxOffset = Math.max(0, pastPositions.length - paneMetrics.visibleRows);
     const effectiveCurrentScrollOffset = Math.min(currentScrollOffset, currentMaxOffset);
@@ -475,6 +587,13 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const shadowBalance = botState.mode === 'shadow' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const liveBalance = botState.mode === 'live' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const activeBalance = activeMode === 'live' ? liveBalance : shadowBalance;
+    const modalBackground = terminal.backgroundColor || theme.modalBackground;
+    const detailModalWidth = Math.max(60, Math.min(terminal.width - 8, terminal.wide ? 110 : 88));
+    const detailModalContentWidth = Math.max(40, detailModalWidth - 4);
+    const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12));
+    const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows);
+    const detailOffset = Math.min(dailyDetailScrollOffset, detailMaxOffset);
+    const visibleDetailEntries = dailyEntries.slice(detailOffset, detailOffset + detailVisibleRows);
     useEffect(() => {
         if (currentScrollOffset !== effectiveCurrentScrollOffset) {
             onCurrentScrollOffsetChange?.(effectiveCurrentScrollOffset);
@@ -485,6 +604,17 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             onPastScrollOffsetChange?.(effectivePastScrollOffset);
         }
     }, [pastScrollOffset, effectivePastScrollOffset, onPastScrollOffsetChange]);
+    useEffect(() => {
+        if (dailyDetailScrollOffset !== detailOffset) {
+            onDailyDetailScrollOffsetChange?.(detailOffset);
+        }
+    }, [dailyDetailScrollOffset, detailOffset, onDailyDetailScrollOffsetChange]);
+    const paddedDetailEntries = useMemo(() => Array.from({ length: detailVisibleRows }, (_, index) => visibleDetailEntries[index] ?? null), [detailVisibleRows, visibleDetailEntries]);
+    const detailRangeLabel = dailyEntries.length
+        ? `${detailOffset + 1}-${Math.min(detailOffset + visibleDetailEntries.length, dailyEntries.length)}/${dailyEntries.length}`
+        : '0/0';
+    const detailQueueLayout = useMemo(() => getDailyQueueLayout(detailModalContentWidth, dailyValueWidth), [detailModalContentWidth, dailyValueWidth]);
+    const detailMaxAbsPnl = useMemo(() => Math.max(1, ...dailyEntries.map((entry) => Math.abs(entry.pnl))), [dailyEntries]);
     const getPositionProfit = (row) => {
         const shares = row.entry_price > 0 ? row.size_usd / row.entry_price : null;
         const toWin = row.status === 'exit'
@@ -593,7 +723,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                     positionsLayout.showUser ? (React.createElement(React.Fragment, null,
                         React.createElement(Text, { color: username ? theme.white : theme.dim }, fit(userText, positionsLayout.userWidth)),
                         React.createElement(Text, null, " "))) : null,
-                React.createElement(Text, { color: row.market_url ? theme.accent : undefined }, terminalHyperlink(fit(row.question || row.market_id, questionWidth), row.market_url)),
+                    React.createElement(Text, { color: row.market_url ? theme.accent : undefined }, terminalHyperlink(fit(row.question || row.market_id, questionWidth), row.market_url)),
                     React.createElement(Text, null, " "),
                     React.createElement(Text, { color: theme.dim }, fitRight(secondsAgo(row.entered_at), positionsLayout.ageWidth)),
                     React.createElement(Text, null, " "),
@@ -627,7 +757,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     };
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
-            React.createElement(Box, { title: activeTitle, width: stacked ? '100%' : '50%' },
+            React.createElement(Box, { title: activeTitle, width: stacked ? '100%' : '50%', accent: selectedBox === 'summary' },
                 React.createElement(StatRow, { label: "Total P&L", value: formatDollar(activeSummary?.total_pnl), color: (activeSummary?.total_pnl || 0) >= 0 ? theme.green : theme.red }),
                 React.createElement(StatRow, { label: "Current balance", value: activeBalance == null ? '-' : `$${activeBalance.toFixed(3)}`, color: activeBalance != null ? theme.white : theme.dim }),
                 React.createElement(StatRow, { label: "Win rate", value: activeSummary ? formatPct(activeSummary.resolved ? activeSummary.wins / activeSummary.resolved : 0) : '-' }),
@@ -635,21 +765,25 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                 React.createElement(StatRow, { label: "Avg confidence", value: formatPct(activeSummary?.avg_confidence) }),
                 React.createElement(StatRow, { label: "Avg total", value: formatDollar(activeSummary?.avg_size) })),
             !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(Box, { title: `Daily ${activeTitle} P&L`, width: stacked ? '100%' : '50%' }, dailyEntries.length ? (dailyEntries.map((row) => {
-                return (React.createElement(InkBox, { key: row.day, width: "100%" },
-                    React.createElement(InkBox, { width: dailyLayout.dateWidth },
-                        React.createElement(Text, null, fit(row.day, dailyLayout.dateWidth))),
-                    React.createElement(Text, null, " "),
-                    React.createElement(InkBox, { width: dailyLayout.barWidth },
-                        React.createElement(BarSparkline, { value: row.normalized, width: dailyLayout.barWidth, positive: row.pnl >= 0, centered: true })),
-                    React.createElement(Text, null, " "),
-                    React.createElement(InkBox, { width: dailyLayout.valueWidth, justifyContent: "flex-end" },
-                        React.createElement(Text, { color: theme.dim }, fitRight(row.label, dailyLayout.valueWidth)))));
-            })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeMode} trades yet.`)))),
+            React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeTitle.toLowerCase()} trades yet.`)))),
         React.createElement(InkBox, { marginTop: 1, flexDirection: "column", height: paneMetrics.paneHeight * 2 + 1 },
             React.createElement(InkBox, { height: paneMetrics.paneHeight },
-                React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: activePane === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, { profitScaleRows: currentPositions })) : (React.createElement(Text, { color: theme.dim }, "No open positions right now.")))),
+                React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: selectedBox === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, { profitScaleRows: currentPositions })) : (React.createElement(Text, { color: theme.dim }, "No open positions right now.")))),
             React.createElement(InkBox, { height: 1 }),
             React.createElement(InkBox, { height: paneMetrics.paneHeight },
-                React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: activePane === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, { showStatus: true, showTtr: false, profitScaleRows: pastPositions })) : (React.createElement(Text, { color: theme.dim }, "No past positions yet.")))))));
+                React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: selectedBox === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, { showStatus: true, showTtr: false, profitScaleRows: pastPositions })) : (React.createElement(Text, { color: theme.dim }, "No past positions yet."))))),
+        dailyDetailOpen ? (React.createElement(InkBox, { position: "absolute", width: "100%", height: "100%", justifyContent: "center", alignItems: "center" },
+            React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: detailModalWidth },
+                React.createElement(InkBox, { width: "100%" },
+                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`),
+                    React.createElement(Text, { backgroundColor: modalBackground }, " "),
+                    React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, `${fitRight(detailRangeLabel, detailRangeLabel.length)} `)),
+                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailModalWidth - 2)),
+                paddedDetailEntries.map((row, index) => (React.createElement(InkBox, { key: `detail-${row?.day || `empty-${index}`}`, width: "100%" },
+                    React.createElement(Text, { color: row ? theme.white : theme.dim, backgroundColor: modalBackground }, ` ${fitRight(row ? formatHourlyBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`),
+                    React.createElement(Text, { backgroundColor: modalBackground }, " "),
+                    React.createElement(InkBox, { width: detailQueueLayout.barWidth },
+                        React.createElement(BarSparkline, { value: row ? row.pnl / detailMaxAbsPnl : 0, width: detailQueueLayout.barWidth, positive: row ? row.pnl >= 0 : true, centered: true, axisChar: "\u2502" })),
+                    React.createElement(Text, { backgroundColor: modalBackground }, " "),
+                    React.createElement(Text, { color: row ? (row.pnl >= 0 ? theme.green : theme.red) : theme.dim, backgroundColor: modalBackground }, `${fitRight(row?.label || '', detailQueueLayout.valueWidth)} `))))))) : null));
 }

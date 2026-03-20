@@ -19,9 +19,15 @@ dependencies = [
     "xgboost>=2.0",
 ]
 
+[project.scripts]
+main = "kelly_watcher.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-package = false
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["kelly_watcher"]

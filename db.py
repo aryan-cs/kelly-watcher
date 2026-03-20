@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
+
+from market_urls import market_url_from_metadata
 
 DB_PATH = Path("data/trading.db")
 
@@ -65,6 +68,88 @@ def _ensure_positions_schema(conn: sqlite3.Connection) -> None:
         DROP TABLE positions_legacy;
         """
     )
+
+
+def _repair_trade_log_market_urls(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, market_url, market_metadata_json
+        FROM trade_log
+        WHERE market_metadata_json IS NOT NULL
+          AND market_metadata_json <> ''
+        """
+    ).fetchall()
+
+    updates: list[tuple[str, int]] = []
+    for row in rows:
+        raw_meta = str(row["market_metadata_json"] or "").strip()
+        if not raw_meta:
+            continue
+        try:
+            meta = json.loads(raw_meta)
+        except Exception:
+            continue
+        canonical_url = market_url_from_metadata(meta)
+        if not canonical_url:
+            continue
+        existing_url = str(row["market_url"] or "").strip()
+        if canonical_url == existing_url:
+            continue
+        updates.append((canonical_url, int(row["id"])))
+
+    if updates:
+        conn.executemany("UPDATE trade_log SET market_url=? WHERE id=?", updates)
+
+
+def _backfill_retrain_runs_from_model_history(conn: sqlite3.Connection) -> None:
+    existing_finished = {
+        int(row["finished_at"])
+        for row in conn.execute(
+            """
+            SELECT finished_at
+            FROM retrain_runs
+            WHERE LOWER(COALESCE(status, ''))='deployed'
+            """
+        ).fetchall()
+    }
+    rows = conn.execute(
+        """
+        SELECT trained_at, n_samples, brier_score, log_loss, deployed
+        FROM model_history
+        ORDER BY trained_at ASC
+        """
+    ).fetchall()
+    inserts: list[tuple[int, int, str, str, int, int, int, int, float, float, str]] = []
+    for row in rows:
+        trained_at = int(row["trained_at"] or 0)
+        if trained_at <= 0 or trained_at in existing_finished:
+            continue
+        inserts.append(
+            (
+                trained_at,
+                trained_at,
+                "backfill",
+                "deployed",
+                1,
+                int(row["deployed"] or 0),
+                int(row["n_samples"] or 0),
+                0,
+                float(row["brier_score"]),
+                float(row["log_loss"]),
+                "Backfilled from model_history",
+            )
+        )
+
+    if inserts:
+        conn.executemany(
+            """
+            INSERT INTO retrain_runs (
+                started_at, finished_at, trigger, status, ok, deployed,
+                sample_count, min_samples, brier_score, log_loss, message
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            inserts,
+        )
 
 
 def init_db() -> None:
@@ -211,6 +296,27 @@ def init_db() -> None:
             deployed        INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS retrain_runs (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at            INTEGER NOT NULL,
+            finished_at           INTEGER NOT NULL,
+            trigger               TEXT NOT NULL DEFAULT '',
+            status                TEXT NOT NULL DEFAULT '',
+            ok                    INTEGER NOT NULL DEFAULT 0,
+            deployed              INTEGER NOT NULL DEFAULT 0,
+            sample_count          INTEGER NOT NULL DEFAULT 0,
+            min_samples           INTEGER NOT NULL DEFAULT 0,
+            brier_score           REAL,
+            log_loss              REAL,
+            candidate_name        TEXT,
+            candidate_count       INTEGER,
+            search_beats_baseline INTEGER,
+            search_total_pnl      REAL,
+            val_selected_trades   INTEGER,
+            val_total_pnl         REAL,
+            message               TEXT NOT NULL DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS perf_snapshots (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             snapshot_at     INTEGER NOT NULL,
@@ -264,6 +370,7 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_trade_log_skipped ON trade_log(skipped);
         CREATE INDEX IF NOT EXISTS idx_belief_updates_applied_at ON belief_updates(applied_at);
         CREATE INDEX IF NOT EXISTS idx_wallet_watch_state_status ON wallet_watch_state(status);
+        CREATE INDEX IF NOT EXISTS idx_retrain_runs_finished_at ON retrain_runs(finished_at DESC);
         """
     )
     _ensure_table_columns(
@@ -354,7 +461,48 @@ def init_db() -> None:
             "updated_at": "INTEGER NOT NULL DEFAULT 0",
         },
     )
+    _ensure_table_columns(
+        conn,
+        "retrain_runs",
+        {
+            "started_at": "INTEGER NOT NULL DEFAULT 0",
+            "finished_at": "INTEGER NOT NULL DEFAULT 0",
+            "trigger": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT ''",
+            "ok": "INTEGER NOT NULL DEFAULT 0",
+            "deployed": "INTEGER NOT NULL DEFAULT 0",
+            "sample_count": "INTEGER NOT NULL DEFAULT 0",
+            "min_samples": "INTEGER NOT NULL DEFAULT 0",
+            "brier_score": "REAL",
+            "log_loss": "REAL",
+            "candidate_name": "TEXT",
+            "candidate_count": "INTEGER",
+            "search_beats_baseline": "INTEGER",
+            "search_total_pnl": "REAL",
+            "val_selected_trades": "INTEGER",
+            "val_total_pnl": "REAL",
+            "message": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
     _ensure_positions_schema(conn)
+    _repair_trade_log_market_urls(conn)
+    _backfill_retrain_runs_from_model_history(conn)
+    conn.execute(
+        """
+        UPDATE positions
+        SET token_id = LOWER(token_id)
+        WHERE token_id IS NOT NULL
+          AND token_id != LOWER(token_id)
+        """
+    )
+    conn.execute(
+        """
+        UPDATE trade_log
+        SET token_id = LOWER(token_id)
+        WHERE token_id IS NOT NULL
+          AND token_id != LOWER(token_id)
+        """
+    )
     conn.execute(
         """
         UPDATE trade_log

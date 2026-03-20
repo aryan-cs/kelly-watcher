@@ -33,6 +33,7 @@ ENRICHMENT_FETCH_WORKERS = 6
 MARKET_METADATA_CACHE_TTL_S = 300
 ORDERBOOK_CACHE_TTL_S = 2
 PRICE_HISTORY_CACHE_TTL_S = 60
+INTRADAY_MARKET_METADATA_CACHE_TTL_S = 30
 
 
 @dataclass
@@ -98,6 +99,10 @@ class PolymarketTracker:
 
     def close(self) -> None:
         self.client.close()
+
+    @staticmethod
+    def _new_http_client() -> httpx.Client:
+        return httpx.Client(timeout=15.0, follow_redirects=True)
 
     def add_wallet(self, address: str) -> None:
         wallet = address.lower()
@@ -246,7 +251,8 @@ class PolymarketTracker:
                 request_kwargs: dict[str, Any] = {"params": params}
                 if timeout_s is not None:
                     request_kwargs["timeout"] = timeout_s
-                response = self.client.get(url, **request_kwargs)
+                with self._new_http_client() as client:
+                    response = client.get(url, **request_kwargs)
                 if response.status_code == 404 and suppress_404:
                     self._touch_activity()
                     return None, True
@@ -304,6 +310,24 @@ class PolymarketTracker:
         cache[key] = (time.time(), value)
         return value
 
+    @staticmethod
+    def _metadata_cache_ttl_s(meta: dict[str, Any] | None) -> int:
+        if not isinstance(meta, dict):
+            return MARKET_METADATA_CACHE_TTL_S
+
+        close_time = str(meta.get("endDate") or meta.get("closedTime") or "").strip()
+        if not close_time:
+            return MARKET_METADATA_CACHE_TTL_S
+
+        try:
+            close_ts = datetime.fromisoformat(close_time.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return MARKET_METADATA_CACHE_TTL_S
+
+        if max(close_ts - time.time(), 0.0) < 86400:
+            return INTRADAY_MARKET_METADATA_CACHE_TTL_S
+        return MARKET_METADATA_CACHE_TTL_S
+
     def get_leaderboard(self, window: str = "1w", limit: int = 50) -> list[dict]:
         payload, _ = self._request_json(
             f"{DATA_API}/leaderboard",
@@ -353,9 +377,14 @@ class PolymarketTracker:
             return {}, 0
 
         cache_key = str(condition_id).strip().lower()
-        cached = self._cache_get("_market_metadata_cache", cache_key, MARKET_METADATA_CACHE_TTL_S)
-        if cached is not None:
-            return cached
+        cache_entry = self._market_metadata_cache.get(cache_key)
+        if cache_entry:
+            cached_at, cached_value = cache_entry
+            meta, _ = cached_value
+            ttl_seconds = self._metadata_cache_ttl_s(meta)
+            if (time.time() - float(cached_at)) <= ttl_seconds:
+                return cached_value
+            self._market_metadata_cache.pop(cache_key, None)
 
         payload, ok = self._request_json(
             f"{GAMMA_API}/markets",
@@ -544,7 +573,6 @@ class PolymarketTracker:
                     if source_ts <= 0:
                         continue
                     if self._is_stale_source_timestamp(source_ts, poll_started_at):
-                        self._advance_wallet_cursor_state(address, source_ts, trade_id)
                         continue
 
                     condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip().lower()

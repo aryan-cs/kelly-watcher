@@ -4,12 +4,14 @@ import {
   cycleDurationPreset,
   editableConfigFields,
   isPresetDurationField,
+  readEnvValues,
   readEditableConfigValues,
   validateEditableConfigValue,
   writeEditableConfigValue
 } from './configEditor.js'
 import {MODEL_PANEL_DEFS, Models} from './pages/Models.js'
 import {stackPanels} from './responsive.js'
+import {dangerActions, restartShadowAccount, setLiveTradingEnabled} from './settingsDanger.js'
 import {theme} from './theme.js'
 import {LiveFeed} from './pages/LiveFeed.js'
 import {Signals} from './pages/Signals.js'
@@ -289,9 +291,21 @@ function AppContent({
         ? terminal.compact
           ? '←→ pane  ↑↓ select  enter detail  d drop  a reactivate  esc close  r refresh  q exit'
           : '←/→: pane  ↑/↓: select  enter: detail  d: drop tracked  a: reactivate dropped  esc: close  r: refresh  q: exit'
-      : terminal.compact
-        ? 'r refresh  q exit'
-        : 'r: refresh  q: exit'
+      : page === 6
+        ? settingsEditor.dangerConfirm
+          ? terminal.compact
+            ? '↑↓ choose  enter confirm  esc cancel  r refresh  q exit'
+            : '↑/↓: choose  enter: confirm  esc: cancel  r: refresh  q: exit'
+          : settingsEditor.isEditing
+            ? terminal.compact
+              ? '↑↓ presets  enter save  esc cancel  r refresh  q exit'
+              : '↑/↓: cycle presets  enter: save  esc: cancel  r: refresh  q: exit'
+            : terminal.compact
+              ? '←→ box  ↑↓ select  enter open  r refresh  q exit'
+              : '←/→: switch box  ↑/↓: select  enter: edit/open  r: refresh  q: exit'
+        : terminal.compact
+          ? 'r refresh  q exit'
+          : 'r: refresh  q: exit'
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.accent} width={terminal.width} height={terminal.height}>
@@ -419,11 +433,15 @@ function App() {
     isEditing: false,
     draft: '',
     replaceDraftOnInput: false,
-    statusMessage: 'Use j/k or arrows to select a setting, then press e to edit.',
-    statusTone: 'info'
+    statusMessage: 'Use left/right to switch boxes. Use up/down to select. Enter edits config or opens the selected danger action.',
+    statusTone: 'info',
+    focusArea: 'config',
+    dangerSelectedIndex: 0,
+    dangerConfirm: null
   }))
 
   const selectedField = editableConfigFields[settingsEditor.selectedIndex]
+  const selectedDangerAction = dangerActions[settingsEditor.dangerSelectedIndex]
   const selectedModelPanel = MODEL_PANEL_DEFS[Math.max(0, Math.min(modelSelectionIndex, MODEL_PANEL_DEFS.length - 1))]
   const selectedModelSettingKeys = selectedModelPanel?.settingKeys || []
   const walletPaneCount = (pane: WalletPane): number => {
@@ -544,9 +562,11 @@ function App() {
       setSettingsEditor((current) => ({
         ...current,
         values,
+        focusArea: 'config',
         isEditing: false,
         draft: '',
         replaceDraftOnInput: false,
+        dangerConfirm: null,
         statusMessage: selectedField.liveApplies
           ? `${selectedField.label} saved. The bot will pick it up on the next poll loop.`
           : `${selectedField.label} saved to .env. Restart the bot to apply it.`,
@@ -572,11 +592,12 @@ function App() {
 
     setSettingsEditor((current) => ({
       ...current,
+      focusArea: 'config',
       isEditing: true,
       draft: current.values[selectedField.key] || selectedField.defaultValue,
       replaceDraftOnInput: true,
       statusMessage: isPresetDurationField(selectedField)
-        ? `Editing ${selectedField.label}. Use left/right to toggle presets, Enter to save, or Esc to cancel.`
+        ? `Editing ${selectedField.label}. Use up/down to cycle presets, Enter to save, or Esc to cancel.`
         : `Editing ${selectedField.label}. Press Enter to save or Esc to cancel.`,
       statusTone: 'info'
       }))
@@ -597,17 +618,173 @@ function App() {
     setSettingsEditor((current) => ({
       ...current,
       values,
+      focusArea: 'config',
       selectedIndex: fieldIndex,
       isEditing: field.kind !== 'bool',
       draft: field.kind === 'bool' ? '' : currentValue,
       replaceDraftOnInput: field.kind !== 'bool',
+      dangerConfirm: null,
       statusMessage: field.kind === 'bool'
         ? field.description
         : isPresetDurationField(field)
-          ? `Editing ${field.label}. Use left/right to toggle presets, Enter to save, or Esc to cancel.`
+          ? `Editing ${field.label}. Use up/down to cycle presets, Enter to save, or Esc to cancel.`
           : `Editing ${field.label}. Press Enter to save or Esc to cancel.`,
       statusTone: 'info'
     }))
+  }
+
+  const moveSettingsSelection = (direction: 'up' | 'down') => {
+    setSettingsEditor((current) => {
+      if (current.focusArea === 'config') {
+        const nextIndex =
+          direction === 'up'
+            ? (current.selectedIndex - 1 + editableConfigFields.length) % editableConfigFields.length
+            : (current.selectedIndex + 1) % editableConfigFields.length
+        return {
+          ...current,
+          selectedIndex: nextIndex,
+          statusMessage: editableConfigFields[nextIndex]?.description || current.statusMessage,
+          statusTone: 'info'
+        }
+      }
+
+      const nextIndex =
+        direction === 'up'
+          ? (current.dangerSelectedIndex - 1 + dangerActions.length) % dangerActions.length
+          : (current.dangerSelectedIndex + 1) % dangerActions.length
+      return {
+        ...current,
+        dangerSelectedIndex: nextIndex,
+        statusMessage: dangerActions[nextIndex]?.description || current.statusMessage,
+        statusTone: 'info'
+      }
+    })
+  }
+
+  const switchSettingsBox = (direction: 'left' | 'right') => {
+    setSettingsEditor((current) => {
+      const nextFocus =
+        direction === 'left'
+          ? 'config'
+          : 'danger'
+      return {
+        ...current,
+        focusArea: nextFocus,
+        statusMessage:
+          nextFocus === 'config'
+            ? editableConfigFields[current.selectedIndex]?.description || current.statusMessage
+            : dangerActions[current.dangerSelectedIndex]?.description || current.statusMessage,
+        statusTone: 'info'
+      }
+    })
+  }
+
+  const cycleSelectedConfigPreset = (direction: 'previous' | 'next') => {
+    const nextValue = cycleDurationPreset(
+      selectedField,
+      settingsEditor.draft || settingsEditor.values[selectedField.key] || selectedField.defaultValue,
+      direction
+    )
+    if (!nextValue) {
+      return
+    }
+    setSettingsEditor((current) => ({
+      ...current,
+      draft: nextValue,
+      replaceDraftOnInput: false,
+      statusMessage: `Editing ${selectedField.label}. Use up/down to cycle presets, Enter to save, or Esc to cancel.`,
+      statusTone: 'info'
+    }))
+  }
+
+  const openDangerAction = () => {
+    if (!selectedDangerAction) {
+      return
+    }
+
+    if (selectedDangerAction.id === 'live_trading') {
+      const envValues = readEnvValues()
+      const currentValue = String(envValues.USE_REAL_MONEY || '').trim().toLowerCase() === 'true'
+      setSettingsEditor((current) => ({
+        ...current,
+        focusArea: 'danger',
+        dangerConfirm: {
+          actionId: 'live_trading',
+          title: currentValue ? 'Disable Live Trading?' : 'Enable Live Trading?',
+          message: currentValue
+            ? 'This only updates config. The running bot will stay in its current mode until you restart it.'
+            : 'This arms real-money mode in config. The running bot will stay unchanged until you restart it.',
+          options: currentValue
+            ? [
+                {id: 'confirm_disable', label: 'Disable live trading', description: 'Save USE_REAL_MONEY=false.'},
+                {id: 'cancel', label: 'Cancel', description: 'Leave config unchanged.'}
+              ]
+            : [
+                {id: 'confirm_enable', label: 'Enable live trading', description: 'Save USE_REAL_MONEY=true.'},
+                {id: 'cancel', label: 'Cancel', description: 'Leave config unchanged.'}
+              ],
+          selectedIndex: 0
+        },
+        statusMessage: 'Use up/down to choose. Enter confirms. Esc cancels.',
+        statusTone: 'info'
+      }))
+      return
+    }
+
+    setSettingsEditor((current) => ({
+      ...current,
+      focusArea: 'danger',
+      dangerConfirm: {
+        actionId: 'restart_shadow',
+        title: 'Restart Shadow Account?',
+        message: 'This clears tracker history, events, bot state, and SQLite data, then restarts shadow mode from the configured bankroll.',
+        options: [
+          {id: 'keep_wallets', label: 'Keep current wallets', description: 'Reset data but preserve WATCHED_WALLETS.'},
+          {id: 'clear_wallets', label: 'Clear current wallets', description: 'Reset data and blank WATCHED_WALLETS.'},
+          {id: 'cancel', label: 'Cancel', description: 'Leave everything unchanged.'}
+        ],
+        selectedIndex: 0
+      },
+      statusMessage: 'Use up/down to choose. Enter confirms. Esc cancels.',
+      statusTone: 'info'
+    }))
+  }
+
+  const executeDangerAction = () => {
+    const confirm = settingsEditor.dangerConfirm
+    if (!confirm) {
+      return
+    }
+
+    const selectedOption = confirm.options[confirm.selectedIndex]
+    if (!selectedOption || selectedOption.id === 'cancel') {
+      setSettingsEditor((current) => ({
+        ...current,
+        dangerConfirm: null,
+        statusMessage: `${confirm.title} canceled.`,
+        statusTone: 'info'
+      }))
+      return
+    }
+
+    const result =
+      confirm.actionId === 'live_trading'
+        ? setLiveTradingEnabled(selectedOption.id === 'confirm_enable')
+        : restartShadowAccount(selectedOption.id === 'keep_wallets')
+
+    setSettingsEditor((current) => ({
+      ...current,
+      values: readEditableConfigValues(),
+      focusArea: 'danger',
+      dangerConfirm: null,
+      statusMessage: result.message,
+      statusTone: result.ok ? 'success' : 'error'
+    }))
+
+    if (result.ok) {
+      setIsRefreshing(true)
+      setRefreshToken((current) => current + 1)
+    }
   }
 
   useEffect(() => {
@@ -772,6 +949,65 @@ function App() {
     }
 
     if (page === 6) {
+      if (settingsEditor.dangerConfirm) {
+        if (key.escape) {
+          setSettingsEditor((current) => ({
+            ...current,
+            dangerConfirm: null,
+            statusMessage: `${current.dangerConfirm?.title || 'Danger action'} canceled.`,
+            statusTone: 'info'
+          }))
+          return
+        }
+
+        if (key.return) {
+          executeDangerAction()
+          return
+        }
+
+        if (key.upArrow || normalized === 'k') {
+          setSettingsEditor((current) => {
+            if (!current.dangerConfirm) {
+              return current
+            }
+            const optionCount = current.dangerConfirm.options.length
+            const nextIndex = current.dangerConfirm.selectedIndex <= 0 ? optionCount - 1 : current.dangerConfirm.selectedIndex - 1
+            return {
+              ...current,
+              dangerConfirm: {
+                ...current.dangerConfirm,
+                selectedIndex: nextIndex
+              },
+              statusMessage: current.dangerConfirm.options[nextIndex]?.description || current.statusMessage,
+              statusTone: 'info'
+            }
+          })
+          return
+        }
+
+        if (key.downArrow || normalized === 'j') {
+          setSettingsEditor((current) => {
+            if (!current.dangerConfirm) {
+              return current
+            }
+            const optionCount = current.dangerConfirm.options.length
+            const nextIndex = current.dangerConfirm.selectedIndex >= optionCount - 1 ? 0 : current.dangerConfirm.selectedIndex + 1
+            return {
+              ...current,
+              dangerConfirm: {
+                ...current.dangerConfirm,
+                selectedIndex: nextIndex
+              },
+              statusMessage: current.dangerConfirm.options[nextIndex]?.description || current.statusMessage,
+              statusTone: 'info'
+            }
+          })
+          return
+        }
+
+        return
+      }
+
       if (settingsEditor.isEditing) {
         if (key.escape) {
           setSettingsEditor((current) => ({
@@ -790,21 +1026,13 @@ function App() {
           return
         }
 
-        if ((key.leftArrow || key.rightArrow) && isPresetDurationField(selectedField)) {
-          const nextValue = cycleDurationPreset(
-            selectedField,
-            settingsEditor.draft || settingsEditor.values[selectedField.key] || selectedField.defaultValue,
-            key.rightArrow ? 'right' : 'left'
-          )
-          if (nextValue) {
-            setSettingsEditor((current) => ({
-              ...current,
-              draft: nextValue,
-              replaceDraftOnInput: false,
-              statusMessage: `Editing ${selectedField.label}. Use left/right to toggle presets, Enter to save, or Esc to cancel.`,
-              statusTone: 'info'
-            }))
-          }
+        if (isPresetDurationField(selectedField) && (key.upArrow || normalized === 'k')) {
+          cycleSelectedConfigPreset('previous')
+          return
+        }
+
+        if (isPresetDurationField(selectedField) && (key.downArrow || normalized === 'j')) {
+          cycleSelectedConfigPreset('next')
           return
         }
 
@@ -840,27 +1068,31 @@ function App() {
       }
 
       if (key.upArrow || normalized === 'k') {
-        setSettingsEditor((current) => ({
-          ...current,
-          selectedIndex: (current.selectedIndex - 1 + editableConfigFields.length) % editableConfigFields.length,
-          statusMessage: editableConfigFields[(current.selectedIndex - 1 + editableConfigFields.length) % editableConfigFields.length].description,
-          statusTone: 'info'
-        }))
+        moveSettingsSelection('up')
         return
       }
 
       if (key.downArrow || normalized === 'j') {
-        setSettingsEditor((current) => ({
-          ...current,
-          selectedIndex: (current.selectedIndex + 1) % editableConfigFields.length,
-          statusMessage: editableConfigFields[(current.selectedIndex + 1) % editableConfigFields.length].description,
-          statusTone: 'info'
-        }))
+        moveSettingsSelection('down')
+        return
+      }
+
+      if (key.leftArrow || normalized === 'h') {
+        switchSettingsBox('left')
+        return
+      }
+
+      if (key.rightArrow || normalized === 'l') {
+        switchSettingsBox('right')
         return
       }
 
       if (normalized === 'e' || key.return) {
-        beginConfigEdit()
+        if (settingsEditor.focusArea === 'danger') {
+          openDangerAction()
+        } else {
+          beginConfigEdit()
+        }
         return
       }
     }
@@ -1145,9 +1377,11 @@ function App() {
         setSettingsEditor((current) => ({
           ...current,
           values: readEditableConfigValues(),
+          focusArea: 'config',
           isEditing: false,
           draft: '',
-          replaceDraftOnInput: false
+          replaceDraftOnInput: false,
+          dangerConfirm: null
         }))
       }
       setPage(parsed as Page)

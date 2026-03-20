@@ -26,6 +26,8 @@ data/
 logs/
 *.log
 *.pid
+nohup.out
+results.json
 *.joblib
 *.db
 *.db-*

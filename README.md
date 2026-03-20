@@ -1,614 +1,187 @@
 # Kelly Watcher
 
-Kelly Watcher is a Polymarket copy-trading system with:
+Kelly Watcher is a local, operator-driven Polymarket copy-trading system. It watches selected wallets, scores incoming trades, sizes positions with Kelly-style logic, executes in shadow or live mode, records everything to SQLite, and exposes a terminal dashboard for monitoring the bot in real time.
 
-- a shadow-mode execution path that mirrors real entry and exit logic
-- a live trading path guarded by risk controls and readiness checks
-- an event-driven terminal dashboard
-- wallet discovery and identity helper scripts
-- model training and auto-retraining on resolved, fill-aware trades
+This repository is meant to be clonable by another developer without any private local state. Secrets, databases, logs, model artifacts, and other runtime files are intentionally excluded from git. A fresh clone should be able to install dependencies, create a `.env`, start in shadow mode, and begin operating from there.
 
-The project is built around one rule: only real, fill-aware executed trades should count as evidence for performance, training, and live-readiness decisions.
+## What This Repository Includes
 
-## What The Bot Does
+- A Python backend that polls watched wallets and decides whether to copy trades.
+- A shadow trading path that simulates fills from captured order books.
+- A live trading path guarded by readiness and risk checks.
+- A terminal dashboard built with Ink + React.
+- Wallet discovery and identity resolution tools.
+- A training and auto-retraining pipeline for the model-based signal path.
+- Tests covering runtime behavior, training/search logic, market URL handling, CLI behavior, and retrain bookkeeping.
 
-At a high level:
+## What This Repository Does Not Commit
 
-1. The bot polls Polymarket for trades from a configured watchlist of wallets.
-2. Each incoming watched trade is normalized into a `TradeEvent` with real market metadata, order book data, and price history when available.
-3. The bot scores the watched trader and the market.
-4. It turns that into a confidence estimate using either:
-   - the heuristic scorer, or
-   - a trained XGBoost model if a current deployable model exists
-5. It sizes the position with Kelly sizing and then applies risk guards.
-6. It either:
-   - skips the trade,
-   - records a rejected signal, or
-   - executes a shadow or live order
-7. It logs everything to SQLite and emits a compact JSON event stream for the dashboard.
-8. Later, resolved trades are graded and can become training data for the next model retrain.
+These are intentionally local-only and should stay out of version control:
 
-## Repository Map
+- `.env` and any other secret-bearing env files
+- `data/` runtime files and SQLite databases
+- `logs/`
+- `model.joblib`
+- Python caches and Node modules
+- one-off local artifacts such as `nohup.out` and `results.json`
 
-### Core runtime
+The bot creates its runtime directories automatically on startup.
 
-- `main.py`: main bot loop, event emission, startup checks, scheduled retraining, bot-state file
-- `tracker.py`: Polymarket data client for watched-wallet trades, market metadata, order books, and price history
-- `signal_engine.py`: combines trader score + market score, uses heuristic or XGBoost path
-- `executor.py`: shadow fills, live orders, partial exits, trade logging
-- `evaluator.py`: resolves shadow trades and computes P&L summaries
-- `dedup.py`: avoids duplicate/in-flight/already-open copies
-- `db.py`: SQLite schema and schema migration helper
-- `config.py`: all `.env` parsing and config validation
-- `trade_contract.py`: shared SQL contract for what counts as executed/open/resolved trades
+## High-Level Architecture
 
-### Scoring and features
+At a high level, the system works like this:
 
-- `trader_scorer.py`: computes trader quality from cached, remote, and local history
-- `market_scorer.py`: scores market quality from spread, depth, time-to-resolution, volume, concentration, and related inputs
-- `features.py`: feature list and feature map used by training/inference
-- `beliefs.py`: heuristic-prior adjustment layer learned from historical buckets
-- `kelly.py`: Kelly sizing
+1. `tracker.py` polls watched Polymarket wallets for recent trades and loads market metadata, order books, and price history.
+2. `watchlist_manager.py` keeps wallets in hot, warm, discovery, or dropped tiers so more promising wallets are polled more aggressively.
+3. `signal_engine.py` scores each buy signal using either:
+   - the heuristic pipeline, or
+   - a deployed model artifact if a current compatible `model.joblib` exists.
+4. `kelly.py` sizes the trade, then wallet trust and exposure guards shrink or block it.
+5. `executor.py` either:
+   - simulates a shadow order from the order book, or
+   - posts a real Polymarket order in live mode.
+6. `db.py` writes the durable record into `data/trading.db`.
+7. `main.py` also emits a lightweight JSON event stream and bot state file for the dashboard.
+8. `evaluator.py` resolves finished markets, computes PnL, and closes positions.
+9. `train.py` and `auto_retrain.py` periodically retrain and optionally deploy a new model.
 
-### Training and maintenance
+Important distinction:
 
-- `train.py`: loads fill-aware resolved trades, trains/calibrates model, writes `model.joblib`
-- `auto_retrain.py`: scheduled and early retraining logic
-- `alerter.py`: Telegram notifications
+- PnL, readiness checks, and open-position accounting are based on executed trades.
+- The training set is broader: it includes resolved executed buys and can also include a narrow set of resolved skipped buys with counterfactual returns, down-weighted during training.
 
-### Wallet discovery and identity helpers
+## Prerequisites
 
-- `resolve_wallet.py`: converts Polymarket profile URLs, handles, and wallet addresses into normalized watchlist wallets
-- `rank_copytrade_wallets.py`: ranks leaderboard wallets by copy-tradability, not just raw leaderboard P&L
-- `identity_cache.py`: wallet <-> username cache and resolver
-- `polymarket_setup.py`: one-time live-wallet allowance setup for USDC collateral
+You need:
 
-### Dashboard
+- Python 3.11+
+- `uv`
+- Node.js and `npm` for the dashboard
+- network access to Polymarket APIs
 
-- `dashboard/dashboard.tsx`: the terminal app shell, keybindings, page routing
-- `dashboard/pages/LiveFeed.tsx`: page 1, raw incoming watched trades
-- `dashboard/pages/Signals.tsx`: page 2, scored/accepted/rejected signals
-- `dashboard/pages/Performance.tsx`: page 3, open and past copied positions
-- `dashboard/pages/Models.tsx`: page 4, model quality and training cycle
-- `dashboard/pages/Wallets.tsx`: page 5, watched-wallet quality and stats
-- `dashboard/pages/Settings.tsx`: page 6, live config/status view
+Optional for live trading:
 
-### Tests
+- a Polygon wallet with USDC
+- `POLYGON_PRIVATE_KEY`
+- `POLYGON_WALLET_ADDRESS`
 
-- `tests/test_runtime_fixes.py`: runtime regression coverage
-- `tests/test_rank_copytrade_wallets.py`: wallet-ranking tests
-- `tests/test_daily_pnl_close_timestamps.py`: daily P&L timestamp behavior
+Notes:
 
-## Data Files
+- The dashboard uses `better-sqlite3`. On some machines, `npm install` may require platform build tools.
+- The repository includes `uv.lock` and `dashboard/package-lock.json` so installs are reproducible.
 
-The bot writes and reads a small set of runtime files:
+## Quick Start
 
-- `data/trading.db`: main SQLite database
-- `data/events.jsonl`: dashboard event stream
-- `data/bot_state.json`: lightweight runtime status for the dashboard
-- `data/identity_cache.json`: wallet <-> username cache
-- `model.joblib`: currently deployed trained model artifact
-- `logs/bot.log`: rotating bot logs
+### 1. Clone the repository
 
-Important note:
+```bash
+git clone https://github.com/aryan-cs/kelly-watcher.git
+cd kelly-watcher
+```
 
-- `events.jsonl` is for the dashboard only
-- `trade_log` inside `data/trading.db` is the durable source of truth
-
-## Getting It Running
-
-### 1. Install Python dependencies
+### 2. Install backend dependencies
 
 ```bash
 uv sync
 ```
 
-### 2. Create your env file
+### 3. Install dashboard dependencies
+
+```bash
+cd dashboard
+npm install
+cd ..
+```
+
+### 4. Create your local config
 
 ```bash
 cp .env.example .env
 ```
 
-At minimum, set:
+At minimum for shadow mode, set:
 
 - `WATCHED_WALLETS`
-- `USE_REAL_MONEY=false` for shadow mode
+- `USE_REAL_MONEY=false`
 
-If you want live mode later, you also need:
+`WATCHED_WALLETS` should be a comma-separated list of lowercase wallet addresses.
 
-- `POLYGON_PRIVATE_KEY`
-- `POLYGON_WALLET_ADDRESS`
+### 5. Populate a watchlist
 
-### 3. Initialize the database
+If you already know the wallets, paste them into `.env`.
+
+If you only know Polymarket handles or profile URLs, use:
 
 ```bash
-uv run python -c "from db import init_db; init_db()"
+uv run python resolve_wallet.py @some_user
+uv run python resolve_wallet.py https://polymarket.com/@some_user
 ```
 
-### 4. Start the backend
+If you want to discover candidate wallets from leaderboard data, use:
+
+```bash
+uv run python rank_copytrade_wallets.py --top 20
+```
+
+Both tools print a ready-to-paste `WATCHED_WALLETS=...` line.
+
+### 6. Start the backend
+
+Preferred:
+
+```bash
+uv run main
+```
+
+Equivalent:
 
 ```bash
 uv run python main.py
 ```
 
-### 5. Start the dashboard
+The backend will automatically:
+
+- create `data/` and `logs/`
+- initialize or migrate the SQLite schema
+- load `.env`
+- validate startup config
+- start the polling loop
+- emit `data/events.jsonl` and `data/bot_state.json`
+
+### 7. Start the dashboard
 
 In a second terminal:
 
 ```bash
 cd dashboard
-npm install
 npm start
 ```
 
-The dashboard reads:
+Windows helper:
 
-- `data/trading.db`
-- `data/events.jsonl`
-- `data/bot_state.json`
-- `data/identity_cache.json`
+```bat
+start-dashboard.cmd
+```
 
-If your terminal supports OSC-8 hyperlinks, market names on pages 1, 2, and 3 open the real Polymarket market page.
+## Runtime Modes
 
-## Quick Operational Modes
+### Shadow Mode
 
-### Shadow mode
+This is the default and the recommended starting point.
 
-This is the default.
+Requirements:
 
 - `USE_REAL_MONEY=false`
-- no live orders are sent
-- the bot still fetches live market data
-- shadow entries/exits use order-book-aware fill simulation
-- trades, skips, features, and P&L are logged normally
-
-### Live mode
-
-Enable only after shadow validation:
-
-```bash
-USE_REAL_MONEY=true
-```
-
-Live mode requires:
-
-- a valid wallet address and matching private key
-- Polymarket collateral approval
-- enough shadow history if `LIVE_REQUIRE_SHADOW_HISTORY=true`
-- healthy data feed / live account checks
-
-Run the collateral setup once before live trading:
-
-```bash
-uv run python polymarket_setup.py
-```
-
-## Dashboard Guide
-
-The terminal dashboard has 6 pages.
-
-### Page 1: Tracker
-
-Shows raw incoming watched-wallet trades before your bot decides whether to copy them.
-
-Columns include:
-
-- time
-- watched username/wallet
-- market name
-- buy/sell action
-- side
-- price
-- size
-
-Use it to answer:
-
-- Is the feed alive?
-- Are the watched wallets still active?
-- Are market names and trade sizes sane?
-
-### Page 2: Signals
-
-Shows the bot's scored decisions after filtering.
-
-This is where you see:
-
-- accepted signals
-- rejected signals
-- skipped signals
-- confidence
-- reason text
-
-Use it to answer:
-
-- Why was a trade copied or rejected?
-- Is the confidence threshold too strict?
-- Are risk checks or market vetoes firing too often?
-
-### Page 3: Perf
-
-Shows copied positions and historical outcomes.
-
-This page is split between:
-
-- current/open positions
-- past/resolved positions
-
-Use it to answer:
-
-- What positions are still open?
-- What has resolved already?
-- What is shadow or live P&L doing?
-- How long has capital been tied up?
-
-### Page 4: Models
-
-Explains the scoring system and shows model health.
-
-It includes boxes for:
-
-- prediction quality
-- tracker health
-- confidence calibration
-- signal mode comparison
-- heuristic/model composition
-- retraining cadence
-
-Use it to answer:
-
-- Is the deployed model better than baseline?
-- Is confidence calibrated?
-- Is XGBoost outperforming the heuristic path?
-- How often has the model retrained?
-
-### Page 5: Wallets
-
-Shows wallet-level quality information for watched traders.
-
-It merges:
-
-- observed local bot history from `trade_log`
-- cached trader stats from `trader_cache`
-- username mapping from `identity_cache.json`
-
-Use it to answer:
-
-- Which watched wallets are actually helping?
-- Which wallets are stale or inactive?
-- Which wallets have strong or weak resolved history?
-
-### Page 6: Config
-
-Shows runtime state plus editable config values.
-
-It includes:
-
-- mode
-- poll interval
-- bankroll
-- database counts
-- editable `.env` fields
-- watched wallets from `.env`
-
-Use it to answer:
-
-- What config is active right now?
-- Is the bot connected and polling?
-- Did my `.env` update take effect?
-
-## Dashboard Controls
-
-Global controls:
-
-- `1` to `6`: switch pages
-- `r`: refresh
-- `q`: quit dashboard
-
-Page-specific controls:
-
-- Tracker: `Up/Down` scroll, double-tap `Up` to jump latest
-- Signals: `Up/Down` scroll, `Left/Right` pan long reason text
-- Perf: arrows to change box, `j/k` to scroll positions, `Enter` for daily detail, `Esc` to close
-- Models: arrows to move between boxes, `Enter` for help/detail
-- Wallets: `Up/Down` select wallet, `Enter` detail, `Esc` close
-- Config: arrows or `j/k` select editable field, `e` or `Enter` edit, `Esc` cancel
-
-## How Wallet Discovery Works
-
-There are two main helper flows:
-
-### 1. Resolve a profile/handle/wallet into a watchlist entry
-
-Use `resolve_wallet.py`.
-
-It accepts:
-
-- full Polymarket profile URLs
-- `@handles`
-- raw wallet addresses
-- piped stdin
-
-Examples:
-
-```bash
-uv run python resolve_wallet.py @tradername
-uv run python resolve_wallet.py https://polymarket.com/@tradername
-uv run python resolve_wallet.py 0xabc123...
-printf '%s\n' '@alpha' '@beta' | uv run python resolve_wallet.py
-```
-
-What it does:
-
-- normalizes wallet addresses
-- resolves username -> wallet
-- resolves wallet -> username
-- prints a final comma-separated `WATCHED_WALLETS=...` line you can paste into `.env`
-
-### 2. Find good wallets to track
-
-Use `rank_copytrade_wallets.py`.
-
-This script does more than scrape leaderboard P&L. It tries to answer: "Is this trader actually copyable?"
-
-It pulls:
-
-- leaderboard entries
-- recent trades
-- closed positions
-- market close timestamps
-
-Then it scores wallets using things like:
-
-- realized performance
-- win rate and ROI
-- recent activity
-- how often buys happen early enough to copy
-- late-buy ratio
-- minimum sample thresholds
-
-Example:
-
-```bash
-uv run python rank_copytrade_wallets.py --top 10
-```
-
-Useful variants:
-
-```bash
-uv run python rank_copytrade_wallets.py --time-period WEEK --top 20
-uv run python rank_copytrade_wallets.py --wallets-only
-uv run python rank_copytrade_wallets.py --show-rejected
-uv run python rank_copytrade_wallets.py --json-out ranked_wallets.json
-```
-
-The script prints:
-
-- a ranked table
-- acceptance/rejection summary
-- a ready-to-paste `WATCHED_WALLETS=...` line
-
-## Username <-> Wallet Mapping
-
-Identity handling lives in `identity_cache.py`.
-
-It keeps a bidirectional cache in `data/identity_cache.json`:
-
-- wallet -> username
-- username -> wallet
-
-This cache is used by:
-
-- `resolve_wallet.py`
-- `tracker.py`
-- dashboard wallet display
+- `WATCHED_WALLETS` configured
 
 Behavior:
 
-- if a clean observed username exists, it is remembered
-- if a placeholder username is detected, it is ignored
-- wallet lookups can resolve by scraping Polymarket profile pages
-- handle lookups can resolve by scraping profile pages for wallet addresses
+- no real orders are sent
+- fills are simulated from the captured order book
+- positions, skips, resolutions, and PnL are still logged normally
+- the dashboard works the same way as in live mode
 
-In practice:
-
-- `resolve_wallet.py` is the operator-facing CLI
-- `identity_cache.py` is the shared library backing it
-
-## Trading Logic In More Detail
-
-### Trade ingestion
-
-`tracker.py`:
-
-- polls `data-api.polymarket.com` for watched-wallet trades
-- normalizes timestamps, price, size, token ID, side, and market ID
-- fetches Gamma market metadata
-- fetches CLOB order books
-- fetches price history when available
-- applies wallet cursors so old trades do not replay forever
-- drops stale trades and invalid trades instead of inventing fallback values
-
-### Trader scoring
-
-`trader_scorer.py` builds trader features from:
-
-- remote closed/open positions
-- cached `trader_cache`
-- local resolved trade history when needed
-
-Features include:
-
-- shrunk win rate
-- trade count
-- consistency
-- volume
-- average size
-- diversity
-- account age
-- conviction ratio
-
-### Market scoring
-
-`market_scorer.py` builds a market quality score from:
-
-- spread
-- visible book depth
-- time until resolution
-- 1h momentum
-- 24h volume
-- 7d average volume trend
-- open interest
-- top-holder concentration
-
-It also vetoes markets that are clearly unsafe or invalid, such as:
-
-- crossed books
-- missing books
-- too little depth
-- too close to expiry
-- beyond your configured max horizon
-
-### Signal generation
-
-`signal_engine.py` then:
-
-- runs the market veto first
-- scores trader quality
-- scores market quality
-- combines them heuristically, or
-- uses the deployed XGBoost model if a valid current artifact exists
-
-The model artifact must match the current data contract or it is ignored.
-
-### Sizing and execution
-
-`kelly.py` sizes the trade.
-
-`executor.py` then:
-
-- simulates shadow fills from captured order books, or
-- places live orders through the CLOB client
-- supports partial exits
-- logs every accepted or skipped trade into `trade_log`
-
-### Resolution and retraining
-
-`evaluator.py` resolves shadow trades when outcomes are known.
-
-`train.py` then trains only on:
-
-- resolved trades
-- executed buys
-- fill-aware rows
-
-The model is only deployed if it clears internal validation checks.
-
-`auto_retrain.py` handles:
-
-- scheduled retrains
-- early retrains after enough new resolved labels arrive
-
-## Important Config Values
-
-### Watchlist and mode
-
-- `WATCHED_WALLETS`: comma-separated wallets to copy
-- `USE_REAL_MONEY`: `false` for shadow, `true` for live
-
-### Sizing and trade filters
-
-- `MAX_BET_FRACTION`
-- `MIN_CONFIDENCE`
-- `MIN_BET_USD`
-- `SHADOW_BANKROLL_USD`
-
-### Live/shadow safety
-
-- `MAX_LIVE_DRAWDOWN_PCT`
-- `MAX_DAILY_LOSS_PCT`
-- `MAX_TOTAL_OPEN_EXPOSURE_FRACTION`
-- `MAX_MARKET_EXPOSURE_FRACTION`
-- `MAX_TRADER_EXPOSURE_FRACTION`
-- `MAX_LIVE_HEALTH_FAILURES`
-- `LIVE_REQUIRE_SHADOW_HISTORY`
-- `LIVE_MIN_SHADOW_RESOLVED`
-
-### Feed/runtime behavior
-
-- `POLL_INTERVAL_SECONDS`
-- `HOT_WALLET_COUNT`
-- `WARM_WALLET_COUNT`
-- `WARM_POLL_INTERVAL_MULTIPLIER`
-- `DISCOVERY_POLL_INTERVAL_MULTIPLIER`
-- `MAX_SOURCE_TRADE_AGE`
-- `MAX_FEED_STALENESS`
-- `MAX_MARKET_HORIZON`
-
-### Training
-
-- `RETRAIN_BASE_CADENCE`
-- `RETRAIN_HOUR_LOCAL`
-- `RETRAIN_EARLY_CHECK_INTERVAL`
-- `RETRAIN_MIN_NEW_LABELS`
-- `MODEL_PATH`
-
-### Alerts
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-
-## Common Commands
-
-### Start the bot
-
-```bash
-uv run python main.py
-```
-
-### Start the dashboard
-
-```bash
-cd dashboard
-npm start
-```
-
-### Initialize or migrate the database
-
-```bash
-uv run python -c "from db import init_db; init_db()"
-```
-
-### Resolve a profile or handle into wallets
-
-```bash
-uv run python resolve_wallet.py @someuser
-```
-
-### Rank wallets for a new watchlist
-
-```bash
-uv run python rank_copytrade_wallets.py --top 10
-```
-
-### Run the one-time live allowance setup
-
-```bash
-uv run python polymarket_setup.py
-```
-
-### Train the model manually
-
-```bash
-uv run python train.py
-```
-
-### Run tests
-
-```bash
-uv run python -m unittest discover -s tests
-```
-
-### Reset shadow state and restart
+Reset helper:
 
 ```bash
 ./restart_shadow.sh
@@ -620,43 +193,473 @@ Foreground mode:
 ./restart_shadow.sh --foreground
 ```
 
-## How Shadow Reset Works
-
-`restart_shadow.sh` is the safe reset helper for shadow mode.
-
-It:
+What `restart_shadow.sh` does:
 
 - refuses to run if `USE_REAL_MONEY=true`
-- kills an existing `main.py` bot process
-- clears shadow runtime state
-- preserves your config, identity cache, logs, and model artifact
-- reinitializes the database
-- starts the bot again
+- stops an existing bot process
+- deletes shadow runtime state such as the SQLite DB and event stream
+- preserves config, identity cache, logs, and your model artifact
+- recreates the DB and restarts the bot
 
-It removes:
+### Live Mode
+
+Use live mode only after you have validated shadow behavior.
+
+Required env values:
+
+- `USE_REAL_MONEY=true`
+- `POLYGON_PRIVATE_KEY`
+- `POLYGON_WALLET_ADDRESS`
+
+Recommended first-time setup:
+
+```bash
+uv run python polymarket_setup.py
+```
+
+Live startup also enforces operational checks such as:
+
+- wallet/private-key consistency
+- minimum balance availability
+- live allowance checks
+- live position sync health
+- optional shadow-history requirement if `LIVE_REQUIRE_SHADOW_HISTORY=true`
+
+Important live behavior:
+
+- USDC collateral approval is typically a one-time step.
+- Conditional token approvals are requested automatically when opening a live position.
+- Entry guards can pause new entries after drawdown or daily-loss limits are hit.
+
+## How The System Works
+
+### 1. Trade Ingestion
+
+`tracker.py` polls Polymarket data endpoints for watched-wallet activity and normalizes each incoming source trade into a structured event. It fetches:
+
+- source trade details
+- market metadata
+- order books
+- price history when available
+
+It also manages cursors so old trades do not replay forever.
+
+### 2. Watchlist Tiering
+
+`watchlist_manager.py` separates wallets into tiers:
+
+- hot
+- warm
+- discovery
+- dropped
+
+Hot wallets are polled most frequently. Lower tiers are polled less often. Wallets can be demoted or dropped when they become stale, underperform, or repeatedly produce uncopyable signals.
+
+### 3. Trader and Market Scoring
+
+`trader_scorer.py` builds trader-level features such as:
+
+- win rate
+- sample count
+- volume
+- average size
+- account age
+- conviction ratio
+
+`market_scorer.py` scores the market itself using inputs such as:
+
+- spread
+- visible depth
+- time to resolution
+- momentum
+- volume
+- concentration
+
+Unsafe markets are vetoed before sizing.
+
+### 4. Signal Selection
+
+`signal_engine.py` then decides whether the trade passes.
+
+It has two paths:
+
+- Heuristic path: combines trader and market quality into a confidence estimate, then applies adaptive floors and belief adjustments.
+- Model path: if `MODEL_PATH` points to a compatible artifact, the engine uses the trained model instead of the pure heuristic scorer.
+
+If the model artifact is missing, stale, or incompatible with the current training contract, the system falls back to heuristics automatically.
+
+### 5. Position Sizing
+
+`kelly.py` computes the base Kelly-style size. That output is then adjusted by:
+
+- the minimum confidence threshold
+- the minimum bet size
+- bankroll availability
+- wallet trust and quality multipliers
+- portfolio exposure caps
+
+### 6. Execution
+
+`executor.py` handles both entries and exits.
+
+Shadow mode:
+
+- simulates fills from the current order book
+- rejects trades that would not have filled cleanly
+
+Live mode:
+
+- initializes the CLOB client
+- checks live balances and allowances
+- posts market orders
+- reconciles live fills and positions
+
+### 7. Resolution and PnL
+
+`evaluator.py` periodically checks whether copied markets resolved. It updates:
+
+- resolved outcome
+- remaining position size
+- shadow or live PnL
+- training labels
+
+It also contains sports-page fallbacks for certain market types when the direct market payload is not enough.
+
+### 8. Retraining
+
+`auto_retrain.py` and `train.py` handle scheduled and early retraining.
+
+Current model behavior:
+
+- the label mode is expected-return based
+- the artifact is versioned by a data contract
+- deployable models must pass internal search and holdout checks
+- skipped-but-trainable counterfactual rows are down-weighted relative to executed fills
+
+If a retrain passes deployment checks, the bot reloads the model automatically.
+
+### 9. Dashboard
+
+The dashboard is a terminal app, not a web app. It reads local files directly:
 
 - `data/trading.db`
-- WAL/SHM files
 - `data/events.jsonl`
 - `data/bot_state.json`
-- `data/shadow_bot.pid`
+- `data/identity_cache.json`
 
-## Testing And Validation
+This means the dashboard should be run on the same machine and from the same repository checkout as the backend.
 
-Current test entry point:
+## Runtime Files
+
+The bot reads and writes these local files during normal operation:
+
+- `data/trading.db`: source-of-truth SQLite database
+- `data/events.jsonl`: rolling event stream for the dashboard
+- `data/bot_state.json`: lightweight runtime status
+- `data/identity_cache.json`: wallet-to-username cache
+- `logs/bot.log`: rotating backend log
+- `logs/shadow_runtime.out`: background log when using `restart_shadow.sh`
+- `model.joblib`: optional deployed model artifact
+
+Important note:
+
+- `trade_log` in SQLite is the durable record.
+- `events.jsonl` exists to drive the dashboard and should be treated as a convenience stream, not as the canonical ledger.
+
+## Key Database Tables
+
+The most important tables in `data/trading.db` are:
+
+- `trade_log`: all copied trades, skips, fills, exits, resolutions, and features
+- `positions`: currently open positions
+- `trader_cache`: cached trader stats used by scoring
+- `model_history`: deployed model artifacts and metrics
+- `retrain_runs`: every retrain attempt, including skipped and rejected runs
+- `wallet_cursors`: per-wallet polling cursors
+- `wallet_watch_state`: tracked/dropped wallet state
+
+## Dashboard Guide
+
+The terminal dashboard currently has six main pages.
+
+### Page 1: Live Feed
+
+Shows raw incoming watched-wallet trades before the bot makes a copy decision.
+
+Useful for checking:
+
+- whether the feed is alive
+- whether watched wallets are active
+- whether prices and sizes look sane
+
+### Page 2: Signals
+
+Shows accepted, rejected, skipped, and paused decisions after scoring.
+
+Useful for checking:
+
+- why a trade was accepted or rejected
+- whether thresholds are too strict
+- whether vetoes or risk controls are dominating
+
+### Page 3: Performance
+
+Shows open positions, closed positions, and performance state.
+
+Useful for checking:
+
+- current exposure
+- recent exits
+- shadow or live PnL
+- time spent in positions
+
+### Page 4: Models
+
+Shows model and retrain health.
+
+Useful for checking:
+
+- whether the deployed model beats baseline
+- whether retraining is succeeding
+- whether the bot is on heuristics or a model-backed path
+
+### Page 5: Wallets
+
+Shows wallet-level quality and tracking information.
+
+Useful for checking:
+
+- which wallets are helping
+- which wallets are stale or downgraded
+- which ones have local resolved copied history
+
+### Page 6: Settings
+
+Shows runtime state plus editable env-backed config values.
+
+Important behavior:
+
+- some fields apply on the next loop
+- some fields require a bot restart
+- toggling live trading only edits `.env`; it does not hot-switch the running bot
+
+## Dashboard Controls
+
+Global:
+
+- `1` through `6`: switch pages
+- `r`: refresh
+- `q`: quit
+
+Page-specific:
+
+- Live Feed: `Up/Down` scroll
+- Signals: `Up/Down` scroll, `Left/Right` pan long text
+- Performance: arrows to move, `j/k` to scroll, `Enter` for detail, `Esc` to close
+- Models: arrows to move, `Enter` for detail
+- Wallets: `Up/Down` select, `Enter` detail, `Esc` close
+- Settings: arrows or `j/k` select, `Enter` or `e` edit, `Esc` cancel
+
+## Common Commands
+
+Start the bot:
+
+```bash
+uv run main
+```
+
+Start the dashboard:
+
+```bash
+cd dashboard
+npm start
+```
+
+Run the full test suite:
 
 ```bash
 uv run python -m unittest discover -s tests
 ```
 
-This repo also benefits from quick manual checks:
+Resolve a handle or profile into wallets:
 
-- backend boots cleanly in shadow mode
-- dashboard starts and updates live
-- incoming trades appear on page 1
-- scored signals appear on page 2
-- performance rows appear on page 3
-- hyperlinks open real Polymarket pages on pages 1, 2, and 3
+```bash
+uv run python resolve_wallet.py @some_user
+```
+
+Rank candidate wallets:
+
+```bash
+uv run python rank_copytrade_wallets.py --top 20
+```
+
+Run manual training:
+
+```bash
+uv run python train.py
+```
+
+Run one-time live collateral setup:
+
+```bash
+uv run python polymarket_setup.py
+```
+
+Run the bot in a restart loop on Windows:
+
+```bat
+watchdog.bat
+```
+
+## Environment Variables
+
+All env parsing lives in `config.py`. Duration values typically accept forms such as `45s`, `10m`, `6h`, `7d`, or `unlimited`.
+
+### Required or commonly changed
+
+- `WATCHED_WALLETS`: comma-separated watched wallet addresses
+- `USE_REAL_MONEY`: `false` for shadow, `true` for live
+- `MIN_CONFIDENCE`: minimum signal confidence
+- `MIN_BET_USD`: minimum order size
+- `MAX_BET_FRACTION`: Kelly cap as a fraction of bankroll
+- `SHADOW_BANKROLL_USD`: paper bankroll in shadow mode
+- `MODEL_PATH`: optional deployed model artifact path
+
+### Live trading and account safety
+
+- `POLYGON_PRIVATE_KEY`
+- `POLYGON_WALLET_ADDRESS`
+- `MAX_LIVE_DRAWDOWN_PCT`
+- `MAX_DAILY_LOSS_PCT`
+- `MAX_TOTAL_OPEN_EXPOSURE_FRACTION`
+- `MAX_MARKET_EXPOSURE_FRACTION`
+- `MAX_TRADER_EXPOSURE_FRACTION`
+- `MAX_LIVE_HEALTH_FAILURES`
+- `LIVE_REQUIRE_SHADOW_HISTORY`
+- `LIVE_MIN_SHADOW_RESOLVED`
+
+### Polling and market timing
+
+- `POLL_INTERVAL_SECONDS`
+- `HOT_WALLET_COUNT`
+- `WARM_WALLET_COUNT`
+- `WARM_POLL_INTERVAL_MULTIPLIER`
+- `DISCOVERY_POLL_INTERVAL_MULTIPLIER`
+- `MAX_SOURCE_TRADE_AGE`
+- `MAX_FEED_STALENESS`
+- `MIN_EXECUTION_WINDOW`
+- `MAX_MARKET_HORIZON`
+
+### Wallet quality, discovery, and auto-drop
+
+- `WALLET_INACTIVITY_LIMIT`
+- `WALLET_SLOW_DROP_MAX_TRACKING_AGE`
+- `WALLET_PERFORMANCE_DROP_MIN_TRADES`
+- `WALLET_PERFORMANCE_DROP_MAX_WIN_RATE`
+- `WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN`
+- `WALLET_UNCOPYABLE_PENALTY_MIN_BUYS`
+- `WALLET_UNCOPYABLE_PENALTY_WEIGHT`
+- `WALLET_UNCOPYABLE_DROP_MIN_BUYS`
+- `WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE`
+- `WALLET_UNCOPYABLE_DROP_MAX_RESOLVED_COPIED`
+- `WALLET_COLD_START_MIN_OBSERVED_BUYS`
+- `WALLET_DISCOVERY_MIN_OBSERVED_BUYS`
+- `WALLET_DISCOVERY_MIN_RESOLVED_BUYS`
+- `WALLET_DISCOVERY_SIZE_MULTIPLIER`
+- `WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS`
+- `WALLET_PROBATION_SIZE_MULTIPLIER`
+- `WALLET_QUALITY_SIZE_MIN_MULTIPLIER`
+- `WALLET_QUALITY_SIZE_MAX_MULTIPLIER`
+
+### Retraining and logging
+
+- `RETRAIN_BASE_CADENCE`
+- `RETRAIN_HOUR_LOCAL`
+- `RETRAIN_EARLY_CHECK_INTERVAL`
+- `RETRAIN_MIN_NEW_LABELS`
+- `RETRAIN_MIN_SAMPLES`
+- `LOG_LEVEL`
+
+### Alerts
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+
+## Repository Layout
+
+Core runtime:
+
+- `main.py`: startup, polling loop, scheduling, event emission, bot-state writes
+- `tracker.py`: Polymarket trade and market data client
+- `signal_engine.py`: heuristic/model decision logic
+- `executor.py`: shadow and live execution
+- `evaluator.py`: resolution and PnL updates
+- `db.py`: SQLite schema and migrations
+- `dedup.py`: duplicate and open-position gating
+
+Training and model:
+
+- `train.py`: feature loading, search, calibration, deployment decision
+- `auto_retrain.py`: scheduled and early retrain orchestration
+- `economic_model.py`: return-target transforms and sample weights
+- `trade_contract.py`: SQL contract for trainable and executed rows
+- `features.py`: shared feature list
+
+Watchlist and wallet tooling:
+
+- `watchlist_manager.py`: wallet tiering and auto-drop logic
+- `wallet_trust.py`: sizing and trust tiers
+- `resolve_wallet.py`: handle/profile URL to wallet resolver
+- `rank_copytrade_wallets.py`: leaderboard-based discovery and ranking
+- `identity_cache.py`: wallet and username cache
+
+Dashboard:
+
+- `dashboard/dashboard.tsx`: main terminal UI
+- `dashboard/pages/*.tsx`: page views
+- `dashboard/configEditor.ts`: env-backed editable settings
+- `dashboard/settingsDanger.ts`: live toggle and shadow reset actions
+
+Packaging and entrypoints:
+
+- `pyproject.toml`: project metadata and the `main` console script
+- `kelly_watcher/cli.py`: lightweight launcher so `uv run main` works cleanly
+
+## Operational Notes
+
+- This is an operator system, not a fire-and-forget hosted service.
+- The dashboard expects local filesystem access to the repo runtime files.
+- A fresh clone starts on heuristics unless you later train and deploy a model artifact.
+- Runtime backups and scheduled jobs are driven by `main.py`, not by external infra.
+- The bot will refuse unsafe live startup states rather than silently continuing.
+
+Current scheduled tasks inside the main process include:
+
+- trade resolution checks every 2 minutes
+- daily report at 08:00 local time
+- DB backup at 04:00 local time
+- scheduled retrain at the configured cadence/hour
+- early retrain checks at `RETRAIN_EARLY_CHECK_INTERVAL`
+- watchlist refresh and cache refresh jobs
+
+## Testing
+
+Primary test command:
+
+```bash
+uv run python -m unittest discover -s tests
+```
+
+Areas covered by tests include:
+
+- runtime and startup regressions
+- CLI launch behavior
+- expected-return model handling
+- training-data contract rules
+- search/holdout planning
+- retrain run bookkeeping
+- market URL handling
+- wallet trust and watchlist management
 
 ## Troubleshooting
 
@@ -664,43 +667,52 @@ This repo also benefits from quick manual checks:
 
 Check that the backend is running and writing:
 
+- `data/trading.db`
 - `data/events.jsonl`
 - `data/bot_state.json`
-- `data/trading.db`
 
 ### No trades are coming in
 
 Check:
 
 - `WATCHED_WALLETS` is populated
-- the watched wallets are active
-- poll interval is not unrealistically low
-- logs are not full of `429` errors
+- the watched wallets are actually active
+- your poll interval is sane
+- the logs are not showing repeated API failures or rate limits
 
-### The model is not being used
+### The bot says the model is unavailable
 
-That usually means:
+That usually means one of:
 
-- `model.joblib` does not exist, or
-- it was trained under an old data contract and is being ignored on purpose
+- `model.joblib` does not exist
+- the artifact was trained under an older data contract
+- the artifact failed to load
 
-In that case the bot falls back to the heuristic scorer.
+In all of those cases the bot falls back to heuristics automatically.
 
-### A username is wrong or missing
+### Live mode refuses to start
 
-Use:
+Common reasons:
+
+- wallet/private-key mismatch
+- missing balance or allowance
+- live position sync failure
+- `LIVE_REQUIRE_SHADOW_HISTORY=true` but you do not have enough resolved shadow trades yet
+
+### A username is missing or wrong
+
+Refresh it with:
 
 ```bash
 uv run python resolve_wallet.py <wallet-or-handle>
 ```
 
-That will refresh the identity mapping and update `data/identity_cache.json`.
+That updates `data/identity_cache.json`.
 
 ## Safety Notes
 
-- Shadow mode is the default.
-- Live mode should only be used after corrected shadow validation.
-- Training, readiness, and evaluation are designed to rely on fill-aware executed trades, not hypothetical skipped rows.
-- The live system still depends on real operational discipline: watchlist quality, exchange health, data feed health, and bankroll sizing all matter.
-
-This repo is best treated as an operator system, not a fire-and-forget bot.
+- Shadow mode is the default for a reason.
+- Live mode should be treated as high risk and operationally supervised.
+- Test and validate watchlist quality before trusting bankroll results.
+- Keep secrets in `.env`, never in committed source files.
+- Do not treat the dashboard event stream as the canonical ledger; use SQLite for durable records.

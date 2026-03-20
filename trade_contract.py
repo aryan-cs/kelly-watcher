@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-DATA_CONTRACT_VERSION = 2
+DATA_CONTRACT_VERSION = 4
+MODEL_LABEL_MODE = "expected_return_weighted_counterfactual_v1"
 RESOLVED_PNL_SQL = "COALESCE(actual_pnl_usd, shadow_pnl_usd)"
 REALIZED_CLOSE_TS_SQL = "COALESCE(exited_at, resolved_at, placed_at)"
 PROFITABLE_TRADE_SQL = f"CASE WHEN {RESOLVED_PNL_SQL} > 0 THEN 1 ELSE 0 END"
@@ -31,6 +32,55 @@ AND exited_at IS NULL
 RESOLVED_EXECUTED_ENTRY_SQL = f"""
 {EXECUTED_ENTRY_SQL}
 AND {RESOLVED_PNL_SQL} IS NOT NULL
+"""
+
+TRAINABLE_SKIPPED_REASON_SQL = """
+(
+    LOWER(COALESCE(skip_reason, '')) LIKE 'signal confidence was %below the % minimum'
+    OR LOWER(COALESCE(skip_reason, '')) LIKE 'confidence was %below the % minimum needed to place a trade'
+    OR LOWER(COALESCE(skip_reason, '')) LIKE 'heuristic score was %below the % minimum needed to place a trade'
+    OR LOWER(COALESCE(skip_reason, '')) LIKE 'model edge was %below the % threshold'
+    OR LOWER(COALESCE(skip_reason, '')) = 'trade did not pass the signal checks'
+    OR LOWER(COALESCE(skip_reason, '')) = 'kelly sizing found no positive edge at this price, so the trade was skipped'
+)
+"""
+
+RESOLVED_TRAINABLE_SKIPPED_BUY_SQL = f"""
+skipped=1
+AND {OBSERVED_BUY_SQL}
+AND counterfactual_return IS NOT NULL
+AND {TRAINABLE_SKIPPED_REASON_SQL}
+"""
+
+RESOLVED_TRAINING_SAMPLE_SQL = f"""
+(
+    {RESOLVED_EXECUTED_ENTRY_SQL}
+)
+OR
+(
+    {RESOLVED_TRAINABLE_SKIPPED_BUY_SQL}
+)
+"""
+
+TRAINING_LABEL_SQL = f"""
+CASE
+    WHEN skipped=1 THEN CASE WHEN COALESCE(counterfactual_return, 0) > 0 THEN 1 ELSE 0 END
+    ELSE {PROFITABLE_TRADE_SQL}
+END
+"""
+
+TRAINING_RETURN_SQL = f"""
+CASE
+    WHEN skipped=1 THEN counterfactual_return
+    ELSE {RESOLVED_PNL_SQL} / NULLIF(COALESCE(actual_entry_size_usd, signal_size_usd), 0)
+END
+"""
+
+TRAINING_OUTCOME_SQL = f"""
+CASE
+    WHEN {TRAINING_RETURN_SQL} > 0 THEN 1
+    ELSE 0
+END
 """
 
 

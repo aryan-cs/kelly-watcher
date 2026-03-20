@@ -8,9 +8,10 @@ import numpy as np
 from adaptive_confidence import adaptive_min_confidence_for_signal
 from beliefs import adjust_heuristic_confidence
 from config import model_path
+from economic_model import apply_probability_calibrator, expected_return_to_confidence, inverse_return_target
 from features import FEATURE_COLS, build_feature_map
 from market_scorer import MarketFeatures, MarketScorer
-from trade_contract import DATA_CONTRACT_VERSION
+from trade_contract import DATA_CONTRACT_VERSION, MODEL_LABEL_MODE
 from trader_scorer import TraderFeatures, TraderScorer
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,8 @@ class SignalEngine:
         self._xgb = None
         self._xgb_cols = FEATURE_COLS
         self._xgb_policy = {"edge_threshold": 0.0}
+        self._xgb_probability_calibrator = None
+        self._xgb_prediction_mode = "probability"
         self._model_backend = "heuristic"
         self._try_load_xgb()
 
@@ -42,15 +45,16 @@ class SignalEngine:
                 contract_version = int(artifact.get("data_contract_version") or 0)
                 if (
                     contract_version < DATA_CONTRACT_VERSION
-                    or not artifact.get("fill_aware_only", False)
-                    or artifact.get("label_mode") != "economic_pnl_positive"
+                    or artifact.get("label_mode") != MODEL_LABEL_MODE
                 ):
                     logger.warning(
-                        "Ignoring legacy model at %s because it was not trained under the current fill-aware economic label contract",
+                        "Ignoring legacy model at %s because it was not trained under the current training-label contract",
                         path,
                     )
                     return
                 self._xgb = artifact.get("model")
+                self._xgb_probability_calibrator = artifact.get("probability_calibrator")
+                self._xgb_prediction_mode = str(artifact.get("prediction_mode") or "probability")
                 self._xgb_cols = artifact.get("feature_cols", FEATURE_COLS)
                 self._xgb_policy = artifact.get("policy", {"edge_threshold": 0.0})
                 self._model_backend = artifact.get("model_backend", "ml")
@@ -62,6 +66,8 @@ class SignalEngine:
             self._xgb = None
             self._xgb_cols = FEATURE_COLS
             self._xgb_policy = {"edge_threshold": 0.0}
+            self._xgb_probability_calibrator = None
+            self._xgb_prediction_mode = "probability"
             self._model_backend = "heuristic"
             logger.warning("Failed to load trained model: %s - using heuristic scorer", exc)
 
@@ -69,6 +75,8 @@ class SignalEngine:
         self._xgb = None
         self._xgb_cols = FEATURE_COLS
         self._xgb_policy = {"edge_threshold": 0.0}
+        self._xgb_probability_calibrator = None
+        self._xgb_prediction_mode = "probability"
         self._model_backend = "heuristic"
         self._try_load_xgb()
 
@@ -167,8 +175,20 @@ class SignalEngine:
             ],
             dtype=float,
         )
-        confidence = float(self._xgb.predict_proba(ordered)[0, 1])
         execution_price = market_features.execution_price if market_features.execution_price > 0 else market_features.mid
+        if self._xgb_prediction_mode == "expected_return":
+            expected_return = float(inverse_return_target(self._xgb.predict(ordered)[0]))
+            base_confidence = float(expected_return_to_confidence(expected_return, execution_price))
+            confidence = float(
+                apply_probability_calibrator(
+                    self._xgb_probability_calibrator,
+                    base_confidence,
+                )
+            )
+        else:
+            expected_return = None
+            base_confidence = None
+            confidence = float(self._xgb.predict_proba(ordered)[0, 1])
         edge = confidence - execution_price
         edge_threshold = float(self._xgb_policy.get("edge_threshold", 0.0))
         passed = edge >= edge_threshold
@@ -179,7 +199,8 @@ class SignalEngine:
         )
         return {
             "confidence": round(confidence, 4),
-            "raw_confidence": round(confidence, 4),
+            "raw_confidence": round(base_confidence if base_confidence is not None else confidence, 4),
+            "expected_return": round(expected_return, 4) if expected_return is not None else None,
             "edge": round(edge, 4),
             "edge_threshold": round(edge_threshold, 4),
             "passed": passed,

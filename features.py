@@ -26,6 +26,9 @@ FEATURE_COLS = [
 ]
 
 LABEL_COL = "label"
+OUTCOME_COL = "outcome_label"
+RETURN_COL = "economic_return"
+SAMPLE_WEIGHT_COL = "sample_weight"
 
 
 def build_feature_map(

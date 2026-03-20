@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from functools import lru_cache
 from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
@@ -436,7 +435,14 @@ def retrain_min_new_labels() -> int:
         return 100
 
 
-@lru_cache(maxsize=1)
+def retrain_min_samples() -> int:
+    raw = _get_env_file_value("RETRAIN_MIN_SAMPLES") or _get("RETRAIN_MIN_SAMPLES", "200")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 200
+
+
 def watched_wallets() -> list[str]:
     raw = _get("WATCHED_WALLETS")
     if not raw:

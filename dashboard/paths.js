@@ -10,5 +10,6 @@ export const eventsPath = path.resolve(dataDir, 'events.jsonl');
 export const identityPath = path.resolve(dataDir, 'identity_cache.json');
 export const botStatePath = path.resolve(dataDir, 'bot_state.json');
 export const retrainRequestPath = path.resolve(dataDir, 'manual_retrain_request.json');
+export const manualTradeRequestPath = path.resolve(dataDir, 'manual_trade_request.json');
 export const envPath = path.resolve(projectRoot, '.env');
 export const envExamplePath = path.resolve(projectRoot, '.env.example');

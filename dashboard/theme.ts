@@ -1,6 +1,7 @@
 export const theme = {
   accent: 'white',
   modalBackground: '#05080d',
+  purple: '#c084fc',
   green: '#24ff7b',
   red: '#ff0f0f',
   blue: '#17cdff',
@@ -61,6 +62,10 @@ function normalizeHexColor(raw?: string): string | undefined {
 
 export function selectionBackgroundColor(backgroundColor?: string): string {
   return blendHex(normalizeHexColor(backgroundColor) || theme.modalBackground, '#ffffff', 0.07)
+}
+
+export function modalScrimColor(backgroundColor?: string): string {
+  return blendHex(normalizeHexColor(backgroundColor) || theme.modalBackground, '#000000', 0.14)
 }
 
 export function probabilityColor(value: number): string {

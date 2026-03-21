@@ -1,16 +1,18 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box as InkBox, Text } from 'ink';
 import { BarSparkline } from '../components/BarSparkline.js';
 import { Box } from '../components/Box.js';
+import { ModalOverlay } from '../components/ModalOverlay.js';
 import { StatRow } from '../components/StatRow.js';
-import { fit, fitRight, formatAdaptiveDollar, formatAdaptiveNumber, formatDisplayId, formatShortDateTime, formatDollar, formatNumber, formatPct, secondsAgo, terminalHyperlink, timeUntil, shortAddress } from '../format.js';
+import { fit, fitRight, formatAdaptiveDollar, formatAdaptiveNumber, formatDisplayId, formatShortDateTime, formatDollar, formatNumber, formatPct, secondsAgo, truncate, terminalHyperlink, timeUntil, shortAddress } from '../format.js';
 import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
-import { centeredGradientColor, outcomeColor, positiveDollarColor, probabilityColor, theme } from '../theme.js';
+import { centeredGradientColor, outcomeColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme } from '../theme.js';
 import { useBotState } from '../useBotState.js';
 import { useQuery } from '../useDb.js';
 import { useEventStream } from '../useEventStream.js';
 import { useTradeIdIndex } from '../useTradeIdIndex.js';
+import { editablePositionStatuses } from '../positionEditor.js';
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
 AND COALESCE(source_action, 'buy')='buy'
@@ -26,50 +28,18 @@ AND COALESCE(remaining_entry_size_usd, actual_entry_size_usd, signal_size_usd, 0
 AND outcome IS NULL
 AND exited_at IS NULL
 `;
-const SUMMARY_SQL = `
-SELECT
-  real_money,
-  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) AS acted,
-  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} AND (CASE WHEN real_money=0 THEN shadow_pnl_usd ELSE actual_pnl_usd END) IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} AND (CASE WHEN real_money=0 THEN shadow_pnl_usd ELSE actual_pnl_usd END) > 0 THEN 1 ELSE 0 END) AS wins,
-  ROUND(SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN COALESCE(shadow_pnl_usd, actual_pnl_usd) ELSE 0 END), 3) AS total_pnl,
-  ROUND(AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN confidence END), 3) AS avg_confidence,
-  ROUND(AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN actual_entry_size_usd END), 3) AS avg_size
-FROM trade_log
-GROUP BY real_money
-`;
-const DAILY_SQL = `
-SELECT
-  real_money,
-  strftime('%Y-%m-%d %H:00', datetime(${REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
-  ROUND(
-    SUM(
-      CASE
-        WHEN real_money=0 THEN shadow_pnl_usd
-        ELSE actual_pnl_usd
-      END
-    ),
-    3
-  ) AS pnl
-FROM trade_log
-WHERE ${EXECUTED_ENTRY_WHERE}
-  AND (
-    CASE
-      WHEN real_money=0 THEN shadow_pnl_usd
-      ELSE actual_pnl_usd
-    END
-  ) IS NOT NULL
-GROUP BY real_money, day
-ORDER BY day DESC
-`;
 const SHADOW_OPEN_POSITIONS_SQL = `
 SELECT
   ('o:' || tl.id) AS row_key,
+  'trade_log' AS source_kind,
+  tl.id AS source_trade_log_id,
   tl.trade_id,
   tl.market_id,
   tl.market_url,
   tl.side,
+  COALESCE(tl.token_id, '') AS token_id,
   ROUND(COALESCE(tl.remaining_entry_size_usd, tl.actual_entry_size_usd), 3) AS size_usd,
+  ROUND(COALESCE(tl.remaining_entry_shares, tl.actual_entry_shares, tl.source_shares), 6) AS shares,
   ROUND(
     CASE
       WHEN COALESCE(tl.remaining_entry_shares, 0) > 1e-9 THEN tl.remaining_entry_size_usd / tl.remaining_entry_shares
@@ -96,6 +66,28 @@ ORDER BY tl.placed_at DESC, tl.id DESC
 const LIVE_POSITIONS_SQL = `
 SELECT
   ('p:' || p.market_id || ':' || p.token_id || ':' || p.entered_at || ':' || p.real_money) AS row_key,
+  'position' AS source_kind,
+  COALESCE(
+    (
+      SELECT tl.id
+      FROM trade_log tl
+      WHERE tl.market_id = p.market_id
+        AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${EXECUTED_ENTRY_WHERE}
+        AND tl.placed_at <= p.entered_at
+      ORDER BY tl.placed_at DESC, tl.id DESC
+      LIMIT 1
+    ),
+    (
+      SELECT tl.id
+      FROM trade_log tl
+      WHERE tl.market_id = p.market_id
+        AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${EXECUTED_ENTRY_WHERE}
+      ORDER BY tl.placed_at DESC, tl.id DESC
+      LIMIT 1
+    )
+  ) AS source_trade_log_id,
   COALESCE(
     (
       SELECT tl.trade_id
@@ -140,7 +132,36 @@ SELECT
     )
   ) AS market_url,
   p.side,
+  COALESCE(p.token_id, '') AS token_id,
   ROUND(p.size_usd, 3) AS size_usd,
+  ROUND(
+    CASE
+      WHEN p.avg_price > 0 THEN p.size_usd / p.avg_price
+      ELSE COALESCE(
+        (
+          SELECT tl.actual_entry_shares
+          FROM trade_log tl
+          WHERE tl.market_id = p.market_id
+            AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+            AND ${EXECUTED_ENTRY_WHERE}
+            AND tl.placed_at <= p.entered_at
+          ORDER BY tl.placed_at DESC, tl.id DESC
+          LIMIT 1
+        ),
+        (
+          SELECT tl.actual_entry_shares
+          FROM trade_log tl
+          WHERE tl.market_id = p.market_id
+            AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+            AND ${EXECUTED_ENTRY_WHERE}
+          ORDER BY tl.placed_at DESC, tl.id DESC
+          LIMIT 1
+        ),
+        0
+      )
+    END,
+    6
+  ) AS shares,
   ROUND(
     CASE
       WHEN p.avg_price > 0 THEN p.avg_price
@@ -300,11 +321,15 @@ ORDER BY p.entered_at DESC
 const RESOLVED_POSITIONS_SQL = `
 SELECT
   ('t:' || tl.id) AS row_key,
+  'trade_log' AS source_kind,
+  tl.id AS source_trade_log_id,
   tl.trade_id,
   tl.market_id,
   tl.market_url,
   tl.side,
+  COALESCE(tl.token_id, '') AS token_id,
   ROUND(tl.actual_entry_size_usd, 3) AS size_usd,
+  ROUND(tl.actual_entry_shares, 6) AS shares,
   ROUND(tl.actual_entry_price, 3) AS entry_price,
   ROUND(tl.confidence, 3) AS confidence,
   tl.placed_at AS entered_at,
@@ -325,6 +350,29 @@ FROM trade_log tl
 WHERE ${EXECUTED_ENTRY_WHERE}
   AND (CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END) IS NOT NULL
 ORDER BY COALESCE(NULLIF(tl.exited_at, 0), NULLIF(tl.resolved_at, 0), NULLIF(tl.market_close_ts, 0), tl.placed_at) DESC, tl.id DESC
+`;
+const TRADE_LOG_MANUAL_EDITS_SQL = `
+SELECT
+  trade_log_id,
+  entry_price,
+  shares,
+  size_usd,
+  status,
+  updated_at
+FROM trade_log_manual_edits
+`;
+const POSITION_MANUAL_EDITS_SQL = `
+SELECT
+  market_id,
+  token_id,
+  LOWER(side) AS side,
+  real_money,
+  entry_price,
+  shares,
+  size_usd,
+  status,
+  updated_at
+FROM position_manual_edits
 `;
 function getPositionsLayout(width) {
     const showId = width >= 132;
@@ -452,6 +500,758 @@ function formatHourlyBucketLabel(bucket, compact = false) {
     const timeText = `${hour12}:00 ${suffix}`;
     return compact ? timeText : `${shortDate} ${timeText}`;
 }
+function toneColor(tone) {
+    if (tone === 'error')
+        return theme.red;
+    if (tone === 'success')
+        return theme.green;
+    return theme.dim;
+}
+function actionToneColor(tone) {
+    if (tone === 'error')
+        return theme.red;
+    if (tone === 'success')
+        return theme.green;
+    return theme.dim;
+}
+function emptyPriceHistoryState(status) {
+    return {
+        status,
+        series: []
+    };
+}
+function parseMetaList(value) {
+    if (Array.isArray(value)) {
+        return value.map((item) => String(item || '').trim()).filter(Boolean);
+    }
+    if (typeof value === 'string') {
+        const text = value.trim();
+        if (!text) {
+            return [];
+        }
+        try {
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed)) {
+                return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+            }
+        }
+        catch {
+            // Fall through to comma-split handling.
+        }
+        if (text.includes(',')) {
+            return text.split(',').map((part) => part.trim()).filter(Boolean);
+        }
+        return [text];
+    }
+    return [];
+}
+function seriesColorForOutcome(label, index, isSelected) {
+    const semanticColor = outcomeColor(label);
+    if (semanticColor !== theme.blue) {
+        return semanticColor;
+    }
+    const palette = [theme.purple, theme.yellow, theme.blue, theme.green, theme.red, theme.dim];
+    return palette[index % palette.length] || theme.white;
+}
+function extractOutcomeSeries(row, meta) {
+    const definitions = [];
+    const outcomes = parseMetaList(meta?.outcomes ?? meta?.outcomeNames ?? meta?.outcome_names);
+    const tokenIds = parseMetaList(meta?.clobTokenIds ?? meta?.clobTokenIDs ?? meta?.tokenIds ?? meta?.token_ids);
+    if (outcomes.length > 0 && outcomes.length === tokenIds.length) {
+        for (let index = 0; index < outcomes.length; index += 1) {
+            const tokenId = String(tokenIds[index] || '').trim();
+            const label = String(outcomes[index] || '').trim();
+            if (tokenId && label) {
+                definitions.push({ tokenId, label });
+            }
+        }
+    }
+    const tokens = Array.isArray(meta?.tokens) ? meta?.tokens : [];
+    for (const token of tokens) {
+        if (!token || typeof token !== 'object') {
+            continue;
+        }
+        const tokenRecord = token;
+        const tokenId = String(tokenRecord.token_id ?? tokenRecord.tokenId ?? tokenRecord.clobTokenId ?? '').trim();
+        const label = String(tokenRecord.outcome ?? tokenRecord.name ?? tokenRecord.title ?? '').trim();
+        if (tokenId && label) {
+            definitions.push({ tokenId, label });
+        }
+    }
+    const deduped = new Map();
+    for (const definition of definitions) {
+        if (!deduped.has(definition.tokenId)) {
+            deduped.set(definition.tokenId, definition);
+        }
+    }
+    const selectedTokenId = String(row.token_id || '').trim();
+    const selectedLabel = String(row.side || '').trim().toUpperCase();
+    if (selectedTokenId && !deduped.has(selectedTokenId)) {
+        deduped.set(selectedTokenId, {
+            tokenId: selectedTokenId,
+            label: selectedLabel || 'SELECTED'
+        });
+    }
+    return Array.from(deduped.values());
+}
+function normalizePriceHistoryRows(payload) {
+    const history = Array.isArray(payload)
+        ? payload
+        : payload && typeof payload === 'object' && Array.isArray(payload.history)
+            ? payload.history
+            : [];
+    const normalized = history
+        .map((row) => {
+        if (!row || typeof row !== 'object') {
+            return null;
+        }
+        const price = Number(row.p ??
+            row.price ??
+            row.value);
+        const ts = Number(row.t ??
+            row.timestamp ??
+            row.time);
+        if (!Number.isFinite(price) || !Number.isFinite(ts) || price < 0 || price > 1 || ts <= 0) {
+            return null;
+        }
+        return {
+            price,
+            ts: ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts)
+        };
+    })
+        .filter((row) => row != null);
+    normalized.sort((left, right) => left.ts - right.ts);
+    return normalized;
+}
+async function fetchClobPriceHistory(tokenId) {
+    const encodedTokenId = encodeURIComponent(String(tokenId || '').trim());
+    const attempts = [
+        `https://clob.polymarket.com/prices-history?market=${encodedTokenId}&interval=max&fidelity=15`,
+        `https://clob.polymarket.com/prices-history?market=${encodedTokenId}&interval=max&fidelity=60`,
+        `https://clob.polymarket.com/prices-history?market=${encodedTokenId}&interval=max`
+    ];
+    let lastError = null;
+    for (let index = 0; index < attempts.length; index += 1) {
+        const response = await fetch(attempts[index] || '');
+        if (response.ok) {
+            const payload = await response.json();
+            return normalizePriceHistoryRows(payload);
+        }
+        lastError = new Error(`HTTP ${response.status}`);
+        if (response.status !== 400 || index === attempts.length - 1) {
+            break;
+        }
+    }
+    throw lastError || new Error('unknown error');
+}
+function makeCell(char, color) {
+    return { char, color };
+}
+function sampleSeriesPoints(points, targetCount) {
+    if (points.length <= targetCount) {
+        return points;
+    }
+    return Array.from({ length: targetCount }, (_, index) => {
+        const sourceIndex = targetCount === 1
+            ? points.length - 1
+            : Math.round((index / Math.max(targetCount - 1, 1)) * Math.max(points.length - 1, 0));
+        return points[Math.max(0, Math.min(points.length - 1, sourceIndex))];
+    });
+}
+function drawSeriesCell(grid, x, y, char, color) {
+    const row = grid[y];
+    if (!row || !row[x]) {
+        return;
+    }
+    const current = row[x];
+    const isAxis = current.color === theme.dim;
+    const isReferenceLine = current.char === '┄';
+    if (isAxis || isReferenceLine || current.char === ' ') {
+        row[x] = makeCell(char, color);
+        return;
+    }
+    if (current.color === color) {
+        row[x] = makeCell(current.char === '.' ? current.char : char, color);
+        return;
+    }
+    row[x] = makeCell('+', theme.white);
+}
+function drawHorizontalSegment(grid, y, fromX, toX, color) {
+    const start = Math.min(fromX, toX);
+    const end = Math.max(fromX, toX);
+    for (let x = start; x <= end; x += 1) {
+        drawSeriesCell(grid, x, y, '─', color);
+    }
+}
+function drawVerticalSegment(grid, x, fromY, toY, color) {
+    const start = Math.min(fromY, toY);
+    const end = Math.max(fromY, toY);
+    for (let y = start; y <= end; y += 1) {
+        drawSeriesCell(grid, x, y, '│', color);
+    }
+}
+function buildHistoryTimeline(series) {
+    const unique = new Set();
+    for (const entry of series) {
+        for (const point of entry.points) {
+            unique.add(point.ts);
+        }
+    }
+    return Array.from(unique).sort((left, right) => left - right);
+}
+function findNearestHistoryPoint(points, ts) {
+    if (!points.length) {
+        return null;
+    }
+    let low = 0;
+    let high = points.length - 1;
+    while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        const middlePoint = points[middle];
+        if ((middlePoint?.ts || 0) < ts) {
+            low = middle + 1;
+        }
+        else {
+            high = middle;
+        }
+    }
+    const candidateIndexes = Array.from(new Set([low - 1, low, low + 1])).filter((index) => index >= 0 && index < points.length);
+    let bestIndex = candidateIndexes[0] || 0;
+    let bestDistance = Math.abs((points[bestIndex]?.ts || 0) - ts);
+    for (const index of candidateIndexes) {
+        const distance = Math.abs((points[index]?.ts || 0) - ts);
+        if (distance < bestDistance) {
+            bestIndex = index;
+            bestDistance = distance;
+        }
+    }
+    return points[bestIndex] || points[0] || null;
+}
+function renderCellSegments(cells, key, backgroundColor) {
+    const segments = [];
+    for (const cell of cells) {
+        const last = segments[segments.length - 1];
+        if (last && last.color === cell.color) {
+            last.text += cell.char;
+        }
+        else {
+            segments.push({ text: cell.char, color: cell.color });
+        }
+    }
+    return (React.createElement(Text, { key: key, backgroundColor: backgroundColor }, segments.map((segment, index) => (React.createElement(Text, { key: `${key}-segment-${index}`, color: segment.color, backgroundColor: backgroundColor }, segment.text)))));
+}
+function weightedColumnWidths(totalWidth, columns, gapWidth) {
+    if (!columns.length) {
+        return [];
+    }
+    const usableWidth = Math.max(columns.length, totalWidth - Math.max(0, columns.length - 1) * gapWidth);
+    const ratios = columns.map((column) => Math.max(0.5, column.ratio ?? 1));
+    const ratioSum = ratios.reduce((sum, value) => sum + value, 0);
+    const widths = ratios.map((ratio) => Math.max(1, Math.floor((usableWidth * ratio) / Math.max(ratioSum, 1))));
+    let remaining = usableWidth - widths.reduce((sum, value) => sum + value, 0);
+    for (let index = widths.length - 1; index >= 0 && remaining > 0; index -= 1) {
+        widths[index] = (widths[index] || 1) + 1;
+        remaining -= 1;
+    }
+    return widths;
+}
+function DetailMetricColumns({ columns, width, backgroundColor }) {
+    const gapWidth = columns.length > 1 ? 2 : 0;
+    const widths = weightedColumnWidths(width, columns, gapWidth);
+    const sharedLabelWidth = Math.max(4, Math.min(12, columns.reduce((max, column) => Math.max(max, column.label.length + 1), 4)));
+    return (React.createElement(InkBox, { width: "100%" },
+        React.createElement(Text, { backgroundColor: backgroundColor }, " "),
+        columns.map((column, index) => {
+            const columnWidth = widths[index] || 1;
+            const labelWidth = Math.max(4, Math.min(columnWidth - 1, sharedLabelWidth));
+            const valueWidth = Math.max(1, columnWidth - labelWidth);
+            const formattedValue = column.valueAlign === 'left'
+                ? fit(column.value, valueWidth)
+                : fitRight(column.value, valueWidth);
+            return (React.createElement(React.Fragment, { key: `detail-column-${index}-${column.label}` },
+                React.createElement(InkBox, { width: columnWidth },
+                    React.createElement(Text, { color: theme.dim, backgroundColor: backgroundColor }, fit(column.label, labelWidth)),
+                    React.createElement(Text, { color: column.color ?? theme.white, backgroundColor: backgroundColor, bold: column.bold }, formattedValue)),
+                index < columns.length - 1 ? (React.createElement(Text, { backgroundColor: backgroundColor }, ' '.repeat(gapWidth))) : null));
+        }),
+        React.createElement(Text, { backgroundColor: backgroundColor }, " ")));
+}
+function DetailValueColumns({ columns, width, backgroundColor }) {
+    const gapWidth = columns.length > 1 ? 2 : 0;
+    const widths = weightedColumnWidths(width, columns, gapWidth);
+    return (React.createElement(InkBox, { width: "100%" },
+        React.createElement(Text, { backgroundColor: backgroundColor }, " "),
+        columns.map((column, index) => {
+            const columnWidth = widths[index] || 1;
+            const formattedValue = column.valueAlign === 'right'
+                ? fitRight(column.value, columnWidth)
+                : fit(column.value, columnWidth);
+            return (React.createElement(React.Fragment, { key: `detail-value-${index}-${column.value}` },
+                React.createElement(Text, { color: column.color ?? theme.white, backgroundColor: backgroundColor, bold: column.bold }, formattedValue),
+                index < columns.length - 1 ? (React.createElement(Text, { backgroundColor: backgroundColor }, ' '.repeat(gapWidth))) : null));
+        }),
+        React.createElement(Text, { backgroundColor: backgroundColor }, " ")));
+}
+function PriceHistoryLegendRow({ sample, label, color, width, backgroundColor, bold = false }) {
+    const sampleWidth = Math.max(4, Math.min(8, sample.length));
+    const labelWidth = Math.max(1, width - sampleWidth - 2);
+    return (React.createElement(InkBox, { width: "100%" },
+        React.createElement(Text, { backgroundColor: backgroundColor }, " "),
+        React.createElement(Text, { color: color, backgroundColor: backgroundColor, bold: bold }, fit(sample, sampleWidth)),
+        React.createElement(Text, { backgroundColor: backgroundColor }, " "),
+        React.createElement(Text, { color: color, backgroundColor: backgroundColor, bold: bold }, fit(label, labelWidth)),
+        React.createElement(Text, { backgroundColor: backgroundColor }, " ")));
+}
+function PriceHistoryLegendEntryRow({ sample, label, color, price, seenAt, width, backgroundColor, bold = false }) {
+    const sampleWidth = Math.max(4, Math.min(8, sample.length));
+    const meta = `At ${price}  Seen ${seenAt}`;
+    const metaWidth = Math.min(meta.length, Math.max(10, width - sampleWidth - 3));
+    const labelWidth = Math.max(1, width - sampleWidth - metaWidth - 2);
+    return (React.createElement(InkBox, { width: "100%" },
+        React.createElement(Text, { backgroundColor: backgroundColor }, " "),
+        React.createElement(Text, { color: color, backgroundColor: backgroundColor, bold: bold }, fit(sample, sampleWidth)),
+        React.createElement(Text, { backgroundColor: backgroundColor }, " "),
+        React.createElement(Text, { color: color, backgroundColor: backgroundColor, bold: bold }, fit(label, labelWidth)),
+        React.createElement(Text, { backgroundColor: backgroundColor }, " "),
+        React.createElement(Text, { color: theme.dim, backgroundColor: backgroundColor }, fitRight(meta, metaWidth)),
+        React.createElement(Text, { backgroundColor: backgroundColor }, " ")));
+}
+function buildMultiSeriesChart(series, width, height = 11, cursorTs, referencePrice, referenceTs, cursorSelected = false) {
+    const chartHeight = Math.max(4, Math.floor(height));
+    const yLabelWidth = 8;
+    const plotWidth = Math.max(18, Math.floor(width) - yLabelWidth - 1);
+    const plotPaddingLeft = 3;
+    const plotPaddingRight = 3;
+    const plotDataWidth = Math.max(3, plotWidth - plotPaddingLeft - plotPaddingRight);
+    const validSeries = series.filter((entry) => entry.points.length > 0);
+    const allPoints = validSeries.flatMap((entry) => entry.points);
+    const selectedSeries = validSeries.find((entry) => entry.isSelected) || validSeries[0] || null;
+    if (!allPoints.length) {
+        return {
+            rows: Array.from({ length: chartHeight + 1 }, () => Array.from({ length: yLabelWidth + plotWidth }, () => makeCell(' ', undefined))),
+            minPrice: null,
+            maxPrice: null,
+            startTs: null,
+            endTs: null,
+            selectedSeries
+        };
+    }
+    const rawMinPrice = Math.min(...allPoints.map((point) => point.price), referencePrice != null && Number.isFinite(referencePrice) ? referencePrice : 1);
+    const rawMaxPrice = Math.max(...allPoints.map((point) => point.price), referencePrice != null && Number.isFinite(referencePrice) ? referencePrice : 0);
+    const pricePad = Math.max(0.01, (rawMaxPrice - rawMinPrice) * 0.08);
+    const minPrice = Math.max(0, rawMinPrice - pricePad);
+    const maxPrice = Math.min(1, rawMaxPrice + pricePad);
+    const startTs = Math.min(...allPoints.map((point) => point.ts));
+    const endTs = Math.max(...allPoints.map((point) => point.ts));
+    const safeEndTs = endTs > startTs ? endTs : startTs + 3600;
+    const grid = Array.from({ length: chartHeight }, () => Array.from({ length: plotWidth }, (_, column) => makeCell(column === 0 ? '│' : ' ', column === 0 ? theme.dim : undefined)));
+    const axisRow = chartHeight - 1;
+    const tickColumns = new Set([
+        plotPaddingLeft,
+        plotPaddingLeft + Math.floor(Math.max(plotDataWidth - 1, 0) / 2),
+        plotPaddingLeft + Math.max(plotDataWidth - 1, 0)
+    ]);
+    for (let column = 0; column < plotWidth; column += 1) {
+        const char = column === 0
+            ? '└'
+            : column === plotWidth - 1
+                ? '┘'
+                : tickColumns.has(column)
+                    ? '┴'
+                    : '─';
+        grid[axisRow][column] = makeCell(char, theme.dim);
+    }
+    const mapPriceToY = (price) => {
+        const normalizedPrice = Math.abs(maxPrice - minPrice) <= 1e-9 ? 0.5 : (price - minPrice) / (maxPrice - minPrice);
+        return Math.max(0, Math.min(chartHeight - 2, (chartHeight - 2) - Math.round(normalizedPrice * Math.max(chartHeight - 2, 1))));
+    };
+    const mapPoint = (point) => {
+        const x = plotPaddingLeft +
+            Math.round((((point.ts - startTs) / Math.max(safeEndTs - startTs, 1)) * Math.max(plotDataWidth - 1, 1)));
+        const y = mapPriceToY(point.price);
+        return { x, y };
+    };
+    const mapTsToX = (ts) => plotPaddingLeft +
+        Math.round((((ts - startTs) / Math.max(safeEndTs - startTs, 1)) * Math.max(plotDataWidth - 1, 1)));
+    if (referencePrice != null && Number.isFinite(referencePrice)) {
+        const referenceY = mapPriceToY(referencePrice);
+        for (let column = 1; column < plotWidth; column += 1) {
+            if (column === 0) {
+                continue;
+            }
+            grid[referenceY][column] = makeCell('┄', theme.white);
+        }
+    }
+    const referenceColumn = referenceTs != null && Number.isFinite(referenceTs) && referenceTs >= startTs && referenceTs <= safeEndTs
+        ? Math.max(plotPaddingLeft, Math.min(plotPaddingLeft + Math.max(plotDataWidth - 1, 0), mapTsToX(referenceTs)))
+        : null;
+    if (referenceColumn != null) {
+        for (let rowIndex = 0; rowIndex < chartHeight - 1; rowIndex += 1) {
+            const current = grid[rowIndex]?.[referenceColumn];
+            if (!current || current.char !== ' ') {
+                continue;
+            }
+            grid[rowIndex][referenceColumn] = makeCell('┊', theme.white);
+        }
+        if (grid[axisRow]?.[referenceColumn]) {
+            grid[axisRow][referenceColumn] = makeCell('┼', theme.white);
+        }
+    }
+    const cursorColumn = cursorTs != null
+        ? Math.max(plotPaddingLeft, Math.min(plotPaddingLeft + Math.max(plotDataWidth - 1, 0), mapTsToX(cursorTs)))
+        : null;
+    if (cursorColumn != null) {
+        const cursorColor = cursorSelected ? theme.white : theme.dim;
+        for (let rowIndex = 0; rowIndex < chartHeight - 1; rowIndex += 1) {
+            const current = grid[rowIndex]?.[cursorColumn];
+            if (!current || current.char !== ' ') {
+                continue;
+            }
+            grid[rowIndex][cursorColumn] = makeCell('┆', cursorColor);
+        }
+        if (grid[axisRow]?.[cursorColumn]) {
+            grid[axisRow][cursorColumn] = makeCell('┼', cursorColor);
+        }
+    }
+    for (const entry of validSeries) {
+        const sampled = sampleSeriesPoints(entry.points, plotDataWidth);
+        const mapped = sampled.map(mapPoint);
+        if (!mapped.length) {
+            continue;
+        }
+        for (let index = 0; index < mapped.length - 1; index += 1) {
+            const current = mapped[index];
+            const next = mapped[index + 1];
+            drawHorizontalSegment(grid, current.y, current.x, next.x, entry.color);
+            if (next.y !== current.y) {
+                drawVerticalSegment(grid, next.x, current.y, next.y, entry.color);
+            }
+        }
+        const changePoints = mapped.filter((point, index) => {
+            if (index === 0 || index === mapped.length - 1) {
+                return true;
+            }
+            const previous = mapped[index - 1];
+            const next = mapped[index + 1];
+            return previous?.y !== point.y || next?.y !== point.y;
+        });
+        for (const point of changePoints) {
+            drawSeriesCell(grid, point.x, point.y, '.', entry.color);
+        }
+    }
+    const rows = grid.map((plotRow, rowIndex) => {
+        const referencePrice = maxPrice - ((rowIndex / Math.max(chartHeight - 2, 1)) * (maxPrice - minPrice));
+        const showLabel = rowIndex === 0 ||
+            rowIndex === chartHeight - 2 ||
+            rowIndex === Math.floor((chartHeight - 2) / 2);
+        const label = showLabel ? fitRight(formatNumber(referencePrice), yLabelWidth) : ' '.repeat(yLabelWidth);
+        return [
+            ...label.split('').map((char) => makeCell(char, theme.dim)),
+            makeCell(' ', undefined),
+            ...plotRow
+        ];
+    });
+    const startLabel = startTs ? formatShortDateTime(startTs) : '-';
+    const midTs = startTs && endTs ? Math.floor((startTs + endTs) / 2) : 0;
+    const midLabel = midTs ? formatShortDateTime(midTs) : '-';
+    const endLabel = endTs ? formatShortDateTime(endTs) : '-';
+    const axisLabelWidth = yLabelWidth + 1 + plotWidth;
+    const leftWidth = Math.max(1, Math.floor((axisLabelWidth - midLabel.length - endLabel.length) / 2));
+    const middleWidth = Math.max(1, axisLabelWidth - leftWidth - endLabel.length);
+    const axisLabelRow = `${fit(startLabel, leftWidth)}${fit(midLabel, middleWidth)}${fitRight(endLabel, endLabel.length)}`;
+    rows.push(axisLabelRow.split('').map((char) => makeCell(char, theme.dim)));
+    return {
+        rows,
+        minPrice: rawMinPrice,
+        maxPrice: rawMaxPrice,
+        startTs,
+        endTs,
+        selectedSeries
+    };
+}
+function formatSignedPriceChange(value) {
+    if (value == null || !Number.isFinite(value)) {
+        return '-';
+    }
+    const rounded = Number(value.toFixed(3));
+    return `${rounded > 0 ? '+' : ''}${formatNumber(rounded)}`;
+}
+function PriceHistoryPreview({ history, width, backgroundColor, selected = false, cursorOffsetFromEnd = 0, entryPrice = null, entryTs = null, shares = null }) {
+    const validSeries = history.series.filter((entry) => entry.points.length > 0);
+    const timeline = buildHistoryTimeline(validSeries);
+    const clampedCursorOffset = timeline.length
+        ? Math.max(0, Math.min(Math.floor(cursorOffsetFromEnd), timeline.length - 1))
+        : 0;
+    const cursorIndex = timeline.length ? Math.max(0, timeline.length - 1 - clampedCursorOffset) : null;
+    const cursorTs = cursorIndex != null ? (timeline[cursorIndex] || null) : null;
+    const cursorValues = cursorTs == null
+        ? []
+        : validSeries.map((entry) => {
+            const point = findNearestHistoryPoint(entry.points, cursorTs);
+            return {
+                series: entry,
+                point: point || null
+            };
+        });
+    const chartRenderHeight = width >= 112 ? 23 : 20;
+    const chart = buildMultiSeriesChart(validSeries, width, chartRenderHeight, cursorTs, entryPrice, entryTs, selected);
+    const selectedSeries = chart.selectedSeries;
+    const selectedCursorValue = cursorValues.find((entry) => entry.series.tokenId === selectedSeries?.tokenId) || cursorValues[0] || null;
+    const selectedCursorPoint = selectedCursorValue?.point || null;
+    const selectedCursorChangeFromEntry = selectedCursorPoint && entryPrice != null
+        ? Number((selectedCursorPoint.price - entryPrice).toFixed(3))
+        : null;
+    const selectedCursorCashoutPnl = selectedCursorPoint && entryPrice != null && shares != null && Number.isFinite(shares) && shares > 0
+        ? Number((shares * (selectedCursorPoint.price - entryPrice)).toFixed(3))
+        : null;
+    const selectedSeriesColor = selectedSeries?.color ?? theme.white;
+    const selectedChangeFromEntryLabel = formatSignedPriceChange(selectedCursorChangeFromEntry);
+    const selectedCashoutPnlLabel = formatDollar(selectedCursorCashoutPnl);
+    const selectedCashoutPnlColor = selectedCursorCashoutPnl == null
+        ? theme.dim
+        : selectedCursorCashoutPnl > 0
+            ? theme.green
+            : selectedCursorCashoutPnl < 0
+                ? theme.red
+                : theme.white;
+    const selectedBackgroundColor = backgroundColor;
+    return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
+        history.status === 'error' ? (React.createElement(Text, { color: theme.red, backgroundColor: selectedBackgroundColor }, ` ${fit(history.message || 'Price history failed to load.', width)} `)) : (React.createElement(Text, { backgroundColor: selectedBackgroundColor }, ` ${' '.repeat(Math.max(1, width))} `)),
+        chart.rows.map((row, index) => (React.createElement(InkBox, { key: `price-history-line-${index}`, width: "100%" },
+            React.createElement(Text, { backgroundColor: selectedBackgroundColor }, " "),
+            renderCellSegments(row, `price-history-cells-${index}`, selectedBackgroundColor),
+            React.createElement(Text, { backgroundColor: selectedBackgroundColor }, " ")))),
+        React.createElement(Text, { backgroundColor: selectedBackgroundColor }, ` ${' '.repeat(Math.max(1, width))} `),
+        React.createElement(DetailValueColumns, { columns: [
+                {
+                    value: cursorTs ? formatShortDateTime(cursorTs) : '-',
+                    ratio: 1.6,
+                    valueAlign: 'left'
+                },
+                {
+                    value: selectedSeries?.label || '-',
+                    color: selectedSeriesColor,
+                    bold: selectedSeries != null,
+                    ratio: 1.4,
+                    valueAlign: 'left'
+                },
+                {
+                    value: selectedCursorPoint ? formatNumber(selectedCursorPoint.price) : '-',
+                    color: selectedSeriesColor,
+                    valueAlign: 'right'
+                },
+                {
+                    value: selectedChangeFromEntryLabel,
+                    color: theme.white,
+                    ratio: 1,
+                    valueAlign: 'right'
+                },
+                {
+                    value: selectedCashoutPnlLabel,
+                    color: selectedCashoutPnlColor,
+                    ratio: 1.1,
+                    valueAlign: 'right'
+                }
+            ], width: width, backgroundColor: selectedBackgroundColor }),
+        React.createElement(Text, { backgroundColor: selectedBackgroundColor }, ` ${' '.repeat(Math.max(1, width))} `),
+        React.createElement(Text, { color: theme.dim, backgroundColor: selectedBackgroundColor }, ` ${fit('Legend', width)} `),
+        entryPrice != null ? (React.createElement(PriceHistoryLegendRow, { sample: '┄┄┄┄', label: `Entry  ${formatNumber(entryPrice)}  ${entryTs ? formatShortDateTime(entryTs) : ''}`.trim(), color: theme.white, width: width, backgroundColor: selectedBackgroundColor })) : null,
+        validSeries.map((entry) => {
+            const cursorEntry = cursorValues.find((value) => value.series.tokenId === entry.tokenId);
+            const point = cursorEntry?.point || null;
+            return (React.createElement(PriceHistoryLegendEntryRow, { key: `price-series-legend-${entry.tokenId}`, sample: entry.isSelected ? '.-.-.' : '. . .', label: `${entry.isSelected ? '* ' : ''}${entry.label}`, color: entry.color, bold: entry.isSelected, price: point ? formatNumber(point.price) : '-', seenAt: point ? formatShortDateTime(point.ts) : '-', width: width, backgroundColor: selectedBackgroundColor }));
+        })));
+}
+function usePositionPriceHistory(row) {
+    const [history, setHistory] = useState(() => emptyPriceHistoryState('idle'));
+    useEffect(() => {
+        if (!row) {
+            setHistory(emptyPriceHistoryState('idle'));
+            return;
+        }
+        const marketId = String(row.market_id || '').trim();
+        const tokenId = String(row.token_id || '').trim();
+        if (!marketId || !tokenId) {
+            setHistory({
+                ...emptyPriceHistoryState('error'),
+                message: 'This position is missing market metadata keys, so price history is unavailable.'
+            });
+            return;
+        }
+        let cancelled = false;
+        const loadHistory = async (showLoading) => {
+            if (showLoading) {
+                setHistory((current) => ({
+                    ...emptyPriceHistoryState('loading'),
+                    message: current.status === 'error' ? current.message : undefined
+                }));
+            }
+            try {
+                const marketResponse = await fetch(`https://gamma-api.polymarket.com/markets?condition_ids=${encodeURIComponent(marketId)}`);
+                if (!marketResponse.ok) {
+                    throw new Error(`metadata HTTP ${marketResponse.status}`);
+                }
+                const marketPayload = await marketResponse.json();
+                const markets = Array.isArray(marketPayload)
+                    ? marketPayload
+                    : marketPayload && typeof marketPayload === 'object' && Array.isArray(marketPayload.markets)
+                        ? marketPayload.markets
+                        : [];
+                const meta = markets.find((entry) => entry && typeof entry === 'object' && String(entry.conditionId || '').trim().toLowerCase() === marketId.toLowerCase()) ||
+                    (markets[0] && typeof markets[0] === 'object' ? markets[0] : null);
+                const outcomeDefs = extractOutcomeSeries(row, meta);
+                const seriesResults = await Promise.allSettled(outcomeDefs.map(async (definition, index) => {
+                    const points = await fetchClobPriceHistory(definition.tokenId);
+                    return {
+                        tokenId: definition.tokenId,
+                        label: definition.label,
+                        color: seriesColorForOutcome(definition.label, index, definition.tokenId === tokenId),
+                        isSelected: definition.tokenId === tokenId,
+                        points
+                    };
+                }));
+                if (cancelled) {
+                    return;
+                }
+                const populatedSeries = seriesResults
+                    .flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+                    .filter((entry) => entry.points.length > 0);
+                setHistory({
+                    status: 'ready',
+                    fetchedAt: Math.floor(Date.now() / 1000),
+                    series: populatedSeries,
+                    message: populatedSeries.length ? undefined : 'No market history was returned for this market.'
+                });
+            }
+            catch (error) {
+                if (cancelled) {
+                    return;
+                }
+                setHistory({
+                    ...emptyPriceHistoryState('error'),
+                    message: `Price history failed: ${error instanceof Error ? error.message : 'unknown error'}`
+                });
+            }
+        };
+        void loadHistory(true);
+        const timer = setInterval(() => {
+            void loadHistory(false);
+        }, 60000);
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+        };
+    }, [row?.row_key, row?.token_id]);
+    return history;
+}
+function normalizeManualStatus(raw) {
+    const normalized = String(raw || '').trim().toLowerCase();
+    if (editablePositionStatuses.includes(normalized)) {
+        return normalized;
+    }
+    return null;
+}
+function positionEditKey(marketId, tokenId, side, realMoney) {
+    return `${realMoney}:${marketId}:${tokenId}:${side.trim().toLowerCase()}`;
+}
+function roundTo(value, decimals) {
+    return Number(value.toFixed(decimals));
+}
+function computePositionProfit(row) {
+    if (row.status === 'open' || row.status === 'waiting') {
+        return null;
+    }
+    if (row.status === 'win') {
+        return row.shares != null ? row.shares - row.size_usd : null;
+    }
+    if (row.status === 'lose') {
+        return -row.size_usd;
+    }
+    const exitSizeUsd = row.exit_size_usd ?? row.size_usd;
+    return exitSizeUsd - row.size_usd;
+}
+function normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEditLookup) {
+    const tradeEdit = row.source_trade_log_id != null ? tradeLogEditLookup.get(row.source_trade_log_id) : undefined;
+    const positionEdit = positionEditLookup.get(positionEditKey(row.market_id, row.token_id, row.side, row.real_money));
+    const edit = row.source_kind === 'position' ? (positionEdit ?? tradeEdit) : tradeEdit;
+    const entry_price = edit?.entry_price != null ? Number(edit.entry_price) : row.entry_price;
+    const shares = edit?.shares != null ? Number(edit.shares) : row.shares;
+    const size_usd = edit?.size_usd != null ? Number(edit.size_usd) : row.size_usd;
+    const statusOverride = normalizeManualStatus(edit?.status);
+    const status = statusOverride ??
+        (row.status === 'open' && row.market_close_ts > 0 && row.market_close_ts <= nowTs ? 'waiting' : row.status);
+    const baseResolutionTs = row.resolution_ts ||
+        row.market_close_ts ||
+        (edit?.updated_at != null ? Number(edit.updated_at) : 0) ||
+        row.entered_at;
+    const resolution_ts = status === 'open'
+        ? 0
+        : status === 'waiting'
+            ? row.market_close_ts || baseResolutionTs
+            : baseResolutionTs;
+    const exit_size_usd = status === 'exit'
+        ? roundTo(Number(row.exit_size_usd ?? size_usd), 3)
+        : null;
+    const normalizedRow = {
+        ...row,
+        entry_price: roundTo(Number(entry_price || 0), 3),
+        shares: shares != null ? roundTo(Number(shares), 6) : null,
+        size_usd: roundTo(Number(size_usd || 0), 3),
+        status,
+        resolution_ts,
+        exit_size_usd
+    };
+    return {
+        ...normalizedRow,
+        pnl_usd: computePositionProfit(normalizedRow)
+    };
+}
+function groupDailyPnl(rows, nowTs) {
+    const totals = new Map();
+    rows.forEach((row) => {
+        const pnl = row.pnl_usd;
+        if (pnl == null) {
+            return;
+        }
+        const ts = row.resolution_ts || row.market_close_ts || row.entered_at;
+        if (!ts) {
+            return;
+        }
+        const bucketDate = new Date(ts * 1000);
+        bucketDate.setMinutes(0, 0, 0);
+        const bucket = formatHourlyBucketKey(bucketDate);
+        totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3));
+    });
+    const parsedEntries = Array.from(totals.entries())
+        .map(([day, pnl]) => ({
+        day,
+        pnl,
+        label: formatDollar(pnl),
+        bucketDate: parseHourlyBucket(day)
+    }))
+        .filter((row) => row.bucketDate != null)
+        .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime());
+    if (!parsedEntries.length) {
+        return [];
+    }
+    const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]));
+    const newestResolved = new Date(parsedEntries[0].bucketDate.getTime());
+    const currentBucket = floorToHour(new Date(nowTs * 1000));
+    const newest = currentBucket.getTime() > newestResolved.getTime() ? currentBucket : newestResolved;
+    const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime());
+    const filledEntries = [];
+    for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
+        const bucketKey = formatHourlyBucketKey(cursor);
+        const existing = entryByBucket.get(bucketKey);
+        filledEntries.push(existing
+            ? { day: existing.day, pnl: existing.pnl, label: existing.label }
+            : { day: bucketKey, pnl: 0, label: formatDollar(0) });
+        const nextCursor = new Date(cursor.getTime());
+        nextCursor.setHours(nextCursor.getHours() - 1);
+        cursor = nextCursor;
+    }
+    return filledEntries;
+}
 function DailyPnlPreviewChart({ entries, width }) {
     const levelCount = 4;
     const gapWidth = 0;
@@ -485,25 +1285,26 @@ function DailyPnlPreviewChart({ entries, width }) {
             React.createElement(Text, { color: theme.dim }, '─'.repeat(chartWidth))),
         Array.from({ length: levelCount }, (_, index) => renderRow(index + 1, true))));
 }
-export function Performance({ currentScrollOffset, pastScrollOffset, activePane, selectedBox, dailyDetailOpen, dailyDetailScrollOffset, onCurrentScrollOffsetChange, onPastScrollOffsetChange, onDailyDetailScrollOffsetChange }) {
+export function Performance({ currentScrollOffset, pastScrollOffset, activePane, selectedBox, dailyDetailOpen, dailyDetailScrollOffset, actionState, editState, onCurrentScrollOffsetChange, onPastScrollOffsetChange, onDailyDetailScrollOffsetChange, onSelectionMetaChange, onDetailHistoryMetaChange }) {
     const terminal = useTerminalSize();
     const stacked = stackPanels(terminal.width);
-    const rows = useQuery(SUMMARY_SQL);
-    const daily = useQuery(DAILY_SQL);
     const shadowOpenPositions = useQuery(SHADOW_OPEN_POSITIONS_SQL);
     const livePositions = useQuery(LIVE_POSITIONS_SQL);
     const resolvedPositions = useQuery(RESOLVED_POSITIONS_SQL);
+    const tradeLogManualEdits = useQuery(TRADE_LOG_MANUAL_EDITS_SQL);
+    const positionManualEdits = useQuery(POSITION_MANUAL_EDITS_SQL);
     const events = useEventStream(1000);
     const { lookup: tradeIdLookup } = useTradeIdIndex();
     const botState = useBotState(1000);
+    const detailHistoryRow = actionState?.row ?? editState?.row ?? null;
+    const positionPriceHistory = usePositionPriceHistory(detailHistoryRow);
+    const detailSelectedSeriesColor = useMemo(() => positionPriceHistory.series.find((entry) => entry.isSelected)?.color ?? outcomeColor(detailHistoryRow?.side || ''), [detailHistoryRow?.side, positionPriceHistory.series]);
+    const detailHistoryTimelineCount = useMemo(() => buildHistoryTimeline(positionPriceHistory.series).length, [positionPriceHistory.series]);
     const positionsTableWidth = Math.max(72, terminal.width - 10);
     const positionsLayout = getPositionsLayout(positionsTableWidth);
     const nowTs = Date.now() / 1000;
     const activeMode = botState.mode === 'live' ? 'live' : 'shadow';
     const activeRealMoney = activeMode === 'live' ? 1 : 0;
-    const shadow = rows.find((row) => row.real_money === 0);
-    const live = rows.find((row) => row.real_money === 1);
-    const activeSummary = activeMode === 'live' ? live : shadow;
     const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker';
     const currentHourBucketTs = Math.floor(nowTs / 3600) * 3600;
     const usernames = useMemo(() => {
@@ -519,66 +1320,53 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         }
         return lookup;
     }, [events]);
+    const tradeLogEditLookup = useMemo(() => new Map(tradeLogManualEdits.map((row) => [Number(row.trade_log_id), row])), [tradeLogManualEdits]);
+    const positionEditLookup = useMemo(() => new Map(positionManualEdits.map((row) => [
+        positionEditKey(row.market_id, row.token_id, row.side, Number(row.real_money || 0)),
+        row
+    ])), [positionManualEdits]);
     const activeOpenPositions = useMemo(() => activeMode === 'live'
         ? livePositions.filter((row) => row.real_money === activeRealMoney)
         : shadowOpenPositions, [activeMode, activeRealMoney, livePositions, shadowOpenPositions]);
     const activeResolvedPositions = useMemo(() => resolvedPositions.filter((row) => row.real_money === activeRealMoney), [activeRealMoney, resolvedPositions]);
-    const currentPositions = useMemo(() => activeOpenPositions
-        .filter((row) => row.market_close_ts <= 0 || row.market_close_ts > nowTs)
-        .sort((left, right) => right.entered_at - left.entered_at), [activeOpenPositions, nowTs]);
+    const effectiveOpenPositions = useMemo(() => activeOpenPositions.map((row) => normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEditLookup)), [activeOpenPositions, nowTs, positionEditLookup, tradeLogEditLookup]);
+    const effectiveResolvedPositions = useMemo(() => activeResolvedPositions.map((row) => normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEditLookup)), [activeResolvedPositions, nowTs, positionEditLookup, tradeLogEditLookup]);
+    const effectivePositions = useMemo(() => [...effectiveOpenPositions, ...effectiveResolvedPositions], [effectiveOpenPositions, effectiveResolvedPositions]);
+    const currentPositions = useMemo(() => effectivePositions
+        .filter((row) => row.status === 'open')
+        .sort((left, right) => right.entered_at - left.entered_at), [effectivePositions]);
     const currentPositionsTotal = useMemo(() => currentPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0), [currentPositions]);
-    const waitingPositions = useMemo(() => activeOpenPositions
-        .filter((row) => row.market_close_ts > 0 && row.market_close_ts <= nowTs)
-        .map((row) => ({ ...row, status: 'waiting' })), [activeOpenPositions, nowTs]);
+    const waitingPositions = useMemo(() => effectivePositions
+        .filter((row) => row.status === 'waiting')
+        .sort((a, b) => Math.max(b.market_close_ts || 0, b.entered_at || 0) -
+        Math.max(a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions]);
     const waitingPositionsTotal = useMemo(() => waitingPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0), [waitingPositions]);
-    const pastPositions = useMemo(() => [...activeResolvedPositions, ...waitingPositions].sort((a, b) => Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
-        Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)), [activeResolvedPositions, waitingPositions]);
-    const activeDailyRows = useMemo(() => daily.filter((row) => row.real_money === activeRealMoney), [activeRealMoney, daily]);
-    const dailyEntries = useMemo(() => {
-        const parsedEntries = activeDailyRows
-            .map((row) => {
-            const bucketDate = parseHourlyBucket(row.day);
-            if (!bucketDate) {
-                return null;
-            }
-            const pnl = Number(row.pnl || 0);
-            return {
-                day: row.day,
-                pnl,
-                label: formatDollar(pnl),
-                bucketDate
-            };
-        })
-            .filter((row) => row != null)
-            .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime());
-        if (!parsedEntries.length) {
-            return activeDailyRows.map((row) => {
-                const pnl = Number(row.pnl || 0);
-                return {
-                    day: row.day,
-                    pnl,
-                    label: formatDollar(pnl)
-                };
-            });
-        }
-        const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]));
-        const newestResolved = new Date(parsedEntries[0].bucketDate.getTime());
-        const currentBucket = floorToHour(new Date(currentHourBucketTs * 1000));
-        const newest = currentBucket.getTime() > newestResolved.getTime() ? currentBucket : newestResolved;
-        const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime());
-        const filledEntries = [];
-        for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
-            const bucketKey = formatHourlyBucketKey(cursor);
-            const existing = entryByBucket.get(bucketKey);
-            filledEntries.push(existing
-                ? { day: existing.day, pnl: existing.pnl, label: existing.label }
-                : { day: bucketKey, pnl: 0, label: formatDollar(0) });
-            const nextCursor = new Date(cursor.getTime());
-            nextCursor.setHours(nextCursor.getHours() - 1);
-            cursor = nextCursor;
-        }
-        return filledEntries;
-    }, [activeDailyRows, currentHourBucketTs]);
+    const pastPositions = useMemo(() => effectivePositions
+        .filter((row) => row.status !== 'open')
+        .sort((a, b) => Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
+        Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions]);
+    const activeSummary = useMemo(() => {
+        const acted = effectivePositions.length;
+        const resolved = effectivePositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit');
+        const wins = resolved.filter((row) => (row.pnl_usd ?? 0) > 0).length;
+        const totalPnl = roundTo(resolved.reduce((sum, row) => sum + (row.pnl_usd || 0), 0), 3);
+        const confidenceRows = effectivePositions.filter((row) => row.confidence != null);
+        const avgConfidence = confidenceRows.length > 0
+            ? roundTo(confidenceRows.reduce((sum, row) => sum + Number(row.confidence || 0), 0) / confidenceRows.length, 3)
+            : null;
+        const avgSize = acted > 0
+            ? roundTo(effectivePositions.reduce((sum, row) => sum + Number(row.size_usd || 0), 0) / acted, 3)
+            : null;
+        return {
+            acted,
+            resolved: resolved.length,
+            wins,
+            total_pnl: resolved.length ? totalPnl : 0,
+            avg_confidence: avgConfidence,
+            avg_size: avgSize
+        };
+    }, [effectivePositions]);
+    const dailyEntries = useMemo(() => groupDailyPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), currentHourBucketTs), [currentHourBucketTs, pastPositions]);
     const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
     const dailyPreviewCapacity = useMemo(() => dailyEntries.length
         ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
@@ -586,16 +1374,25 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const dailyPreviewEntries = useMemo(() => dailyEntries.slice(0, dailyPreviewCapacity).reverse(), [dailyEntries, dailyPreviewCapacity]);
     const dailyValueWidth = useMemo(() => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10), [dailyEntries]);
     const paneMetrics = getPositionPaneMetrics(terminal.height, stacked);
-    const currentMaxOffset = Math.max(0, currentPositions.length - paneMetrics.visibleRows);
-    const pastMaxOffset = Math.max(0, pastPositions.length - paneMetrics.visibleRows);
+    const currentMaxOffset = Math.max(currentPositions.length - 1, 0);
+    const pastMaxOffset = Math.max(pastPositions.length - 1, 0);
     const effectiveCurrentScrollOffset = Math.min(currentScrollOffset, currentMaxOffset);
     const effectivePastScrollOffset = Math.min(pastScrollOffset, pastMaxOffset);
-    const visibleCurrentPositions = currentPositions.slice(effectiveCurrentScrollOffset, effectiveCurrentScrollOffset + paneMetrics.visibleRows);
-    const visiblePastPositions = pastPositions.slice(effectivePastScrollOffset, effectivePastScrollOffset + paneMetrics.visibleRows);
+    const currentWindowStart = currentPositions.length > paneMetrics.visibleRows
+        ? Math.min(Math.max(effectiveCurrentScrollOffset - Math.floor(paneMetrics.visibleRows / 2), 0), Math.max(0, currentPositions.length - paneMetrics.visibleRows))
+        : 0;
+    const pastWindowStart = pastPositions.length > paneMetrics.visibleRows
+        ? Math.min(Math.max(effectivePastScrollOffset - Math.floor(paneMetrics.visibleRows / 2), 0), Math.max(0, pastPositions.length - paneMetrics.visibleRows))
+        : 0;
+    const visibleCurrentPositions = currentPositions.slice(currentWindowStart, currentWindowStart + paneMetrics.visibleRows);
+    const visiblePastPositions = pastPositions.slice(pastWindowStart, pastWindowStart + paneMetrics.visibleRows);
+    const selectedCurrentRow = currentPositions[effectiveCurrentScrollOffset] ?? null;
+    const selectedPastRow = pastPositions[effectivePastScrollOffset] ?? null;
     const shadowBalance = botState.mode === 'shadow' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const liveBalance = botState.mode === 'live' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const activeBalance = activeMode === 'live' ? liveBalance : shadowBalance;
     const modalBackground = terminal.backgroundColor || theme.modalBackground;
+    const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);
     const detailModalWidth = Math.max(60, Math.min(terminal.width - 8, terminal.wide ? 110 : 88));
     const detailModalContentWidth = Math.max(40, detailModalWidth - 4);
     const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12));
@@ -617,33 +1414,89 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             onDailyDetailScrollOffsetChange?.(detailOffset);
         }
     }, [dailyDetailScrollOffset, detailOffset, onDailyDetailScrollOffsetChange]);
+    useEffect(() => {
+        onSelectionMetaChange?.({
+            currentCount: currentPositions.length,
+            pastCount: pastPositions.length,
+            selectedCurrentRow,
+            selectedPastRow
+        });
+    }, [
+        currentPositions.length,
+        onSelectionMetaChange,
+        pastPositions.length,
+        selectedCurrentRow?.entry_price,
+        selectedCurrentRow?.row_key,
+        selectedCurrentRow?.shares,
+        selectedCurrentRow?.size_usd,
+        selectedCurrentRow?.status,
+        selectedPastRow?.entry_price,
+        selectedPastRow?.row_key,
+        selectedPastRow?.shares,
+        selectedPastRow?.size_usd,
+        selectedPastRow?.status
+    ]);
+    useEffect(() => {
+        onDetailHistoryMetaChange?.({
+            timelineCount: detailHistoryTimelineCount
+        });
+    }, [detailHistoryTimelineCount, onDetailHistoryMetaChange]);
     const paddedDetailEntries = useMemo(() => Array.from({ length: detailVisibleRows }, (_, index) => visibleDetailEntries[index] ?? null), [detailVisibleRows, visibleDetailEntries]);
     const detailRangeLabel = dailyEntries.length
         ? `${detailOffset + 1}-${Math.min(detailOffset + visibleDetailEntries.length, dailyEntries.length)}/${dailyEntries.length}`
         : '0/0';
     const detailQueueLayout = useMemo(() => getDailyQueueLayout(detailModalContentWidth, dailyValueWidth), [detailModalContentWidth, dailyValueWidth]);
     const detailMaxAbsPnl = useMemo(() => Math.max(1, ...dailyEntries.map((entry) => Math.abs(entry.pnl))), [dailyEntries]);
-    const getPositionProfit = (row) => {
-        const shares = row.entry_price > 0 ? row.size_usd / row.entry_price : null;
-        const toWin = row.status === 'exit'
-            ? row.exit_size_usd
-            : row.status === 'lose'
-                ? 0
-                : shares != null
-                    ? shares
-                    : null;
-        return row.status === 'win' || row.status === 'lose' || row.status === 'exit'
-            ? (row.pnl_usd ?? null)
-            : toWin != null
-                ? toWin - row.size_usd
-                : null;
-    };
-    const renderPositionsTable = (rowsToRender, { showStatus = false, showTtr = true, profitScaleRows = rowsToRender } = {}) => {
+    const actionModalWidth = Math.max(82, Math.min(terminal.width - 4, terminal.wide ? 128 : 105));
+    const actionModalContentWidth = Math.max(57, actionModalWidth - 4);
+    const actionFieldLabelWidth = Math.max(10, Math.min(12, Math.floor(actionModalContentWidth * 0.26)));
+    const actionFieldValueWidth = Math.max(14, actionModalContentWidth - actionFieldLabelWidth - 1);
+    const actionQuestionText = actionState
+        ? truncate(actionState.row.question || actionState.row.market_id, actionModalContentWidth)
+        : '';
+    const actionInstructionText = actionState?.editingAmount
+        ? 'Type a positive USD amount. Enter closes the field editor. Esc leaves the field editor.'
+        : actionState?.selectedField === 'chart'
+            ? 'Chart selected. Use left/right to scrub through time. Up/down moves to the operator controls.'
+            : 'Up/down selects a field. Left/right changes action. Enter edits or triggers the selected row. s submits. Esc cancels.';
+    const editModalWidth = Math.max(78, Math.min(terminal.width - 4, terminal.wide ? 123 : 100));
+    const editModalContentWidth = Math.max(53, editModalWidth - 4);
+    const editFieldLabelWidth = Math.max(8, Math.min(10, Math.floor(editModalContentWidth * 0.22)));
+    const editFieldValueWidth = Math.max(12, editModalContentWidth - editFieldLabelWidth - 1);
+    const editDraftEntryValue = editState && Number.isFinite(Number(editState.draftEntry)) && Number(editState.draftEntry) > 0
+        ? Number(editState.draftEntry)
+        : null;
+    const editDraftSharesValue = editState && Number.isFinite(Number(editState.draftShares)) && Number(editState.draftShares) > 0
+        ? Number(editState.draftShares)
+        : null;
+    const editDraftTotalValue = editState && Number.isFinite(Number(editState.draftTotal)) && Number(editState.draftTotal) > 0
+        ? Number(editState.draftTotal)
+        : null;
+    const editPreviewPnl = editState && editDraftTotalValue != null
+        ? editState.draftStatus === 'win'
+            ? editDraftSharesValue != null
+                ? editDraftSharesValue - editDraftTotalValue
+                : null
+            : editState.draftStatus === 'lose'
+                ? -editDraftTotalValue
+                : editState.draftStatus === 'exit'
+                    ? Number(editState.row.exit_size_usd ?? editDraftTotalValue) - editDraftTotalValue
+                    : null
+        : null;
+    const editQuestionText = editState
+        ? truncate(editState.row.question || editState.row.market_id, editModalContentWidth)
+        : '';
+    const editInstructionText = editState?.editingField
+        ? 'Type a positive number. Enter closes the field editor. Esc leaves the field editor.'
+        : editState?.selectedField === 'chart'
+            ? 'Chart selected. Use left/right to scrub through time. Up/down moves to the edit fields.'
+            : 'Up/down selects a field. Enter edits numbers. Left/right changes status. s saves. Esc cancels.';
+    const renderPositionsTable = (rowsToRender, { showStatus = false, showTtr = true, profitScaleRows = rowsToRender, selectedRowKey } = {}) => {
         const trailingWidth = positionsLayout.ttrWidth;
         const trailingDelta = trailingWidth - positionsLayout.ttrWidth;
         const questionWidth = Math.max(14, positionsLayout.questionWidth - trailingDelta);
         const resolutionWidth = positionsLayout.resolutionWidth;
-        const maxAbsProfit = profitScaleRows.reduce((max, row) => Math.max(max, Math.abs(getPositionProfit(row) ?? 0)), 0);
+        const maxAbsProfit = profitScaleRows.reduce((max, row) => Math.max(max, Math.abs(computePositionProfit(row) ?? 0)), 0);
         return (React.createElement(React.Fragment, null,
             React.createElement(InkBox, { width: "100%" },
                 positionsLayout.showId ? (React.createElement(React.Fragment, null,
@@ -677,6 +1530,8 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                     React.createElement(Text, { color: theme.dim }, " "),
                     React.createElement(Text, { color: theme.dim }, fitRight(showStatus ? 'STATUS' : 'TTR', trailingWidth)))) : null),
             React.createElement(InkBox, { flexDirection: "column" }, rowsToRender.map((row) => {
+                const isSelected = row.row_key === selectedRowKey;
+                const rowBackground = isSelected ? selectedRowBackground : undefined;
                 const sideColor = outcomeColor(row.side);
                 const displayId = row.trade_id ? tradeIdLookup.get(row.trade_id) ?? null : null;
                 const username = row.trader_address ? usernames.get(row.trader_address.toLowerCase()) : undefined;
@@ -687,9 +1542,8 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                 const entryColor = row.entry_price > 0 ? probabilityColor(row.entry_price) : theme.dim;
                 const confidenceColor = row.confidence != null ? probabilityColor(row.confidence) : theme.dim;
                 const resolutionTs = row.resolution_ts || row.market_close_ts;
-                const resolutionPassed = row.market_close_ts > 0 && row.market_close_ts <= nowTs;
                 const resolutionColor = row.status === 'waiting' ? theme.red : theme.dim;
-                const shares = row.entry_price > 0 ? row.size_usd / row.entry_price : null;
+                const shares = row.shares;
                 const toWin = row.status === 'exit'
                     ? row.exit_size_usd
                     : row.status === 'lose'
@@ -697,7 +1551,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                         : shares != null
                             ? shares
                             : null;
-                const profit = getPositionProfit(row);
+                const profit = computePositionProfit(row);
                 const statusText = row.status === 'win'
                     ? 'win'
                     : row.status === 'lose'
@@ -726,44 +1580,44 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                     : centeredGradientColor(profit, maxAbsProfit || 1);
                 return (React.createElement(InkBox, { key: row.row_key, width: "100%" },
                     positionsLayout.showId ? (React.createElement(React.Fragment, null,
-                        React.createElement(Text, { color: theme.dim }, fitRight(displayIdText, positionsLayout.idWidth)),
-                        React.createElement(Text, null, " "))) : null,
+                        React.createElement(Text, { color: theme.dim, backgroundColor: rowBackground }, fitRight(displayIdText, positionsLayout.idWidth)),
+                        React.createElement(Text, { backgroundColor: rowBackground }, " "))) : null,
                     positionsLayout.showUser ? (React.createElement(React.Fragment, null,
-                        React.createElement(Text, { color: username ? theme.white : theme.dim }, fit(userText, positionsLayout.userWidth)),
-                        React.createElement(Text, null, " "))) : null,
-                    React.createElement(Text, { color: row.market_url ? theme.accent : undefined }, terminalHyperlink(fit(row.question || row.market_id, questionWidth), row.market_url)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: theme.dim }, fitRight(secondsAgo(row.entered_at), positionsLayout.ageWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: actionColor }, fit(actionText, positionsLayout.actionWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: sideColor }, fit(row.side.toUpperCase(), positionsLayout.sideWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: entryColor }, fitRight(formatNumber(row.entry_price), positionsLayout.entryWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, null, fitRight(shares != null
+                        React.createElement(Text, { color: username ? theme.white : theme.dim, backgroundColor: rowBackground }, fit(userText, positionsLayout.userWidth)),
+                        React.createElement(Text, { backgroundColor: rowBackground }, " "))) : null,
+                    React.createElement(Text, { color: isSelected ? theme.accent : row.market_url ? theme.accent : undefined, backgroundColor: rowBackground, bold: isSelected }, terminalHyperlink(fit(`${isSelected ? '> ' : '  '}${row.question || row.market_id}`, questionWidth), row.market_url)),
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { color: theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(row.entered_at), positionsLayout.ageWidth)),
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { color: actionColor, backgroundColor: rowBackground, bold: isSelected }, fit(actionText, positionsLayout.actionWidth)),
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { color: sideColor, backgroundColor: rowBackground, bold: isSelected }, fit(row.side.toUpperCase(), positionsLayout.sideWidth)),
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { color: entryColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(formatNumber(row.entry_price), positionsLayout.entryWidth)),
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { backgroundColor: rowBackground, bold: isSelected }, fitRight(shares != null
                         ? formatAdaptiveNumber(shares, positionsLayout.sharesWidth)
                         : '-', positionsLayout.sharesWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, null, fitRight(formatAdaptiveDollar(row.size_usd, positionsLayout.sizeWidth), positionsLayout.sizeWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: toWinColor }, fitRight(toWin != null
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { backgroundColor: rowBackground, bold: isSelected }, fitRight(formatAdaptiveDollar(row.size_usd, positionsLayout.sizeWidth), positionsLayout.sizeWidth)),
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { color: toWinColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(toWin != null
                         ? formatAdaptiveDollar(toWin, positionsLayout.toWinWidth)
                         : '-', positionsLayout.toWinWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: profitColor }, fitRight(profit != null
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { color: profitColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(profit != null
                         ? formatAdaptiveDollar(profit, positionsLayout.profitWidth)
                         : '-', positionsLayout.profitWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: confidenceColor }, fitRight(formatPct(row.confidence, 1), positionsLayout.confidenceWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: resolutionColor }, fitRight(formatShortDateTime(resolutionTs), resolutionWidth)),
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { color: confidenceColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(formatPct(row.confidence, 1), positionsLayout.confidenceWidth)),
+                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    React.createElement(Text, { color: resolutionColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(formatShortDateTime(resolutionTs), resolutionWidth)),
                     showTtr || showStatus ? (React.createElement(React.Fragment, null,
-                        React.createElement(Text, null, " "),
-                        React.createElement(Text, { color: showStatus ? statusColor : resolutionColor }, fitRight(showStatus ? statusText : timeUntil(row.market_close_ts), trailingWidth)))) : null));
+                        React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                        React.createElement(Text, { color: showStatus ? statusColor : resolutionColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(showStatus ? statusText : timeUntil(row.market_close_ts), trailingWidth)))) : null));
             }))));
     };
-    return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
+    const renderPageBody = () => (React.createElement(React.Fragment, null,
         React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
             React.createElement(Box, { title: activeTitle, width: stacked ? '100%' : '50%', accent: selectedBox === 'summary' },
                 React.createElement(StatRow, { label: "Total P&L", value: formatDollar(activeSummary?.total_pnl), color: (activeSummary?.total_pnl || 0) >= 0 ? theme.green : theme.red }),
@@ -776,11 +1630,99 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeTitle.toLowerCase()} trades yet.`)))),
         React.createElement(InkBox, { marginTop: 1, flexDirection: "column", height: paneMetrics.paneHeight * 2 + 1 },
             React.createElement(InkBox, { height: paneMetrics.paneHeight },
-                React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: selectedBox === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, { profitScaleRows: currentPositions })) : (React.createElement(Text, { color: theme.dim }, "No open positions right now.")))),
+                React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: selectedBox === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, {
+                    profitScaleRows: currentPositions,
+                    selectedRowKey: selectedCurrentRow?.row_key
+                })) : (React.createElement(Text, { color: theme.dim }, "No open positions right now.")))),
             React.createElement(InkBox, { height: 1 }),
             React.createElement(InkBox, { height: paneMetrics.paneHeight },
-                React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: selectedBox === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, { showStatus: true, showTtr: false, profitScaleRows: pastPositions })) : (React.createElement(Text, { color: theme.dim }, "No past positions yet."))))),
-        dailyDetailOpen ? (React.createElement(InkBox, { position: "absolute", width: "100%", height: "100%", justifyContent: "center", alignItems: "center" },
+                React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: selectedBox === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, {
+                    showStatus: true,
+                    showTtr: false,
+                    profitScaleRows: pastPositions,
+                    selectedRowKey: selectedPastRow?.row_key
+                })) : (React.createElement(Text, { color: theme.dim }, "No past positions yet.")))))));
+    return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
+        renderPageBody(),
+        actionState ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
+            React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: actionModalWidth },
+                React.createElement(Text, { color: actionState.row.market_url ? theme.accent : theme.dim, backgroundColor: modalBackground, bold: Boolean(actionState.row.market_url) }, ` ${actionState.row.market_url ? terminalHyperlink(fit(actionQuestionText, actionModalContentWidth), actionState.row.market_url) : fit(actionQuestionText, actionModalContentWidth)} `),
+                React.createElement(DetailMetricColumns, { columns: [
+                        { label: 'Side', value: actionState.row.side.toUpperCase(), color: detailSelectedSeriesColor },
+                        { label: 'Size', value: formatAdaptiveDollar(actionState.row.size_usd, 10) },
+                        {
+                            label: 'Pos',
+                            value: actionState.row.shares != null ? `${formatAdaptiveNumber(actionState.row.shares, 10)} sh` : '-',
+                            ratio: 1.2
+                        },
+                        { label: 'Entry', value: formatNumber(actionState.row.entry_price) },
+                        { label: 'Entered', value: secondsAgo(actionState.row.entered_at) }
+                    ], width: actionModalContentWidth, backgroundColor: modalBackground }),
+                React.createElement(PriceHistoryPreview, { history: positionPriceHistory, width: actionModalContentWidth, backgroundColor: modalBackground, selected: actionState.selectedField === 'chart', cursorOffsetFromEnd: actionState.historyCursorOffset, entryPrice: actionState.row.entry_price, entryTs: actionState.row.entered_at, shares: actionState.row.shares }),
+                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(actionModalWidth - 2)),
+                [
+                    ['action', actionState.action === 'buy_more' ? 'BUY MORE' : 'CASH OUT', false],
+                    ...(actionState.action === 'buy_more'
+                        ? [['amount', actionState.editingAmount ? `${actionState.draftAmountUsd}_` : actionState.draftAmountUsd, actionState.editingAmount]]
+                        : []),
+                    ['execute', actionState.action === 'buy_more' ? 'SEND BUY REQUEST' : 'SEND CASH-OUT REQUEST', false],
+                    ['edit', 'OPEN MANUAL EDIT', false]
+                ].map(([field, value]) => {
+                    const selected = actionState.selectedField === field;
+                    const rowBackground = selected ? selectedRowBackground : modalBackground;
+                    const label = field === 'action'
+                        ? 'ACTION'
+                        : field === 'amount'
+                            ? 'BUY USD'
+                            : field === 'execute'
+                                ? 'EXECUTE'
+                                : 'EDIT';
+                    return (React.createElement(InkBox, { key: `action-field-${field}`, width: "100%" },
+                        React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, ` ${fit(`${selected ? '>' : ' '} ${label}`, actionFieldLabelWidth)} `),
+                        React.createElement(Text, { color: selected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: selected }, `${fitRight(value, actionFieldValueWidth)} `)));
+                }),
+                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(actionModalWidth - 2)),
+                React.createElement(Text, { color: actionToneColor(actionState.statusTone), backgroundColor: modalBackground }, ` ${fit((actionState.statusMessage || actionInstructionText).trim(), actionModalContentWidth)} `)))) : null,
+        editState ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
+            React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: editModalWidth },
+                React.createElement(Text, { color: editState.row.market_url ? theme.accent : theme.dim, backgroundColor: modalBackground, bold: Boolean(editState.row.market_url) }, ` ${editState.row.market_url ? terminalHyperlink(fit(editQuestionText, editModalContentWidth), editState.row.market_url) : fit(editQuestionText, editModalContentWidth)} `),
+                React.createElement(DetailMetricColumns, { columns: [
+                        { label: 'Side', value: editState.row.side.toUpperCase(), color: detailSelectedSeriesColor },
+                        { label: 'Size', value: formatAdaptiveDollar(editState.row.size_usd, 10) },
+                        { label: 'Status', value: editState.row.status.toUpperCase() },
+                        { label: 'Entered', value: secondsAgo(editState.row.entered_at), ratio: 1.1 }
+                    ], width: editModalContentWidth, backgroundColor: modalBackground }),
+                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(editModalWidth - 2)),
+                [
+                    ['entry', editState.draftEntry, editState.editingField === 'entry'],
+                    ['shares', editState.draftShares, editState.editingField === 'shares'],
+                    ['total', editState.draftTotal, editState.editingField === 'total'],
+                    ['status', editState.draftStatus, false]
+                ].map(([field, value, editing]) => {
+                    const selected = editState.selectedField === field;
+                    const rowBackground = selected ? selectedRowBackground : modalBackground;
+                    const label = `${selected ? '>' : ' '} ${field.toUpperCase()}`;
+                    const shownValue = field === 'status' ? value.toUpperCase() : editing ? `${value}_` : value;
+                    return (React.createElement(InkBox, { key: `edit-field-${field}`, width: "100%" },
+                        React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, ` ${fit(label, editFieldLabelWidth)} `),
+                        React.createElement(Text, { color: selected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: selected }, `${fitRight(shownValue, editFieldValueWidth)} `)));
+                }),
+                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(editModalWidth - 2)),
+                React.createElement(DetailMetricColumns, { columns: [
+                        {
+                            label: 'Preview P&L',
+                            value: editPreviewPnl == null ? '-' : formatDollar(editPreviewPnl),
+                            ratio: 1.2
+                        },
+                        {
+                            label: 'To win',
+                            value: editDraftSharesValue == null ? '-' : formatAdaptiveDollar(editDraftSharesValue, 10),
+                            ratio: 1.1
+                        }
+                    ], width: editModalContentWidth, backgroundColor: modalBackground }),
+                React.createElement(PriceHistoryPreview, { history: positionPriceHistory, width: editModalContentWidth, backgroundColor: modalBackground, selected: editState.selectedField === 'chart', cursorOffsetFromEnd: editState.historyCursorOffset, entryPrice: editDraftEntryValue ?? editState.row.entry_price, entryTs: editState.row.entered_at, shares: editDraftSharesValue ?? editState.row.shares }),
+                React.createElement(Text, { color: toneColor(editState.statusTone), backgroundColor: modalBackground }, ` ${fit((editState.statusMessage || editInstructionText).trim(), editModalContentWidth)} `)))) : null,
+        dailyDetailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: detailModalWidth },
                 React.createElement(InkBox, { width: "100%" },
                     React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`),

@@ -77,7 +77,7 @@ from market_urls import market_url_from_metadata
 from signal_engine import SignalEngine
 from telegram_runtime import service_telegram_commands
 from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
-from tracker import PolymarketTracker
+from tracker import PolymarketTracker, TradeEvent
 from trader_scorer import get_trader_features, refresh_trader_cache
 from wallet_trust import apply_wallet_trust_sizing, get_wallet_trust_state
 from watchlist_manager import WatchlistManager
@@ -100,6 +100,7 @@ logger = logging.getLogger(__name__)
 EVENT_FILE = Path("data/events.jsonl")
 BOT_STATE_FILE = Path("data/bot_state.json")
 MANUAL_RETRAIN_REQUEST_FILE = Path("data/manual_retrain_request.json")
+MANUAL_TRADE_REQUEST_FILE = Path("data/manual_trade_request.json")
 _emit_count = 0
 _event_lock = threading.Lock()
 WATCHED_WALLETS = watched_wallets()
@@ -161,6 +162,20 @@ class DailyLossGuard:
                 f"(today start ${self.start_equity:.2f}, current ${account_equity:.2f})"
             )
         return None
+
+
+@dataclass(frozen=True)
+class ManualTradeRequest:
+    action: str
+    market_id: str
+    token_id: str
+    side: str
+    question: str
+    trader_address: str
+    amount_usd: float | None
+    request_id: str
+    requested_at: int
+    source: str
 
 
 def _emit_event(payload: dict) -> None:
@@ -289,6 +304,8 @@ def _send_resolution_alerts(resolved_rows: list[dict[str, object]]) -> None:
                 pnl_usd=pnl,
                 question=question,
                 market_url=market_url,
+                tracked_trader_name=str(row.get("trader_name") or "").strip() or None,
+                tracked_trader_address=str(row.get("trader_address") or "").strip() or None,
             ),
             kind="resolution",
         )
@@ -416,6 +433,56 @@ def _run_telegram_command_loop(stop_event: threading.Event) -> None:
         stop_event.wait(0.5)
 
 
+def _parse_manual_trade_request_payload(payload: dict) -> ManualTradeRequest:
+    if not isinstance(payload, dict):
+        raise ValueError("manual trade request payload must be an object")
+
+    raw_action = str(payload.get("action") or "").strip().lower()
+    action_aliases = {
+        "buy": "buy_more",
+        "buy_more": "buy_more",
+        "cash_out": "cash_out",
+        "sell": "cash_out",
+        "sell_all": "cash_out",
+    }
+    action = action_aliases.get(raw_action)
+    if not action:
+        raise ValueError(f"unsupported manual trade action: {raw_action or '-'}")
+
+    market_id = str(payload.get("market_id") or "").strip()
+    token_id = str(payload.get("token_id") or "").strip()
+    side = str(payload.get("side") or "").strip().lower()
+    question = str(payload.get("question") or "").strip()
+    trader_address = str(payload.get("trader_address") or "").strip().lower()
+    request_id = str(payload.get("request_id") or "").strip()
+    requested_at = int(payload.get("requested_at") or 0)
+    source = str(payload.get("source") or "unknown").strip().lower() or "unknown"
+    amount_raw = payload.get("amount_usd")
+    amount_usd = float(amount_raw) if amount_raw is not None else None
+
+    if not market_id:
+        raise ValueError("manual trade request is missing market_id")
+    if not token_id:
+        raise ValueError("manual trade request is missing token_id")
+    if not side:
+        raise ValueError("manual trade request is missing side")
+    if action == "buy_more" and (amount_usd is None or amount_usd <= 0):
+        raise ValueError("manual buy request must include a positive amount_usd")
+
+    return ManualTradeRequest(
+        action=action,
+        market_id=market_id,
+        token_id=token_id,
+        side=side,
+        question=question,
+        trader_address=trader_address,
+        amount_usd=amount_usd,
+        request_id=request_id,
+        requested_at=requested_at,
+        source=source,
+    )
+
+
 def _consume_manual_retrain_request(run_retrain_job) -> bool:
     if not MANUAL_RETRAIN_REQUEST_FILE.exists():
         return False
@@ -457,6 +524,338 @@ def _consume_manual_retrain_request(run_retrain_job) -> bool:
     )
     run_retrain_job(f"manual_{source}")
     return True
+
+
+def _consume_manual_trade_request(handle_request) -> bool:
+    if not MANUAL_TRADE_REQUEST_FILE.exists():
+        return False
+
+    try:
+        payload = json.loads(MANUAL_TRADE_REQUEST_FILE.read_text(encoding="utf-8"))
+        request = _parse_manual_trade_request_payload(payload)
+    except Exception as exc:
+        logger.warning("Discarding invalid manual trade request: %s", exc)
+        try:
+            MANUAL_TRADE_REQUEST_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return False
+
+    try:
+        MANUAL_TRADE_REQUEST_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+    now_ts = int(time.time())
+    if request.requested_at > 0 and (now_ts - request.requested_at) > 900:
+        logger.info(
+            "Ignoring stale manual trade request from %s (action=%s age=%ss request_id=%s)",
+            request.source,
+            request.action,
+            now_ts - request.requested_at,
+            request.request_id or "-",
+        )
+        return False
+
+    logger.info(
+        "Manual trade requested by %s (action=%s market=%s request_id=%s)",
+        request.source,
+        request.action,
+        request.market_id[:12],
+        request.request_id or "-",
+    )
+    handle_request(request)
+    return True
+
+
+def _manual_trade_event(
+    request: ManualTradeRequest,
+    *,
+    trade_id: str,
+    question: str,
+    price: float,
+    shares: float,
+    size_usd: float,
+    close_time: str,
+    snapshot: dict | None,
+    raw_market_metadata: dict | None,
+    raw_orderbook: dict | None,
+    metadata_fetched_at: int,
+    orderbook_fetched_at: int,
+) -> TradeEvent:
+    now_ts = int(time.time())
+    action = "buy" if request.action == "buy_more" else "sell"
+    trader_address = request.trader_address or "manual-dashboard"
+    return TradeEvent(
+        trade_id=trade_id,
+        market_id=request.market_id,
+        question=question,
+        side=request.side,
+        action=action,
+        price=price,
+        shares=shares,
+        size_usd=size_usd,
+        token_id=request.token_id,
+        trader_name="Manual Dashboard",
+        trader_address=trader_address,
+        timestamp=now_ts,
+        close_time=close_time,
+        snapshot=snapshot,
+        raw_trade={
+            "source": request.source,
+            "request_id": request.request_id,
+            "requested_at": request.requested_at,
+            "manual_action": request.action,
+            "amount_usd": request.amount_usd,
+        },
+        raw_market_metadata=raw_market_metadata or {},
+        raw_orderbook=raw_orderbook,
+        source_ts_raw=str(request.requested_at or now_ts),
+        observed_at=now_ts,
+        poll_started_at=now_ts,
+        metadata_fetched_at=metadata_fetched_at,
+        orderbook_fetched_at=orderbook_fetched_at,
+        market_close_ts=PolymarketTracker._normalize_timestamp(close_time) if close_time else 0,
+    )
+
+
+def _process_manual_trade_request(
+    request: ManualTradeRequest,
+    *,
+    tracker: PolymarketTracker,
+    executor: PolymarketExecutor,
+    dedup: DedupeCache,
+    live_entry_guard: LiveEntryGuard | None,
+    daily_loss_guard: DailyLossGuard | None,
+) -> None:
+    meta, metadata_fetched_at = tracker.get_market_metadata(request.market_id)
+    question = request.question or str(meta.get("question") or meta.get("title") or request.market_id)
+    close_time = str(meta.get("endDate") or meta.get("closedTime") or meta.get("closeTime") or "").strip()
+    snapshot = dict(PolymarketTracker._metadata_snapshot(meta))
+    orderbook_snapshot, raw_book, orderbook_fetched_at = tracker.get_orderbook_snapshot(request.token_id)
+    if orderbook_snapshot:
+        snapshot.update(orderbook_snapshot)
+
+    manual_trade_id = f"manual-{request.action}-{request.request_id or int(time.time())}"
+    trader_address = request.trader_address or "manual-dashboard"
+
+    if request.action == "buy_more":
+        account_equity = (
+            executor.get_account_equity_usd()
+            if live_entry_guard is not None
+            else executor.get_usdc_balance()
+        )
+        entry_block_reason = _entry_pause_reason(
+            tracker,
+            executor,
+            live_entry_guard,
+            daily_loss_guard,
+            account_equity,
+        )
+        amount_usd = float(request.amount_usd or 0.0)
+        if entry_block_reason:
+            event = _manual_trade_event(
+                request,
+                trade_id=manual_trade_id,
+                question=question,
+                price=float(snapshot.get("best_ask") or snapshot.get("mid") or 0.0),
+                shares=0.0,
+                size_usd=amount_usd,
+                close_time=close_time,
+                snapshot=snapshot,
+                raw_market_metadata=meta,
+                raw_orderbook=raw_book,
+                metadata_fetched_at=metadata_fetched_at,
+                orderbook_fetched_at=orderbook_fetched_at,
+            )
+            _pause_event(event, amount_usd, entry_block_reason)
+            return
+
+        fill_estimate, fill_reason = executor.estimate_entry_fill(raw_book, amount_usd)
+        if fill_estimate is None:
+            event = _manual_trade_event(
+                request,
+                trade_id=manual_trade_id,
+                question=question,
+                price=float(snapshot.get("best_ask") or snapshot.get("mid") or 0.0),
+                shares=0.0,
+                size_usd=amount_usd,
+                close_time=close_time,
+                snapshot=snapshot,
+                raw_market_metadata=meta,
+                raw_orderbook=raw_book,
+                metadata_fetched_at=metadata_fetched_at,
+                orderbook_fetched_at=orderbook_fetched_at,
+            )
+            _skip_event(event, amount_usd, _humanize_reason(fill_reason or "manual buy quote failed"), decision="MANUAL")
+            return
+
+        exposure_block_reason = executor.entry_risk_block_reason(
+            market_id=request.market_id,
+            trader_address=trader_address,
+            proposed_size_usd=amount_usd,
+            account_equity=account_equity,
+        )
+        if exposure_block_reason:
+            event = _manual_trade_event(
+                request,
+                trade_id=manual_trade_id,
+                question=question,
+                price=fill_estimate.avg_price,
+                shares=fill_estimate.shares,
+                size_usd=amount_usd,
+                close_time=close_time,
+                snapshot=snapshot,
+                raw_market_metadata=meta,
+                raw_orderbook=raw_book,
+                metadata_fetched_at=metadata_fetched_at,
+                orderbook_fetched_at=orderbook_fetched_at,
+            )
+            _skip_event(event, amount_usd, exposure_block_reason, decision="MANUAL")
+            return
+
+        market_f = build_market_features(snapshot, close_time, amount_usd, fill_estimate.avg_price)
+        if market_f is None:
+            event = _manual_trade_event(
+                request,
+                trade_id=manual_trade_id,
+                question=question,
+                price=fill_estimate.avg_price,
+                shares=fill_estimate.shares,
+                size_usd=amount_usd,
+                close_time=close_time,
+                snapshot=snapshot,
+                raw_market_metadata=meta,
+                raw_orderbook=raw_book,
+                metadata_fetched_at=metadata_fetched_at,
+                orderbook_fetched_at=orderbook_fetched_at,
+            )
+            _skip_event(event, amount_usd, "manual buy could not build market features", decision="MANUAL")
+            return
+
+        event = _manual_trade_event(
+            request,
+            trade_id=manual_trade_id,
+            question=question,
+            price=fill_estimate.avg_price,
+            shares=fill_estimate.shares,
+            size_usd=amount_usd,
+            close_time=close_time,
+            snapshot=snapshot,
+            raw_market_metadata=meta,
+            raw_orderbook=raw_book,
+            metadata_fetched_at=metadata_fetched_at,
+            orderbook_fetched_at=orderbook_fetched_at,
+        )
+        result = executor.execute(
+            trade_id=manual_trade_id,
+            market_id=request.market_id,
+            token_id=request.token_id,
+            side=request.side,
+            dollar_size=amount_usd,
+            kelly_f=0.0,
+            confidence=0.0,
+            signal={
+                "mode": "manual",
+                "manual": True,
+                "source": request.source,
+                "trader": {"score": None},
+                "market": {"score": None},
+            },
+            event=event,
+            trader_f=None,
+            market_f=market_f,
+            dedup=dedup,
+        )
+        if use_real_money():
+            dedup.sync_positions_from_api(tracker, wallet_address())
+        else:
+            dedup.load_from_db(rebuild_shadow_positions=True)
+        if result.placed:
+            execution_price = (result.dollar_size / result.shares) if result.shares > 0 else event.price
+            _emit_event(
+                {
+                    "type": "signal",
+                    "trade_id": manual_trade_id,
+                    "market_id": request.market_id,
+                    "question": question,
+                    "market_url": market_url_from_metadata(meta),
+                    "side": request.side,
+                    "action": "buy",
+                    "price": round(execution_price, 6),
+                    "shares": round(result.shares, 6),
+                    "amount_usd": result.dollar_size,
+                    "size_usd": result.dollar_size,
+                    "username": "Manual Dashboard",
+                    "trader": trader_address,
+                    "decision": "MANUAL BUY",
+                    "confidence": None,
+                    "signal_mode": "manual",
+                    "shadow": result.shadow,
+                    "order_id": result.order_id,
+                    "reason": "operator requested a manual buy from the dashboard",
+                    "ts": int(time.time()),
+                }
+            )
+        else:
+            _skip_event(event, amount_usd, _humanize_reason(result.reason), decision="MANUAL")
+        return
+
+    position = dedup.get_position(request.market_id, request.token_id, request.side)
+    position_size_usd = float((position or {}).get("size") or 0.0)
+    price = float(snapshot.get("best_bid") or snapshot.get("mid") or 0.0)
+    event = _manual_trade_event(
+        request,
+        trade_id=manual_trade_id,
+        question=question,
+        price=price,
+        shares=0.0,
+        size_usd=position_size_usd,
+        close_time=close_time,
+        snapshot=snapshot,
+        raw_market_metadata=meta,
+        raw_orderbook=raw_book,
+        metadata_fetched_at=metadata_fetched_at,
+        orderbook_fetched_at=orderbook_fetched_at,
+    )
+    result = executor.execute_exit(
+        trade_id=manual_trade_id,
+        market_id=request.market_id,
+        token_id=request.token_id,
+        side=request.side,
+        event=event,
+        dedup=dedup,
+    )
+    if use_real_money():
+        dedup.sync_positions_from_api(tracker, wallet_address())
+    if result.placed:
+        execution_price = (result.dollar_size / result.shares) if result.shares > 0 else event.price
+        _emit_event(
+            {
+                "type": "signal",
+                "trade_id": manual_trade_id,
+                "market_id": request.market_id,
+                "question": question,
+                "market_url": market_url_from_metadata(meta),
+                "side": request.side,
+                "action": "sell",
+                "price": round(execution_price, 6),
+                "shares": round(result.shares, 6),
+                "amount_usd": result.dollar_size,
+                "size_usd": result.dollar_size,
+                "username": "Manual Dashboard",
+                "trader": trader_address,
+                "decision": "MANUAL EXIT",
+                "confidence": None,
+                "shadow": result.shadow,
+                "order_id": result.order_id,
+                "reason": "operator requested a manual cash out from the dashboard",
+                "ts": int(time.time()),
+            }
+        )
+        return
+
+    _skip_event(event, position_size_usd, _humanize_reason(result.reason), decision="MANUAL")
 
 
 def _log_runtime_ready(
@@ -1374,6 +1773,16 @@ def main() -> None:
 
     def _service_runtime_requests() -> None:
         _consume_manual_retrain_request(_run_retrain_job)
+        _consume_manual_trade_request(
+            lambda request: _process_manual_trade_request(
+                request,
+                tracker=tracker,
+                executor=executor,
+                dedup=dedup,
+                live_entry_guard=live_entry_guard,
+                daily_loss_guard=daily_loss_guard,
+            )
+        )
 
     _set_startup_detail("loading watchlist")
     _persist_bot_state(**watchlist.state_fields())
@@ -1606,6 +2015,8 @@ def main() -> None:
                                     question=event.question,
                                     market_url=_market_url_for_event(event),
                                     detail=f"trade {event.trade_id[:12]} failed: {exc}",
+                                    tracked_trader_name=getattr(event, "trader_name", None),
+                                    tracked_trader_address=getattr(event, "trader_address", None),
                                 ),
                                 kind="error",
                             )

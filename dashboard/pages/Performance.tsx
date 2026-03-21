@@ -1,7 +1,8 @@
-import React, {useEffect, useMemo} from 'react'
+import React, {useEffect, useMemo, useState} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {BarSparkline} from '../components/BarSparkline.js'
 import {Box} from '../components/Box.js'
+import {ModalOverlay} from '../components/ModalOverlay.js'
 import {StatRow} from '../components/StatRow.js'
 import {
   fit,
@@ -17,7 +18,6 @@ import {
   truncate,
   terminalHyperlink,
   timeUntil,
-  wrapText,
   shortAddress
 } from '../format.js'
 import {stackPanels} from '../responsive.js'
@@ -59,17 +59,32 @@ export interface PositionRow {
   pnl_usd: number | null
 }
 
-export type PerfPositionEditField = 'entry' | 'shares' | 'total' | 'status'
+export type PerfPositionEditField = 'chart' | 'entry' | 'shares' | 'total' | 'status'
 
 export interface PerfPositionEditState {
   row: PositionRow
   pane: 'current' | 'past'
   selectedField: PerfPositionEditField
-  editingField: Exclude<PerfPositionEditField, 'status'> | null
+  editingField: Exclude<PerfPositionEditField, 'chart' | 'status'> | null
   draftEntry: string
   draftShares: string
   draftTotal: string
   draftStatus: PositionManualEditStatus
+  historyCursorOffset: number
+  statusMessage?: string
+  statusTone?: 'info' | 'success' | 'error'
+}
+
+export type PerfPositionAction = 'buy_more' | 'cash_out'
+export type PerfPositionActionField = 'chart' | 'action' | 'amount' | 'execute' | 'edit'
+
+export interface PerfPositionActionState {
+  row: PositionRow
+  selectedField: PerfPositionActionField
+  action: PerfPositionAction
+  editingAmount: boolean
+  draftAmountUsd: string
+  historyCursorOffset: number
   statusMessage?: string
   statusTone?: 'info' | 'success' | 'error'
 }
@@ -79,6 +94,10 @@ export interface PerformanceSelectionMeta {
   pastCount: number
   selectedCurrentRow: PositionRow | null
   selectedPastRow: PositionRow | null
+}
+
+export interface PerformanceDetailHistoryMeta {
+  timelineCount: number
 }
 
 const EXECUTED_ENTRY_WHERE = `
@@ -489,11 +508,38 @@ interface PerformanceProps {
   selectedBox: PerfBox
   dailyDetailOpen: boolean
   dailyDetailScrollOffset: number
+  actionState?: PerfPositionActionState | null
   editState?: PerfPositionEditState | null
   onCurrentScrollOffsetChange?: (offset: number) => void
   onPastScrollOffsetChange?: (offset: number) => void
   onDailyDetailScrollOffsetChange?: (offset: number) => void
   onSelectionMetaChange?: (meta: PerformanceSelectionMeta) => void
+  onDetailHistoryMetaChange?: (meta: PerformanceDetailHistoryMeta) => void
+}
+
+interface PriceHistoryPoint {
+  price: number
+  ts: number
+}
+
+interface PositionPriceSeries {
+  tokenId: string
+  label: string
+  color: string
+  isSelected: boolean
+  points: PriceHistoryPoint[]
+}
+
+interface PositionPriceHistoryState {
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  message?: string
+  fetchedAt?: number
+  series: PositionPriceSeries[]
+}
+
+interface HistoryCursorValue {
+  series: PositionPriceSeries
+  point: PriceHistoryPoint | null
 }
 
 interface DailyPnlEntry {
@@ -677,6 +723,946 @@ function toneColor(tone?: PerfPositionEditState['statusTone']): string {
   if (tone === 'error') return theme.red
   if (tone === 'success') return theme.green
   return theme.dim
+}
+
+function actionToneColor(tone?: PerfPositionActionState['statusTone']): string {
+  if (tone === 'error') return theme.red
+  if (tone === 'success') return theme.green
+  return theme.dim
+}
+
+function emptyPriceHistoryState(status: PositionPriceHistoryState['status']): PositionPriceHistoryState {
+  return {
+    status,
+    series: []
+  }
+}
+
+function parseMetaList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text) {
+      return []
+    }
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item || '').trim()).filter(Boolean)
+      }
+    } catch {
+      // Fall through to comma-split handling.
+    }
+    if (text.includes(',')) {
+      return text.split(',').map((part) => part.trim()).filter(Boolean)
+    }
+    return [text]
+  }
+  return []
+}
+
+function seriesColorForOutcome(label: string, index: number, isSelected: boolean): string {
+  const semanticColor = outcomeColor(label)
+  if (semanticColor !== theme.blue) {
+    return semanticColor
+  }
+  const palette = [theme.purple, theme.yellow, theme.blue, theme.green, theme.red, theme.dim]
+  return palette[index % palette.length] || theme.white
+}
+
+function extractOutcomeSeries(row: PositionRow, meta: Record<string, unknown> | null | undefined): Array<{tokenId: string; label: string}> {
+  const definitions: Array<{tokenId: string; label: string}> = []
+  const outcomes = parseMetaList(meta?.outcomes ?? meta?.outcomeNames ?? meta?.outcome_names)
+  const tokenIds = parseMetaList(meta?.clobTokenIds ?? meta?.clobTokenIDs ?? meta?.tokenIds ?? meta?.token_ids)
+
+  if (outcomes.length > 0 && outcomes.length === tokenIds.length) {
+    for (let index = 0; index < outcomes.length; index += 1) {
+      const tokenId = String(tokenIds[index] || '').trim()
+      const label = String(outcomes[index] || '').trim()
+      if (tokenId && label) {
+        definitions.push({tokenId, label})
+      }
+    }
+  }
+
+  const tokens = Array.isArray(meta?.tokens) ? meta?.tokens : []
+  for (const token of tokens) {
+    if (!token || typeof token !== 'object') {
+      continue
+    }
+    const tokenRecord = token as Record<string, unknown>
+    const tokenId = String(tokenRecord.token_id ?? tokenRecord.tokenId ?? tokenRecord.clobTokenId ?? '').trim()
+    const label = String(tokenRecord.outcome ?? tokenRecord.name ?? tokenRecord.title ?? '').trim()
+    if (tokenId && label) {
+      definitions.push({tokenId, label})
+    }
+  }
+
+  const deduped = new Map<string, {tokenId: string; label: string}>()
+  for (const definition of definitions) {
+    if (!deduped.has(definition.tokenId)) {
+      deduped.set(definition.tokenId, definition)
+    }
+  }
+
+  const selectedTokenId = String(row.token_id || '').trim()
+  const selectedLabel = String(row.side || '').trim().toUpperCase()
+  if (selectedTokenId && !deduped.has(selectedTokenId)) {
+    deduped.set(selectedTokenId, {
+      tokenId: selectedTokenId,
+      label: selectedLabel || 'SELECTED'
+    })
+  }
+
+  return Array.from(deduped.values())
+}
+
+function normalizePriceHistoryRows(payload: unknown): PriceHistoryPoint[] {
+  const history =
+    Array.isArray(payload)
+      ? payload
+      : payload && typeof payload === 'object' && Array.isArray((payload as {history?: unknown[]}).history)
+        ? (payload as {history: unknown[]}).history
+        : []
+
+  const normalized = history
+    .map((row) => {
+      if (!row || typeof row !== 'object') {
+        return null
+      }
+      const price = Number(
+        (row as {p?: unknown; price?: unknown; value?: unknown}).p ??
+        (row as {p?: unknown; price?: unknown; value?: unknown}).price ??
+        (row as {p?: unknown; price?: unknown; value?: unknown}).value
+      )
+      const ts = Number(
+        (row as {t?: unknown; timestamp?: unknown; time?: unknown}).t ??
+        (row as {t?: unknown; timestamp?: unknown; time?: unknown}).timestamp ??
+        (row as {t?: unknown; timestamp?: unknown; time?: unknown}).time
+      )
+      if (!Number.isFinite(price) || !Number.isFinite(ts) || price < 0 || price > 1 || ts <= 0) {
+        return null
+      }
+      return {
+        price,
+        ts: ts > 10_000_000_000 ? Math.floor(ts / 1000) : Math.floor(ts)
+      }
+    })
+    .filter((row): row is PriceHistoryPoint => row != null)
+
+  normalized.sort((left, right) => left.ts - right.ts)
+  return normalized
+}
+
+async function fetchClobPriceHistory(tokenId: string): Promise<PriceHistoryPoint[]> {
+  const encodedTokenId = encodeURIComponent(String(tokenId || '').trim())
+  const attempts = [
+    `https://clob.polymarket.com/prices-history?market=${encodedTokenId}&interval=max&fidelity=15`,
+    `https://clob.polymarket.com/prices-history?market=${encodedTokenId}&interval=max&fidelity=60`,
+    `https://clob.polymarket.com/prices-history?market=${encodedTokenId}&interval=max`
+  ]
+
+  let lastError: Error | null = null
+
+  for (let index = 0; index < attempts.length; index += 1) {
+    const response = await fetch(attempts[index] || '')
+    if (response.ok) {
+      const payload = await response.json()
+      return normalizePriceHistoryRows(payload)
+    }
+    lastError = new Error(`HTTP ${response.status}`)
+    if (response.status !== 400 || index === attempts.length - 1) {
+      break
+    }
+  }
+
+  throw lastError || new Error('unknown error')
+}
+
+interface ChartCell {
+  char: string
+  color?: string
+}
+
+function makeCell(char: string, color?: string): ChartCell {
+  return {char, color}
+}
+
+function sampleSeriesPoints(points: PriceHistoryPoint[], targetCount: number): PriceHistoryPoint[] {
+  if (points.length <= targetCount) {
+    return points
+  }
+  return Array.from({length: targetCount}, (_, index) => {
+    const sourceIndex =
+      targetCount === 1
+        ? points.length - 1
+        : Math.round((index / Math.max(targetCount - 1, 1)) * Math.max(points.length - 1, 0))
+    return points[Math.max(0, Math.min(points.length - 1, sourceIndex))]
+  })
+}
+
+function drawSeriesCell(grid: ChartCell[][], x: number, y: number, char: string, color: string) {
+  const row = grid[y]
+  if (!row || !row[x]) {
+    return
+  }
+  const current = row[x]
+  const isAxis = current.color === theme.dim
+  const isReferenceLine = current.char === '┄'
+  if (isAxis || isReferenceLine || current.char === ' ') {
+    row[x] = makeCell(char, color)
+    return
+  }
+  if (current.color === color) {
+    row[x] = makeCell(current.char === '.' ? current.char : char, color)
+    return
+  }
+  row[x] = makeCell('+', theme.white)
+}
+
+function drawHorizontalSegment(grid: ChartCell[][], y: number, fromX: number, toX: number, color: string) {
+  const start = Math.min(fromX, toX)
+  const end = Math.max(fromX, toX)
+  for (let x = start; x <= end; x += 1) {
+    drawSeriesCell(grid, x, y, '─', color)
+  }
+}
+
+function drawVerticalSegment(grid: ChartCell[][], x: number, fromY: number, toY: number, color: string) {
+  const start = Math.min(fromY, toY)
+  const end = Math.max(fromY, toY)
+  for (let y = start; y <= end; y += 1) {
+    drawSeriesCell(grid, x, y, '│', color)
+  }
+}
+
+function buildHistoryTimeline(series: PositionPriceSeries[]): number[] {
+  const unique = new Set<number>()
+  for (const entry of series) {
+    for (const point of entry.points) {
+      unique.add(point.ts)
+    }
+  }
+  return Array.from(unique).sort((left, right) => left - right)
+}
+
+function findNearestHistoryPoint(points: PriceHistoryPoint[], ts: number): PriceHistoryPoint | null {
+  if (!points.length) {
+    return null
+  }
+
+  let low = 0
+  let high = points.length - 1
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    const middlePoint = points[middle]
+    if ((middlePoint?.ts || 0) < ts) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+
+  const candidateIndexes = Array.from(new Set([low - 1, low, low + 1])).filter(
+    (index) => index >= 0 && index < points.length
+  )
+  let bestIndex = candidateIndexes[0] || 0
+  let bestDistance = Math.abs((points[bestIndex]?.ts || 0) - ts)
+  for (const index of candidateIndexes) {
+    const distance = Math.abs((points[index]?.ts || 0) - ts)
+    if (distance < bestDistance) {
+      bestIndex = index
+      bestDistance = distance
+    }
+  }
+  return points[bestIndex] || points[0] || null
+}
+
+function renderCellSegments(cells: ChartCell[], key: string, backgroundColor?: string) {
+  const segments: Array<{text: string; color?: string}> = []
+  for (const cell of cells) {
+    const last = segments[segments.length - 1]
+    if (last && last.color === cell.color) {
+      last.text += cell.char
+    } else {
+      segments.push({text: cell.char, color: cell.color})
+    }
+  }
+  return (
+    <Text key={key} backgroundColor={backgroundColor}>
+      {segments.map((segment, index) => (
+        <Text key={`${key}-segment-${index}`} color={segment.color} backgroundColor={backgroundColor}>
+          {segment.text}
+        </Text>
+      ))}
+    </Text>
+  )
+}
+
+interface DetailMetricColumn {
+  label: string
+  value: string
+  color?: string
+  bold?: boolean
+  ratio?: number
+  valueAlign?: 'left' | 'right'
+}
+
+interface DetailValueColumn {
+  value: string
+  color?: string
+  bold?: boolean
+  ratio?: number
+  valueAlign?: 'left' | 'right'
+}
+
+function weightedColumnWidths<T extends {ratio?: number}>(totalWidth: number, columns: T[], gapWidth: number): number[] {
+  if (!columns.length) {
+    return []
+  }
+  const usableWidth = Math.max(columns.length, totalWidth - Math.max(0, columns.length - 1) * gapWidth)
+  const ratios = columns.map((column) => Math.max(0.5, column.ratio ?? 1))
+  const ratioSum = ratios.reduce((sum, value) => sum + value, 0)
+  const widths = ratios.map((ratio) => Math.max(1, Math.floor((usableWidth * ratio) / Math.max(ratioSum, 1))))
+  let remaining = usableWidth - widths.reduce((sum, value) => sum + value, 0)
+  for (let index = widths.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    widths[index] = (widths[index] || 1) + 1
+    remaining -= 1
+  }
+  return widths
+}
+
+function DetailMetricColumns({
+  columns,
+  width,
+  backgroundColor
+}: {
+  columns: DetailMetricColumn[]
+  width: number
+  backgroundColor?: string
+}) {
+  const gapWidth = columns.length > 1 ? 2 : 0
+  const widths = weightedColumnWidths(width, columns, gapWidth)
+  const sharedLabelWidth = Math.max(
+    4,
+    Math.min(
+      12,
+      columns.reduce((max, column) => Math.max(max, column.label.length + 1), 4)
+    )
+  )
+
+  return (
+    <InkBox width="100%">
+      <Text backgroundColor={backgroundColor}> </Text>
+      {columns.map((column, index) => {
+        const columnWidth = widths[index] || 1
+        const labelWidth = Math.max(4, Math.min(columnWidth - 1, sharedLabelWidth))
+        const valueWidth = Math.max(1, columnWidth - labelWidth)
+        const formattedValue =
+          column.valueAlign === 'left'
+            ? fit(column.value, valueWidth)
+            : fitRight(column.value, valueWidth)
+        return (
+          <React.Fragment key={`detail-column-${index}-${column.label}`}>
+            <InkBox width={columnWidth}>
+              <Text color={theme.dim} backgroundColor={backgroundColor}>
+                {fit(column.label, labelWidth)}
+              </Text>
+              <Text color={column.color ?? theme.white} backgroundColor={backgroundColor} bold={column.bold}>
+                {formattedValue}
+              </Text>
+            </InkBox>
+            {index < columns.length - 1 ? (
+              <Text backgroundColor={backgroundColor}>{' '.repeat(gapWidth)}</Text>
+            ) : null}
+          </React.Fragment>
+        )
+      })}
+      <Text backgroundColor={backgroundColor}> </Text>
+    </InkBox>
+  )
+}
+
+function DetailValueColumns({
+  columns,
+  width,
+  backgroundColor
+}: {
+  columns: DetailValueColumn[]
+  width: number
+  backgroundColor?: string
+}) {
+  const gapWidth = columns.length > 1 ? 2 : 0
+  const widths = weightedColumnWidths(width, columns, gapWidth)
+
+  return (
+    <InkBox width="100%">
+      <Text backgroundColor={backgroundColor}> </Text>
+      {columns.map((column, index) => {
+        const columnWidth = widths[index] || 1
+        const formattedValue =
+          column.valueAlign === 'right'
+            ? fitRight(column.value, columnWidth)
+            : fit(column.value, columnWidth)
+        return (
+          <React.Fragment key={`detail-value-${index}-${column.value}`}>
+            <Text color={column.color ?? theme.white} backgroundColor={backgroundColor} bold={column.bold}>
+              {formattedValue}
+            </Text>
+            {index < columns.length - 1 ? (
+              <Text backgroundColor={backgroundColor}>{' '.repeat(gapWidth)}</Text>
+            ) : null}
+          </React.Fragment>
+        )
+      })}
+      <Text backgroundColor={backgroundColor}> </Text>
+    </InkBox>
+  )
+}
+
+function PriceHistoryLegendRow({
+  sample,
+  label,
+  color,
+  width,
+  backgroundColor,
+  bold = false
+}: {
+  sample: string
+  label: string
+  color: string
+  width: number
+  backgroundColor?: string
+  bold?: boolean
+}) {
+  const sampleWidth = Math.max(4, Math.min(8, sample.length))
+  const labelWidth = Math.max(1, width - sampleWidth - 2)
+  return (
+    <InkBox width="100%">
+      <Text backgroundColor={backgroundColor}> </Text>
+      <Text color={color} backgroundColor={backgroundColor} bold={bold}>
+        {fit(sample, sampleWidth)}
+      </Text>
+      <Text backgroundColor={backgroundColor}> </Text>
+      <Text color={color} backgroundColor={backgroundColor} bold={bold}>
+        {fit(label, labelWidth)}
+      </Text>
+      <Text backgroundColor={backgroundColor}> </Text>
+    </InkBox>
+  )
+}
+
+function PriceHistoryLegendEntryRow({
+  sample,
+  label,
+  color,
+  price,
+  seenAt,
+  width,
+  backgroundColor,
+  bold = false
+}: {
+  sample: string
+  label: string
+  color: string
+  price: string
+  seenAt: string
+  width: number
+  backgroundColor?: string
+  bold?: boolean
+}) {
+  const sampleWidth = Math.max(4, Math.min(8, sample.length))
+  const meta = `At ${price}  Seen ${seenAt}`
+  const metaWidth = Math.min(meta.length, Math.max(10, width - sampleWidth - 3))
+  const labelWidth = Math.max(1, width - sampleWidth - metaWidth - 2)
+  return (
+    <InkBox width="100%">
+      <Text backgroundColor={backgroundColor}> </Text>
+      <Text color={color} backgroundColor={backgroundColor} bold={bold}>
+        {fit(sample, sampleWidth)}
+      </Text>
+      <Text backgroundColor={backgroundColor}> </Text>
+      <Text color={color} backgroundColor={backgroundColor} bold={bold}>
+        {fit(label, labelWidth)}
+      </Text>
+      <Text backgroundColor={backgroundColor}> </Text>
+      <Text color={theme.dim} backgroundColor={backgroundColor}>
+        {fitRight(meta, metaWidth)}
+      </Text>
+      <Text backgroundColor={backgroundColor}> </Text>
+    </InkBox>
+  )
+}
+
+function buildMultiSeriesChart(
+  series: PositionPriceSeries[],
+  width: number,
+  height = 11,
+  cursorTs?: number | null,
+  referencePrice?: number | null,
+  referenceTs?: number | null,
+  cursorSelected = false
+): {
+  rows: ChartCell[][]
+  minPrice: number | null
+  maxPrice: number | null
+  startTs: number | null
+  endTs: number | null
+  selectedSeries: PositionPriceSeries | null
+} {
+  const chartHeight = Math.max(4, Math.floor(height))
+  const yLabelWidth = 8
+  const plotWidth = Math.max(18, Math.floor(width) - yLabelWidth - 1)
+  const plotPaddingLeft = 3
+  const plotPaddingRight = 3
+  const plotDataWidth = Math.max(3, plotWidth - plotPaddingLeft - plotPaddingRight)
+  const validSeries = series.filter((entry) => entry.points.length > 0)
+  const allPoints = validSeries.flatMap((entry) => entry.points)
+  const selectedSeries = validSeries.find((entry) => entry.isSelected) || validSeries[0] || null
+
+  if (!allPoints.length) {
+    return {
+      rows: Array.from({length: chartHeight + 1}, () =>
+        Array.from({length: yLabelWidth + plotWidth}, () => makeCell(' ', undefined))
+      ),
+      minPrice: null,
+      maxPrice: null,
+      startTs: null,
+      endTs: null,
+      selectedSeries
+    }
+  }
+
+  const rawMinPrice = Math.min(
+    ...allPoints.map((point) => point.price),
+    referencePrice != null && Number.isFinite(referencePrice) ? referencePrice : 1
+  )
+  const rawMaxPrice = Math.max(
+    ...allPoints.map((point) => point.price),
+    referencePrice != null && Number.isFinite(referencePrice) ? referencePrice : 0
+  )
+  const pricePad = Math.max(0.01, (rawMaxPrice - rawMinPrice) * 0.08)
+  const minPrice = Math.max(0, rawMinPrice - pricePad)
+  const maxPrice = Math.min(1, rawMaxPrice + pricePad)
+  const startTs = Math.min(...allPoints.map((point) => point.ts))
+  const endTs = Math.max(...allPoints.map((point) => point.ts))
+  const safeEndTs = endTs > startTs ? endTs : startTs + 3600
+
+  const grid = Array.from({length: chartHeight}, () =>
+    Array.from({length: plotWidth}, (_, column) => makeCell(column === 0 ? '│' : ' ', column === 0 ? theme.dim : undefined))
+  )
+  const axisRow = chartHeight - 1
+  const tickColumns = new Set([
+    plotPaddingLeft,
+    plotPaddingLeft + Math.floor(Math.max(plotDataWidth - 1, 0) / 2),
+    plotPaddingLeft + Math.max(plotDataWidth - 1, 0)
+  ])
+  for (let column = 0; column < plotWidth; column += 1) {
+    const char =
+      column === 0
+        ? '└'
+        : column === plotWidth - 1
+          ? '┘'
+          : tickColumns.has(column)
+            ? '┴'
+            : '─'
+    grid[axisRow][column] = makeCell(char, theme.dim)
+  }
+
+  const mapPriceToY = (price: number) => {
+    const normalizedPrice =
+      Math.abs(maxPrice - minPrice) <= 1e-9 ? 0.5 : (price - minPrice) / (maxPrice - minPrice)
+    return Math.max(0, Math.min(chartHeight - 2, (chartHeight - 2) - Math.round(normalizedPrice * Math.max(chartHeight - 2, 1))))
+  }
+
+  const mapPoint = (point: PriceHistoryPoint) => {
+    const x =
+      plotPaddingLeft +
+      Math.round(
+        (((point.ts - startTs) / Math.max(safeEndTs - startTs, 1)) * Math.max(plotDataWidth - 1, 1))
+      )
+    const y = mapPriceToY(point.price)
+    return {x, y}
+  }
+
+  const mapTsToX = (ts: number) =>
+    plotPaddingLeft +
+    Math.round(
+      (((ts - startTs) / Math.max(safeEndTs - startTs, 1)) * Math.max(plotDataWidth - 1, 1))
+    )
+
+  if (referencePrice != null && Number.isFinite(referencePrice)) {
+    const referenceY = mapPriceToY(referencePrice)
+    for (let column = 1; column < plotWidth; column += 1) {
+      if (column === 0) {
+        continue
+      }
+      grid[referenceY][column] = makeCell('┄', theme.white)
+    }
+  }
+
+  const referenceColumn =
+    referenceTs != null && Number.isFinite(referenceTs) && referenceTs >= startTs && referenceTs <= safeEndTs
+      ? Math.max(
+          plotPaddingLeft,
+          Math.min(plotPaddingLeft + Math.max(plotDataWidth - 1, 0), mapTsToX(referenceTs))
+        )
+      : null
+
+  if (referenceColumn != null) {
+    for (let rowIndex = 0; rowIndex < chartHeight - 1; rowIndex += 1) {
+      const current = grid[rowIndex]?.[referenceColumn]
+      if (!current || current.char !== ' ') {
+        continue
+      }
+      grid[rowIndex][referenceColumn] = makeCell('┊', theme.white)
+    }
+    if (grid[axisRow]?.[referenceColumn]) {
+      grid[axisRow][referenceColumn] = makeCell('┼', theme.white)
+    }
+  }
+
+  const cursorColumn =
+    cursorTs != null
+      ? Math.max(
+          plotPaddingLeft,
+          Math.min(
+            plotPaddingLeft + Math.max(plotDataWidth - 1, 0),
+            mapTsToX(cursorTs)
+          )
+        )
+      : null
+
+  if (cursorColumn != null) {
+    const cursorColor = cursorSelected ? theme.white : theme.dim
+    for (let rowIndex = 0; rowIndex < chartHeight - 1; rowIndex += 1) {
+      const current = grid[rowIndex]?.[cursorColumn]
+      if (!current || current.char !== ' ') {
+        continue
+      }
+      grid[rowIndex][cursorColumn] = makeCell('┆', cursorColor)
+    }
+    if (grid[axisRow]?.[cursorColumn]) {
+      grid[axisRow][cursorColumn] = makeCell('┼', cursorColor)
+    }
+  }
+
+  for (const entry of validSeries) {
+    const sampled = sampleSeriesPoints(entry.points, plotDataWidth)
+    const mapped = sampled.map(mapPoint)
+    if (!mapped.length) {
+      continue
+    }
+    for (let index = 0; index < mapped.length - 1; index += 1) {
+      const current = mapped[index]
+      const next = mapped[index + 1]
+      drawHorizontalSegment(grid, current.y, current.x, next.x, entry.color)
+      if (next.y !== current.y) {
+        drawVerticalSegment(grid, next.x, current.y, next.y, entry.color)
+      }
+    }
+    const changePoints = mapped.filter((point, index) => {
+      if (index === 0 || index === mapped.length - 1) {
+        return true
+      }
+      const previous = mapped[index - 1]
+      const next = mapped[index + 1]
+      return previous?.y !== point.y || next?.y !== point.y
+    })
+    for (const point of changePoints) {
+      drawSeriesCell(grid, point.x, point.y, '.', entry.color)
+    }
+  }
+
+  const rows = grid.map((plotRow, rowIndex) => {
+    const referencePrice =
+      maxPrice - ((rowIndex / Math.max(chartHeight - 2, 1)) * (maxPrice - minPrice))
+    const showLabel =
+      rowIndex === 0 ||
+      rowIndex === chartHeight - 2 ||
+      rowIndex === Math.floor((chartHeight - 2) / 2)
+    const label = showLabel ? fitRight(formatNumber(referencePrice), yLabelWidth) : ' '.repeat(yLabelWidth)
+    return [
+      ...label.split('').map((char) => makeCell(char, theme.dim)),
+      makeCell(' ', undefined),
+      ...plotRow
+    ]
+  })
+
+  const startLabel = startTs ? formatShortDateTime(startTs) : '-'
+  const midTs = startTs && endTs ? Math.floor((startTs + endTs) / 2) : 0
+  const midLabel = midTs ? formatShortDateTime(midTs) : '-'
+  const endLabel = endTs ? formatShortDateTime(endTs) : '-'
+  const axisLabelWidth = yLabelWidth + 1 + plotWidth
+  const leftWidth = Math.max(1, Math.floor((axisLabelWidth - midLabel.length - endLabel.length) / 2))
+  const middleWidth = Math.max(1, axisLabelWidth - leftWidth - endLabel.length)
+  const axisLabelRow = `${fit(startLabel, leftWidth)}${fit(midLabel, middleWidth)}${fitRight(endLabel, endLabel.length)}`
+  rows.push(axisLabelRow.split('').map((char) => makeCell(char, theme.dim)))
+
+  return {
+    rows,
+    minPrice: rawMinPrice,
+    maxPrice: rawMaxPrice,
+    startTs,
+    endTs,
+    selectedSeries
+  }
+}
+
+function formatSignedPriceChange(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) {
+    return '-'
+  }
+  const rounded = Number(value.toFixed(3))
+  return `${rounded > 0 ? '+' : ''}${formatNumber(rounded)}`
+}
+
+function PriceHistoryPreview({
+  history,
+  width,
+  backgroundColor,
+  selected = false,
+  cursorOffsetFromEnd = 0,
+  entryPrice = null,
+  entryTs = null,
+  shares = null
+}: {
+  history: PositionPriceHistoryState
+  width: number
+  backgroundColor?: string
+  selected?: boolean
+  cursorOffsetFromEnd?: number
+  entryPrice?: number | null
+  entryTs?: number | null
+  shares?: number | null
+}) {
+  const validSeries = history.series.filter((entry) => entry.points.length > 0)
+  const timeline = buildHistoryTimeline(validSeries)
+  const clampedCursorOffset = timeline.length
+    ? Math.max(0, Math.min(Math.floor(cursorOffsetFromEnd), timeline.length - 1))
+    : 0
+  const cursorIndex = timeline.length ? Math.max(0, timeline.length - 1 - clampedCursorOffset) : null
+  const cursorTs = cursorIndex != null ? (timeline[cursorIndex] || null) : null
+  const cursorValues: HistoryCursorValue[] =
+    cursorTs == null
+      ? []
+      : validSeries.map((entry) => {
+          const point = findNearestHistoryPoint(entry.points, cursorTs)
+          return {
+            series: entry,
+            point: point || null
+          }
+        })
+  const chartRenderHeight = width >= 112 ? 23 : 20
+  const chart = buildMultiSeriesChart(validSeries, width, chartRenderHeight, cursorTs, entryPrice, entryTs, selected)
+  const selectedSeries = chart.selectedSeries
+  const selectedCursorValue =
+    cursorValues.find((entry) => entry.series.tokenId === selectedSeries?.tokenId) || cursorValues[0] || null
+  const selectedCursorPoint = selectedCursorValue?.point || null
+  const selectedCursorChangeFromEntry =
+    selectedCursorPoint && entryPrice != null
+      ? Number((selectedCursorPoint.price - entryPrice).toFixed(3))
+      : null
+  const selectedCursorCashoutPnl =
+    selectedCursorPoint && entryPrice != null && shares != null && Number.isFinite(shares) && shares > 0
+      ? Number((shares * (selectedCursorPoint.price - entryPrice)).toFixed(3))
+      : null
+  const selectedSeriesColor = selectedSeries?.color ?? theme.white
+  const selectedChangeFromEntryLabel = formatSignedPriceChange(selectedCursorChangeFromEntry)
+  const selectedCashoutPnlLabel = formatDollar(selectedCursorCashoutPnl)
+  const selectedCashoutPnlColor =
+    selectedCursorCashoutPnl == null
+      ? theme.dim
+      : selectedCursorCashoutPnl > 0
+        ? theme.green
+        : selectedCursorCashoutPnl < 0
+          ? theme.red
+          : theme.white
+  const selectedBackgroundColor = backgroundColor
+
+  return (
+    <InkBox flexDirection="column" width="100%">
+      {history.status === 'error' ? (
+        <Text color={theme.red} backgroundColor={selectedBackgroundColor}>
+          {` ${fit(history.message || 'Price history failed to load.', width)} `}
+        </Text>
+      ) : (
+        <Text backgroundColor={selectedBackgroundColor}>{` ${' '.repeat(Math.max(1, width))} `}</Text>
+      )}
+      {chart.rows.map((row, index) => (
+        <InkBox key={`price-history-line-${index}`} width="100%">
+          <Text backgroundColor={selectedBackgroundColor}> </Text>
+          {renderCellSegments(row, `price-history-cells-${index}`, selectedBackgroundColor)}
+          <Text backgroundColor={selectedBackgroundColor}> </Text>
+        </InkBox>
+      ))}
+      <Text backgroundColor={selectedBackgroundColor}>{` ${' '.repeat(Math.max(1, width))} `}</Text>
+      <DetailValueColumns
+        columns={[
+          {
+            value: cursorTs ? formatShortDateTime(cursorTs) : '-',
+            ratio: 1.6,
+            valueAlign: 'left'
+          },
+          {
+            value: selectedSeries?.label || '-',
+            color: selectedSeriesColor,
+            bold: selectedSeries != null,
+            ratio: 1.4,
+            valueAlign: 'left'
+          },
+          {
+            value: selectedCursorPoint ? formatNumber(selectedCursorPoint.price) : '-',
+            color: selectedSeriesColor,
+            valueAlign: 'right'
+          },
+          {
+            value: selectedChangeFromEntryLabel,
+            color: theme.white,
+            ratio: 1,
+            valueAlign: 'right'
+          },
+          {
+            value: selectedCashoutPnlLabel,
+            color: selectedCashoutPnlColor,
+            ratio: 1.1,
+            valueAlign: 'right'
+          }
+        ]}
+        width={width}
+        backgroundColor={selectedBackgroundColor}
+      />
+      <Text backgroundColor={selectedBackgroundColor}>{` ${' '.repeat(Math.max(1, width))} `}</Text>
+      <Text color={theme.dim} backgroundColor={selectedBackgroundColor}>
+        {` ${fit('Legend', width)} `}
+      </Text>
+      {entryPrice != null ? (
+        <PriceHistoryLegendRow
+          sample={'┄┄┄┄'}
+          label={`Entry  ${formatNumber(entryPrice)}  ${entryTs ? formatShortDateTime(entryTs) : ''}`.trim()}
+          color={theme.white}
+          width={width}
+          backgroundColor={selectedBackgroundColor}
+        />
+      ) : null}
+      {validSeries.map((entry) => {
+        const cursorEntry = cursorValues.find((value) => value.series.tokenId === entry.tokenId)
+        const point = cursorEntry?.point || null
+        return (
+          <PriceHistoryLegendEntryRow
+            key={`price-series-legend-${entry.tokenId}`}
+            sample={entry.isSelected ? '.-.-.' : '. . .'}
+            label={`${entry.isSelected ? '* ' : ''}${entry.label}`}
+            color={entry.color}
+            bold={entry.isSelected}
+            price={point ? formatNumber(point.price) : '-'}
+            seenAt={point ? formatShortDateTime(point.ts) : '-'}
+            width={width}
+            backgroundColor={selectedBackgroundColor}
+          />
+        )
+      })}
+    </InkBox>
+  )
+}
+
+function usePositionPriceHistory(row: PositionRow | null | undefined): PositionPriceHistoryState {
+  const [history, setHistory] = useState<PositionPriceHistoryState>(() => emptyPriceHistoryState('idle'))
+
+  useEffect(() => {
+    if (!row) {
+      setHistory(emptyPriceHistoryState('idle'))
+      return
+    }
+
+    const marketId = String(row.market_id || '').trim()
+    const tokenId = String(row.token_id || '').trim()
+    if (!marketId || !tokenId) {
+      setHistory({
+        ...emptyPriceHistoryState('error'),
+        message: 'This position is missing market metadata keys, so price history is unavailable.'
+      })
+      return
+    }
+
+    let cancelled = false
+
+    const loadHistory = async (showLoading: boolean) => {
+      if (showLoading) {
+        setHistory((current) => ({
+          ...emptyPriceHistoryState('loading'),
+          message: current.status === 'error' ? current.message : undefined
+        }))
+      }
+
+      try {
+        const marketResponse = await fetch(
+          `https://gamma-api.polymarket.com/markets?condition_ids=${encodeURIComponent(marketId)}`
+        )
+        if (!marketResponse.ok) {
+          throw new Error(`metadata HTTP ${marketResponse.status}`)
+        }
+        const marketPayload = await marketResponse.json()
+        const markets = Array.isArray(marketPayload)
+          ? marketPayload
+          : marketPayload && typeof marketPayload === 'object' && Array.isArray((marketPayload as {markets?: unknown[]}).markets)
+            ? (marketPayload as {markets: unknown[]}).markets
+            : []
+        const meta =
+          (markets.find(
+            (entry) => entry && typeof entry === 'object' && String((entry as {conditionId?: unknown}).conditionId || '').trim().toLowerCase() === marketId.toLowerCase()
+          ) as Record<string, unknown> | undefined) ||
+          (markets[0] && typeof markets[0] === 'object' ? (markets[0] as Record<string, unknown>) : null)
+        const outcomeDefs = extractOutcomeSeries(row, meta)
+        const seriesResults = await Promise.allSettled(
+          outcomeDefs.map(async (definition, index) => {
+            const points = await fetchClobPriceHistory(definition.tokenId)
+            return {
+              tokenId: definition.tokenId,
+              label: definition.label,
+              color: seriesColorForOutcome(definition.label, index, definition.tokenId === tokenId),
+              isSelected: definition.tokenId === tokenId,
+              points
+            } satisfies PositionPriceSeries
+          })
+        )
+        if (cancelled) {
+          return
+        }
+        const populatedSeries = seriesResults
+          .flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+          .filter((entry) => entry.points.length > 0)
+        setHistory({
+          status: 'ready',
+          fetchedAt: Math.floor(Date.now() / 1000),
+          series: populatedSeries,
+          message: populatedSeries.length ? undefined : 'No market history was returned for this market.'
+        })
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        setHistory({
+          ...emptyPriceHistoryState('error'),
+          message: `Price history failed: ${error instanceof Error ? error.message : 'unknown error'}`
+        })
+      }
+    }
+
+    void loadHistory(true)
+    const timer = setInterval(() => {
+      void loadHistory(false)
+    }, 60000)
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [row?.row_key, row?.token_id])
+
+  return history
 }
 
 function normalizeManualStatus(raw: string | null | undefined): PositionManualEditStatus | null {
@@ -870,11 +1856,13 @@ export function Performance({
   selectedBox,
   dailyDetailOpen,
   dailyDetailScrollOffset,
+  actionState,
   editState,
   onCurrentScrollOffsetChange,
   onPastScrollOffsetChange,
   onDailyDetailScrollOffsetChange,
-  onSelectionMetaChange
+  onSelectionMetaChange,
+  onDetailHistoryMetaChange
 }: PerformanceProps) {
   const terminal = useTerminalSize()
   const stacked = stackPanels(terminal.width)
@@ -886,6 +1874,16 @@ export function Performance({
   const events = useEventStream(1000)
   const {lookup: tradeIdLookup} = useTradeIdIndex()
   const botState = useBotState(1000)
+  const detailHistoryRow = actionState?.row ?? editState?.row ?? null
+  const positionPriceHistory = usePositionPriceHistory(detailHistoryRow)
+  const detailSelectedSeriesColor = useMemo(
+    () => positionPriceHistory.series.find((entry) => entry.isSelected)?.color ?? outcomeColor(detailHistoryRow?.side || ''),
+    [detailHistoryRow?.side, positionPriceHistory.series]
+  )
+  const detailHistoryTimelineCount = useMemo(
+    () => buildHistoryTimeline(positionPriceHistory.series).length,
+    [positionPriceHistory.series]
+  )
   const positionsTableWidth = Math.max(72, terminal.width - 10)
   const positionsLayout = getPositionsLayout(positionsTableWidth)
   const nowTs = Date.now() / 1000
@@ -1122,9 +2120,15 @@ export function Performance({
     selectedPastRow?.entry_price,
     selectedPastRow?.row_key,
     selectedPastRow?.shares,
-    selectedPastRow?.size_usd,
-    selectedPastRow?.status
-  ])
+      selectedPastRow?.size_usd,
+      selectedPastRow?.status
+    ])
+
+  useEffect(() => {
+    onDetailHistoryMetaChange?.({
+      timelineCount: detailHistoryTimelineCount
+    })
+  }, [detailHistoryTimelineCount, onDetailHistoryMetaChange])
 
   const paddedDetailEntries = useMemo(
     () =>
@@ -1142,8 +2146,21 @@ export function Performance({
     () => Math.max(1, ...dailyEntries.map((entry) => Math.abs(entry.pnl))),
     [dailyEntries]
   )
-  const editModalWidth = Math.max(56, Math.min(terminal.width - 8, terminal.wide ? 88 : 74))
-  const editModalContentWidth = Math.max(36, editModalWidth - 4)
+  const actionModalWidth = Math.max(82, Math.min(terminal.width - 4, terminal.wide ? 128 : 105))
+  const actionModalContentWidth = Math.max(57, actionModalWidth - 4)
+  const actionFieldLabelWidth = Math.max(10, Math.min(12, Math.floor(actionModalContentWidth * 0.26)))
+  const actionFieldValueWidth = Math.max(14, actionModalContentWidth - actionFieldLabelWidth - 1)
+  const actionQuestionText = actionState
+    ? truncate(actionState.row.question || actionState.row.market_id, actionModalContentWidth)
+    : ''
+  const actionInstructionText =
+    actionState?.editingAmount
+      ? 'Type a positive USD amount. Enter closes the field editor. Esc leaves the field editor.'
+      : actionState?.selectedField === 'chart'
+        ? 'Chart selected. Use left/right to scrub through time. Up/down moves to the operator controls.'
+        : 'Up/down selects a field. Left/right changes action. Enter edits or triggers the selected row. s submits. Esc cancels.'
+  const editModalWidth = Math.max(78, Math.min(terminal.width - 4, terminal.wide ? 123 : 100))
+  const editModalContentWidth = Math.max(53, editModalWidth - 4)
   const editFieldLabelWidth = Math.max(8, Math.min(10, Math.floor(editModalContentWidth * 0.22)))
   const editFieldValueWidth = Math.max(12, editModalContentWidth - editFieldLabelWidth - 1)
   const editDraftEntryValue =
@@ -1170,16 +2187,15 @@ export function Performance({
             ? Number(editState.row.exit_size_usd ?? editDraftTotalValue) - editDraftTotalValue
             : null
       : null
-  const editQuestionLines = editState
-    ? wrapText(
-        truncate(editState.row.question || editState.row.market_id, editModalContentWidth),
-        editModalContentWidth
-      )
-    : []
+  const editQuestionText = editState
+    ? truncate(editState.row.question || editState.row.market_id, editModalContentWidth)
+    : ''
   const editInstructionText =
     editState?.editingField
       ? 'Type a positive number. Enter closes the field editor. Esc leaves the field editor.'
-      : 'Up/down selects a field. Enter edits numbers. Left/right changes status. s saves. Esc cancels.'
+      : editState?.selectedField === 'chart'
+        ? 'Chart selected. Use left/right to scrub through time. Up/down moves to the edit fields.'
+        : 'Up/down selects a field. Enter edits numbers. Left/right changes status. s saves. Esc cancels.'
 
   const renderPositionsTable = (
     rowsToRender: PositionRow[],
@@ -1403,8 +2419,8 @@ export function Performance({
     )
   }
 
-  return (
-    <InkBox flexDirection="column" width="100%">
+  const renderPageBody = () => (
+    <>
       <InkBox flexDirection={stacked ? 'column' : 'row'}>
         <Box title={activeTitle} width={stacked ? '100%' : '50%'} accent={selectedBox === 'summary'}>
           <StatRow label="Total P&L" value={formatDollar(activeSummary?.total_pnl)} color={(activeSummary?.total_pnl || 0) >= 0 ? theme.green : theme.red} />
@@ -1467,27 +2483,105 @@ export function Performance({
           </Box>
         </InkBox>
       </InkBox>
+    </>
+  )
+
+  return (
+    <InkBox flexDirection="column" width="100%">
+      {renderPageBody()}
+      {actionState ? (
+        <ModalOverlay backgroundColor={terminal.backgroundColor}>
+          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={actionModalWidth}>
+            <Text
+              color={actionState.row.market_url ? theme.accent : theme.dim}
+              backgroundColor={modalBackground}
+              bold={Boolean(actionState.row.market_url)}
+            >
+              {` ${actionState.row.market_url ? terminalHyperlink(fit(actionQuestionText, actionModalContentWidth), actionState.row.market_url) : fit(actionQuestionText, actionModalContentWidth)} `}
+            </Text>
+            <DetailMetricColumns
+              columns={[
+                {label: 'Side', value: actionState.row.side.toUpperCase(), color: detailSelectedSeriesColor},
+                {label: 'Size', value: formatAdaptiveDollar(actionState.row.size_usd, 10)},
+                {
+                  label: 'Pos',
+                  value: actionState.row.shares != null ? `${formatAdaptiveNumber(actionState.row.shares, 10)} sh` : '-',
+                  ratio: 1.2
+                },
+                {label: 'Entry', value: formatNumber(actionState.row.entry_price)},
+                {label: 'Entered', value: secondsAgo(actionState.row.entered_at)}
+              ]}
+              width={actionModalContentWidth}
+              backgroundColor={modalBackground}
+            />
+            <PriceHistoryPreview
+              history={positionPriceHistory}
+              width={actionModalContentWidth}
+              backgroundColor={modalBackground}
+              selected={actionState.selectedField === 'chart'}
+              cursorOffsetFromEnd={actionState.historyCursorOffset}
+              entryPrice={actionState.row.entry_price}
+              entryTs={actionState.row.entered_at}
+              shares={actionState.row.shares}
+            />
+            <Text backgroundColor={modalBackground}>{' '.repeat(actionModalWidth - 2)}</Text>
+            {([
+              ['action', actionState.action === 'buy_more' ? 'BUY MORE' : 'CASH OUT', false],
+              ...(actionState.action === 'buy_more'
+                ? ([['amount', actionState.editingAmount ? `${actionState.draftAmountUsd}_` : actionState.draftAmountUsd, actionState.editingAmount]] as Array<[PerfPositionActionField, string, boolean]>)
+                : []),
+              ['execute', actionState.action === 'buy_more' ? 'SEND BUY REQUEST' : 'SEND CASH-OUT REQUEST', false],
+              ['edit', 'OPEN MANUAL EDIT', false]
+            ] as Array<[PerfPositionActionField, string, boolean]>).map(([field, value]) => {
+              const selected = actionState.selectedField === field
+              const rowBackground = selected ? selectedRowBackground : modalBackground
+              const label =
+                field === 'action'
+                  ? 'ACTION'
+                  : field === 'amount'
+                    ? 'BUY USD'
+                    : field === 'execute'
+                      ? 'EXECUTE'
+                      : 'EDIT'
+              return (
+                <InkBox key={`action-field-${field}`} width="100%">
+                  <Text color={selected ? theme.accent : theme.dim} backgroundColor={rowBackground} bold={selected}>
+                    {` ${fit(`${selected ? '>' : ' '} ${label}`, actionFieldLabelWidth)} `}
+                  </Text>
+                  <Text color={selected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={selected}>
+                    {`${fitRight(value, actionFieldValueWidth)} `}
+                  </Text>
+                </InkBox>
+              )
+            })}
+            <Text backgroundColor={modalBackground}>{' '.repeat(actionModalWidth - 2)}</Text>
+            <Text color={actionToneColor(actionState.statusTone)} backgroundColor={modalBackground}>
+              {` ${fit((actionState.statusMessage || actionInstructionText).trim(), actionModalContentWidth)} `}
+            </Text>
+          </InkBox>
+        </ModalOverlay>
+      ) : null}
 
       {editState ? (
-        <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
+        <ModalOverlay backgroundColor={terminal.backgroundColor}>
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={editModalWidth}>
-            <InkBox width="100%">
-              <Text color={theme.accent} backgroundColor={modalBackground} bold>
-                {` ${fit('Manual Position Edit', Math.max(1, editModalContentWidth - 1))}`}
-              </Text>
-              <Text backgroundColor={modalBackground}> </Text>
-            </InkBox>
-            <Text color={theme.white} backgroundColor={modalBackground} bold>
-              {` ${fit(`${editState.row.side.toUpperCase()} ${formatAdaptiveDollar(editState.row.size_usd, 10)} ${activeTitle}`, editModalContentWidth)} `}
+            <Text
+              color={editState.row.market_url ? theme.accent : theme.dim}
+              backgroundColor={modalBackground}
+              bold={Boolean(editState.row.market_url)}
+            >
+              {` ${editState.row.market_url ? terminalHyperlink(fit(editQuestionText, editModalContentWidth), editState.row.market_url) : fit(editQuestionText, editModalContentWidth)} `}
             </Text>
-            {editQuestionLines.map((line, index) => (
-              <Text key={`edit-question-${index}`} color={theme.dim} backgroundColor={modalBackground}>
-                {` ${fit(line, editModalContentWidth)} `}
-              </Text>
-            ))}
-            <Text color={theme.dim} backgroundColor={modalBackground}>
-              {` ${fit(`Status ${editState.row.status}  Trade ${editState.row.trade_id || '-'}  Entered ${secondsAgo(editState.row.entered_at)}`, editModalContentWidth)} `}
-            </Text>
+            <DetailMetricColumns
+              columns={[
+                {label: 'Side', value: editState.row.side.toUpperCase(), color: detailSelectedSeriesColor},
+                {label: 'Size', value: formatAdaptiveDollar(editState.row.size_usd, 10)},
+                {label: 'Status', value: editState.row.status.toUpperCase()},
+                {label: 'Entered', value: secondsAgo(editState.row.entered_at), ratio: 1.1}
+              ]}
+              width={editModalContentWidth}
+              backgroundColor={modalBackground}
+            />
             <Text backgroundColor={modalBackground}>{' '.repeat(editModalWidth - 2)}</Text>
             {([
               ['entry', editState.draftEntry, editState.editingField === 'entry'],
@@ -1511,21 +2605,41 @@ export function Performance({
               )
             })}
             <Text backgroundColor={modalBackground}>{' '.repeat(editModalWidth - 2)}</Text>
-            <Text color={theme.dim} backgroundColor={modalBackground}>
-              {` ${fit(
-                `Preview P&L ${editPreviewPnl == null ? '-' : formatDollar(editPreviewPnl)}  To win ${editDraftSharesValue == null ? '-' : formatAdaptiveDollar(editDraftSharesValue, 10)}`,
-                editModalContentWidth
-              )} `}
-            </Text>
+            <DetailMetricColumns
+              columns={[
+                {
+                  label: 'Preview P&L',
+                  value: editPreviewPnl == null ? '-' : formatDollar(editPreviewPnl),
+                  ratio: 1.2
+                },
+                {
+                  label: 'To win',
+                  value: editDraftSharesValue == null ? '-' : formatAdaptiveDollar(editDraftSharesValue, 10),
+                  ratio: 1.1
+                }
+              ]}
+              width={editModalContentWidth}
+              backgroundColor={modalBackground}
+            />
+            <PriceHistoryPreview
+              history={positionPriceHistory}
+              width={editModalContentWidth}
+              backgroundColor={modalBackground}
+              selected={editState.selectedField === 'chart'}
+              cursorOffsetFromEnd={editState.historyCursorOffset}
+              entryPrice={editDraftEntryValue ?? editState.row.entry_price}
+              entryTs={editState.row.entered_at}
+              shares={editDraftSharesValue ?? editState.row.shares}
+            />
             <Text color={toneColor(editState.statusTone)} backgroundColor={modalBackground}>
               {` ${fit((editState.statusMessage || editInstructionText).trim(), editModalContentWidth)} `}
             </Text>
           </InkBox>
-        </InkBox>
+        </ModalOverlay>
       ) : null}
 
       {dailyDetailOpen ? (
-        <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
+        <ModalOverlay backgroundColor={terminal.backgroundColor}>
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={detailModalWidth}>
             <InkBox width="100%">
               <Text color={theme.accent} backgroundColor={modalBackground} bold>
@@ -1562,7 +2676,7 @@ export function Performance({
               </InkBox>
             ))}
           </InkBox>
-        </InkBox>
+        </ModalOverlay>
       ) : null}
     </InkBox>
   )

@@ -19,10 +19,14 @@ import {Signals} from './pages/Signals.js'
 import {
   Performance,
   type PerfBox,
+  type PerfPositionActionField,
+  type PerfPositionActionState,
   type PerfPositionEditField,
   type PerfPositionEditState,
+  type PerformanceDetailHistoryMeta,
   type PerformanceSelectionMeta
 } from './pages/Performance'
+import {requestManualTrade} from './manualTradeControl.js'
 import {Wallets} from './pages/Wallets'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
 import {secondsAgo} from './format.js'
@@ -140,6 +144,7 @@ interface AppContentProps {
   perfSelectedBox: PerfBox
   perfDailyDetailOpen: boolean
   perfDailyDetailScrollOffset: number
+  perfPositionAction: PerfPositionActionState | null
   perfPositionEdit: PerfPositionEditState | null
   modelSelectionIndex: number
   modelDetailOpen: boolean
@@ -155,6 +160,7 @@ interface AppContentProps {
   onPerfPastScrollOffsetChange: (offset: number) => void
   onPerfDailyDetailScrollOffsetChange: (offset: number) => void
   onPerfSelectionMetaChange: (meta: PerformanceSelectionMeta) => void
+  onPerfDetailHistoryMetaChange: (meta: PerformanceDetailHistoryMeta) => void
   transientNotice: TransientNotice | null
 }
 
@@ -173,11 +179,13 @@ function renderPage(
   perfSelectedBox: PerfBox,
   perfDailyDetailOpen: boolean,
   perfDailyDetailScrollOffset: number,
+  perfPositionAction: PerfPositionActionState | null,
   perfPositionEdit: PerfPositionEditState | null,
   onPerfCurrentScrollOffsetChange: (offset: number) => void,
   onPerfPastScrollOffsetChange: (offset: number) => void,
   onPerfDailyDetailScrollOffsetChange: (offset: number) => void,
   onPerfSelectionMetaChange: (meta: PerformanceSelectionMeta) => void,
+  onPerfDetailHistoryMetaChange: (meta: PerformanceDetailHistoryMeta) => void,
   modelSelectionIndex: number,
   modelDetailOpen: boolean,
   modelSettingSelectionIndex: number,
@@ -211,11 +219,13 @@ function renderPage(
           selectedBox={perfSelectedBox}
           dailyDetailOpen={perfDailyDetailOpen}
           dailyDetailScrollOffset={perfDailyDetailScrollOffset}
+          actionState={perfPositionAction}
           editState={perfPositionEdit}
           onCurrentScrollOffsetChange={onPerfCurrentScrollOffsetChange}
           onPastScrollOffsetChange={onPerfPastScrollOffsetChange}
           onDailyDetailScrollOffsetChange={onPerfDailyDetailScrollOffsetChange}
           onSelectionMetaChange={onPerfSelectionMetaChange}
+          onDetailHistoryMetaChange={onPerfDetailHistoryMetaChange}
         />
       )
     case 4:
@@ -260,6 +270,7 @@ function AppContent({
   perfSelectedBox,
   perfDailyDetailOpen,
   perfDailyDetailScrollOffset,
+  perfPositionAction,
   perfPositionEdit,
   modelSelectionIndex,
   modelDetailOpen,
@@ -275,6 +286,7 @@ function AppContent({
   onPerfPastScrollOffsetChange,
   onPerfDailyDetailScrollOffsetChange,
   onPerfSelectionMetaChange,
+  onPerfDetailHistoryMetaChange,
   transientNotice
 }: AppContentProps) {
   const terminal = useTerminalSize()
@@ -364,10 +376,14 @@ function AppContent({
           ? '↑↓ scroll  ←→ pan  ↑↑ latest  r refresh  q exit'
           : '↑/↓: scroll  ←/→: pan  ↑↑: latest  r: refresh  q: exit'
       : page === 3
-        ? perfPositionEdit
+        ? perfPositionAction
           ? terminal.compact
-            ? '↑↓ field  ←→ status  enter edit  s save  esc cancel'
-            : '↑/↓: field  ←/→: status  enter: edit value  s: save  esc: cancel'
+            ? '↑↓ field  ←→ chart/action  enter edit  s send  esc cancel'
+            : '↑/↓: field  ←/→: scrub chart or change action  enter: edit/confirm  s: send request  esc: cancel'
+          : perfPositionEdit
+          ? terminal.compact
+            ? '↑↓ field  ←→ chart/status  enter edit  s save  esc cancel'
+            : '↑/↓: field  ←/→: scrub chart or change status  enter: edit value  s: save  esc: cancel'
           : perfDailyDetailOpen
           ? terminal.compact
             ? '↑↓ list  esc close  r refresh  q exit'
@@ -452,11 +468,13 @@ function AppContent({
           perfSelectedBox,
           perfDailyDetailOpen,
           perfDailyDetailScrollOffset,
+          perfPositionAction,
           perfPositionEdit,
           onPerfCurrentScrollOffsetChange,
           onPerfPastScrollOffsetChange,
           onPerfDailyDetailScrollOffsetChange,
           onPerfSelectionMetaChange,
+          onPerfDetailHistoryMetaChange,
           modelSelectionIndex,
           modelDetailOpen,
           modelSettingSelectionIndex,
@@ -510,6 +528,10 @@ function App() {
     selectedCurrentRow: null,
     selectedPastRow: null
   })
+  const [perfDetailHistoryMeta, setPerfDetailHistoryMeta] = useState<PerformanceDetailHistoryMeta>({
+    timelineCount: 0
+  })
+  const [perfPositionAction, setPerfPositionAction] = useState<PerfPositionActionState | null>(null)
   const [perfPositionEdit, setPerfPositionEdit] = useState<PerfPositionEditState | null>(null)
   const [modelSelectionIndex, setModelSelectionIndex] = useState(0)
   const [modelDetailOpen, setModelDetailOpen] = useState(false)
@@ -652,7 +674,33 @@ function App() {
     })
   }
 
-  const perfEditableFieldOrder: PerfPositionEditField[] = ['entry', 'shares', 'total', 'status']
+  const perfEditableFieldOrder: PerfPositionEditField[] = ['chart', 'entry', 'shares', 'total', 'status']
+
+  const describePerfActionField = (field: PerfPositionActionField): string => {
+    if (field === 'chart') {
+      return 'Chart selected. Use left/right to scrub through price history. Up/down moves to the operator controls.'
+    }
+    if (field === 'amount') {
+      return 'Press Enter to edit the buy amount in USD.'
+    }
+    if (field === 'execute') {
+      return 'Press Enter or s to send this operator action to the bot.'
+    }
+    if (field === 'edit') {
+      return 'Press Enter to open the existing manual position editor.'
+    }
+    return 'Use left/right to switch between buy more and cash out.'
+  }
+
+  const describePerfEditField = (field: PerfPositionEditField): string => {
+    if (field === 'chart') {
+      return 'Chart selected. Use left/right to scrub through price history. Up/down moves to the edit fields.'
+    }
+    if (field === 'status') {
+      return 'Use left/right to change the saved status.'
+    }
+    return 'Press Enter to edit this numeric value.'
+  }
   const activePerfRow =
     perfSelectedBox === 'current'
       ? perfSelectionMeta.selectedCurrentRow
@@ -660,23 +708,145 @@ function App() {
         ? perfSelectionMeta.selectedPastRow
         : null
 
-  const openPerfPositionEditor = () => {
-    if (!activePerfRow || (perfSelectedBox !== 'current' && perfSelectedBox !== 'past')) {
+  const openPerfPositionEditor = (rowOverride?: PerformanceSelectionMeta['selectedCurrentRow']) => {
+    const row = rowOverride ?? activePerfRow
+    if (!row || (perfSelectedBox !== 'current' && perfSelectedBox !== 'past' && rowOverride == null)) {
       return
     }
 
+    setPerfDetailHistoryMeta({timelineCount: 0})
+    setPerfPositionAction(null)
     setPerfPositionEdit({
-      row: activePerfRow,
-      pane: perfSelectedBox,
-      selectedField: 'entry',
+      row,
+      pane: rowOverride ? 'current' : perfSelectedBox === 'past' ? 'past' : 'current',
+      selectedField: 'chart',
       editingField: null,
-      draftEntry: String(Number(activePerfRow.entry_price.toFixed(6))),
-      draftShares: String(Number((activePerfRow.shares ?? 0).toFixed(6))),
-      draftTotal: String(Number(activePerfRow.size_usd.toFixed(6))),
-      draftStatus: activePerfRow.status,
-      statusMessage: 'Select a field, press Enter to edit numbers, then press s to save.',
+      draftEntry: String(Number(row.entry_price.toFixed(6))),
+      draftShares: String(Number((row.shares ?? 0).toFixed(6))),
+      draftTotal: String(Number(row.size_usd.toFixed(6))),
+      draftStatus: row.status,
+      historyCursorOffset: 0,
+      statusMessage: describePerfEditField('chart'),
       statusTone: 'info'
     })
+  }
+
+  const perfActionFieldOrder = (action: PerfPositionActionState['action']): PerfPositionActionField[] =>
+    action === 'buy_more' ? ['chart', 'action', 'amount', 'execute', 'edit'] : ['chart', 'action', 'execute', 'edit']
+
+  const openPerfPositionAction = () => {
+    const row = perfSelectionMeta.selectedCurrentRow
+    if (!row || perfSelectedBox !== 'current') {
+      return
+    }
+
+    setPerfDetailHistoryMeta({timelineCount: 0})
+    setPerfPositionEdit(null)
+    setPerfPositionAction({
+      row,
+      selectedField: 'chart',
+      action: 'cash_out',
+      editingAmount: false,
+      draftAmountUsd: String(Number(row.size_usd.toFixed(6))),
+      historyCursorOffset: 0,
+      statusMessage: describePerfActionField('chart'),
+      statusTone: 'info'
+    })
+  }
+
+  const movePerfActionField = (direction: 'up' | 'down') => {
+    setPerfPositionAction((current) => {
+      if (!current) {
+        return current
+      }
+      const fieldOrder = perfActionFieldOrder(current.action)
+      const currentIndex = fieldOrder.indexOf(current.selectedField)
+      const nextIndex =
+        direction === 'up'
+          ? (currentIndex - 1 + fieldOrder.length) % fieldOrder.length
+          : (currentIndex + 1) % fieldOrder.length
+      const nextField = fieldOrder[nextIndex]
+      return {
+        ...current,
+        selectedField: nextField,
+        statusMessage: describePerfActionField(nextField),
+        statusTone: 'info'
+      }
+    })
+  }
+
+  const cyclePerfAction = (direction: 'left' | 'right') => {
+    setPerfPositionAction((current) => {
+      if (!current) {
+        return current
+      }
+      const actionOrder: PerfPositionActionState['action'][] = ['cash_out', 'buy_more']
+      const currentIndex = actionOrder.indexOf(current.action)
+      const delta = direction === 'left' ? -1 : 1
+      const nextAction = actionOrder[(currentIndex + delta + actionOrder.length) % actionOrder.length]
+      const nextFieldOrder = perfActionFieldOrder(nextAction)
+      const nextField = nextFieldOrder.includes(current.selectedField) ? current.selectedField : 'action'
+      return {
+        ...current,
+        action: nextAction,
+        selectedField: nextField,
+        editingAmount: false,
+        statusMessage:
+          nextField === 'chart'
+            ? describePerfActionField('chart')
+            : nextAction === 'buy_more'
+              ? 'Buy more will use a fresh Polymarket quote when the bot executes the request.'
+              : 'Cash out will sell the full selected position using a fresh Polymarket quote.',
+        statusTone: 'info'
+      }
+    })
+  }
+
+  const submitPerfPositionAction = () => {
+    if (!perfPositionAction) {
+      return
+    }
+
+    const amountUsd = Number(perfPositionAction.draftAmountUsd)
+    if (perfPositionAction.action === 'buy_more' && (!Number.isFinite(amountUsd) || amountUsd <= 0)) {
+      setPerfPositionAction((current) =>
+        current
+          ? {
+              ...current,
+              selectedField: 'amount',
+              statusMessage: 'Buy more requires a positive USD amount.',
+              statusTone: 'error'
+            }
+          : current
+      )
+      return
+    }
+
+    const result = requestManualTrade({
+      action: perfPositionAction.action,
+      marketId: perfPositionAction.row.market_id,
+      tokenId: perfPositionAction.row.token_id,
+      side: perfPositionAction.row.side,
+      question: perfPositionAction.row.question,
+      traderAddress: perfPositionAction.row.trader_address,
+      amountUsd: perfPositionAction.action === 'buy_more' ? amountUsd : null
+    })
+
+    if (!result.ok) {
+      setPerfPositionAction((current) =>
+        current
+          ? {
+              ...current,
+              statusMessage: result.message,
+              statusTone: 'error'
+            }
+          : current
+      )
+      return
+    }
+
+    setPerfPositionAction(null)
+    showTransientNotice(result.message, 'success')
   }
 
   const movePerfEditField = (direction: 'up' | 'down') => {
@@ -692,13 +862,41 @@ function App() {
       return {
         ...current,
         selectedField: perfEditableFieldOrder[nextIndex],
-        statusMessage:
-          perfEditableFieldOrder[nextIndex] === 'status'
-            ? 'Use left/right to change the saved status.'
-            : 'Press Enter to edit this numeric value.',
+        statusMessage: describePerfEditField(perfEditableFieldOrder[nextIndex]),
         statusTone: 'info'
       }
     })
+  }
+
+  const scrubPerfHistory = (direction: 'left' | 'right') => {
+    const delta = direction === 'left' ? 1 : -1
+    const maxOffset = Math.max(0, perfDetailHistoryMeta.timelineCount - 1)
+    if (perfPositionAction) {
+      setPerfPositionAction((current) =>
+        current
+          ? {
+              ...current,
+              historyCursorOffset: Math.max(0, Math.min(maxOffset, current.historyCursorOffset + delta)),
+              statusMessage: describePerfActionField('chart'),
+              statusTone: 'info'
+            }
+          : current
+      )
+      return
+    }
+
+    if (perfPositionEdit) {
+      setPerfPositionEdit((current) =>
+        current
+          ? {
+              ...current,
+              historyCursorOffset: Math.max(0, Math.min(maxOffset, current.historyCursorOffset + delta)),
+              statusMessage: describePerfEditField('chart'),
+              statusTone: 'info'
+            }
+          : current
+      )
+    }
   }
 
   const cyclePerfEditStatus = (direction: 'left' | 'right') => {
@@ -1075,6 +1273,12 @@ function App() {
       setPerfDailyDetailOpen(false)
     }
   }, [page, perfDailyDetailOpen])
+
+  useEffect(() => {
+    if (page !== 3 && perfPositionAction) {
+      setPerfPositionAction(null)
+    }
+  }, [page, perfPositionAction])
 
   useEffect(() => {
     if (page !== 3 && perfPositionEdit) {
@@ -1507,6 +1711,150 @@ function App() {
     }
 
     if (page === 3) {
+      if (perfPositionAction) {
+        if (perfPositionAction.editingAmount) {
+          if (key.escape) {
+            setPerfPositionAction((current) =>
+              current
+                ? {
+                    ...current,
+                    editingAmount: false,
+                    statusMessage: 'Finished editing buy amount. Press s to send the request.',
+                    statusTone: 'info'
+                  }
+                : current
+            )
+            return
+          }
+
+          if (key.return) {
+            setPerfPositionAction((current) =>
+              current
+                ? {
+                    ...current,
+                    editingAmount: false,
+                    statusMessage: 'Finished editing buy amount. Press s to send the request.',
+                    statusTone: 'info'
+                  }
+                : current
+            )
+            return
+          }
+
+          if (key.backspace || key.delete) {
+            setPerfPositionAction((current) =>
+              current
+                ? {
+                    ...current,
+                    draftAmountUsd: current.draftAmountUsd.slice(0, -1)
+                  }
+                : current
+            )
+            return
+          }
+
+          if (/^[0-9.]$/.test(input)) {
+            setPerfPositionAction((current) =>
+              current
+                ? {
+                    ...current,
+                    draftAmountUsd: `${current.draftAmountUsd}${input}`
+                  }
+                : current
+            )
+            return
+          }
+
+          return
+        }
+
+        if (key.escape) {
+          setPerfPositionAction(null)
+          return
+        }
+
+        if (key.upArrow || normalized === 'k') {
+          movePerfActionField('up')
+          return
+        }
+
+        if (key.downArrow || normalized === 'j') {
+          movePerfActionField('down')
+          return
+        }
+
+        if ((key.leftArrow || normalized === 'h') && perfPositionAction.selectedField === 'chart') {
+          scrubPerfHistory('left')
+          return
+        }
+
+        if ((key.rightArrow || normalized === 'l') && perfPositionAction.selectedField === 'chart') {
+          scrubPerfHistory('right')
+          return
+        }
+
+        if ((key.leftArrow || normalized === 'h') && perfPositionAction.selectedField === 'action') {
+          cyclePerfAction('left')
+          return
+        }
+
+        if ((key.rightArrow || normalized === 'l') && perfPositionAction.selectedField === 'action') {
+          cyclePerfAction('right')
+          return
+        }
+
+        if (normalized === 's') {
+          submitPerfPositionAction()
+          return
+        }
+
+        if (key.return) {
+          if (perfPositionAction.selectedField === 'chart') {
+            setPerfPositionAction((current) =>
+              current
+                ? {
+                    ...current,
+                    statusMessage: describePerfActionField('chart'),
+                    statusTone: 'info'
+                  }
+                : current
+            )
+            return
+          }
+
+          if (perfPositionAction.selectedField === 'action') {
+            cyclePerfAction('right')
+            return
+          }
+
+          if (perfPositionAction.selectedField === 'amount') {
+            setPerfPositionAction((current) =>
+              current
+                ? {
+                    ...current,
+                    editingAmount: true,
+                    statusMessage: 'Editing buy amount in USD. Type a value, then press Enter.',
+                    statusTone: 'info'
+                  }
+                : current
+            )
+            return
+          }
+
+          if (perfPositionAction.selectedField === 'edit') {
+            const row = perfPositionAction.row
+            setPerfPositionAction(null)
+            openPerfPositionEditor(row)
+            return
+          }
+
+          submitPerfPositionAction()
+          return
+        }
+
+        return
+      }
+
       if (perfPositionEdit) {
         if (perfPositionEdit.editingField) {
           if (key.escape) {
@@ -1593,6 +1941,16 @@ function App() {
           return
         }
 
+        if ((key.leftArrow || normalized === 'h') && perfPositionEdit.selectedField === 'chart') {
+          scrubPerfHistory('left')
+          return
+        }
+
+        if ((key.rightArrow || normalized === 'l') && perfPositionEdit.selectedField === 'chart') {
+          scrubPerfHistory('right')
+          return
+        }
+
         if ((key.leftArrow || normalized === 'h') && perfPositionEdit.selectedField === 'status') {
           cyclePerfEditStatus('left')
           return
@@ -1609,6 +1967,19 @@ function App() {
         }
 
         if (key.return) {
+          if (perfPositionEdit.selectedField === 'chart') {
+            setPerfPositionEdit((current) =>
+              current
+                ? {
+                    ...current,
+                    statusMessage: describePerfEditField('chart'),
+                    statusTone: 'info'
+                  }
+                : current
+            )
+            return
+          }
+
           if (perfPositionEdit.selectedField === 'status') {
             cyclePerfEditStatus('right')
           } else {
@@ -1681,7 +2052,11 @@ function App() {
         }
 
         if (perfSelectedBox === 'current' || perfSelectedBox === 'past') {
-          openPerfPositionEditor()
+          if (perfSelectedBox === 'current') {
+            openPerfPositionAction()
+          } else {
+            openPerfPositionEditor()
+          }
           return
         }
 
@@ -1814,6 +2189,7 @@ function App() {
           perfSelectedBox={perfSelectedBox}
           perfDailyDetailOpen={perfDailyDetailOpen}
           perfDailyDetailScrollOffset={perfDailyDetailScrollOffset}
+          perfPositionAction={perfPositionAction}
           perfPositionEdit={perfPositionEdit}
           modelSelectionIndex={modelSelectionIndex}
           modelDetailOpen={modelDetailOpen}
@@ -1829,6 +2205,7 @@ function App() {
           onPerfPastScrollOffsetChange={setPerfPastScrollOffset}
           onPerfDailyDetailScrollOffsetChange={setPerfDailyDetailScrollOffset}
           onPerfSelectionMetaChange={setPerfSelectionMeta}
+          onPerfDetailHistoryMetaChange={setPerfDetailHistoryMeta}
           transientNotice={transientNotice}
         />
       </ManualRefreshProvider>

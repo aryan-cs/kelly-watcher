@@ -1581,7 +1581,7 @@ export function Wallets({
     <InkBox flexDirection="column" width="100%" height="100%">
       {renderPageBody()}
       {detailOpen && selectedWallet ? (
-        <ModalOverlay backgroundColor={terminal.backgroundColor} backdrop={renderPageBody()}>
+        <ModalOverlay backgroundColor={terminal.backgroundColor}>
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={modalWidth}>
             <InkBox width="100%">
               <Text color={theme.accent} backgroundColor={modalBackground} bold>

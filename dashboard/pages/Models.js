@@ -1064,7 +1064,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                     React.createElement(Text, { color: retrainRunStateColor(row.status, row.deployed) }, fitRight(retrainRunStateLabel(row.status, row.deployed), retrainWidths.stateWidth)))))) : (React.createElement(Text, { color: theme.dim }, "No retrain attempts logged yet."))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         renderPageBody(),
-        detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor, backdrop: renderPageBody() },
+        detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: helpModalWidth },
                 React.createElement(InkBox, { width: "100%" },
                     React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(selectedPanel.title, helpTitleWidth)}`),

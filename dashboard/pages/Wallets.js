@@ -1100,7 +1100,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                     React.createElement(Text, { color: theme.dim }, droppedFooterText))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%", height: "100%" },
         renderPageBody(),
-        detailOpen && selectedWallet ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor, backdrop: renderPageBody() },
+        detailOpen && selectedWallet ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: modalWidth },
                 React.createElement(InkBox, { width: "100%" },
                     React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit('Wallet Detail', detailHeaderWidth)}`),

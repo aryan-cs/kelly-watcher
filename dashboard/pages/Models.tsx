@@ -1511,7 +1511,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     <InkBox flexDirection="column" width="100%">
       {renderPageBody()}
       {detailOpen ? (
-        <ModalOverlay backgroundColor={terminal.backgroundColor} backdrop={renderPageBody()}>
+        <ModalOverlay backgroundColor={terminal.backgroundColor}>
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={helpModalWidth}>
             <InkBox width="100%">
               <Text color={theme.accent} backgroundColor={modalBackground} bold>

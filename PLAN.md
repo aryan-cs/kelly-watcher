@@ -303,7 +303,7 @@ MODEL_PATH=model.joblib
 # Kelly sizing uses this as the bankroll when USE_REAL_MONEY=false.
 # Set this to roughly the amount you plan to deploy when going live,
 # so your shadow trade sizes are realistic.
-SHADOW_BANKROLL_USD=1000
+SHADOW_BANKROLL_USD=3000
 ```
 
 ### `.gitignore`
@@ -1471,7 +1471,7 @@ class PolymarketExecutor:
     def get_usdc_balance(self) -> float:
         """
         In shadow mode: returns the simulated bankroll stored in the DB,
-        initialized to SHADOW_BANKROLL_USD from .env (default $1000).
+        initialized to SHADOW_BANKROLL_USD from .env (default $3000).
         In live mode: queries the real Polygon USDC balance.
         """
         if not use_real_money():
@@ -1481,7 +1481,7 @@ class PolymarketExecutor:
                 "WHERE real_money=0 AND skipped=0 AND outcome IS NULL"
             ).fetchone()
             conn.close()
-            bankroll = float(os.getenv("SHADOW_BANKROLL_USD", "1000"))
+            bankroll = float(os.getenv("SHADOW_BANKROLL_USD", "3000"))
             spent    = row["spent"] or 0.0
             return max(bankroll - spent, 0.0)
         try:

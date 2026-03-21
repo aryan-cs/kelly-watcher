@@ -363,7 +363,7 @@ def model_path() -> str:
 
 
 def shadow_bankroll_usd() -> float:
-    return _get_float("SHADOW_BANKROLL_USD", "1000")
+    return _get_float("SHADOW_BANKROLL_USD", "3000")
 
 
 def max_live_drawdown_pct() -> float:

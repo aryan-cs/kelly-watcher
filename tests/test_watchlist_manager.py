@@ -527,7 +527,7 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_raw_cursor_activity_does_not_prevent_inactivity_drop_without_logged_trades(self) -> None:
+    def test_recent_raw_cursor_activity_prevents_inactivity_drop_without_logged_trades(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -570,8 +570,60 @@ class WatchlistManagerTest(unittest.TestCase):
                     manager = WatchlistManager(["0xcursoronly"])
                     snapshot = manager.refresh()
 
-                self.assertEqual(snapshot.hot, ())
-                self.assertEqual(snapshot.dropped, ("0xcursoronly",))
+                self.assertEqual(snapshot.hot, ("0xcursoronly",))
+                self.assertEqual(snapshot.dropped, ())
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_profitable_local_wallet_is_protected_from_inactivity_drop(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    ("0xprofit", 0.55, 30, 0.1, 0.0, 20.0, 6, 10, 16, 0, 50.0, 0.01, 0, 0.0, 0.0, 1_700_000_000),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    ("0xprofit", 1_699_990_000, 1_699_990_000),
+                )
+                insert_logged_trade(
+                    conn,
+                    "0xprofit",
+                    1_699_990_000,
+                    actual_entry_price=0.50,
+                    actual_entry_shares=2.0,
+                    actual_entry_size_usd=1.0,
+                    shadow_pnl_usd=0.75,
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("watchlist_manager._protected_best_wallets", return_value=set()), patch(
+                    "watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0
+                ), patch("watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.time.time", return_value=1_700_000_200
+                ):
+                    manager = WatchlistManager(["0xprofit"])
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.hot, ("0xprofit",))
+                self.assertEqual(snapshot.dropped, ())
             finally:
                 db.DB_PATH = original_db_path
 
@@ -974,7 +1026,7 @@ class WatchlistManagerTest(unittest.TestCase):
                     (
                         ("0xhot", 1_700_000_100, "[]", 1_700_000_100),
                         ("0xwarm", 1_699_999_000, "[]", 1_699_999_000),
-                        ("0xslow", 1_699_998_000, "[]", 1_699_998_000),
+                        ("0xslow", 1_699_990_000, "[]", 1_699_990_000),
                     ),
                 )
                 conn.execute(
@@ -1009,6 +1061,66 @@ class WatchlistManagerTest(unittest.TestCase):
                 ).fetchone()
                 conn.close()
                 self.assertEqual(row["status_reason"], "slow>1h")
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_recent_source_activity_prevents_slow_drop_after_tracking_age_limit(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xhot", 0.70, 50, 0.4, 0.0, 20.0, 10, 10, 35, 0, 500.0, 0.08, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xwarm", 0.60, 20, 0.2, 0.0, 20.0, 10, 10, 10, 0, 100.0, 0.02, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xslow", 0.50, 8, 0.0, 0.0, 20.0, 10, 10, 4, 0, 0.0, 0.0, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO wallet_cursors (wallet_address, last_source_ts, last_trade_ids_json, updated_at)
+                    VALUES (?,?,?,?)
+                    """,
+                    (
+                        ("0xhot", 1_700_000_100, "[]", 1_700_000_100),
+                        ("0xwarm", 1_699_999_000, "[]", 1_699_999_000),
+                        ("0xslow", 1_699_999_800, "[]", 1_699_999_800),
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    ("0xslow", 1_699_990_000, 1_699_990_000),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
+                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "watchlist_manager.time.time", return_value=1_700_000_200
+                ):
+                    manager = WatchlistManager(["0xhot", "0xwarm", "0xslow"])
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.hot, ("0xhot",))
+                self.assertEqual(snapshot.warm, ("0xwarm",))
+                self.assertEqual(snapshot.discovery, ("0xslow",))
+                self.assertEqual(snapshot.dropped, ())
             finally:
                 db.DB_PATH = original_db_path
 

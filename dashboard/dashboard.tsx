@@ -25,9 +25,9 @@ import {
   type PerfPositionEditState,
   type PerformanceDetailHistoryMeta,
   type PerformanceSelectionMeta
-} from './pages/Performance'
+} from './pages/Performance.js'
 import {requestManualTrade} from './manualTradeControl.js'
-import {Wallets} from './pages/Wallets'
+import {Wallets} from './pages/Wallets.js'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
 import {secondsAgo} from './format.js'
 import {ManualRefreshProvider} from './refresh.js'
@@ -2223,6 +2223,18 @@ function clearTerminal() {
   process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
 }
 
+function ensureInteractiveTerminal(): boolean {
+  if (process.stdin.isTTY && process.stdout.isTTY && typeof process.stdin.setRawMode === 'function') {
+    return true
+  }
+
+  console.error(
+    'The dashboard requires an interactive terminal with raw-mode input support. Use PowerShell, Command Prompt, Windows Terminal, Terminal.app, iTerm, or a standard Linux shell.'
+  )
+  process.exitCode = 1
+  return false
+}
+
 clearTerminal()
 
 declare global {
@@ -2230,6 +2242,9 @@ declare global {
 }
 
 async function bootstrap() {
+  if (!ensureInteractiveTerminal()) {
+    return
+  }
   globalThis.__KELLY_WATCHER_TERMINAL_BG__ = await detectTerminalBackgroundColor()
   render(<App />)
 }

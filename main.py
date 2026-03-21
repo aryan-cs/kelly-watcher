@@ -99,6 +99,7 @@ logger = logging.getLogger(__name__)
 
 EVENT_FILE = Path("data/events.jsonl")
 BOT_STATE_FILE = Path("data/bot_state.json")
+BOT_PID_FILE = Path("data/shadow_bot.pid")
 MANUAL_RETRAIN_REQUEST_FILE = Path("data/manual_retrain_request.json")
 MANUAL_TRADE_REQUEST_FILE = Path("data/manual_trade_request.json")
 _emit_count = 0
@@ -114,6 +115,28 @@ _SCORE_RE = re.compile(r"score ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
 _INVALID_PRICE_RE = re.compile(r"invalid price ([0-9.]+)", re.IGNORECASE)
 _EXPIRES_RE = re.compile(r"expires in <([0-9]+)s", re.IGNORECASE)
 _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECASE)
+
+
+def _write_bot_pid_file() -> None:
+    BOT_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BOT_PID_FILE.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+
+def _clear_bot_pid_file() -> None:
+    try:
+        raw = BOT_PID_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+    if raw and raw != str(os.getpid()):
+        return
+
+    try:
+        BOT_PID_FILE.unlink()
+    except FileNotFoundError:
+        return
 
 
 @dataclass
@@ -1661,8 +1684,14 @@ def main() -> None:
     logger.info("Mode: %s", "LIVE (REAL MONEY)" if use_real_money() else "SHADOW (no real money)")
     logger.info("=" * 60)
 
+    tracker: PolymarketTracker | None = None
+    scheduler: BackgroundScheduler | None = None
+    telegram_command_stop: threading.Event | None = None
+    telegram_command_thread: threading.Thread | None = None
+
     init_db()
     _validate_startup()
+    _write_bot_pid_file()
     EVENT_FILE.touch(exist_ok=True)
     _repair_event_file_market_urls()
     start_ts = int(time.time())
@@ -2057,10 +2086,21 @@ def main() -> None:
         logger.info("Shutting down...")
         send_alert("bot stopped", kind="status")
     finally:
-        telegram_command_stop.set()
-        telegram_command_thread.join(timeout=1.0)
-        scheduler.shutdown(wait=False)
-        tracker.close()
+        _clear_bot_pid_file()
+        if telegram_command_stop is not None:
+            telegram_command_stop.set()
+        if telegram_command_thread is not None:
+            telegram_command_thread.join(timeout=1.0)
+        if scheduler is not None:
+            try:
+                scheduler.shutdown(wait=False)
+            except Exception:
+                logger.debug("Scheduler shutdown skipped during cleanup", exc_info=True)
+        if tracker is not None:
+            try:
+                tracker.close()
+            except Exception:
+                logger.debug("Tracker close skipped during cleanup", exc_info=True)
 
 
 if __name__ == "__main__":

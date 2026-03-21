@@ -95,8 +95,20 @@ cd ..
 
 ### 4. Create your local config
 
+Copy `.env.example` to `.env`.
+
+Examples:
+
 ```bash
 cp .env.example .env
+```
+
+```powershell
+Copy-Item .env.example .env
+```
+
+```bat
+copy .env.example .env
 ```
 
 At minimum for shadow mode, set:
@@ -157,6 +169,13 @@ cd dashboard
 npm start
 ```
 
+For dashboard development from the TypeScript sources instead of the checked-in runtime JS:
+
+```bash
+cd dashboard
+npm run dev
+```
+
 Windows helper:
 
 ```bat
@@ -184,21 +203,27 @@ Behavior:
 Reset helper:
 
 ```bash
-./restart_shadow.sh
+uv run python restart_shadow.py
 ```
 
 Foreground mode:
 
 ```bash
-./restart_shadow.sh --foreground
+uv run python restart_shadow.py --foreground
 ```
 
-What `restart_shadow.sh` does:
+Reset only, then start the bot yourself:
+
+```bash
+uv run python restart_shadow.py --reset-only
+```
+
+What `restart_shadow.py` does:
 
 - refuses to run if `USE_REAL_MONEY=true`
 - stops an existing bot process
 - deletes shadow runtime state such as the SQLite DB and event stream
-- preserves config, identity cache, logs, and your model artifact
+- preserves config, `WATCHED_WALLETS`, identity cache, logs, and your model artifact
 - recreates the DB and restarts the bot
 
 ### Live Mode
@@ -358,7 +383,7 @@ The bot reads and writes these local files during normal operation:
 - `data/bot_state.json`: lightweight runtime status
 - `data/identity_cache.json`: wallet-to-username cache
 - `logs/bot.log`: rotating backend log
-- `logs/shadow_runtime.out`: background log when using `restart_shadow.sh`
+- `logs/shadow_runtime.out`: background log when using `restart_shadow.py`
 - `model.joblib`: optional deployed model artifact
 
 Important note:
@@ -499,6 +524,12 @@ Run manual training:
 uv run python train.py
 ```
 
+Reset and restart the shadow account:
+
+```bash
+uv run python restart_shadow.py
+```
+
 Run one-time live collateral setup:
 
 ```bash
@@ -624,6 +655,7 @@ Packaging and entrypoints:
 
 - `pyproject.toml`: project metadata and the `main` console script
 - `kelly_watcher/cli.py`: lightweight launcher so `uv run main` works cleanly
+- `restart_shadow.py`: cross-platform shadow reset and restart helper
 
 ## Operational Notes
 

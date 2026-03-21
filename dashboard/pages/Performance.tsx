@@ -479,6 +479,7 @@ interface PositionsLayout {
   sizeWidth: number
   toWinWidth: number
   profitWidth: number
+  cashOutWidth: number
   confidenceWidth: number
   resolutionWidth: number
   ttrWidth: number
@@ -575,10 +576,11 @@ function getPositionsLayout(width: number): PositionsLayout {
   const sizeWidth = 8
   const toWinWidth = 8
   const profitWidth = 8
+  const cashOutWidth = 8
   const confidenceWidth = 6
   const ttrWidth = 11
   const ageWidth = 8
-  const gaps = 11 + (showId ? 1 : 0) + (showUser ? 1 : 0)
+  const gaps = 12 + (showId ? 1 : 0) + (showUser ? 1 : 0)
   const fixedStatic =
     idWidth +
     userWidth +
@@ -589,6 +591,7 @@ function getPositionsLayout(width: number): PositionsLayout {
     sizeWidth +
     toWinWidth +
     profitWidth +
+    cashOutWidth +
     confidenceWidth +
     ttrWidth +
     ageWidth
@@ -615,6 +618,7 @@ function getPositionsLayout(width: number): PositionsLayout {
     sizeWidth,
     toWinWidth,
     profitWidth,
+    cashOutWidth,
     confidenceWidth,
     resolutionWidth,
     ttrWidth,
@@ -879,6 +883,123 @@ async function fetchClobPriceHistory(tokenId: string): Promise<PriceHistoryPoint
   }
 
   throw lastError || new Error('unknown error')
+}
+
+interface PositionMarkQuote {
+  price: number | null
+  fetchedAt: number
+}
+
+function extractBestBookPrice(levels: unknown, strategy: 'highest' | 'lowest'): number | null {
+  if (!Array.isArray(levels)) {
+    return null
+  }
+  const prices = levels
+    .map((level) => {
+      if (!level || typeof level !== 'object') {
+        return null
+      }
+      const price = Number((level as {price?: unknown}).price)
+      return Number.isFinite(price) && price > 0 && price <= 1 ? price : null
+    })
+    .filter((price): price is number => price != null)
+
+  if (!prices.length) {
+    return null
+  }
+  return strategy === 'highest' ? Math.max(...prices) : Math.min(...prices)
+}
+
+async function fetchPositionMarkQuote(tokenId: string): Promise<PositionMarkQuote | null> {
+  const encodedTokenId = encodeURIComponent(String(tokenId || '').trim())
+  const fetchedAt = Date.now()
+
+  try {
+    const response = await fetch(`https://clob.polymarket.com/book?token_id=${encodedTokenId}`)
+    if (response.ok) {
+      const payload = await response.json()
+      const bestBid = extractBestBookPrice((payload as {bids?: unknown[]}).bids, 'highest')
+      const bestAsk = extractBestBookPrice((payload as {asks?: unknown[]}).asks, 'lowest')
+      const price = bestBid ?? bestAsk
+      if (price != null) {
+        return {price, fetchedAt}
+      }
+    }
+  } catch {
+    // Fall back to the latest traded price below.
+  }
+
+  try {
+    const history = await fetchClobPriceHistory(tokenId)
+    const lastPoint = history[history.length - 1]
+    if (lastPoint) {
+      return {price: lastPoint.price, fetchedAt}
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+function useLivePositionProfitLookup(rows: PositionRow[]): Map<string, number | null> {
+  const tokenIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          rows
+            .map((row) => String(row.token_id || '').trim())
+            .filter(Boolean)
+        )
+      ).sort(),
+    [rows]
+  )
+  const tokenIdsKey = useMemo(() => tokenIds.join('|'), [tokenIds])
+  const [quoteByToken, setQuoteByToken] = useState<Record<string, PositionMarkQuote | null>>({})
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!tokenIds.length) {
+      setQuoteByToken({})
+      return undefined
+    }
+
+    const loadQuotes = async () => {
+      const entries = await Promise.all(
+        tokenIds.map(async (tokenId) => [tokenId, await fetchPositionMarkQuote(tokenId)] as const)
+      )
+      if (cancelled) {
+        return
+      }
+      setQuoteByToken(Object.fromEntries(entries))
+    }
+
+    void loadQuotes()
+    const timer = setInterval(() => {
+      void loadQuotes()
+    }, 15_000)
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [tokenIdsKey])
+
+  return useMemo(() => {
+    const lookup = new Map<string, number | null>()
+    rows.forEach((row) => {
+      const tokenId = String(row.token_id || '').trim()
+      const quote = tokenId ? quoteByToken[tokenId] : null
+      const shares = row.shares
+      const profit =
+        quote?.price != null && shares != null
+          ? roundTo((Number(shares) * quote.price) - Number(row.size_usd || 0), 3)
+          : null
+      lookup.set(row.row_key, profit)
+    })
+    return lookup
+  }, [quoteByToken, rows])
 }
 
 interface ChartCell {
@@ -1961,6 +2082,7 @@ export function Performance({
     () => currentPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0),
     [currentPositions]
   )
+  const livePositionProfitLookup = useLivePositionProfitLookup(currentPositions)
   const waitingPositions = useMemo(
     () =>
       effectivePositions
@@ -2392,12 +2514,28 @@ export function Performance({
       selectedRowKey
     }: RenderPositionsOptions & {selectedRowKey?: string} = {}
   ) => {
+    const displayProfit = (row: PositionRow): number | null => {
+      if (row.status === 'open' || row.status === 'waiting') {
+        return row.shares != null ? roundTo(Number(row.shares) - Number(row.size_usd || 0), 3) : null
+      }
+      return computePositionProfit(row)
+    }
+    const displayCashOutNow = (row: PositionRow): number | null => {
+      if (row.status === 'open' || row.status === 'waiting') {
+        return livePositionProfitLookup.get(row.row_key) ?? null
+      }
+      return null
+    }
     const trailingWidth = positionsLayout.ttrWidth
     const trailingDelta = trailingWidth - positionsLayout.ttrWidth
     const questionWidth = Math.max(14, positionsLayout.questionWidth - trailingDelta)
     const resolutionWidth = positionsLayout.resolutionWidth
     const maxAbsProfit = profitScaleRows.reduce(
-      (max, row) => Math.max(max, Math.abs(computePositionProfit(row) ?? 0)),
+      (max, row) => Math.max(max, Math.abs(displayProfit(row) ?? 0)),
+      0
+    )
+    const maxAbsCashOut = profitScaleRows.reduce(
+      (max, row) => Math.max(max, Math.abs(displayCashOutNow(row) ?? 0)),
       0
     )
 
@@ -2433,6 +2571,8 @@ export function Performance({
           <Text color={theme.dim}>{fitRight('TO WIN', positionsLayout.toWinWidth)}</Text>
           <Text color={theme.dim}> </Text>
           <Text color={theme.dim}>{fitRight('PROFIT', positionsLayout.profitWidth)}</Text>
+          <Text color={theme.dim}> </Text>
+          <Text color={theme.dim}>{fitRight('CASH NOW', positionsLayout.cashOutWidth)}</Text>
           <Text color={theme.dim}> </Text>
           <Text color={theme.dim}>{fitRight('CONF', positionsLayout.confidenceWidth)}</Text>
           <Text color={theme.dim}> </Text>
@@ -2471,7 +2611,8 @@ export function Performance({
                   : shares != null
                     ? shares
                     : null
-            const profit = computePositionProfit(row)
+            const profit = displayProfit(row)
+            const cashOutNow = displayCashOutNow(row)
             const statusText =
               row.status === 'win'
                 ? 'win'
@@ -2502,6 +2643,10 @@ export function Performance({
               profit == null
                 ? theme.dim
                 : centeredGradientColor(profit, maxAbsProfit || 1)
+            const cashOutColor =
+              cashOutNow == null
+                ? theme.dim
+                : centeredGradientColor(cashOutNow, maxAbsCashOut || 1)
 
             return (
               <InkBox key={row.row_key} width="100%">
@@ -2576,6 +2721,15 @@ export function Performance({
                       ? formatAdaptiveDollar(profit, positionsLayout.profitWidth)
                       : '-',
                     positionsLayout.profitWidth
+                  )}
+                </Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={cashOutColor} backgroundColor={rowBackground} bold={isSelected}>
+                  {fitRight(
+                    cashOutNow != null
+                      ? formatAdaptiveDollar(cashOutNow, positionsLayout.cashOutWidth)
+                      : '-',
+                    positionsLayout.cashOutWidth
                   )}
                 </Text>
                 <Text backgroundColor={rowBackground}> </Text>

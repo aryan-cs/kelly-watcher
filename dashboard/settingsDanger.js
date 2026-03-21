@@ -11,7 +11,7 @@ export const dangerActions = [
     {
         id: 'restart_shadow',
         label: 'Restart Shadow',
-        description: 'Clear shadow tracker state, event history, and SQLite data, then restart the bot from the configured tracker bankroll. Confirmation lets you keep or clear WATCHED_WALLETS.',
+        description: 'Clear shadow tracker state, event history, and SQLite data, then restart the bot from the configured shadow bankroll. Confirmation lets you keep or clear WATCHED_WALLETS.',
         value: (envValues) => `${watchedWalletCount(envValues)} wlts`
     }
 ];
@@ -62,10 +62,13 @@ export function restartShadowAccount(keepWallets) {
         if (!keepWallets) {
             writeEditableConfigValue('WATCHED_WALLETS', '');
         }
-        const result = spawnSync('/bin/bash', ['restart_shadow.sh'], {
+        const result = spawnSync('uv', ['run', 'python', 'restart_shadow.py'], {
             cwd: projectRoot,
             encoding: 'utf8'
         });
+        if (result.error) {
+            throw result.error;
+        }
         const output = combinedOutput(result.stdout, result.stderr);
         if (result.status !== 0) {
             if (!keepWallets) {

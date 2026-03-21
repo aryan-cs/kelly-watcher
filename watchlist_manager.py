@@ -673,6 +673,7 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str], protected_wallets: 
     protected = protected_wallets or set()
 
     status_rows = _wallet_status_rows(wallets)
+    cursor_map = _wallet_cursor_map(wallets)
     logged_activity_map = _wallet_logged_activity_map(wallets)
     now_ts = int(time.time())
     reason = f"inactive>{_format_duration_label(inactivity_limit)}"
@@ -686,14 +687,15 @@ def _auto_drop_inactive_wallets(wallet_addresses: list[str], protected_wallets: 
             continue
 
         last_logged_ts = int(logged_activity_map.get(wallet, 0))
+        last_source_ts = int(cursor_map.get(wallet, 0))
         reactivated_at = int(status_row.get("reactivated_at") or 0)
         tracking_started_at = int(status_row.get("tracking_started_at") or 0)
-        inactivity_anchor = max(last_logged_ts, reactivated_at, tracking_started_at)
+        inactivity_anchor = max(last_logged_ts, last_source_ts, reactivated_at, tracking_started_at)
         if inactivity_anchor <= 0:
             continue
         if (now_ts - inactivity_anchor) < inactivity_limit:
             continue
-        to_drop.append((wallet, reason, now_ts, last_logged_ts))
+        to_drop.append((wallet, reason, now_ts, max(last_logged_ts, last_source_ts)))
 
     _drop_wallets(to_drop)
 
@@ -708,6 +710,7 @@ def _slow_wallet_drop_updates(
         return []
     protected = protected_wallets or set()
 
+    cursor_map = _wallet_cursor_map(list(discovery_wallets))
     logged_activity_map = _wallet_logged_activity_map(list(discovery_wallets))
     now_ts = int(time.time())
     reason = f"slow>{_format_duration_label(max_tracking_age)}"
@@ -724,7 +727,12 @@ def _slow_wallet_drop_updates(
             continue
         if (now_ts - tracking_started_at) < max_tracking_age:
             continue
-        to_drop.append((wallet, reason, now_ts, int(logged_activity_map.get(wallet, 0))))
+        last_logged_ts = int(logged_activity_map.get(wallet, 0))
+        last_source_ts = int(cursor_map.get(wallet, 0))
+        recent_activity_anchor = max(last_logged_ts, last_source_ts)
+        if recent_activity_anchor > 0 and (now_ts - recent_activity_anchor) < max_tracking_age:
+            continue
+        to_drop.append((wallet, reason, now_ts, recent_activity_anchor))
 
     return to_drop
 
@@ -837,8 +845,9 @@ class WatchlistManager:
 
     def _build_snapshot(self, *, run_auto_drop: bool = True) -> WatchTierSnapshot:
         _ensure_tracking_started(self.wallets)
-        inactivity_protected_wallets = _protected_best_wallets(self.wallets)
-        quality_protected_wallets = inactivity_protected_wallets | _profitable_local_wallets(self.wallets)
+        profitable_local_wallets = _profitable_local_wallets(self.wallets)
+        inactivity_protected_wallets = _protected_best_wallets(self.wallets) | profitable_local_wallets
+        quality_protected_wallets = inactivity_protected_wallets
         if run_auto_drop:
             _auto_drop_inactive_wallets(self.wallets, inactivity_protected_wallets)
             _auto_drop_underperforming_wallets(self.wallets, quality_protected_wallets)

@@ -14,43 +14,39 @@ import {
   formatNumber,
   formatPct,
   secondsAgo,
+  truncate,
   terminalHyperlink,
   timeUntil,
+  wrapText,
   shortAddress
 } from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
-import {centeredGradientColor, outcomeColor, positiveDollarColor, probabilityColor, theme} from '../theme.js'
+import {centeredGradientColor, outcomeColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
 import {useBotState} from '../useBotState.js'
 import {useQuery} from '../useDb.js'
 import {useEventStream} from '../useEventStream.js'
 import {useTradeIdIndex} from '../useTradeIdIndex.js'
+import {
+  editablePositionStatuses,
+  type PositionManualEditRow,
+  type PositionManualEditStatus,
+  type TradeLogManualEditRow
+} from '../positionEditor.js'
 
-interface SummaryRow {
-  real_money: number
-  acted: number
-  resolved: number
-  wins: number
-  total_pnl: number | null
-  avg_confidence: number | null
-  avg_size: number | null
-}
-
-interface DailyRow {
-  real_money: number
-  day: string
-  pnl: number | null
-}
-
-interface PositionRow {
+export interface PositionRow {
   row_key: string
+  source_kind: 'trade_log' | 'position'
+  source_trade_log_id: number | null
   trade_id: string | null
   market_id: string
   market_url: string | null
   side: string
+  token_id: string
   size_usd: number
   exit_size_usd: number | null
   entry_price: number
+  shares: number | null
   confidence: number | null
   entered_at: number
   market_close_ts: number
@@ -61,6 +57,28 @@ interface PositionRow {
   status: 'open' | 'waiting' | 'win' | 'lose' | 'exit'
   outcome: number | null
   pnl_usd: number | null
+}
+
+export type PerfPositionEditField = 'entry' | 'shares' | 'total' | 'status'
+
+export interface PerfPositionEditState {
+  row: PositionRow
+  pane: 'current' | 'past'
+  selectedField: PerfPositionEditField
+  editingField: Exclude<PerfPositionEditField, 'status'> | null
+  draftEntry: string
+  draftShares: string
+  draftTotal: string
+  draftStatus: PositionManualEditStatus
+  statusMessage?: string
+  statusTone?: 'info' | 'success' | 'error'
+}
+
+export interface PerformanceSelectionMeta {
+  currentCount: number
+  pastCount: number
+  selectedCurrentRow: PositionRow | null
+  selectedPastRow: PositionRow | null
 }
 
 const EXECUTED_ENTRY_WHERE = `
@@ -81,52 +99,18 @@ AND outcome IS NULL
 AND exited_at IS NULL
 `
 
-const SUMMARY_SQL = `
-SELECT
-  real_money,
-  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) AS acted,
-  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} AND (CASE WHEN real_money=0 THEN shadow_pnl_usd ELSE actual_pnl_usd END) IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-  SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} AND (CASE WHEN real_money=0 THEN shadow_pnl_usd ELSE actual_pnl_usd END) > 0 THEN 1 ELSE 0 END) AS wins,
-  ROUND(SUM(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN COALESCE(shadow_pnl_usd, actual_pnl_usd) ELSE 0 END), 3) AS total_pnl,
-  ROUND(AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN confidence END), 3) AS avg_confidence,
-  ROUND(AVG(CASE WHEN ${EXECUTED_ENTRY_WHERE} THEN actual_entry_size_usd END), 3) AS avg_size
-FROM trade_log
-GROUP BY real_money
-`
-
-const DAILY_SQL = `
-SELECT
-  real_money,
-  strftime('%Y-%m-%d %H:00', datetime(${REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
-  ROUND(
-    SUM(
-      CASE
-        WHEN real_money=0 THEN shadow_pnl_usd
-        ELSE actual_pnl_usd
-      END
-    ),
-    3
-  ) AS pnl
-FROM trade_log
-WHERE ${EXECUTED_ENTRY_WHERE}
-  AND (
-    CASE
-      WHEN real_money=0 THEN shadow_pnl_usd
-      ELSE actual_pnl_usd
-    END
-  ) IS NOT NULL
-GROUP BY real_money, day
-ORDER BY day DESC
-`
-
 const SHADOW_OPEN_POSITIONS_SQL = `
 SELECT
   ('o:' || tl.id) AS row_key,
+  'trade_log' AS source_kind,
+  tl.id AS source_trade_log_id,
   tl.trade_id,
   tl.market_id,
   tl.market_url,
   tl.side,
+  COALESCE(tl.token_id, '') AS token_id,
   ROUND(COALESCE(tl.remaining_entry_size_usd, tl.actual_entry_size_usd), 3) AS size_usd,
+  ROUND(COALESCE(tl.remaining_entry_shares, tl.actual_entry_shares, tl.source_shares), 6) AS shares,
   ROUND(
     CASE
       WHEN COALESCE(tl.remaining_entry_shares, 0) > 1e-9 THEN tl.remaining_entry_size_usd / tl.remaining_entry_shares
@@ -154,6 +138,28 @@ ORDER BY tl.placed_at DESC, tl.id DESC
 const LIVE_POSITIONS_SQL = `
 SELECT
   ('p:' || p.market_id || ':' || p.token_id || ':' || p.entered_at || ':' || p.real_money) AS row_key,
+  'position' AS source_kind,
+  COALESCE(
+    (
+      SELECT tl.id
+      FROM trade_log tl
+      WHERE tl.market_id = p.market_id
+        AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${EXECUTED_ENTRY_WHERE}
+        AND tl.placed_at <= p.entered_at
+      ORDER BY tl.placed_at DESC, tl.id DESC
+      LIMIT 1
+    ),
+    (
+      SELECT tl.id
+      FROM trade_log tl
+      WHERE tl.market_id = p.market_id
+        AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${EXECUTED_ENTRY_WHERE}
+      ORDER BY tl.placed_at DESC, tl.id DESC
+      LIMIT 1
+    )
+  ) AS source_trade_log_id,
   COALESCE(
     (
       SELECT tl.trade_id
@@ -198,7 +204,36 @@ SELECT
     )
   ) AS market_url,
   p.side,
+  COALESCE(p.token_id, '') AS token_id,
   ROUND(p.size_usd, 3) AS size_usd,
+  ROUND(
+    CASE
+      WHEN p.avg_price > 0 THEN p.size_usd / p.avg_price
+      ELSE COALESCE(
+        (
+          SELECT tl.actual_entry_shares
+          FROM trade_log tl
+          WHERE tl.market_id = p.market_id
+            AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+            AND ${EXECUTED_ENTRY_WHERE}
+            AND tl.placed_at <= p.entered_at
+          ORDER BY tl.placed_at DESC, tl.id DESC
+          LIMIT 1
+        ),
+        (
+          SELECT tl.actual_entry_shares
+          FROM trade_log tl
+          WHERE tl.market_id = p.market_id
+            AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+            AND ${EXECUTED_ENTRY_WHERE}
+          ORDER BY tl.placed_at DESC, tl.id DESC
+          LIMIT 1
+        ),
+        0
+      )
+    END,
+    6
+  ) AS shares,
   ROUND(
     CASE
       WHEN p.avg_price > 0 THEN p.avg_price
@@ -359,11 +394,15 @@ ORDER BY p.entered_at DESC
 const RESOLVED_POSITIONS_SQL = `
 SELECT
   ('t:' || tl.id) AS row_key,
+  'trade_log' AS source_kind,
+  tl.id AS source_trade_log_id,
   tl.trade_id,
   tl.market_id,
   tl.market_url,
   tl.side,
+  COALESCE(tl.token_id, '') AS token_id,
   ROUND(tl.actual_entry_size_usd, 3) AS size_usd,
+  ROUND(tl.actual_entry_shares, 6) AS shares,
   ROUND(tl.actual_entry_price, 3) AS entry_price,
   ROUND(tl.confidence, 3) AS confidence,
   tl.placed_at AS entered_at,
@@ -384,6 +423,31 @@ FROM trade_log tl
 WHERE ${EXECUTED_ENTRY_WHERE}
   AND (CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END) IS NOT NULL
 ORDER BY COALESCE(NULLIF(tl.exited_at, 0), NULLIF(tl.resolved_at, 0), NULLIF(tl.market_close_ts, 0), tl.placed_at) DESC, tl.id DESC
+`
+
+const TRADE_LOG_MANUAL_EDITS_SQL = `
+SELECT
+  trade_log_id,
+  entry_price,
+  shares,
+  size_usd,
+  status,
+  updated_at
+FROM trade_log_manual_edits
+`
+
+const POSITION_MANUAL_EDITS_SQL = `
+SELECT
+  market_id,
+  token_id,
+  LOWER(side) AS side,
+  real_money,
+  entry_price,
+  shares,
+  size_usd,
+  status,
+  updated_at
+FROM position_manual_edits
 `
 
 interface PositionsLayout {
@@ -425,9 +489,11 @@ interface PerformanceProps {
   selectedBox: PerfBox
   dailyDetailOpen: boolean
   dailyDetailScrollOffset: number
+  editState?: PerfPositionEditState | null
   onCurrentScrollOffsetChange?: (offset: number) => void
   onPastScrollOffsetChange?: (offset: number) => void
   onDailyDetailScrollOffsetChange?: (offset: number) => void
+  onSelectionMetaChange?: (meta: PerformanceSelectionMeta) => void
 }
 
 interface DailyPnlEntry {
@@ -440,6 +506,15 @@ interface DailyQueueLayout {
   dateWidth: number
   barWidth: number
   valueWidth: number
+}
+
+interface ComputedSummary {
+  acted: number
+  resolved: number
+  wins: number
+  total_pnl: number | null
+  avg_confidence: number | null
+  avg_size: number | null
 }
 
 function getPositionsLayout(width: number): PositionsLayout {
@@ -592,6 +667,142 @@ function formatHourlyBucketLabel(bucket: string, compact = false): string {
   return compact ? timeText : `${shortDate} ${timeText}`
 }
 
+function toneColor(tone?: PerfPositionEditState['statusTone']): string {
+  if (tone === 'error') return theme.red
+  if (tone === 'success') return theme.green
+  return theme.dim
+}
+
+function normalizeManualStatus(raw: string | null | undefined): PositionManualEditStatus | null {
+  const normalized = String(raw || '').trim().toLowerCase()
+  if (editablePositionStatuses.includes(normalized as PositionManualEditStatus)) {
+    return normalized as PositionManualEditStatus
+  }
+  return null
+}
+
+function positionEditKey(marketId: string, tokenId: string, side: string, realMoney: number): string {
+  return `${realMoney}:${marketId}:${tokenId}:${side.trim().toLowerCase()}`
+}
+
+function roundTo(value: number, decimals: number): number {
+  return Number(value.toFixed(decimals))
+}
+
+function computePositionProfit(row: PositionRow): number | null {
+  if (row.status === 'open' || row.status === 'waiting') {
+    return null
+  }
+  if (row.status === 'win') {
+    return row.shares != null ? row.shares - row.size_usd : null
+  }
+  if (row.status === 'lose') {
+    return -row.size_usd
+  }
+  const exitSizeUsd = row.exit_size_usd ?? row.size_usd
+  return exitSizeUsd - row.size_usd
+}
+
+function normalizeEffectivePosition(
+  row: PositionRow,
+  nowTs: number,
+  tradeLogEditLookup: Map<number, TradeLogManualEditRow>,
+  positionEditLookup: Map<string, PositionManualEditRow>
+): PositionRow {
+  const tradeEdit =
+    row.source_trade_log_id != null ? tradeLogEditLookup.get(row.source_trade_log_id) : undefined
+  const positionEdit = positionEditLookup.get(positionEditKey(row.market_id, row.token_id, row.side, row.real_money))
+  const edit = row.source_kind === 'position' ? (positionEdit ?? tradeEdit) : tradeEdit
+  const entry_price = edit?.entry_price != null ? Number(edit.entry_price) : row.entry_price
+  const shares = edit?.shares != null ? Number(edit.shares) : row.shares
+  const size_usd = edit?.size_usd != null ? Number(edit.size_usd) : row.size_usd
+  const statusOverride = normalizeManualStatus(edit?.status)
+  const status =
+    statusOverride ??
+    (row.status === 'open' && row.market_close_ts > 0 && row.market_close_ts <= nowTs ? 'waiting' : row.status)
+  const baseResolutionTs =
+    row.resolution_ts ||
+    row.market_close_ts ||
+    (edit?.updated_at != null ? Number(edit.updated_at) : 0) ||
+    row.entered_at
+  const resolution_ts =
+    status === 'open'
+      ? 0
+      : status === 'waiting'
+        ? row.market_close_ts || baseResolutionTs
+        : baseResolutionTs
+  const exit_size_usd =
+    status === 'exit'
+      ? roundTo(Number(row.exit_size_usd ?? size_usd), 3)
+      : null
+  const normalizedRow: PositionRow = {
+    ...row,
+    entry_price: roundTo(Number(entry_price || 0), 3),
+    shares: shares != null ? roundTo(Number(shares), 6) : null,
+    size_usd: roundTo(Number(size_usd || 0), 3),
+    status,
+    resolution_ts,
+    exit_size_usd
+  }
+  return {
+    ...normalizedRow,
+    pnl_usd: computePositionProfit(normalizedRow)
+  }
+}
+
+function groupDailyPnl(rows: PositionRow[]): DailyPnlEntry[] {
+  const totals = new Map<string, number>()
+
+  rows.forEach((row) => {
+    const pnl = row.pnl_usd
+    if (pnl == null) {
+      return
+    }
+    const ts = row.resolution_ts || row.market_close_ts || row.entered_at
+    if (!ts) {
+      return
+    }
+    const bucketDate = new Date(ts * 1000)
+    bucketDate.setMinutes(0, 0, 0)
+    const bucket = formatHourlyBucketKey(bucketDate)
+    totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3))
+  })
+
+  const parsedEntries = Array.from(totals.entries())
+    .map(([day, pnl]) => ({
+      day,
+      pnl,
+      label: formatDollar(pnl),
+      bucketDate: parseHourlyBucket(day)
+    }))
+    .filter((row): row is DailyPnlEntry & {bucketDate: Date} => row.bucketDate != null)
+    .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime())
+
+  if (!parsedEntries.length) {
+    return []
+  }
+
+  const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]))
+  const newest = new Date(parsedEntries[0].bucketDate.getTime())
+  const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime())
+  const filledEntries: DailyPnlEntry[] = []
+
+  for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
+    const bucketKey = formatHourlyBucketKey(cursor)
+    const existing = entryByBucket.get(bucketKey)
+    filledEntries.push(
+      existing
+        ? {day: existing.day, pnl: existing.pnl, label: existing.label}
+        : {day: bucketKey, pnl: 0, label: formatDollar(0)}
+    )
+    const nextCursor = new Date(cursor.getTime())
+    nextCursor.setHours(nextCursor.getHours() - 1)
+    cursor = nextCursor
+  }
+
+  return filledEntries
+}
+
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
   const levelCount = 4
   const gapWidth = 0
@@ -650,17 +861,19 @@ export function Performance({
   selectedBox,
   dailyDetailOpen,
   dailyDetailScrollOffset,
+  editState,
   onCurrentScrollOffsetChange,
   onPastScrollOffsetChange,
-  onDailyDetailScrollOffsetChange
+  onDailyDetailScrollOffsetChange,
+  onSelectionMetaChange
 }: PerformanceProps) {
   const terminal = useTerminalSize()
   const stacked = stackPanels(terminal.width)
-  const rows = useQuery<SummaryRow>(SUMMARY_SQL)
-  const daily = useQuery<DailyRow>(DAILY_SQL)
   const shadowOpenPositions = useQuery<PositionRow>(SHADOW_OPEN_POSITIONS_SQL)
   const livePositions = useQuery<PositionRow>(LIVE_POSITIONS_SQL)
   const resolvedPositions = useQuery<PositionRow>(RESOLVED_POSITIONS_SQL)
+  const tradeLogManualEdits = useQuery<TradeLogManualEditRow>(TRADE_LOG_MANUAL_EDITS_SQL)
+  const positionManualEdits = useQuery<PositionManualEditRow>(POSITION_MANUAL_EDITS_SQL)
   const events = useEventStream(1000)
   const {lookup: tradeIdLookup} = useTradeIdIndex()
   const botState = useBotState(1000)
@@ -669,10 +882,6 @@ export function Performance({
   const nowTs = Date.now() / 1000
   const activeMode = botState.mode === 'live' ? 'live' : 'shadow'
   const activeRealMoney = activeMode === 'live' ? 1 : 0
-
-  const shadow = rows.find((row) => row.real_money === 0)
-  const live = rows.find((row) => row.real_money === 1)
-  const activeSummary = activeMode === 'live' ? live : shadow
   const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker'
   const usernames = useMemo(() => {
     const lookup = new Map<string, string>()
@@ -687,6 +896,23 @@ export function Performance({
     }
     return lookup
   }, [events])
+  const tradeLogEditLookup = useMemo(
+    () =>
+      new Map(
+        tradeLogManualEdits.map((row) => [Number(row.trade_log_id), row])
+      ),
+    [tradeLogManualEdits]
+  )
+  const positionEditLookup = useMemo(
+    () =>
+      new Map(
+        positionManualEdits.map((row) => [
+          positionEditKey(row.market_id, row.token_id, row.side, Number(row.real_money || 0)),
+          row
+        ])
+      ),
+    [positionManualEdits]
+  )
   const activeOpenPositions = useMemo(
     () =>
       activeMode === 'live'
@@ -698,12 +924,30 @@ export function Performance({
     () => resolvedPositions.filter((row) => row.real_money === activeRealMoney),
     [activeRealMoney, resolvedPositions]
   )
+  const effectiveOpenPositions = useMemo(
+    () =>
+      activeOpenPositions.map((row) =>
+        normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEditLookup)
+      ),
+    [activeOpenPositions, nowTs, positionEditLookup, tradeLogEditLookup]
+  )
+  const effectiveResolvedPositions = useMemo(
+    () =>
+      activeResolvedPositions.map((row) =>
+        normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEditLookup)
+      ),
+    [activeResolvedPositions, nowTs, positionEditLookup, tradeLogEditLookup]
+  )
+  const effectivePositions = useMemo(
+    () => [...effectiveOpenPositions, ...effectiveResolvedPositions],
+    [effectiveOpenPositions, effectiveResolvedPositions]
+  )
   const currentPositions = useMemo(
     () =>
-      activeOpenPositions
-        .filter((row) => row.market_close_ts <= 0 || row.market_close_ts > nowTs)
+      effectivePositions
+        .filter((row) => row.status === 'open')
         .sort((left, right) => right.entered_at - left.entered_at),
-    [activeOpenPositions, nowTs]
+    [effectivePositions]
   )
   const currentPositionsTotal = useMemo(
     () => currentPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0),
@@ -711,10 +955,14 @@ export function Performance({
   )
   const waitingPositions = useMemo(
     () =>
-      activeOpenPositions
-        .filter((row) => row.market_close_ts > 0 && row.market_close_ts <= nowTs)
-        .map((row) => ({...row, status: 'waiting' as const})),
-    [activeOpenPositions, nowTs]
+      effectivePositions
+        .filter((row) => row.status === 'waiting')
+        .sort(
+          (a, b) =>
+            Math.max(b.market_close_ts || 0, b.entered_at || 0) -
+            Math.max(a.market_close_ts || 0, a.entered_at || 0)
+        ),
+    [effectivePositions]
   )
   const waitingPositionsTotal = useMemo(
     () => waitingPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0),
@@ -722,68 +970,44 @@ export function Performance({
   )
   const pastPositions = useMemo(
     () =>
-      [...activeResolvedPositions, ...waitingPositions].sort(
+      effectivePositions
+        .filter((row) => row.status !== 'open')
+        .sort(
         (a, b) =>
           Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
           Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)
       ),
-    [activeResolvedPositions, waitingPositions]
+    [effectivePositions]
   )
-  const activeDailyRows = useMemo(
-    () => daily.filter((row) => row.real_money === activeRealMoney),
-    [activeRealMoney, daily]
+  const activeSummary = useMemo<ComputedSummary>(
+    () => {
+      const acted = effectivePositions.length
+      const resolved = effectivePositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit')
+      const wins = resolved.filter((row) => (row.pnl_usd ?? 0) > 0).length
+      const totalPnl = roundTo(resolved.reduce((sum, row) => sum + (row.pnl_usd || 0), 0), 3)
+      const confidenceRows = effectivePositions.filter((row) => row.confidence != null)
+      const avgConfidence =
+        confidenceRows.length > 0
+          ? roundTo(confidenceRows.reduce((sum, row) => sum + Number(row.confidence || 0), 0) / confidenceRows.length, 3)
+          : null
+      const avgSize =
+        acted > 0
+          ? roundTo(effectivePositions.reduce((sum, row) => sum + Number(row.size_usd || 0), 0) / acted, 3)
+          : null
+      return {
+        acted,
+        resolved: resolved.length,
+        wins,
+        total_pnl: resolved.length ? totalPnl : 0,
+        avg_confidence: avgConfidence,
+        avg_size: avgSize
+      }
+    },
+    [effectivePositions]
   )
   const dailyEntries = useMemo<DailyPnlEntry[]>(
-    () => {
-      const parsedEntries = activeDailyRows
-        .map((row) => {
-          const bucketDate = parseHourlyBucket(row.day)
-          if (!bucketDate) {
-            return null
-          }
-          const pnl = Number(row.pnl || 0)
-          return {
-            day: row.day,
-            pnl,
-            label: formatDollar(pnl),
-            bucketDate
-          }
-        })
-        .filter((row): row is DailyPnlEntry & {bucketDate: Date} => row != null)
-        .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime())
-
-      if (!parsedEntries.length) {
-        return activeDailyRows.map((row) => {
-          const pnl = Number(row.pnl || 0)
-          return {
-            day: row.day,
-            pnl,
-            label: formatDollar(pnl)
-          }
-        })
-      }
-
-      const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]))
-      const newest = new Date(parsedEntries[0].bucketDate.getTime())
-      const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime())
-      const filledEntries: DailyPnlEntry[] = []
-
-      for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
-        const bucketKey = formatHourlyBucketKey(cursor)
-        const existing = entryByBucket.get(bucketKey)
-        filledEntries.push(
-          existing
-            ? {day: existing.day, pnl: existing.pnl, label: existing.label}
-            : {day: bucketKey, pnl: 0, label: formatDollar(0)}
-        )
-        const nextCursor = new Date(cursor.getTime())
-        nextCursor.setHours(nextCursor.getHours() - 1)
-        cursor = nextCursor
-      }
-
-      return filledEntries
-    },
-    [activeDailyRows]
+    () => groupDailyPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit')),
+    [pastPositions]
   )
   const dailyPanelContentWidth = useMemo(
     () => getDailyPanelContentWidth(terminal.width, stacked),
@@ -805,24 +1029,41 @@ export function Performance({
     [dailyEntries]
   )
   const paneMetrics = getPositionPaneMetrics(terminal.height, stacked)
-  const currentMaxOffset = Math.max(0, currentPositions.length - paneMetrics.visibleRows)
-  const pastMaxOffset = Math.max(0, pastPositions.length - paneMetrics.visibleRows)
+  const currentMaxOffset = Math.max(currentPositions.length - 1, 0)
+  const pastMaxOffset = Math.max(pastPositions.length - 1, 0)
   const effectiveCurrentScrollOffset = Math.min(currentScrollOffset, currentMaxOffset)
   const effectivePastScrollOffset = Math.min(pastScrollOffset, pastMaxOffset)
+  const currentWindowStart =
+    currentPositions.length > paneMetrics.visibleRows
+      ? Math.min(
+          Math.max(effectiveCurrentScrollOffset - Math.floor(paneMetrics.visibleRows / 2), 0),
+          Math.max(0, currentPositions.length - paneMetrics.visibleRows)
+        )
+      : 0
+  const pastWindowStart =
+    pastPositions.length > paneMetrics.visibleRows
+      ? Math.min(
+          Math.max(effectivePastScrollOffset - Math.floor(paneMetrics.visibleRows / 2), 0),
+          Math.max(0, pastPositions.length - paneMetrics.visibleRows)
+        )
+      : 0
   const visibleCurrentPositions = currentPositions.slice(
-    effectiveCurrentScrollOffset,
-    effectiveCurrentScrollOffset + paneMetrics.visibleRows
+    currentWindowStart,
+    currentWindowStart + paneMetrics.visibleRows
   )
   const visiblePastPositions = pastPositions.slice(
-    effectivePastScrollOffset,
-    effectivePastScrollOffset + paneMetrics.visibleRows
+    pastWindowStart,
+    pastWindowStart + paneMetrics.visibleRows
   )
+  const selectedCurrentRow = currentPositions[effectiveCurrentScrollOffset] ?? null
+  const selectedPastRow = pastPositions[effectivePastScrollOffset] ?? null
   const shadowBalance =
     botState.mode === 'shadow' && botState.bankroll_usd != null ? botState.bankroll_usd : null
   const liveBalance =
     botState.mode === 'live' && botState.bankroll_usd != null ? botState.bankroll_usd : null
   const activeBalance = activeMode === 'live' ? liveBalance : shadowBalance
   const modalBackground = terminal.backgroundColor || theme.modalBackground
+  const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
   const detailModalWidth = Math.max(60, Math.min(terminal.width - 8, terminal.wide ? 110 : 88))
   const detailModalContentWidth = Math.max(40, detailModalWidth - 4)
   const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12))
@@ -847,6 +1088,30 @@ export function Performance({
       onDailyDetailScrollOffsetChange?.(detailOffset)
     }
   }, [dailyDetailScrollOffset, detailOffset, onDailyDetailScrollOffsetChange])
+
+  useEffect(() => {
+    onSelectionMetaChange?.({
+      currentCount: currentPositions.length,
+      pastCount: pastPositions.length,
+      selectedCurrentRow,
+      selectedPastRow
+    })
+  }, [
+    currentPositions.length,
+    onSelectionMetaChange,
+    pastPositions.length,
+    selectedCurrentRow?.entry_price,
+    selectedCurrentRow?.row_key,
+    selectedCurrentRow?.shares,
+    selectedCurrentRow?.size_usd,
+    selectedCurrentRow?.status,
+    selectedPastRow?.entry_price,
+    selectedPastRow?.row_key,
+    selectedPastRow?.shares,
+    selectedPastRow?.size_usd,
+    selectedPastRow?.status
+  ])
+
   const paddedDetailEntries = useMemo(
     () =>
       Array.from({length: detailVisibleRows}, (_, index) => visibleDetailEntries[index] ?? null),
@@ -863,34 +1128,60 @@ export function Performance({
     () => Math.max(1, ...dailyEntries.map((entry) => Math.abs(entry.pnl))),
     [dailyEntries]
   )
-
-  const getPositionProfit = (row: PositionRow): number | null => {
-    const shares = row.entry_price > 0 ? row.size_usd / row.entry_price : null
-    const toWin =
-      row.status === 'exit'
-        ? row.exit_size_usd
-        : row.status === 'lose'
-          ? 0
-          : shares != null
-            ? shares
+  const editModalWidth = Math.max(56, Math.min(terminal.width - 8, terminal.wide ? 88 : 74))
+  const editModalContentWidth = Math.max(36, editModalWidth - 4)
+  const editFieldLabelWidth = Math.max(8, Math.min(10, Math.floor(editModalContentWidth * 0.22)))
+  const editFieldValueWidth = Math.max(12, editModalContentWidth - editFieldLabelWidth - 1)
+  const editDraftEntryValue =
+    editState && Number.isFinite(Number(editState.draftEntry)) && Number(editState.draftEntry) > 0
+      ? Number(editState.draftEntry)
+      : null
+  const editDraftSharesValue =
+    editState && Number.isFinite(Number(editState.draftShares)) && Number(editState.draftShares) > 0
+      ? Number(editState.draftShares)
+      : null
+  const editDraftTotalValue =
+    editState && Number.isFinite(Number(editState.draftTotal)) && Number(editState.draftTotal) > 0
+      ? Number(editState.draftTotal)
+      : null
+  const editPreviewPnl =
+    editState && editDraftTotalValue != null
+      ? editState.draftStatus === 'win'
+        ? editDraftSharesValue != null
+          ? editDraftSharesValue - editDraftTotalValue
+          : null
+        : editState.draftStatus === 'lose'
+          ? -editDraftTotalValue
+          : editState.draftStatus === 'exit'
+            ? Number(editState.row.exit_size_usd ?? editDraftTotalValue) - editDraftTotalValue
             : null
-    return row.status === 'win' || row.status === 'lose' || row.status === 'exit'
-      ? (row.pnl_usd ?? null)
-      : toWin != null
-        ? toWin - row.size_usd
-        : null
-  }
+      : null
+  const editQuestionLines = editState
+    ? wrapText(
+        truncate(editState.row.question || editState.row.market_id, editModalContentWidth),
+        editModalContentWidth
+      )
+    : []
+  const editInstructionText =
+    editState?.editingField
+      ? 'Type a positive number. Enter closes the field editor. Esc leaves the field editor.'
+      : 'Up/down selects a field. Enter edits numbers. Left/right changes status. s saves. Esc cancels.'
 
   const renderPositionsTable = (
     rowsToRender: PositionRow[],
-    {showStatus = false, showTtr = true, profitScaleRows = rowsToRender}: RenderPositionsOptions = {}
+    {
+      showStatus = false,
+      showTtr = true,
+      profitScaleRows = rowsToRender,
+      selectedRowKey
+    }: RenderPositionsOptions & {selectedRowKey?: string} = {}
   ) => {
     const trailingWidth = positionsLayout.ttrWidth
     const trailingDelta = trailingWidth - positionsLayout.ttrWidth
     const questionWidth = Math.max(14, positionsLayout.questionWidth - trailingDelta)
     const resolutionWidth = positionsLayout.resolutionWidth
     const maxAbsProfit = profitScaleRows.reduce(
-      (max, row) => Math.max(max, Math.abs(getPositionProfit(row) ?? 0)),
+      (max, row) => Math.max(max, Math.abs(computePositionProfit(row) ?? 0)),
       0
     )
 
@@ -941,6 +1232,8 @@ export function Performance({
         </InkBox>
         <InkBox flexDirection="column">
           {rowsToRender.map((row) => {
+            const isSelected = row.row_key === selectedRowKey
+            const rowBackground = isSelected ? selectedRowBackground : undefined
             const sideColor = outcomeColor(row.side)
             const displayId = row.trade_id ? tradeIdLookup.get(row.trade_id) ?? null : null
             const username = row.trader_address ? usernames.get(row.trader_address.toLowerCase()) : undefined
@@ -952,9 +1245,8 @@ export function Performance({
             const confidenceColor =
               row.confidence != null ? probabilityColor(row.confidence) : theme.dim
             const resolutionTs = row.resolution_ts || row.market_close_ts
-            const resolutionPassed = row.market_close_ts > 0 && row.market_close_ts <= nowTs
             const resolutionColor = row.status === 'waiting' ? theme.red : theme.dim
-            const shares = row.entry_price > 0 ? row.size_usd / row.entry_price : null
+            const shares = row.shares
             const toWin =
               row.status === 'exit'
                 ? row.exit_size_usd
@@ -963,7 +1255,7 @@ export function Performance({
                   : shares != null
                     ? shares
                     : null
-            const profit = getPositionProfit(row)
+            const profit = computePositionProfit(row)
             const statusText =
               row.status === 'win'
                 ? 'win'
@@ -999,29 +1291,48 @@ export function Performance({
               <InkBox key={row.row_key} width="100%">
                 {positionsLayout.showId ? (
                   <>
-                    <Text color={theme.dim}>{fitRight(displayIdText, positionsLayout.idWidth)}</Text>
-                    <Text> </Text>
+                    <Text color={theme.dim} backgroundColor={rowBackground}>
+                      {fitRight(displayIdText, positionsLayout.idWidth)}
+                    </Text>
+                    <Text backgroundColor={rowBackground}> </Text>
                   </>
                 ) : null}
                 {positionsLayout.showUser ? (
-                <>
-                  <Text color={username ? theme.white : theme.dim}>{fit(userText, positionsLayout.userWidth)}</Text>
-                  <Text> </Text>
-                </>
-              ) : null}
-                <Text color={row.market_url ? theme.accent : undefined}>
-                  {terminalHyperlink(fit(row.question || row.market_id, questionWidth), row.market_url)}
+                  <>
+                    <Text color={username ? theme.white : theme.dim} backgroundColor={rowBackground}>
+                      {fit(userText, positionsLayout.userWidth)}
+                    </Text>
+                    <Text backgroundColor={rowBackground}> </Text>
+                  </>
+                ) : null}
+                <Text
+                  color={isSelected ? theme.accent : row.market_url ? theme.accent : undefined}
+                  backgroundColor={rowBackground}
+                  bold={isSelected}
+                >
+                  {terminalHyperlink(
+                    fit(`${isSelected ? '> ' : '  '}${row.question || row.market_id}`, questionWidth),
+                    row.market_url
+                  )}
                 </Text>
-                <Text> </Text>
-                <Text color={theme.dim}>{fitRight(secondsAgo(row.entered_at), positionsLayout.ageWidth)}</Text>
-                <Text> </Text>
-                <Text color={actionColor}>{fit(actionText, positionsLayout.actionWidth)}</Text>
-                <Text> </Text>
-                <Text color={sideColor}>{fit(row.side.toUpperCase(), positionsLayout.sideWidth)}</Text>
-                <Text> </Text>
-                <Text color={entryColor}>{fitRight(formatNumber(row.entry_price), positionsLayout.entryWidth)}</Text>
-                <Text> </Text>
-                <Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={theme.dim} backgroundColor={rowBackground} bold={isSelected}>
+                  {fitRight(secondsAgo(row.entered_at), positionsLayout.ageWidth)}
+                </Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={actionColor} backgroundColor={rowBackground} bold={isSelected}>
+                  {fit(actionText, positionsLayout.actionWidth)}
+                </Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={sideColor} backgroundColor={rowBackground} bold={isSelected}>
+                  {fit(row.side.toUpperCase(), positionsLayout.sideWidth)}
+                </Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={entryColor} backgroundColor={rowBackground} bold={isSelected}>
+                  {fitRight(formatNumber(row.entry_price), positionsLayout.entryWidth)}
+                </Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text backgroundColor={rowBackground} bold={isSelected}>
                   {fitRight(
                     shares != null
                       ? formatAdaptiveNumber(shares, positionsLayout.sharesWidth)
@@ -1029,10 +1340,12 @@ export function Performance({
                     positionsLayout.sharesWidth
                   )}
                 </Text>
-                <Text> </Text>
-                <Text>{fitRight(formatAdaptiveDollar(row.size_usd, positionsLayout.sizeWidth), positionsLayout.sizeWidth)}</Text>
-                <Text> </Text>
-                <Text color={toWinColor}>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text backgroundColor={rowBackground} bold={isSelected}>
+                  {fitRight(formatAdaptiveDollar(row.size_usd, positionsLayout.sizeWidth), positionsLayout.sizeWidth)}
+                </Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={toWinColor} backgroundColor={rowBackground} bold={isSelected}>
                   {fitRight(
                     toWin != null
                       ? formatAdaptiveDollar(toWin, positionsLayout.toWinWidth)
@@ -1040,8 +1353,8 @@ export function Performance({
                     positionsLayout.toWinWidth
                   )}
                 </Text>
-                <Text> </Text>
-                <Text color={profitColor}>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={profitColor} backgroundColor={rowBackground} bold={isSelected}>
                   {fitRight(
                     profit != null
                       ? formatAdaptiveDollar(profit, positionsLayout.profitWidth)
@@ -1049,14 +1362,18 @@ export function Performance({
                     positionsLayout.profitWidth
                   )}
                 </Text>
-                <Text> </Text>
-                <Text color={confidenceColor}>{fitRight(formatPct(row.confidence, 1), positionsLayout.confidenceWidth)}</Text>
-                <Text> </Text>
-                <Text color={resolutionColor}>{fitRight(formatShortDateTime(resolutionTs), resolutionWidth)}</Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={confidenceColor} backgroundColor={rowBackground} bold={isSelected}>
+                  {fitRight(formatPct(row.confidence, 1), positionsLayout.confidenceWidth)}
+                </Text>
+                <Text backgroundColor={rowBackground}> </Text>
+                <Text color={resolutionColor} backgroundColor={rowBackground} bold={isSelected}>
+                  {fitRight(formatShortDateTime(resolutionTs), resolutionWidth)}
+                </Text>
                 {showTtr || showStatus ? (
                   <>
-                    <Text> </Text>
-                    <Text color={showStatus ? statusColor : resolutionColor}>
+                    <Text backgroundColor={rowBackground}> </Text>
+                    <Text color={showStatus ? statusColor : resolutionColor} backgroundColor={rowBackground} bold={isSelected}>
                       {fitRight(
                         showStatus ? statusText : timeUntil(row.market_close_ts),
                         trailingWidth
@@ -1105,7 +1422,10 @@ export function Performance({
             accent={selectedBox === 'current'}
           >
             {visibleCurrentPositions.length ? (
-              renderPositionsTable(visibleCurrentPositions, {profitScaleRows: currentPositions})
+              renderPositionsTable(visibleCurrentPositions, {
+                profitScaleRows: currentPositions,
+                selectedRowKey: selectedCurrentRow?.row_key
+              })
             ) : (
               <Text color={theme.dim}>No open positions right now.</Text>
             )}
@@ -1121,13 +1441,74 @@ export function Performance({
             accent={selectedBox === 'past'}
           >
             {visiblePastPositions.length ? (
-              renderPositionsTable(visiblePastPositions, {showStatus: true, showTtr: false, profitScaleRows: pastPositions})
+              renderPositionsTable(visiblePastPositions, {
+                showStatus: true,
+                showTtr: false,
+                profitScaleRows: pastPositions,
+                selectedRowKey: selectedPastRow?.row_key
+              })
             ) : (
               <Text color={theme.dim}>No past positions yet.</Text>
             )}
           </Box>
         </InkBox>
       </InkBox>
+
+      {editState ? (
+        <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
+          <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={editModalWidth}>
+            <InkBox width="100%">
+              <Text color={theme.accent} backgroundColor={modalBackground} bold>
+                {` ${fit('Manual Position Edit', Math.max(1, editModalContentWidth - 1))}`}
+              </Text>
+              <Text backgroundColor={modalBackground}> </Text>
+            </InkBox>
+            <Text color={theme.white} backgroundColor={modalBackground} bold>
+              {` ${fit(`${editState.row.side.toUpperCase()} ${formatAdaptiveDollar(editState.row.size_usd, 10)} ${activeTitle}`, editModalContentWidth)} `}
+            </Text>
+            {editQuestionLines.map((line, index) => (
+              <Text key={`edit-question-${index}`} color={theme.dim} backgroundColor={modalBackground}>
+                {` ${fit(line, editModalContentWidth)} `}
+              </Text>
+            ))}
+            <Text color={theme.dim} backgroundColor={modalBackground}>
+              {` ${fit(`Status ${editState.row.status}  Trade ${editState.row.trade_id || '-'}  Entered ${secondsAgo(editState.row.entered_at)}`, editModalContentWidth)} `}
+            </Text>
+            <Text backgroundColor={modalBackground}>{' '.repeat(editModalWidth - 2)}</Text>
+            {([
+              ['entry', editState.draftEntry, editState.editingField === 'entry'],
+              ['shares', editState.draftShares, editState.editingField === 'shares'],
+              ['total', editState.draftTotal, editState.editingField === 'total'],
+              ['status', editState.draftStatus, false]
+            ] as Array<[PerfPositionEditField, string, boolean]>).map(([field, value, editing]) => {
+              const selected = editState.selectedField === field
+              const rowBackground = selected ? selectedRowBackground : modalBackground
+              const label = `${selected ? '>' : ' '} ${field.toUpperCase()}`
+              const shownValue = field === 'status' ? value.toUpperCase() : editing ? `${value}_` : value
+              return (
+                <InkBox key={`edit-field-${field}`} width="100%">
+                  <Text color={selected ? theme.accent : theme.dim} backgroundColor={rowBackground} bold={selected}>
+                    {` ${fit(label, editFieldLabelWidth)} `}
+                  </Text>
+                  <Text color={selected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={selected}>
+                    {`${fitRight(shownValue, editFieldValueWidth)} `}
+                  </Text>
+                </InkBox>
+              )
+            })}
+            <Text backgroundColor={modalBackground}>{' '.repeat(editModalWidth - 2)}</Text>
+            <Text color={theme.dim} backgroundColor={modalBackground}>
+              {` ${fit(
+                `Preview P&L ${editPreviewPnl == null ? '-' : formatDollar(editPreviewPnl)}  To win ${editDraftSharesValue == null ? '-' : formatAdaptiveDollar(editDraftSharesValue, 10)}`,
+                editModalContentWidth
+              )} `}
+            </Text>
+            <Text color={toneColor(editState.statusTone)} backgroundColor={modalBackground}>
+              {` ${fit((editState.statusMessage || editInstructionText).trim(), editModalContentWidth)} `}
+            </Text>
+          </InkBox>
+        </InkBox>
+      ) : null}
 
       {dailyDetailOpen ? (
         <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">

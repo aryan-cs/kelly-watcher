@@ -10,12 +10,19 @@ import {
   writeEditableConfigValue
 } from './configEditor.js'
 import {MODEL_PANEL_DEFS, Models} from './pages/Models.js'
+import {requestManualRetrain} from './retrainControl.js'
 import {stackPanels} from './responsive.js'
 import {dangerActions, restartShadowAccount, setLiveTradingEnabled} from './settingsDanger.js'
 import {theme} from './theme.js'
 import {LiveFeed} from './pages/LiveFeed.js'
 import {Signals} from './pages/Signals.js'
-import {Performance, type PerfBox} from './pages/Performance'
+import {
+  Performance,
+  type PerfBox,
+  type PerfPositionEditField,
+  type PerfPositionEditState,
+  type PerformanceSelectionMeta
+} from './pages/Performance'
 import {Wallets} from './pages/Wallets'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
 import {secondsAgo} from './format.js'
@@ -23,6 +30,7 @@ import {ManualRefreshProvider} from './refresh.js'
 import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} from './terminal.js'
 import {useBotState} from './useBotState.js'
 import {dropTrackedWallet, reactivateDroppedWallet} from './walletWatchState.js'
+import {editablePositionStatuses, savePositionManualEdit, type PositionManualEditStatus} from './positionEditor.js'
 
 type Page = 1 | 2 | 3 | 4 | 5 | 6
 type PerfPane = 'current' | 'past'
@@ -40,6 +48,14 @@ interface WalletMeta {
   worstWalletAddresses: string[]
   trackedWalletAddresses: string[]
   droppedWalletAddresses: string[]
+}
+
+type NoticeTone = 'info' | 'success' | 'error'
+
+interface TransientNotice {
+  message: string
+  tone: NoticeTone
+  expiresAt: number
 }
 
 const PAGES: Record<Page, {label: string}> = {
@@ -89,6 +105,7 @@ interface AppContentProps {
   perfSelectedBox: PerfBox
   perfDailyDetailOpen: boolean
   perfDailyDetailScrollOffset: number
+  perfPositionEdit: PerfPositionEditState | null
   modelSelectionIndex: number
   modelDetailOpen: boolean
   modelSettingSelectionIndex: number
@@ -102,6 +119,8 @@ interface AppContentProps {
   onPerfCurrentScrollOffsetChange: (offset: number) => void
   onPerfPastScrollOffsetChange: (offset: number) => void
   onPerfDailyDetailScrollOffsetChange: (offset: number) => void
+  onPerfSelectionMetaChange: (meta: PerformanceSelectionMeta) => void
+  transientNotice: TransientNotice | null
 }
 
 function renderPage(
@@ -119,9 +138,11 @@ function renderPage(
   perfSelectedBox: PerfBox,
   perfDailyDetailOpen: boolean,
   perfDailyDetailScrollOffset: number,
+  perfPositionEdit: PerfPositionEditState | null,
   onPerfCurrentScrollOffsetChange: (offset: number) => void,
   onPerfPastScrollOffsetChange: (offset: number) => void,
   onPerfDailyDetailScrollOffsetChange: (offset: number) => void,
+  onPerfSelectionMetaChange: (meta: PerformanceSelectionMeta) => void,
   modelSelectionIndex: number,
   modelDetailOpen: boolean,
   modelSettingSelectionIndex: number,
@@ -155,9 +176,11 @@ function renderPage(
           selectedBox={perfSelectedBox}
           dailyDetailOpen={perfDailyDetailOpen}
           dailyDetailScrollOffset={perfDailyDetailScrollOffset}
+          editState={perfPositionEdit}
           onCurrentScrollOffsetChange={onPerfCurrentScrollOffsetChange}
           onPastScrollOffsetChange={onPerfPastScrollOffsetChange}
           onDailyDetailScrollOffsetChange={onPerfDailyDetailScrollOffsetChange}
+          onSelectionMetaChange={onPerfSelectionMetaChange}
         />
       )
     case 4:
@@ -202,6 +225,7 @@ function AppContent({
   perfSelectedBox,
   perfDailyDetailOpen,
   perfDailyDetailScrollOffset,
+  perfPositionEdit,
   modelSelectionIndex,
   modelDetailOpen,
   modelSettingSelectionIndex,
@@ -214,7 +238,9 @@ function AppContent({
   onWalletMetaChange,
   onPerfCurrentScrollOffsetChange,
   onPerfPastScrollOffsetChange,
-  onPerfDailyDetailScrollOffsetChange
+  onPerfDailyDetailScrollOffsetChange,
+  onPerfSelectionMetaChange,
+  transientNotice
 }: AppContentProps) {
   const terminal = useTerminalSize()
   const botState = useBotState()
@@ -246,6 +272,8 @@ function AppContent({
       ? {1: 'Track', 2: 'Sig', 3: 'Perf', 4: 'Mod', 5: 'Wall', 6: 'Cfg'}
       : {1: 'Tracker', 2: 'Signals', 3: 'Perf', 4: 'Models', 5: 'Wallets', 6: 'Config'}
   const footerCompact = terminal.compact
+  const selectedModelPanel = MODEL_PANEL_DEFS[Math.max(0, Math.min(modelSelectionIndex, MODEL_PANEL_DEFS.length - 1))]
+  const activeTransientNotice = transientNotice && now <= transientNotice.expiresAt ? transientNotice : null
   const currentPollElapsedText = formatCurrentPollElapsedSeconds(now, currentLoopStartedAt)
   const lastPollText = loopInProgress
     ? `polling...${currentPollElapsedText ? ` ${currentPollElapsedText}` : ''} | last poll: ${secondsAgo(botState.last_poll_at)}`
@@ -261,7 +289,17 @@ function AppContent({
       : recentRetrainText
         ? `${recentRetrainText} | ${lastPollText}`
         : lastPollText
-  const footerStatusColor = isRefreshing ? theme.accent : retrainInProgress ? theme.yellow : theme.dim
+  const footerStatusColor = activeTransientNotice
+    ? activeTransientNotice.tone === 'error'
+      ? theme.red
+      : activeTransientNotice.tone === 'success'
+        ? theme.green
+        : theme.accent
+    : isRefreshing
+      ? theme.accent
+      : retrainInProgress
+        ? theme.yellow
+        : theme.dim
   const footerControls =
     page === 1
       ? terminal.compact
@@ -272,21 +310,33 @@ function AppContent({
           ? '↑↓ scroll  ←→ pan  ↑↑ latest  r refresh  q exit'
           : '↑/↓: scroll  ←/→: pan  ↑↑: latest  r: refresh  q: exit'
       : page === 3
-        ? perfDailyDetailOpen
+        ? perfPositionEdit
+          ? terminal.compact
+            ? '↑↓ field  ←→ status  enter edit  s save  esc cancel'
+            : '↑/↓: field  ←/→: status  enter: edit value  s: save  esc: cancel'
+          : perfDailyDetailOpen
           ? terminal.compact
             ? '↑↓ list  esc close  r refresh  q exit'
             : '↑/↓: list  esc: close  r: refresh  q: exit'
           : terminal.compact
-            ? '←→ boxes  ↑↓ scroll  enter detail  r refresh  q exit'
-            : '←/→: cycle boxes  ↑/↓: scroll list  enter: daily detail  r: refresh  q: exit'
+            ? '←→ boxes  ↑↓ select  enter open  r refresh  q exit'
+            : '←/→: cycle boxes  ↑/↓: select row  enter: edit/open  r: refresh  q: exit'
       : page === 4
         ? modelDetailOpen
           ? terminal.compact
-            ? '↑↓ settings  enter edit  esc close  r refresh  q exit'
-            : '↑/↓: settings  enter: edit in config  esc: close  r: refresh  q: exit'
+            ? selectedModelPanel.id === 'training_cycle'
+              ? '↑↓ settings  enter edit  t retrain  esc close  r refresh  q exit'
+              : '↑↓ settings  enter edit  esc close  r refresh  q exit'
+            : selectedModelPanel.id === 'training_cycle'
+              ? '↑/↓: settings  enter: edit in config  t: retrain now  esc: close  r: refresh  q: exit'
+              : '↑/↓: settings  enter: edit in config  esc: close  r: refresh  q: exit'
           : terminal.compact
-            ? '↑↓/←→ select  enter help  r refresh  q exit'
-            : '↑/↓/←/→: select  enter: help  r: refresh  q: exit'
+            ? selectedModelPanel.id === 'training_cycle'
+              ? '↑↓/←→ select  enter help  t retrain  r refresh  q exit'
+              : '↑↓/←→ select  enter help  r refresh  q exit'
+            : selectedModelPanel.id === 'training_cycle'
+              ? '↑/↓/←/→: select  enter: help  t: retrain now  r: refresh  q: exit'
+              : '↑/↓/←/→: select  enter: help  r: refresh  q: exit'
       : page === 5
         ? terminal.compact
           ? '←→ pane  ↑↓ select  enter detail  d drop  a reactivate  esc close  r refresh  q exit'
@@ -355,9 +405,11 @@ function AppContent({
           perfSelectedBox,
           perfDailyDetailOpen,
           perfDailyDetailScrollOffset,
+          perfPositionEdit,
           onPerfCurrentScrollOffsetChange,
           onPerfPastScrollOffsetChange,
           onPerfDailyDetailScrollOffsetChange,
+          onPerfSelectionMetaChange,
           modelSelectionIndex,
           modelDetailOpen,
           modelSettingSelectionIndex,
@@ -377,13 +429,13 @@ function AppContent({
           <>
             <Text color={theme.dim}>{footerControls}</Text>
             <Spacer />
-            <Text color={footerStatusColor}>{footerStatusText}</Text>
+            <Text color={footerStatusColor}>{activeTransientNotice ? activeTransientNotice.message : footerStatusText}</Text>
           </>
         ) : (
           <>
             <Text color={theme.dim}>{footerControls}</Text>
             <Spacer />
-            <Text color={footerStatusColor}>{footerStatusText}</Text>
+            <Text color={footerStatusColor}>{activeTransientNotice ? activeTransientNotice.message : footerStatusText}</Text>
           </>
         )}
       </Box>
@@ -405,6 +457,13 @@ function App() {
   const [perfSelectedBox, setPerfSelectedBox] = useState<PerfBox>('current')
   const [perfDailyDetailOpen, setPerfDailyDetailOpen] = useState(false)
   const [perfDailyDetailScrollOffset, setPerfDailyDetailScrollOffset] = useState(0)
+  const [perfSelectionMeta, setPerfSelectionMeta] = useState<PerformanceSelectionMeta>({
+    currentCount: 0,
+    pastCount: 0,
+    selectedCurrentRow: null,
+    selectedPastRow: null
+  })
+  const [perfPositionEdit, setPerfPositionEdit] = useState<PerfPositionEditState | null>(null)
   const [modelSelectionIndex, setModelSelectionIndex] = useState(0)
   const [modelDetailOpen, setModelDetailOpen] = useState(false)
   const [modelSettingSelectionIndex, setModelSettingSelectionIndex] = useState(0)
@@ -424,6 +483,7 @@ function App() {
     trackedWalletAddresses: [],
     droppedWalletAddresses: []
   })
+  const [transientNotice, setTransientNotice] = useState<TransientNotice | null>(null)
   const lastUpArrowRef = useRef<{page: Page | null; pane: PerfPane | null; at: number}>({page: null, pane: null, at: 0})
   const pendingTopJumpRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const upArrowHoldActiveRef = useRef(false)
@@ -543,6 +603,141 @@ function App() {
       }
       return next
     })
+  }
+
+  const perfEditableFieldOrder: PerfPositionEditField[] = ['entry', 'shares', 'total', 'status']
+  const activePerfRow =
+    perfSelectedBox === 'current'
+      ? perfSelectionMeta.selectedCurrentRow
+      : perfSelectedBox === 'past'
+        ? perfSelectionMeta.selectedPastRow
+        : null
+
+  const openPerfPositionEditor = () => {
+    if (!activePerfRow || (perfSelectedBox !== 'current' && perfSelectedBox !== 'past')) {
+      return
+    }
+
+    setPerfPositionEdit({
+      row: activePerfRow,
+      pane: perfSelectedBox,
+      selectedField: 'entry',
+      editingField: null,
+      draftEntry: String(Number(activePerfRow.entry_price.toFixed(6))),
+      draftShares: String(Number((activePerfRow.shares ?? 0).toFixed(6))),
+      draftTotal: String(Number(activePerfRow.size_usd.toFixed(6))),
+      draftStatus: activePerfRow.status,
+      statusMessage: 'Select a field, press Enter to edit numbers, then press s to save.',
+      statusTone: 'info'
+    })
+  }
+
+  const movePerfEditField = (direction: 'up' | 'down') => {
+    setPerfPositionEdit((current) => {
+      if (!current) {
+        return current
+      }
+      const currentIndex = perfEditableFieldOrder.indexOf(current.selectedField)
+      const nextIndex =
+        direction === 'up'
+          ? (currentIndex - 1 + perfEditableFieldOrder.length) % perfEditableFieldOrder.length
+          : (currentIndex + 1) % perfEditableFieldOrder.length
+      return {
+        ...current,
+        selectedField: perfEditableFieldOrder[nextIndex],
+        statusMessage:
+          perfEditableFieldOrder[nextIndex] === 'status'
+            ? 'Use left/right to change the saved status.'
+            : 'Press Enter to edit this numeric value.',
+        statusTone: 'info'
+      }
+    })
+  }
+
+  const cyclePerfEditStatus = (direction: 'left' | 'right') => {
+    setPerfPositionEdit((current) => {
+      if (!current) {
+        return current
+      }
+      const currentIndex = editablePositionStatuses.indexOf(current.draftStatus)
+      const delta = direction === 'left' ? -1 : 1
+      const nextStatus =
+        editablePositionStatuses[
+          (currentIndex + delta + editablePositionStatuses.length) % editablePositionStatuses.length
+        ] || current.draftStatus
+      return {
+        ...current,
+        draftStatus: nextStatus,
+        statusMessage: `Status will be saved as ${nextStatus}.`,
+        statusTone: 'info'
+      }
+    })
+  }
+
+  const savePerfPositionEdit = () => {
+    if (!perfPositionEdit) {
+      return
+    }
+
+    const entryPrice = Number(perfPositionEdit.draftEntry)
+    const shares = Number(perfPositionEdit.draftShares)
+    const sizeUsd = Number(perfPositionEdit.draftTotal)
+
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
+      setPerfPositionEdit((current) =>
+        current
+          ? {...current, selectedField: 'entry', statusMessage: 'Entry must be a positive number.', statusTone: 'error'}
+          : current
+      )
+      return
+    }
+    if (!Number.isFinite(shares) || shares <= 0) {
+      setPerfPositionEdit((current) =>
+        current
+          ? {...current, selectedField: 'shares', statusMessage: 'Shares must be a positive number.', statusTone: 'error'}
+          : current
+      )
+      return
+    }
+    if (!Number.isFinite(sizeUsd) || sizeUsd <= 0) {
+      setPerfPositionEdit((current) =>
+        current
+          ? {...current, selectedField: 'total', statusMessage: 'Total must be a positive number.', statusTone: 'error'}
+          : current
+      )
+      return
+    }
+
+    try {
+      savePositionManualEdit({
+        sourceKind: perfPositionEdit.row.source_kind,
+        sourceTradeLogId: perfPositionEdit.row.source_trade_log_id,
+        marketId: perfPositionEdit.row.market_id,
+        tokenId: perfPositionEdit.row.token_id,
+        side: perfPositionEdit.row.side,
+        realMoney: perfPositionEdit.row.real_money,
+        entryPrice,
+        shares,
+        sizeUsd,
+        status: perfPositionEdit.draftStatus
+      })
+      if (perfPositionEdit.draftStatus === 'open') {
+        setPerfActivePane('current')
+        setPerfSelectedBox('current')
+      } else {
+        setPerfActivePane('past')
+        setPerfSelectedBox('past')
+      }
+      setPerfPositionEdit(null)
+      setRefreshToken((current) => current + 1)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown position edit error'
+      setPerfPositionEdit((current) =>
+        current
+          ? {...current, statusMessage: `Save failed: ${message}`, statusTone: 'error'}
+          : current
+      )
+    }
   }
 
   const saveConfigValue = (rawValue: string) => {
@@ -787,6 +982,14 @@ function App() {
     }
   }
 
+  const showTransientNotice = (message: string, tone: NoticeTone = 'info', durationMs = 5000) => {
+    setTransientNotice({
+      message,
+      tone,
+      expiresAt: Date.now() / 1000 + (durationMs / 1000)
+    })
+  }
+
   useEffect(() => {
     if (refreshToken === 0 || !isRefreshing) {
       return
@@ -825,6 +1028,17 @@ function App() {
       setPerfDailyDetailOpen(false)
     }
   }, [page, perfDailyDetailOpen])
+
+  useEffect(() => {
+    if (page !== 3 && perfPositionEdit) {
+      setPerfPositionEdit(null)
+    }
+  }, [page, perfPositionEdit])
+
+  useEffect(() => {
+    setPerfCurrentScrollOffset((current) => Math.min(current, Math.max(perfSelectionMeta.currentCount - 1, 0)))
+    setPerfPastScrollOffset((current) => Math.min(current, Math.max(perfSelectionMeta.pastCount - 1, 0)))
+  }, [perfSelectionMeta.currentCount, perfSelectionMeta.pastCount])
 
   useEffect(() => {
     setWalletBestSelectionIndex((current) => Math.min(current, Math.max(walletMeta.bestCount - 1, 0)))
@@ -1098,6 +1312,16 @@ function App() {
     }
 
     if (page === 4) {
+      if (normalized === 't' && selectedModelPanel.id === 'training_cycle') {
+        const result = requestManualRetrain()
+        showTransientNotice(result.message, result.ok ? 'success' : 'error')
+        if (result.ok) {
+          setIsRefreshing(true)
+          setRefreshToken((current) => current + 1)
+        }
+        return
+      }
+
       if (modelDetailOpen) {
         if (key.escape) {
           setModelDetailOpen(false)
@@ -1236,6 +1460,133 @@ function App() {
     }
 
     if (page === 3) {
+      if (perfPositionEdit) {
+        if (perfPositionEdit.editingField) {
+          if (key.escape) {
+            setPerfPositionEdit((current) =>
+              current
+                ? {
+                    ...current,
+                    editingField: null,
+                    statusMessage: `Finished editing ${current.editingField}. Press s to save.`,
+                    statusTone: 'info'
+                  }
+                : current
+            )
+            return
+          }
+
+          if (key.return) {
+            setPerfPositionEdit((current) =>
+              current
+                ? {
+                    ...current,
+                    editingField: null,
+                    statusMessage: `Finished editing ${current.selectedField}. Press s to save.`,
+                    statusTone: 'info'
+                  }
+                : current
+            )
+            return
+          }
+
+          if (key.backspace || key.delete) {
+            setPerfPositionEdit((current) => {
+              if (!current || !current.editingField) {
+                return current
+              }
+              const fieldKey =
+                current.editingField === 'entry'
+                  ? 'draftEntry'
+                  : current.editingField === 'shares'
+                    ? 'draftShares'
+                    : 'draftTotal'
+              return {
+                ...current,
+                [fieldKey]: current[fieldKey].slice(0, -1)
+              }
+            })
+            return
+          }
+
+          if (/^[0-9.]$/.test(input)) {
+            setPerfPositionEdit((current) => {
+              if (!current || !current.editingField) {
+                return current
+              }
+              const fieldKey =
+                current.editingField === 'entry'
+                  ? 'draftEntry'
+                  : current.editingField === 'shares'
+                    ? 'draftShares'
+                    : 'draftTotal'
+              return {
+                ...current,
+                [fieldKey]: `${current[fieldKey]}${input}`
+              }
+            })
+            return
+          }
+
+          return
+        }
+
+        if (key.escape) {
+          setPerfPositionEdit(null)
+          return
+        }
+
+        if (key.upArrow || normalized === 'k') {
+          movePerfEditField('up')
+          return
+        }
+
+        if (key.downArrow || normalized === 'j') {
+          movePerfEditField('down')
+          return
+        }
+
+        if ((key.leftArrow || normalized === 'h') && perfPositionEdit.selectedField === 'status') {
+          cyclePerfEditStatus('left')
+          return
+        }
+
+        if ((key.rightArrow || normalized === 'l') && perfPositionEdit.selectedField === 'status') {
+          cyclePerfEditStatus('right')
+          return
+        }
+
+        if (normalized === 's') {
+          savePerfPositionEdit()
+          return
+        }
+
+        if (key.return) {
+          if (perfPositionEdit.selectedField === 'status') {
+            cyclePerfEditStatus('right')
+          } else {
+            setPerfPositionEdit((current) =>
+              current
+                ? {
+                    ...current,
+                    editingField:
+                      current.selectedField === 'entry' ||
+                      current.selectedField === 'shares' ||
+                      current.selectedField === 'total'
+                        ? current.selectedField
+                        : null,
+                    statusMessage: `Editing ${current.selectedField}. Type a value, then press Enter.`,
+                    statusTone: 'info'
+                  }
+                : current
+            )
+          }
+          return
+        }
+
+        return
+      }
+
       if (perfDailyDetailOpen) {
         if (key.escape) {
           setPerfDailyDetailOpen(false)
@@ -1255,12 +1606,12 @@ function App() {
         return
       }
 
-      if (key.upArrow) {
+      if (key.upArrow || normalized === 'k') {
         scrollSelectedPerformancePane(-1)
         return
       }
 
-      if (key.downArrow) {
+      if (key.downArrow || normalized === 'j') {
         scrollSelectedPerformancePane(1)
         return
       }
@@ -1275,9 +1626,18 @@ function App() {
         return
       }
 
-      if (key.return && perfSelectedBox === 'daily') {
-        setPerfDailyDetailScrollOffset(0)
-        setPerfDailyDetailOpen(true)
+      if (key.return || normalized === 'e') {
+        if (perfSelectedBox === 'daily') {
+          setPerfDailyDetailScrollOffset(0)
+          setPerfDailyDetailOpen(true)
+          return
+        }
+
+        if (perfSelectedBox === 'current' || perfSelectedBox === 'past') {
+          openPerfPositionEditor()
+          return
+        }
+
         return
       }
     }
@@ -1407,6 +1767,7 @@ function App() {
           perfSelectedBox={perfSelectedBox}
           perfDailyDetailOpen={perfDailyDetailOpen}
           perfDailyDetailScrollOffset={perfDailyDetailScrollOffset}
+          perfPositionEdit={perfPositionEdit}
           modelSelectionIndex={modelSelectionIndex}
           modelDetailOpen={modelDetailOpen}
           modelSettingSelectionIndex={modelSettingSelectionIndex}
@@ -1420,6 +1781,8 @@ function App() {
           onPerfCurrentScrollOffsetChange={setPerfCurrentScrollOffset}
           onPerfPastScrollOffsetChange={setPerfPastScrollOffset}
           onPerfDailyDetailScrollOffsetChange={setPerfDailyDetailScrollOffset}
+          onPerfSelectionMetaChange={setPerfSelectionMeta}
+          transientNotice={transientNotice}
         />
       </ManualRefreshProvider>
     </TerminalSizeProvider>

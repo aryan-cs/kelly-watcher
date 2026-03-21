@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
-from alerter import send_alert
+from alerter import build_lines, send_alert
 from config import retrain_min_new_labels
 from db import get_conn, init_db
 from trade_contract import RESOLVED_TRAINING_SAMPLE_SQL
@@ -124,10 +124,13 @@ def retrain_cycle_report(signal_engine, *, trigger: str = "manual", started_at: 
                 "metrics": metrics,
             }, trigger=trigger, started_at=started_at)
         if not metrics.get("deployed"):
-            message = (
-                "[RETRAIN REJECTED] Model failed deployment checks\n"
-                f"Brier: {metrics.get('brier_score')} | LL: {metrics.get('log_loss')}\n"
-                f"Val trades: {metrics.get('val_selected_trades')} | Val PnL: {metrics.get('val_total_pnl')}"
+            message = build_lines(
+                "retrain rejected",
+                "model failed deployment checks",
+                f"brier: {metrics.get('brier_score')}",
+                f"log loss: {metrics.get('log_loss')}",
+                f"val trades: {metrics.get('val_selected_trades')}",
+                f"val pnl: {metrics.get('val_total_pnl')}",
             )
             logger.warning(message)
             _send_retrain_alert(message)
@@ -143,17 +146,18 @@ def retrain_cycle_report(signal_engine, *, trigger: str = "manual", started_at: 
 
         signal_engine.reload_model()
         calibration = check_calibration(verbose=True)
-        top_features = "\n".join(f"  {name}: {score:.4f}" for name, score in metrics.get("top_features", []))
-        message = (
-            "[RETRAIN ACCEPTED] New model deployed\n"
-            f"Samples: {sample_count}\n"
-            f"Brier: {metrics['brier_score']}\n"
-            f"Log loss: {metrics['log_loss']} (baseline: {metrics['log_loss_base']})\n"
-            f"Val trades: {metrics.get('val_selected_trades')}\n"
-            f"Val PnL: {metrics.get('val_total_pnl')}\n"
-            f"Edge threshold: {metrics.get('edge_threshold')}\n"
-            f"Calibration buckets: {len(calibration.get('calibration_bins', []))}\n"
-            f"Top features:\n{top_features}"
+        top_feature_lines = [f"- {name}: {score:.4f}" for name, score in metrics.get("top_features", [])]
+        message = build_lines(
+            "retrain accepted",
+            f"deployed new model from {sample_count} samples",
+            f"brier: {metrics['brier_score']}",
+            f"log loss: {metrics['log_loss']} (baseline {metrics['log_loss_base']})",
+            f"val trades: {metrics.get('val_selected_trades')}",
+            f"val pnl: {metrics.get('val_total_pnl')}",
+            f"edge threshold: {metrics.get('edge_threshold')}",
+            f"calibration buckets: {len(calibration.get('calibration_bins', []))}",
+            "top features:" if top_feature_lines else None,
+            "\n".join(top_feature_lines) if top_feature_lines else None,
         )
         logger.info(message)
         _send_retrain_alert(message)
@@ -168,7 +172,7 @@ def retrain_cycle_report(signal_engine, *, trigger: str = "manual", started_at: 
             "calibration": calibration,
         }, trigger=trigger, started_at=started_at)
     except Exception as exc:
-        message = f"[RETRAIN FAILED] Retrain failed: {exc}"
+        message = build_lines("retrain failed", str(exc))
         logger.exception(message)
         _send_retrain_alert(message)
         _record_retrain_run(

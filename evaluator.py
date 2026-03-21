@@ -478,36 +478,33 @@ def daily_report() -> None:
     persist_performance_snapshot("live")
 
     lines = [
-        "=== Daily Performance Report ===",
-        "",
+        "daily performance report",
         (
-            f"[SHADOW] {shadow['resolved']} resolved | WR: {shadow['win_rate']:.0%} | "
-            f"P&L: ${shadow['total_pnl_usd']:.2f} | 7d: ${shadow['weekly_pnl_usd']:.2f}"
+            f"shadow: {shadow['resolved']} resolved | win rate {shadow['win_rate']:.0%} | "
+            f"pnl ${shadow['total_pnl_usd']:.2f} | 7d ${shadow['weekly_pnl_usd']:.2f}"
         ),
-        f"[SHADOW] Sharpe: {shadow['sharpe']:.2f} | Avg conf: {shadow['avg_confidence']:.3f}",
+        f"shadow: sharpe {shadow['sharpe']:.2f} | avg confidence {shadow['avg_confidence']:.3f}",
     ]
 
     if live["acted"] > 0:
         lines.extend(
             [
-                "",
                 (
-                    f"[LIVE] {live['resolved']} resolved | WR: {live['win_rate']:.0%} | "
-                    f"P&L: ${live['total_pnl_usd']:.2f}"
+                    f"live: {live['resolved']} resolved | win rate {live['win_rate']:.0%} | "
+                    f"pnl ${live['total_pnl_usd']:.2f}"
                 ),
             ]
         )
 
     if shadow["top_traders"]:
-        lines.append("")
-        lines.append("Top shadow traders (by P&L):")
+        lines.append("top shadow traders by pnl:")
         for trader in shadow["top_traders"][:3]:
             lines.append(
-                f"  {trader['trader_address'][:10]}... "
+                f"- {trader['trader_address'][:10]}... "
                 f"{trader['wins']}/{trader['n']} | ${float(trader['pnl'] or 0.0):.2f}"
             )
 
-    send_alert("\n".join(lines))
+    send_alert("\n".join(lines), kind="report")
 
 
 def cleanup_premature_resolutions(backup_path: Path | None = None) -> dict[str, int | str]:

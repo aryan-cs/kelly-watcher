@@ -14,7 +14,13 @@ from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
-from alerter import send_alert
+from alerter import (
+    build_bullets,
+    build_lines,
+    build_market_error_alert,
+    build_trade_resolution_alert,
+    send_alert,
+)
 from auto_retrain import retrain_cycle_report, should_retrain_early
 from beliefs import sync_belief_priors
 from config import (
@@ -270,23 +276,22 @@ def _send_resolution_alerts(resolved_rows: list[dict[str, object]]) -> None:
         if not bool(row.get("executed")):
             continue
 
-        mode = "LIVE" if bool(row.get("real_money")) else "SHADOW"
-        outcome_label = "WIN" if bool(row.get("won")) else "LOSS"
-        side = str(row.get("side") or "").strip().upper() or "UNKNOWN"
+        mode = "live" if bool(row.get("real_money")) else "shadow"
+        side = str(row.get("side") or "").strip()
         pnl = float(row.get("pnl") or 0.0)
         question = str(row.get("question") or row.get("market_id") or "").strip()
-        resolved_outcome = str(row.get("market_resolved_outcome") or "").strip().lower()
         market_url = str(row.get("market_url") or "").strip()
-
-        lines = [
-            f"[{mode} {outcome_label}] {side} | pnl={pnl:+.2f}",
-            question[:80],
-        ]
-        if resolved_outcome:
-            lines.append(f"resolved outcome: {resolved_outcome}")
-        if market_url:
-            lines.append(market_url)
-        send_alert("\n".join(lines), kind="resolution")
+        send_alert(
+            build_trade_resolution_alert(
+                mode=mode,
+                won=bool(row.get("won")),
+                side=side,
+                pnl_usd=pnl,
+                question=question,
+                market_url=market_url,
+            ),
+            kind="resolution",
+        )
 
 
 def _resolve_trades_and_alert() -> list[dict[str, object]]:
@@ -452,6 +457,50 @@ def _consume_manual_retrain_request(run_retrain_job) -> bool:
     )
     run_retrain_job(f"manual_{source}")
     return True
+
+
+def _log_runtime_ready(
+    tracker: PolymarketTracker,
+    watchlist: WatchlistManager,
+) -> None:
+    tier_state = watchlist.state_fields()
+    logger.info(
+        "Startup complete. Polling %s wallets every %ss "
+        "(tracked=%s, dropped=%s, hot/warm/discovery=%s/%s/%s)",
+        len(tracker.wallets),
+        poll_interval(),
+        tier_state["tracked_wallet_count"],
+        tier_state["dropped_wallet_count"],
+        tier_state["hot_wallet_count"],
+        tier_state["warm_wallet_count"],
+        tier_state["discovery_wallet_count"],
+    )
+    logger.info(
+        "Runtime files: db=%s state=%s events=%s",
+        DB_PATH,
+        BOT_STATE_FILE,
+        EVENT_FILE,
+    )
+    logger.info(
+        "Console output stays quiet between events. Use %s or the dashboard to confirm liveness.",
+        BOT_STATE_FILE,
+    )
+
+
+def _log_first_poll_summary(
+    *,
+    elapsed: float,
+    polled_wallet_count: int,
+    event_count: int,
+    bankroll: float,
+) -> None:
+    logger.info(
+        "First poll completed in %.2fs: wallets=%s events=%s bankroll=$%.2f",
+        elapsed,
+        polled_wallet_count,
+        event_count,
+        bankroll,
+    )
 
 
 def _reject_event(event, confidence: float, amount_usd: float, reason: str) -> None:
@@ -1138,7 +1187,7 @@ def _validate_startup() -> None:
         message = "Startup validation failed:\n- " + "\n- ".join(errors)
         logger.error(message)
         if use_real_money():
-            send_alert(message)
+            send_alert(build_lines("startup validation failed", build_bullets(errors)), kind="error")
         raise RuntimeError(message)
 
 
@@ -1224,6 +1273,7 @@ def main() -> None:
         "last_loop_started_at": 0,
         "last_activity_at": start_ts,
         "loop_in_progress": False,
+        "startup_detail": "starting bot",
         "last_poll_at": 0,
         "last_poll_duration_s": 0.0,
         "bankroll_usd": None,
@@ -1249,6 +1299,10 @@ def main() -> None:
         with bot_state_lock:
             bot_state_snapshot.update(updates)
             _write_bot_state(**bot_state_snapshot)
+
+    def _set_startup_detail(detail: str) -> None:
+        _persist_bot_state(startup_detail=str(detail or "").strip())
+        _heartbeat(force=True)
 
     def _heartbeat(*, force: bool = False) -> None:
         nonlocal last_activity_write_at
@@ -1321,15 +1375,20 @@ def main() -> None:
     def _service_runtime_requests() -> None:
         _consume_manual_retrain_request(_run_retrain_job)
 
+    _set_startup_detail("loading watchlist")
     _persist_bot_state(**watchlist.state_fields())
+    _set_startup_detail("syncing belief priors")
     sync_belief_priors()
 
-    telegram_command_stop = threading.Event()
-    telegram_command_thread: threading.Thread | None = None
+    _set_startup_detail("creating tracker")
     tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
+    _set_startup_detail("connecting executor")
     executor = PolymarketExecutor()
+    _set_startup_detail("checking wallet balance")
     executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
     _persist_bot_state(bankroll_usd=round(executor.get_usdc_balance(), 2))
+    _set_startup_detail("starting telegram replies")
+    telegram_command_stop = threading.Event()
     telegram_command_thread = threading.Thread(
         target=_run_telegram_command_loop,
         args=(telegram_command_stop,),
@@ -1337,20 +1396,33 @@ def main() -> None:
         daemon=True,
     )
     telegram_command_thread.start()
-    tracker.prime_identities(watchlist.startup_wallets())
+    startup_wallets = watchlist.startup_wallets()
+    _set_startup_detail(f"priming {len(startup_wallets)} identities")
+    tracker.prime_identities(startup_wallets)
+    _set_startup_detail("initializing risk guards")
     live_entry_guard = _init_live_entry_guard(executor)
     daily_loss_guard = _init_daily_loss_guard(executor)
+    _set_startup_detail("loading signal engine")
     engine = SignalEngine()
+    _set_startup_detail("loading trade cache")
     dedup = DedupeCache()
     dedup.load_from_db(rebuild_shadow_positions=True)
     tracker.seen_ids.update(dedup.seen_ids)
+    _set_startup_detail(
+        f"loaded {len(dedup.seen_ids)} seen ids, {len(dedup.open_positions)} open positions"
+    )
+    _set_startup_detail("syncing live positions" if use_real_money() else "rebuilding shadow positions")
     initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
     if use_real_money() and not initial_live_sync_ok:
         raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
-    refresh_trader_cache(watchlist.startup_wallets())
+    _set_startup_detail(f"refreshing {len(startup_wallets)} trader profiles")
+    refresh_trader_cache(startup_wallets)
+    _set_startup_detail("refreshing watchlist")
     watchlist.refresh(run_auto_drop=True)
     _persist_bot_state(**watchlist.state_fields())
+    _set_startup_detail("resolving historical trades")
     _resolve_trades_and_alert()
+    _set_startup_detail("refreshing trade cache")
     dedup.load_from_db(rebuild_shadow_positions=False)
     tracker.seen_ids.update(dedup.seen_ids)
 
@@ -1414,21 +1486,35 @@ def main() -> None:
         id="db_backup",
     )
     if should_retrain_early(engine):
+        _set_startup_detail("running startup retrain")
         _run_retrain_job("startup")
+    _set_startup_detail("starting scheduler")
     scheduler.start()
+    _log_runtime_ready(tracker, watchlist)
+    _persist_bot_state(startup_detail="waiting for first poll")
 
     mode_str = "LIVE" if use_real_money() else "SHADOW"
     tier_state = watchlist.state_fields()
     send_alert(
-        f"Bot started [{mode_str}]\n"
-        f"Watching {len(tracker.wallets)} wallets\n"
-        f"Tracked/Dropped: {tier_state['tracked_wallet_count']}/{tier_state['dropped_wallet_count']}\n"
-        f"Hot/Warm/Discovery: {tier_state['hot_wallet_count']}/{tier_state['warm_wallet_count']}/{tier_state['discovery_wallet_count']}\n"
-        f"Poll interval: {poll_interval()}s"
+        build_lines(
+            f"bot started in {mode_str.lower()} mode",
+            f"watching {len(tracker.wallets)} wallets",
+            (
+                "tracked/dropped: "
+                f"{tier_state['tracked_wallet_count']}/{tier_state['dropped_wallet_count']}"
+            ),
+            (
+                "hot/warm/discovery: "
+                f"{tier_state['hot_wallet_count']}/{tier_state['warm_wallet_count']}/{tier_state['discovery_wallet_count']}"
+            ),
+            f"poll interval: {poll_interval()}s",
+        ),
+        kind="status",
     )
 
     try:
         last_entry_pause_reason: str | None = None
+        first_poll_logged = False
         while True:
             loop_start = time.time()
             current_loop_started_at = int(loop_start)
@@ -1471,11 +1557,22 @@ def main() -> None:
                             if entry_block_reason:
                                 logger.error(entry_block_reason)
                                 send_alert(
-                                    f"[ENTRY PAUSED]\n{entry_block_reason}\nNew entries are paused until the condition clears."
+                                    build_lines(
+                                        "entries paused",
+                                        entry_block_reason,
+                                        "new entries are paused until the condition clears",
+                                    ),
+                                    kind="warning",
                                 )
                             elif last_entry_pause_reason:
                                 logger.info("Entry pause cleared: %s", last_entry_pause_reason)
-                                send_alert("[ENTRY PAUSED] Condition cleared; new entries are enabled again.")
+                                send_alert(
+                                    build_lines(
+                                        "entries resumed",
+                                        "the pause condition cleared and new entries are enabled again",
+                                    ),
+                                    kind="status",
+                                )
                             last_entry_pause_reason = entry_block_reason
                         try:
                             bankroll = max(
@@ -1503,19 +1600,28 @@ def main() -> None:
                                 exc,
                                 exc_info=True,
                             )
-                            send_alert(f"[ERROR] Event {event.trade_id[:12]} failed: {exc}")
+                            send_alert(
+                                build_market_error_alert(
+                                    "event processing failed",
+                                    question=event.question,
+                                    market_url=_market_url_for_event(event),
+                                    detail=f"trade {event.trade_id[:12]} failed: {exc}",
+                                ),
+                                kind="error",
+                            )
                         finally:
                             if event.trade_id in dedup.seen_ids:
                                 tracker.seen_ids.add(event.trade_id)
             except Exception as exc:
                 logger.error("Main loop error: %s", exc, exc_info=True)
-                send_alert(f"[ERROR] Loop error: {exc}")
+                send_alert(build_lines("bot loop error", str(exc)), kind="error")
 
             elapsed = time.time() - loop_start
             state_snapshot = {
                 "started_at": start_ts,
                 "last_loop_started_at": current_loop_started_at,
                 "last_activity_at": int(time.time()),
+                "startup_detail": "",
                 "last_poll_at": int(time.time()),
                 "last_poll_duration_s": round(elapsed, 3),
                 "bankroll_usd": round(bankroll, 2),
@@ -1527,14 +1633,21 @@ def main() -> None:
             current_loop_started_at = 0
             _persist_bot_state(**state_snapshot)
             _service_runtime_requests()
+            if not first_poll_logged:
+                _log_first_poll_summary(
+                    elapsed=elapsed,
+                    polled_wallet_count=polled_wallet_count,
+                    event_count=event_count,
+                    bankroll=bankroll,
+                )
+                first_poll_logged = True
             _wait_for_next_poll(loop_start, state_snapshot, _service_runtime_requests)
     except KeyboardInterrupt:
         logger.info("Shutting down...")
-        send_alert("Bot stopped")
+        send_alert("bot stopped", kind="status")
     finally:
         telegram_command_stop.set()
-        if telegram_command_thread is not None:
-            telegram_command_thread.join(timeout=1.0)
+        telegram_command_thread.join(timeout=1.0)
         scheduler.shutdown(wait=False)
         tracker.close()
 

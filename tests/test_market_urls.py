@@ -10,6 +10,21 @@ from market_urls import market_url_from_metadata
 
 
 class MarketUrlsTest(unittest.TestCase):
+    def test_startup_heavy_maintenance_enabled_for_local_paths(self) -> None:
+        self.assertTrue(db._startup_heavy_maintenance_enabled(Path("data/trading.db")))
+
+    def test_startup_heavy_maintenance_disabled_for_windows_unc_paths(self) -> None:
+        self.assertFalse(db._startup_heavy_maintenance_enabled(Path(r"\\server\share\trading.db")))
+
+    def test_preferred_journal_mode_uses_wal_for_local_paths(self) -> None:
+        self.assertEqual(db._preferred_journal_mode(Path("data/trading.db")), "WAL")
+
+    def test_preferred_journal_mode_uses_delete_for_windows_unc_paths(self) -> None:
+        self.assertEqual(
+            db._preferred_journal_mode(Path(r"\\server\share\trading.db")),
+            "DELETE",
+        )
+
     def test_market_url_from_metadata_uses_sports_route_for_esports_child_market(self) -> None:
         meta = {
             "slug": "cs2-fav-esc1-2026-03-19-game2",

@@ -65,6 +65,52 @@ class RuntimeFixesTest(unittest.TestCase):
 
         client.post.assert_called_once()
 
+    def test_send_alert_allows_status_notifications(self) -> None:
+        client = Mock()
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=False)
+
+        with patch("alerter.telegram_bot_token", return_value="token"), patch(
+            "alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("alerter.httpx.Client", return_value=client_context):
+            alerter.send_alert("bot started", kind="status")
+
+        client.post.assert_called_once()
+
+    def test_build_trade_entry_alert_formats_market_line(self) -> None:
+        message = alerter.build_trade_entry_alert(
+            mode="shadow",
+            side="yes",
+            shares=12.5,
+            price=0.437,
+            total_usd=5.46,
+            confidence=0.713,
+            question="Will BTC finish March above $90k?",
+            market_url="https://polymarket.com/event/btc-above-90k",
+        )
+
+        self.assertEqual(
+            message,
+            "shadow bought 12.5 YES shares @ 43.7 cents for a total of $5.46, 71.3% confident\n"
+            "Will BTC finish March above $90k?: https://polymarket.com/event/btc-above-90k",
+        )
+
+    def test_build_trade_resolution_alert_formats_loss(self) -> None:
+        message = alerter.build_trade_resolution_alert(
+            mode="live",
+            won=False,
+            side="no",
+            pnl_usd=-3.25,
+            question="Will Team A win?",
+            market_url="https://polymarket.com/event/team-a-win",
+        )
+
+        self.assertEqual(
+            message,
+            "live lost NO, lost $3.25\nWill Team A win?: https://polymarket.com/event/team-a-win",
+        )
+
     def test_resolve_wallet_for_username_returns_wallet_and_caches_identity(self) -> None:
         class _Response:
             def __init__(self, text: str, status_code: int = 200) -> None:
@@ -270,8 +316,10 @@ class RuntimeFixesTest(unittest.TestCase):
             main._send_resolution_alerts(resolved_rows)
 
         alert_mock.assert_called_once()
-        self.assertIn("[SHADOW WIN]", alert_mock.call_args.args[0])
-        self.assertIn("resolved outcome: yes", alert_mock.call_args.args[0])
+        self.assertEqual(
+            alert_mock.call_args.args[0],
+            "shadow won YES, made $3.50\nWill it happen?: https://polymarket.com/event/will-it-happen",
+        )
         self.assertEqual(alert_mock.call_args.kwargs["kind"], "resolution")
 
     def test_resolve_shadow_trades_does_not_resolve_open_markets_from_prices(self) -> None:
@@ -1064,15 +1112,23 @@ class RuntimeFixesTest(unittest.TestCase):
                 db.DB_PATH = original_db_path
 
     def test_early_retrain_without_deployed_model_uses_configured_min_samples(self) -> None:
-        with patch("auto_retrain.load_training_data", return_value=[object()] * 149), patch(
-            "auto_retrain.min_samples_required", return_value=150
-        ):
-            self.assertFalse(auto_retrain.should_retrain_early(None))
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
 
-        with patch("auto_retrain.load_training_data", return_value=[object()] * 150), patch(
-            "auto_retrain.min_samples_required", return_value=150
-        ):
-            self.assertTrue(auto_retrain.should_retrain_early(None))
+                with patch("auto_retrain.load_training_data", return_value=[object()] * 149), patch(
+                    "auto_retrain.min_samples_required", return_value=150
+                ):
+                    self.assertFalse(auto_retrain.should_retrain_early(None))
+
+                with patch("auto_retrain.load_training_data", return_value=[object()] * 150), patch(
+                    "auto_retrain.min_samples_required", return_value=150
+                ):
+                    self.assertTrue(auto_retrain.should_retrain_early(None))
+            finally:
+                db.DB_PATH = original_db_path
 
     def test_live_order_response_fill_overrides_book_estimate_for_entries(self) -> None:
         executor = object.__new__(PolymarketExecutor)
@@ -1320,6 +1376,39 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertTrue(payload["loop_in_progress"])
             finally:
                 main.BOT_STATE_FILE = original_state_file
+
+    def test_log_runtime_ready_explains_quiet_console_and_runtime_files(self) -> None:
+        tracker_stub = SimpleNamespace(wallets=["0xabc", "0xdef"])
+        watchlist_stub = SimpleNamespace(
+            state_fields=lambda: {
+                "tracked_wallet_count": 2,
+                "dropped_wallet_count": 1,
+                "hot_wallet_count": 1,
+                "warm_wallet_count": 1,
+                "discovery_wallet_count": 0,
+            }
+        )
+
+        with patch("main.poll_interval", return_value=5.0):
+            with self.assertLogs("main", level="INFO") as captured:
+                main._log_runtime_ready(tracker_stub, watchlist_stub)
+
+        output = "\n".join(captured.output)
+        self.assertIn("Startup complete. Polling 2 wallets every 5.0s", output)
+        self.assertIn("Runtime files: db=", output)
+        self.assertIn("Console output stays quiet between events.", output)
+
+    def test_log_first_poll_summary_reports_initial_poll_completion(self) -> None:
+        with self.assertLogs("main", level="INFO") as captured:
+            main._log_first_poll_summary(
+                elapsed=3.25,
+                polled_wallet_count=4,
+                event_count=0,
+                bankroll=1000.0,
+            )
+
+        output = "\n".join(captured.output)
+        self.assertIn("First poll completed in 3.25s: wallets=4 events=0 bankroll=$1000.00", output)
 
     def test_partial_exit_keeps_remaining_shadow_position_and_realized_pnl(self) -> None:
         with TemporaryDirectory() as tmpdir:

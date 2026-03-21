@@ -1,13 +1,154 @@
 from __future__ import annotations
 
 import logging
+from typing import Iterable
 
 import httpx
 
 from config import telegram_bot_token, telegram_chat_id
 
 logger = logging.getLogger(__name__)
-_TELEGRAM_ALLOWED_KINDS = frozenset({"buy", "resolution", "retrain"})
+_TELEGRAM_ALLOWED_KINDS = frozenset(
+    {"buy", "resolution", "retrain", "exit", "status", "error", "warning", "report"}
+)
+
+
+def _one_line(value: object) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _format_decimal(value: float, digits: int) -> str:
+    return f"{float(value):.{digits}f}".rstrip("0").rstrip(".")
+
+
+def _format_shares(value: float) -> str:
+    return _format_decimal(value, 3)
+
+
+def _format_cents(price: float) -> str:
+    return _format_decimal(float(price) * 100.0, 1)
+
+
+def _format_usd(value: float) -> str:
+    return f"${float(value):.2f}"
+
+
+def _format_signed_usd(value: float) -> str:
+    amount = abs(float(value))
+    if value > 0:
+        return f"+${amount:.2f}"
+    if value < 0:
+        return f"-${amount:.2f}"
+    return f"${amount:.2f}"
+
+
+def _format_pct(value: float) -> str:
+    return f"{float(value) * 100.0:.1f}%"
+
+
+def build_lines(*lines: str | None) -> str:
+    normalized: list[str] = []
+    for line in lines:
+        text = str(line or "").strip()
+        if text:
+            normalized.append(text)
+    return "\n".join(normalized)
+
+
+def build_bullets(lines: Iterable[str]) -> str:
+    return build_lines(*(f"- {_one_line(line)}" for line in lines if _one_line(line)))
+
+
+def build_market_line(question: str, market_url: str | None) -> str:
+    label = _one_line(question) or "Market"
+    url = _one_line(market_url)
+    return f"{label}: {url}" if url else label
+
+
+def build_trade_entry_alert(
+    *,
+    mode: str,
+    side: str,
+    shares: float,
+    price: float,
+    total_usd: float,
+    confidence: float | None,
+    question: str,
+    market_url: str | None,
+) -> str:
+    side_label = _one_line(side).upper()
+    share_noun = "share" if abs(float(shares) - 1.0) < 1e-9 else "shares"
+    confidence_text = f", {_format_pct(confidence)} confident" if confidence is not None else ""
+    position_text = f" {side_label}" if side_label else ""
+    return build_lines(
+        (
+            f"{_one_line(mode).lower()} bought {_format_shares(shares)}{position_text} {share_noun} "
+            f"@ {_format_cents(price)} cents for a total of {_format_usd(total_usd)}{confidence_text}"
+        ),
+        build_market_line(question, market_url),
+    )
+
+
+def build_trade_exit_alert(
+    *,
+    mode: str,
+    side: str,
+    shares: float,
+    price: float,
+    total_usd: float,
+    pnl_usd: float | None,
+    question: str,
+    market_url: str | None,
+) -> str:
+    side_label = _one_line(side).upper()
+    share_noun = "share" if abs(float(shares) - 1.0) < 1e-9 else "shares"
+    pnl_text = (
+        f", realized {_format_signed_usd(pnl_usd)}"
+        if pnl_usd is not None
+        else ""
+    )
+    position_text = f" {side_label}" if side_label else ""
+    return build_lines(
+        (
+            f"{_one_line(mode).lower()} sold {_format_shares(shares)}{position_text} {share_noun} "
+            f"@ {_format_cents(price)} cents for a total of {_format_usd(total_usd)}{pnl_text}"
+        ),
+        build_market_line(question, market_url),
+    )
+
+
+def build_trade_resolution_alert(
+    *,
+    mode: str,
+    won: bool,
+    side: str,
+    pnl_usd: float,
+    question: str,
+    market_url: str | None,
+) -> str:
+    side_label = _one_line(side).upper() or "POSITION"
+    amount = _format_usd(abs(float(pnl_usd)))
+    if abs(float(pnl_usd)) < 1e-9:
+        summary = f"{_one_line(mode).lower()} resolved {side_label}, broke even"
+    elif won:
+        summary = f"{_one_line(mode).lower()} won {side_label}, made {amount}"
+    else:
+        summary = f"{_one_line(mode).lower()} lost {side_label}, lost {amount}"
+    return build_lines(summary, build_market_line(question, market_url))
+
+
+def build_market_error_alert(
+    summary: str,
+    *,
+    question: str | None = None,
+    market_url: str | None = None,
+    detail: str | None = None,
+) -> str:
+    return build_lines(
+        _one_line(summary),
+        build_market_line(question or "Market", market_url) if question or market_url else None,
+        _one_line(detail) if detail else None,
+    )
 
 
 def send_telegram_message(

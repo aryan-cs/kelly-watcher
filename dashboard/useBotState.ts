@@ -8,6 +8,7 @@ export interface BotState {
   last_loop_started_at?: number
   last_activity_at?: number
   loop_in_progress?: boolean
+  startup_detail?: string
   mode?: 'shadow' | 'live'
   n_wallets?: number
   poll_interval?: number

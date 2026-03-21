@@ -8,7 +8,14 @@ from typing import Any, Optional
 
 import httpx
 
-from alerter import send_alert
+from alerter import (
+    build_lines,
+    build_market_error_alert,
+    build_market_line,
+    build_trade_entry_alert,
+    build_trade_exit_alert,
+    send_alert,
+)
 from config import (
     max_live_health_failures,
     max_market_exposure_fraction,
@@ -861,9 +868,16 @@ class PolymarketExecutor:
             confidence,
         )
         send_alert(
-            f"[SHADOW] {side.upper()} ${fill.spent_usd:.2f}\n"
-            f"{event.question[:80]}\n"
-            f"conf={confidence:.3f} | fill={fill.shares:.3f} @ {fill.avg_price:.3f} | kelly_f={kelly_f:.4f}",
+            build_trade_entry_alert(
+                mode="shadow",
+                side=side,
+                shares=fill.shares,
+                price=fill.avg_price,
+                total_usd=fill.spent_usd,
+                confidence=confidence,
+                question=event.question,
+                market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+            ),
             kind="buy",
         )
         return ExecutionResult(True, True, None, fill.spent_usd, "ok", shares=fill.shares, action="entry")
@@ -992,16 +1006,31 @@ class PolymarketExecutor:
                 order_id,
             )
             send_alert(
-                f"[LIVE] {side.upper()} ${actual_spend:.2f}\n"
-                f"{event.question[:80]}\n"
-                f"conf={confidence:.3f} | fill={actual_shares:.3f} @ {actual_price:.3f} | order={order_id}",
+                build_trade_entry_alert(
+                    mode="live",
+                    side=side,
+                    shares=actual_shares,
+                    price=actual_price,
+                    total_usd=actual_spend,
+                    confidence=confidence,
+                    question=event.question,
+                    market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                ),
                 kind="buy",
             )
             return ExecutionResult(True, False, order_id, actual_spend, "ok", shares=actual_shares, action="entry")
         except Exception as exc:
             dedup.release(market_id, token_id, side)
             logger.error("[LIVE ERROR] %s: %s", market_id, exc)
-            send_alert(f"[LIVE ERROR]\n{event.question[:80]}\n{exc}")
+            send_alert(
+                build_market_error_alert(
+                    "live entry failed",
+                    question=event.question,
+                    market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                    detail=str(exc),
+                ),
+                kind="error",
+            )
             return ExecutionResult(False, False, None, 0.0, str(exc))
 
     def execute_exit(
@@ -1543,9 +1572,17 @@ class PolymarketExecutor:
             pnl,
         )
         send_alert(
-            f"[SHADOW EXIT] {event.side.upper()} {shares:.3f} shares\n"
-            f"{event.question[:80]}\n"
-            f"exit @ {fill.avg_price:.3f} | pnl={pnl:+.2f}"
+            build_trade_exit_alert(
+                mode="shadow",
+                side=event.side,
+                shares=shares,
+                price=fill.avg_price,
+                total_usd=exit_notional,
+                pnl_usd=pnl,
+                question=event.question,
+                market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+            ),
+            kind="exit",
         )
         return ExecutionResult(
             True,
@@ -1627,9 +1664,18 @@ class PolymarketExecutor:
                         expected_remaining_shares,
                     )
                     send_alert(
-                        f"[LIVE EXIT WARNING] Ambiguous exit state\n"
-                        f"{event.question[:80]}\n"
-                        f"remaining={remaining_shares:.3f} expected={expected_remaining_shares:.3f}"
+                        build_lines(
+                            "live exit sync is ambiguous",
+                            build_market_line(
+                                event.question,
+                                _market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                            ),
+                            (
+                                f"remaining {_to_float(remaining_shares):.3f} shares; "
+                                f"expected {_to_float(expected_remaining_shares):.3f}"
+                            ),
+                        ),
+                        kind="warning",
                     )
                     dedup.release(
                         market_id,
@@ -1694,9 +1740,17 @@ class PolymarketExecutor:
                 order_id,
             )
             send_alert(
-                f"[LIVE EXIT] {event.side.upper()} {shares:.3f} shares\n"
-                f"{event.question[:80]}\n"
-                f"exit @ {actual_exit_price:.3f} | pnl={pnl:+.2f} | order={order_id}"
+                build_trade_exit_alert(
+                    mode="live",
+                    side=event.side,
+                    shares=shares,
+                    price=actual_exit_price,
+                    total_usd=exit_notional,
+                    pnl_usd=pnl,
+                    question=event.question,
+                    market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                ),
+                kind="exit",
             )
             return ExecutionResult(
                 True,
@@ -1715,7 +1769,15 @@ class PolymarketExecutor:
                 str(position.get("side") or ""),
             )
             logger.error("[LIVE EXIT ERROR] %s: %s", market_id, exc)
-            send_alert(f"[LIVE EXIT ERROR]\n{event.question[:80]}\n{exc}")
+            send_alert(
+                build_market_error_alert(
+                    "live exit failed",
+                    question=event.question,
+                    market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                    detail=str(exc),
+                ),
+                kind="error",
+            )
             return ExecutionResult(
                 False,
                 False,

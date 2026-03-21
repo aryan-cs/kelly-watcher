@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 from pathlib import Path
@@ -8,13 +9,41 @@ from pathlib import Path
 from market_urls import market_url_from_metadata
 
 DB_PATH = Path("data/trading.db")
+REPAIR_BATCH_SIZE = 250
+logger = logging.getLogger(__name__)
+
+
+def _resolved_db_path_text(path: Path) -> str:
+    raw = os.fspath(path)
+    try:
+        return str(path.resolve(strict=False))
+    except Exception:
+        return os.path.abspath(raw)
+
+
+def _preferred_journal_mode(path: Path) -> str:
+    raw = os.fspath(path)
+    if raw.startswith("\\\\"):
+        return "DELETE"
+    resolved = _resolved_db_path_text(path)
+    if resolved.startswith("\\\\"):
+        return "DELETE"
+    return "WAL"
+
+
+def _startup_heavy_maintenance_enabled(path: Path) -> bool:
+    raw = os.fspath(path)
+    if raw.startswith("\\\\"):
+        return False
+    resolved = _resolved_db_path_text(path)
+    return not resolved.startswith("\\\\")
 
 
 def get_conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(DB_PATH)}")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -71,34 +100,58 @@ def _ensure_positions_schema(conn: sqlite3.Connection) -> None:
 
 
 def _repair_trade_log_market_urls(conn: sqlite3.Connection) -> None:
-    rows = conn.execute(
+    cursor = conn.execute(
         """
         SELECT id, market_url, market_metadata_json
         FROM trade_log
         WHERE market_metadata_json IS NOT NULL
           AND market_metadata_json <> ''
+        ORDER BY id ASC
         """
-    ).fetchall()
+    )
 
-    updates: list[tuple[str, int]] = []
-    for row in rows:
-        raw_meta = str(row["market_metadata_json"] or "").strip()
-        if not raw_meta:
-            continue
-        try:
-            meta = json.loads(raw_meta)
-        except Exception:
-            continue
-        canonical_url = market_url_from_metadata(meta)
-        if not canonical_url:
-            continue
-        existing_url = str(row["market_url"] or "").strip()
-        if canonical_url == existing_url:
-            continue
-        updates.append((canonical_url, int(row["id"])))
+    scanned = 0
+    updated = 0
+    while True:
+        rows = cursor.fetchmany(REPAIR_BATCH_SIZE)
+        if not rows:
+            break
 
-    if updates:
-        conn.executemany("UPDATE trade_log SET market_url=? WHERE id=?", updates)
+        batch_updates: list[tuple[str, int]] = []
+        for row in rows:
+            scanned += 1
+            raw_meta = str(row["market_metadata_json"] or "").strip()
+            if not raw_meta:
+                continue
+            try:
+                meta = json.loads(raw_meta)
+            except Exception:
+                continue
+            canonical_url = market_url_from_metadata(meta)
+            if not canonical_url:
+                continue
+            existing_url = str(row["market_url"] or "").strip()
+            if canonical_url == existing_url:
+                continue
+            batch_updates.append((canonical_url, int(row["id"])))
+
+        if batch_updates:
+            conn.executemany("UPDATE trade_log SET market_url=? WHERE id=?", batch_updates)
+            updated += len(batch_updates)
+
+        if scanned and scanned % 5000 == 0:
+            logger.info(
+                "Market URL repair progress: scanned=%s updated=%s",
+                scanned,
+                updated,
+            )
+
+    if scanned:
+        logger.info(
+            "Market URL repair complete: scanned=%s updated=%s",
+            scanned,
+            updated,
+        )
 
 
 def _backfill_retrain_runs_from_model_history(conn: sqlite3.Connection) -> None:
@@ -485,47 +538,53 @@ def init_db() -> None:
         },
     )
     _ensure_positions_schema(conn)
-    _repair_trade_log_market_urls(conn)
     _backfill_retrain_runs_from_model_history(conn)
-    conn.execute(
-        """
-        UPDATE positions
-        SET token_id = LOWER(token_id)
-        WHERE token_id IS NOT NULL
-          AND token_id != LOWER(token_id)
-        """
-    )
-    conn.execute(
-        """
-        UPDATE trade_log
-        SET token_id = LOWER(token_id)
-        WHERE token_id IS NOT NULL
-          AND token_id != LOWER(token_id)
-        """
-    )
-    conn.execute(
-        """
-        UPDATE trade_log
-        SET remaining_entry_shares = CASE
-                WHEN exited_at IS NOT NULL THEN 0
-                ELSE COALESCE(remaining_entry_shares, actual_entry_shares, source_shares, 0)
-            END,
-            remaining_entry_size_usd = CASE
-                WHEN exited_at IS NOT NULL THEN 0
-                ELSE COALESCE(remaining_entry_size_usd, actual_entry_size_usd, signal_size_usd, 0)
-            END,
-            remaining_source_shares = CASE
-                WHEN exited_at IS NOT NULL THEN 0
-                ELSE COALESCE(remaining_source_shares, source_shares, 0)
-            END,
-            realized_exit_shares = COALESCE(realized_exit_shares, 0),
-            realized_exit_size_usd = COALESCE(realized_exit_size_usd, 0),
-            realized_exit_pnl_usd = COALESCE(realized_exit_pnl_usd, 0),
-            partial_exit_count = COALESCE(partial_exit_count, 0)
-        WHERE skipped=0
-          AND COALESCE(source_action, 'buy')='buy'
-        """
-    )
+    if _startup_heavy_maintenance_enabled(DB_PATH):
+        _repair_trade_log_market_urls(conn)
+        conn.execute(
+            """
+            UPDATE positions
+            SET token_id = LOWER(token_id)
+            WHERE token_id IS NOT NULL
+              AND token_id != LOWER(token_id)
+            """
+        )
+        conn.execute(
+            """
+            UPDATE trade_log
+            SET token_id = LOWER(token_id)
+            WHERE token_id IS NOT NULL
+              AND token_id != LOWER(token_id)
+            """
+        )
+        conn.execute(
+            """
+            UPDATE trade_log
+            SET remaining_entry_shares = CASE
+                    WHEN exited_at IS NOT NULL THEN 0
+                    ELSE COALESCE(remaining_entry_shares, actual_entry_shares, source_shares, 0)
+                END,
+                remaining_entry_size_usd = CASE
+                    WHEN exited_at IS NOT NULL THEN 0
+                    ELSE COALESCE(remaining_entry_size_usd, actual_entry_size_usd, signal_size_usd, 0)
+                END,
+                remaining_source_shares = CASE
+                    WHEN exited_at IS NOT NULL THEN 0
+                    ELSE COALESCE(remaining_source_shares, source_shares, 0)
+                END,
+                realized_exit_shares = COALESCE(realized_exit_shares, 0),
+                realized_exit_size_usd = COALESCE(realized_exit_size_usd, 0),
+                realized_exit_pnl_usd = COALESCE(realized_exit_pnl_usd, 0),
+                partial_exit_count = COALESCE(partial_exit_count, 0)
+            WHERE skipped=0
+              AND COALESCE(source_action, 'buy')='buy'
+            """
+        )
+    else:
+        logger.info(
+            "Skipping heavy startup DB maintenance for shared/network path: %s",
+            DB_PATH,
+        )
     conn.commit()
     conn.close()
 

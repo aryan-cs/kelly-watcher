@@ -7,6 +7,7 @@ import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTim
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
 import {negativeHeatColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
+import {useBotState} from '../useBotState.js'
 import {useQuery} from '../useDb.js'
 
 interface ModelRow {
@@ -94,6 +95,12 @@ interface TrainingSummaryRow {
   total_runs: number | null
   runs_7d: number | null
   runs_30d: number | null
+}
+
+interface TrainingProgressRow {
+  last_deployed_trained_at: number | null
+  total_labeled: number | null
+  new_labeled: number | null
 }
 
 export type ModelPanelId =
@@ -235,10 +242,15 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Scheduled in', text: 'Countdown until that scheduled retrain window.'},
       {label: 'Early check', text: 'How often the bot checks whether it should retrain sooner.'},
       {label: 'Early trigger', text: 'Minimum new labels needed to fire an unscheduled retrain.'},
+      {
+        label: 'Trigger progress',
+        text: 'Progress toward the next retrain trigger. With a deployed model this counts new eligible labels since that model went live; before the first model it falls back to total labeled samples versus the minimum sample gate.'
+      },
+      {label: 'Manual run', text: 'Press t while this panel is selected to queue an in-process retrain through the running bot.'},
       {label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.'},
       {label: 'Runs 7d / 30d', text: 'How many retrain attempts landed recently, including failures and skips.'}
     ],
-    settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS']
+    settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS', 'RETRAIN_MIN_SAMPLES']
   }
 ]
 
@@ -295,6 +307,34 @@ AND LOWER(COALESCE(skip_reason, '')) LIKE '%minimum%'
 AND (
   LOWER(COALESCE(skip_reason, '')) LIKE '%confidence%'
   OR LOWER(COALESCE(skip_reason, '')) LIKE '%heuristic score%'
+)
+`
+
+const TRAINABLE_SKIPPED_REASON_WHERE = `
+(
+  LOWER(COALESCE(skip_reason, '')) LIKE 'signal confidence was %below the % minimum'
+  OR LOWER(COALESCE(skip_reason, '')) LIKE 'confidence was %below the % minimum needed to place a trade'
+  OR LOWER(COALESCE(skip_reason, '')) LIKE 'heuristic score was %below the % minimum needed to place a trade'
+  OR LOWER(COALESCE(skip_reason, '')) LIKE 'model edge was %below the % threshold'
+  OR LOWER(COALESCE(skip_reason, '')) = 'trade did not pass the signal checks'
+  OR LOWER(COALESCE(skip_reason, '')) = 'kelly sizing found no positive edge at this price, so the trade was skipped'
+)
+`
+
+const RESOLVED_TRAINABLE_SKIPPED_BUY_WHERE = `
+skipped=1
+AND COALESCE(source_action, 'buy')='buy'
+AND counterfactual_return IS NOT NULL
+AND ${TRAINABLE_SKIPPED_REASON_WHERE}
+`
+
+const RESOLVED_TRAINING_SAMPLE_WHERE = `
+(
+  ${RESOLVED_EXECUTED_ENTRY_WHERE}
+)
+OR
+(
+  ${RESOLVED_TRAINABLE_SKIPPED_BUY_WHERE}
 )
 `
 
@@ -422,6 +462,31 @@ SELECT
   SUM(CASE WHEN finished_at >= strftime('%s', 'now', '-7 days') THEN 1 ELSE 0 END) AS runs_7d,
   SUM(CASE WHEN finished_at >= strftime('%s', 'now', '-30 days') THEN 1 ELSE 0 END) AS runs_30d
 FROM retrain_runs
+`
+
+const TRAINING_PROGRESS_SQL = `
+WITH latest_model AS (
+  SELECT trained_at
+  FROM model_history
+  WHERE deployed=1
+  ORDER BY trained_at DESC
+  LIMIT 1
+)
+SELECT
+  (SELECT trained_at FROM latest_model) AS last_deployed_trained_at,
+  COUNT(*) AS total_labeled,
+  COALESCE(
+    SUM(
+      CASE
+        WHEN COALESCE(label_applied_at, resolved_at, placed_at) > COALESCE((SELECT trained_at FROM latest_model), 0)
+        THEN 1
+        ELSE 0
+      END
+    ),
+    0
+  ) AS new_labeled
+FROM trade_log
+WHERE ${RESOLVED_TRAINING_SAMPLE_WHERE}
 `
 
 function formatCount(value: number | null | undefined): string {
@@ -595,6 +660,32 @@ function clampHour(value: string | null | undefined): number {
   return Math.min(Math.max(parsed, 0), 23)
 }
 
+function parseNonNegativeInt(value: string | null | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || '', 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(parsed, 0)
+}
+
+function progressStatColor(current: number, target: number): string {
+  if (current <= 0) return theme.dim
+  if (target <= 0 || current >= target) return theme.green
+  return theme.yellow
+}
+
+function manualRetrainLabel(startedAt: number, lastActivityAt: number, pollInterval: number, retrainInProgress: boolean, nowTs: number): CompactStatItem {
+  if (retrainInProgress) {
+    return {label: 'Manual run', value: 'Running...', color: theme.yellow}
+  }
+
+  const heartbeatWindow = Math.max(pollInterval * 3, 30)
+  const online = startedAt > 0 && lastActivityAt > 0 && (nowTs - lastActivityAt) <= heartbeatWindow
+  if (!online) {
+    return {label: 'Manual run', value: 'Bot offline', color: theme.dim}
+  }
+
+  return {label: 'Manual run', value: 'Press t', color: theme.accent}
+}
+
 function getNextScheduledRetrainTs(cadence: 'daily' | 'weekly', hour: number, nowTs: number): number {
   const now = new Date(nowTs * 1000)
   const next = new Date(nowTs * 1000)
@@ -652,6 +743,7 @@ function splitIntoColumns<T>(items: T[], columnCount: number): T[][] {
 
 export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues}: ModelsProps) {
   const terminal = useTerminalSize()
+  const botState = useBotState()
   const modalBackground = terminal.backgroundColor || theme.modalBackground
   const selectedRowBackground = selectionBackgroundColor(modalBackground)
   const nowTs = useNow()
@@ -666,6 +758,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const calibrationRows = useQuery<CalibrationRow>(CALIBRATION_SQL)
   const flowRows = useQuery<FlowRow>(FLOW_SQL)
   const trainingSummaryRows = useQuery<TrainingSummaryRow>(TRAINING_SUMMARY_SQL)
+  const trainingProgressRows = useQuery<TrainingProgressRow>(TRAINING_PROGRESS_SQL)
 
   const latest = models[0]
   const tracker = trackerRows[0]
@@ -673,6 +766,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const confusion = confusionRows[0]
   const flow = flowRows[0]
   const trainingSummary = trainingSummaryRows[0]
+  const trainingProgress = trainingProgressRows[0]
   const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0]
   const configFieldByKey = useMemo(
     () => new Map(editableConfigFields.map((field) => [field.key, field])),
@@ -812,6 +906,21 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const retrainHourValue = formatConfigValue('RETRAIN_HOUR_LOCAL')
   const earlyCheckValue = formatConfigValue('RETRAIN_EARLY_CHECK_INTERVAL')
   const earlyTriggerValue = formatConfigValue('RETRAIN_MIN_NEW_LABELS')
+  const earlyTriggerThreshold = parseNonNegativeInt(rawConfigValue('RETRAIN_MIN_NEW_LABELS'), 100)
+  const minSamplesThreshold = parseNonNegativeInt(rawConfigValue('RETRAIN_MIN_SAMPLES'), 200)
+  const hasDeployedModel = Number(trainingProgress?.last_deployed_trained_at || 0) > 0
+  const triggerProgressCurrent = hasDeployedModel
+    ? Math.max(0, Number(trainingProgress?.new_labeled || 0))
+    : Math.max(0, Number(trainingProgress?.total_labeled || 0))
+  const triggerProgressTarget = hasDeployedModel ? earlyTriggerThreshold : minSamplesThreshold
+  const triggerProgressValue = `${formatCount(triggerProgressCurrent)} / ${formatCount(triggerProgressTarget)}${hasDeployedModel ? ' new' : ' total'}`
+  const manualRunItem = manualRetrainLabel(
+    Number(botState.started_at || 0),
+    Number(botState.last_activity_at || 0),
+    Number(botState.poll_interval || 1),
+    Boolean(botState.retrain_in_progress),
+    nowTs
+  )
   const nextScheduledRetrainTs = useMemo(
     () => getNextScheduledRetrainTs(normalizeCadence(baseCadenceRaw), clampHour(retrainHourRaw), nowTs),
     [baseCadenceRaw, retrainHourRaw, nowTs]
@@ -871,6 +980,12 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       {label: 'Scheduled in', value: timeUntil(nextScheduledRetrainTs)},
       {label: 'Early check', value: earlyCheckValue},
       {label: 'Early trigger', value: earlyTriggerValue},
+      {
+        label: 'Trigger progress',
+        value: triggerProgressValue,
+        color: progressStatColor(triggerProgressCurrent, triggerProgressTarget)
+      },
+      manualRunItem,
       {label: 'Total runs', value: formatCount(trainingSummary?.total_runs)},
       {label: 'Last gap', value: formatInterval(lastRetrainGap)},
       {label: 'Avg gap', value: formatInterval(averageRetrainGap)},
@@ -883,8 +998,12 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       earlyCheckValue,
       earlyTriggerValue,
       lastRetrainGap,
+      manualRunItem,
       nextScheduledRetrainTs,
       retrainHourValue,
+      triggerProgressCurrent,
+      triggerProgressTarget,
+      triggerProgressValue,
       trainingSummary?.runs_7d,
       trainingSummary?.runs_30d,
       trainingSummary?.total_runs

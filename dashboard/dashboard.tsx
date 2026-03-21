@@ -89,6 +89,41 @@ function formatRetrainStatus(status?: string): string | null {
   return `train ${value.replace(/_/g, ' ')}`
 }
 
+function describeBackendStatus({
+  startedAt,
+  lastPollAt,
+  activityIsFresh,
+  pollIsFresh,
+  loopInProgress
+}: {
+  startedAt: number
+  lastPollAt: number
+  activityIsFresh: boolean
+  pollIsFresh: boolean
+  loopInProgress: boolean
+}): string {
+  if (pollIsFresh) {
+    return loopInProgress ? 'online, polling' : 'online'
+  }
+  if (startedAt <= 0) {
+    return 'waiting to start'
+  }
+  if (activityIsFresh && lastPollAt <= 0) {
+    return 'starting up'
+  }
+  if (activityIsFresh && loopInProgress) {
+    return 'polling now'
+  }
+  if (lastPollAt > 0) {
+    return 'poll stalled'
+  }
+  return 'offline'
+}
+
+function formatHeaderStatusTag(status: string): string {
+  return `[${status.trim().toUpperCase()}]`
+}
+
 interface AppContentProps {
   page: Page
   isRefreshing: boolean
@@ -261,11 +296,24 @@ function AppContent({
   const retrainStatusText = formatRetrainStatus(botState.last_retrain_status)
   const pollIsFresh = lastPollAt > 0 && (now - lastPollAt) <= heartbeatWindow
   const activityIsFresh = lastActivityAt > 0 && (now - lastActivityAt) <= activityWindow
+  const startupDetail = String(botState.startup_detail || '').trim()
+  const startupInProgress = startedAt > 0 && activityIsFresh && lastPollAt <= 0
   const backendDotColor = pollIsFresh
     ? theme.green
     : startedAt > 0 && activityIsFresh && (loopInProgress || lastPollAt <= 0)
       ? theme.yellow
       : theme.red
+  const backendStatusText =
+    startupInProgress && startupDetail
+      ? startupDetail
+      : describeBackendStatus({
+          startedAt,
+          lastPollAt,
+          activityIsFresh,
+          pollIsFresh,
+          loopInProgress
+        })
+  const backendStatusTag = formatHeaderStatusTag(backendStatusText)
   const navLabels = terminal.compact
     ? {1: 'F', 2: 'S', 3: 'P', 4: 'M', 5: 'W', 6: 'C'}
     : terminal.narrow
@@ -273,19 +321,23 @@ function AppContent({
       : {1: 'Tracker', 2: 'Signals', 3: 'Perf', 4: 'Models', 5: 'Wallets', 6: 'Config'}
   const footerCompact = terminal.compact
   const selectedModelPanel = MODEL_PANEL_DEFS[Math.max(0, Math.min(modelSelectionIndex, MODEL_PANEL_DEFS.length - 1))]
-  const activeTransientNotice = transientNotice && now <= transientNotice.expiresAt ? transientNotice : null
+  const activeTransientNotice =
+    !retrainInProgress && transientNotice && now <= transientNotice.expiresAt ? transientNotice : null
+  const startupElapsedText = formatCurrentPollElapsedSeconds(now, startedAt)
   const currentPollElapsedText = formatCurrentPollElapsedSeconds(now, currentLoopStartedAt)
   const lastPollText = loopInProgress
     ? `polling...${currentPollElapsedText ? ` ${currentPollElapsedText}` : ''} | last poll: ${secondsAgo(botState.last_poll_at)}`
     : `last poll: ${secondsAgo(botState.last_poll_at)}`
   const recentRetrainText =
-    !retrainInProgress && retrainStatusText && lastRetrainFinishedAt > 0 && (now - lastRetrainFinishedAt) <= 600
+    !retrainInProgress && retrainStatusText && lastRetrainFinishedAt > 0 && (now - lastRetrainFinishedAt) <= 60
       ? `${retrainStatusText}: ${secondsAgo(lastRetrainFinishedAt)}`
       : null
   const footerStatusText = isRefreshing
     ? 'refreshing...'
     : retrainInProgress
       ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
+      : startupInProgress
+        ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
       : recentRetrainText
         ? `${recentRetrainText} | ${lastPollText}`
         : lastPollText
@@ -299,6 +351,8 @@ function AppContent({
       ? theme.accent
       : retrainInProgress
         ? theme.yellow
+        : startupInProgress
+          ? theme.yellow
         : theme.dim
   const footerControls =
     page === 1
@@ -377,15 +431,8 @@ function AppContent({
           )
         })}
         <Spacer />
-        {retrainInProgress ? (
-          <>
-            <Text color={theme.yellow} bold>
-              [{terminal.compact ? 'TRN' : 'TRAIN'}
-              {retrainElapsedText ? ` ${retrainElapsedText}` : ''}]
-            </Text>
-            <Text>  </Text>
-          </>
-        ) : null}
+        <Text color={backendDotColor} bold>{backendStatusTag}</Text>
+        <Text color={theme.dim}> </Text>
         <Text color={modeColor} bold>{mode}</Text>
       </Box>
 

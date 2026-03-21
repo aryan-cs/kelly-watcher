@@ -53,6 +53,27 @@ function formatRetrainStatus(status) {
         return 'training';
     return `train ${value.replace(/_/g, ' ')}`;
 }
+function describeBackendStatus({ startedAt, lastPollAt, activityIsFresh, pollIsFresh, loopInProgress }) {
+    if (pollIsFresh) {
+        return loopInProgress ? 'online, polling' : 'online';
+    }
+    if (startedAt <= 0) {
+        return 'waiting to start';
+    }
+    if (activityIsFresh && lastPollAt <= 0) {
+        return 'starting up';
+    }
+    if (activityIsFresh && loopInProgress) {
+        return 'polling now';
+    }
+    if (lastPollAt > 0) {
+        return 'poll stalled';
+    }
+    return 'offline';
+}
+function formatHeaderStatusTag(status) {
+    return `[${status.trim().toUpperCase()}]`;
+}
 function renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsValues, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange) {
     switch (page) {
         case 1:
@@ -89,32 +110,47 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
     const retrainStatusText = formatRetrainStatus(botState.last_retrain_status);
     const pollIsFresh = lastPollAt > 0 && (now - lastPollAt) <= heartbeatWindow;
     const activityIsFresh = lastActivityAt > 0 && (now - lastActivityAt) <= activityWindow;
+    const startupDetail = String(botState.startup_detail || '').trim();
+    const startupInProgress = startedAt > 0 && activityIsFresh && lastPollAt <= 0;
     const backendDotColor = pollIsFresh
         ? theme.green
         : startedAt > 0 && activityIsFresh && (loopInProgress || lastPollAt <= 0)
             ? theme.yellow
             : theme.red;
+    const backendStatusText = startupInProgress && startupDetail
+        ? startupDetail
+        : describeBackendStatus({
+            startedAt,
+            lastPollAt,
+            activityIsFresh,
+            pollIsFresh,
+            loopInProgress
+        });
+    const backendStatusTag = formatHeaderStatusTag(backendStatusText);
     const navLabels = terminal.compact
         ? { 1: 'F', 2: 'S', 3: 'P', 4: 'M', 5: 'W', 6: 'C' }
         : terminal.narrow
             ? { 1: 'Track', 2: 'Sig', 3: 'Perf', 4: 'Mod', 5: 'Wall', 6: 'Cfg' }
             : { 1: 'Tracker', 2: 'Signals', 3: 'Perf', 4: 'Models', 5: 'Wallets', 6: 'Config' };
     const footerCompact = terminal.compact;
+    const startupElapsedText = formatCurrentPollElapsedSeconds(now, startedAt);
     const currentPollElapsedText = formatCurrentPollElapsedSeconds(now, currentLoopStartedAt);
     const lastPollText = loopInProgress
         ? `polling...${currentPollElapsedText ? ` ${currentPollElapsedText}` : ''} | last poll: ${secondsAgo(botState.last_poll_at)}`
         : `last poll: ${secondsAgo(botState.last_poll_at)}`;
-    const recentRetrainText = !retrainInProgress && retrainStatusText && lastRetrainFinishedAt > 0 && (now - lastRetrainFinishedAt) <= 600
+    const recentRetrainText = !retrainInProgress && retrainStatusText && lastRetrainFinishedAt > 0 && (now - lastRetrainFinishedAt) <= 60
         ? `${retrainStatusText}: ${secondsAgo(lastRetrainFinishedAt)}`
         : null;
     const footerStatusText = isRefreshing
         ? 'refreshing...'
         : retrainInProgress
             ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
+            : startupInProgress
+                ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
             : recentRetrainText
                 ? `${recentRetrainText} | ${lastPollText}`
                 : lastPollText;
-    const footerStatusColor = isRefreshing ? theme.accent : retrainInProgress ? theme.yellow : theme.dim;
+    const footerStatusColor = isRefreshing ? theme.accent : retrainInProgress ? theme.yellow : startupInProgress ? theme.yellow : theme.dim;
     const footerControls = page === 1
         ? terminal.compact
             ? '↑↓ scroll  ↑↑ latest  r refresh  q exit'
@@ -172,13 +208,8 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
                     React.createElement(Text, null, "  ")));
             }),
             React.createElement(Spacer, null),
-            retrainInProgress ? (React.createElement(React.Fragment, null,
-                React.createElement(Text, { color: theme.yellow, bold: true },
-                    "[",
-                    terminal.compact ? 'TRN' : 'TRAIN',
-                    retrainElapsedText ? ` ${retrainElapsedText}` : '',
-                    "]"),
-                React.createElement(Text, null, "  "))) : null,
+            React.createElement(Text, { color: backendDotColor, bold: true }, backendStatusTag),
+            React.createElement(Text, { color: theme.dim }, " "),
             React.createElement(Text, { color: modeColor, bold: true }, mode)),
         React.createElement(Box, { padding: 1, flexGrow: 1 }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
         React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1 }, footerCompact ? (React.createElement(React.Fragment, null,

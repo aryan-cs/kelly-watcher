@@ -159,7 +159,7 @@ class RetrainRunHistoryTest(unittest.TestCase):
 
         self.assertEqual(report["status"], "completed_not_deployed")
         alert_mock.assert_called_once()
-        self.assertIn("[RETRAIN REJECTED]", alert_mock.call_args.args[0])
+        self.assertIn("retrain rejected", alert_mock.call_args.args[0])
         self.assertEqual(alert_mock.call_args.kwargs["kind"], "retrain")
 
     def test_retrain_cycle_report_alerts_when_model_is_accepted(self) -> None:
@@ -184,7 +184,7 @@ class RetrainRunHistoryTest(unittest.TestCase):
 
         self.assertEqual(report["status"], "deployed")
         alert_mock.assert_called_once()
-        self.assertIn("[RETRAIN ACCEPTED]", alert_mock.call_args.args[0])
+        self.assertIn("retrain accepted", alert_mock.call_args.args[0])
         self.assertEqual(alert_mock.call_args.kwargs["kind"], "retrain")
 
 

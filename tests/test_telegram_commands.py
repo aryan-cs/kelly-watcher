@@ -177,10 +177,10 @@ class TelegramCommandTest(unittest.TestCase):
                 self.assertAlmostEqual(summary.win_rate, 1.0)
                 self.assertAlmostEqual(summary.avg_confidence or 0.0, 0.7)
                 self.assertAlmostEqual(summary.avg_total or 0.0, 9.5)
-                self.assertIn("Tracker performance", message)
-                self.assertIn("Total P&L: +$3.000", message)
-                self.assertIn("Current balance: $123.456", message)
-                self.assertIn("Avg total: +$9.500", message)
+                self.assertIn("tracker performance", message)
+                self.assertIn("total P&L: +$3.000", message)
+                self.assertIn("current balance: $123.456", message)
+                self.assertIn("avg total: +$9.500", message)
             finally:
                 db.DB_PATH = original_db_path
                 performance_preview.BOT_STATE_FILE = original_bot_state_file

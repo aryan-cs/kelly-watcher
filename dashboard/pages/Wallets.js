@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import React, { useEffect, useMemo } from 'react';
 import { Box as InkBox, Text } from 'ink';
 import { Box } from '../components/Box.js';
+import { ModalOverlay } from '../components/ModalOverlay.js';
 import { dbPath, envExamplePath, envPath } from '../paths.js';
 import { fit, fitRight, formatPct, secondsAgo, shortAddress, truncate, wrapText } from '../format.js';
 import { isPlaceholderUsername, readIdentityMap } from '../identities.js';
@@ -883,6 +884,8 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
     const modalWidth = Math.max(60, Math.min(terminal.width - 6, terminal.wide ? 132 : 90));
     const modalContentWidth = Math.max(36, modalWidth - 4);
     const detailColumnWidth = Math.max(20, Math.floor((modalContentWidth - detailColumnGap * (detailColumnCount - 1)) / detailColumnCount));
+    const detailRowInnerWidth = detailColumnWidth * detailColumnCount + detailColumnGap * (detailColumnCount - 1);
+    const detailRowRemainderWidth = Math.max(0, modalContentWidth - detailRowInnerWidth);
     const detailLabelWidth = Math.max(8, Math.floor(detailColumnWidth * 0.46));
     const detailValueWidth = Math.max(7, detailColumnWidth - detailLabelWidth - 1);
     const detailIndexLabel = activePane === 'best'
@@ -974,7 +977,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                     })()));
                 })) : (React.createElement(Text, { color: theme.dim }, "No wallet performance yet."))))));
     };
-    return (React.createElement(InkBox, { flexDirection: "column", width: "100%", height: "100%" },
+    const renderPageBody = () => (React.createElement(React.Fragment, null,
         React.createElement(InkBox, { width: "100%", flexDirection: shadowPanelsWide ? 'row' : 'column', columnGap: 1, rowGap: 1, flexShrink: 0 },
             renderShadowWalletBox('Best Wallets', 'best', bestShadowWallets),
             renderShadowWalletBox('Worst Wallets', 'worst', worstShadowWallets)),
@@ -1084,8 +1087,10 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: isSelected ? theme.accent : theme.red, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth))));
                     })) : (React.createElement(Text, { color: theme.dim }, "No dropped wallets."))),
-                    React.createElement(Text, { color: theme.dim }, droppedFooterText)))),
-        detailOpen && selectedWallet ? (React.createElement(InkBox, { position: "absolute", width: "100%", height: "100%", justifyContent: "center", alignItems: "center" },
+                    React.createElement(Text, { color: theme.dim }, droppedFooterText))))));
+    return (React.createElement(InkBox, { flexDirection: "column", width: "100%", height: "100%" },
+        renderPageBody(),
+        detailOpen && selectedWallet ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor, backdrop: renderPageBody() },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: modalWidth },
                 React.createElement(InkBox, { width: "100%" },
                     React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit('Wallet Detail', detailHeaderWidth)}`),
@@ -1099,6 +1104,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                     const left = detailColumnLines[0]?.[rowIndex] || { kind: 'blank' };
                     const right = detailColumnLines[1]?.[rowIndex] || { kind: 'blank' };
                     return (React.createElement(InkBox, { key: `detail-row-${rowIndex}`, width: "100%" },
+                        React.createElement(Text, { backgroundColor: modalBackground }, " "),
                         left.kind === 'heading' ? (React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, left.text)) : left.kind === 'metric' ? (React.createElement(React.Fragment, null,
                             React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, left.label),
                             React.createElement(Text, { backgroundColor: modalBackground }, " "),
@@ -1108,7 +1114,9 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                             right.kind === 'heading' ? (React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, right.text)) : right.kind === 'metric' ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, right.label),
                                 React.createElement(Text, { backgroundColor: modalBackground }, " "),
-                                React.createElement(Text, { color: right.valueColor, backgroundColor: modalBackground }, right.value))) : (React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailColumnWidth))))) : null));
+                                React.createElement(Text, { color: right.valueColor, backgroundColor: modalBackground }, right.value))) : (React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailColumnWidth))))) : null,
+                        detailRowRemainderWidth > 0 ? (React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailRowRemainderWidth))) : null,
+                        React.createElement(Text, { backgroundColor: modalBackground }, " ")));
                 })),
                 React.createElement(Text, { backgroundColor: modalBackground }, modalSpacerLine),
                 React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, ` ${fit(truncate(activePane === 'dropped'

@@ -1,6 +1,7 @@
 import React, {useEffect, useMemo, useState} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
+import {ModalOverlay} from '../components/ModalOverlay.js'
 import {StatRow} from '../components/StatRow.js'
 import {editableConfigFields, formatEditableConfigValue, type EditableConfigValues} from '../configEditor.js'
 import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil} from '../format.js'
@@ -1276,8 +1277,8 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     </Box>
   )
 
-  return (
-    <InkBox flexDirection="column" width="100%">
+  const renderPageBody = () => (
+    <>
       <InkBox flexDirection={stacked ? 'column' : 'row'}>
         <Box title="Prediction Quality" width={topRowBoxWidth} accent={clampedSelectedPanelIndex === 0}>
           <StatRow
@@ -1503,9 +1504,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           )}
         </Box>
       </InkBox>
+    </>
+  )
 
+  return (
+    <InkBox flexDirection="column" width="100%">
+      {renderPageBody()}
       {detailOpen ? (
-        <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
+        <ModalOverlay backgroundColor={terminal.backgroundColor} backdrop={renderPageBody()}>
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={helpModalWidth}>
             <InkBox width="100%">
               <Text color={theme.accent} backgroundColor={modalBackground} bold>
@@ -1571,7 +1577,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
               )}
             </InkBox>
           </InkBox>
-        </InkBox>
+        </ModalOverlay>
       ) : null}
     </InkBox>
   )

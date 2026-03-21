@@ -46,6 +46,27 @@ def _format_pct(value: float) -> str:
     return f"{float(value) * 100.0:.1f}%"
 
 
+def _short_wallet(wallet: str) -> str:
+    text = _one_line(wallet)
+    if text.lower().startswith("0x") and len(text) > 16:
+        return f"{text[:8]}...{text[-6:]}"
+    return text
+
+
+def _looks_like_placeholder_name(name: str, wallet: str) -> bool:
+    normalized_name = name.lower()
+    normalized_wallet = wallet.lower()
+    if not normalized_name or not normalized_wallet:
+        return False
+    if normalized_name == normalized_wallet:
+        return True
+    if normalized_name.startswith(f"{normalized_wallet}-"):
+        suffix = normalized_name[len(normalized_wallet) + 1 :]
+        if suffix.isdigit():
+            return True
+    return False
+
+
 def build_lines(*lines: str | None) -> str:
     normalized: list[str] = []
     for line in lines:
@@ -65,6 +86,35 @@ def build_market_line(question: str, market_url: str | None) -> str:
     return f"{label}: {url}" if url else label
 
 
+def build_tracking_line(
+    tracked_trader_name: str | None = None,
+    tracked_trader_address: str | None = None,
+) -> str | None:
+    name = _one_line(tracked_trader_name)
+    wallet = _one_line(tracked_trader_address)
+    if name and wallet and _looks_like_placeholder_name(name, wallet):
+        name = ""
+    if name and wallet:
+        return f"tracking {name} ({_short_wallet(wallet)})"
+    if name:
+        return f"tracking {name}"
+    if wallet:
+        return f"tracking {wallet}"
+    return None
+
+
+def append_tracking_detail(
+    summary: str,
+    tracked_trader_name: str | None = None,
+    tracked_trader_address: str | None = None,
+) -> str:
+    base = _one_line(summary)
+    tracking = build_tracking_line(tracked_trader_name, tracked_trader_address)
+    if not tracking:
+        return base
+    return f"{base} | {tracking}"
+
+
 def build_trade_entry_alert(
     *,
     mode: str,
@@ -75,15 +125,19 @@ def build_trade_entry_alert(
     confidence: float | None,
     question: str,
     market_url: str | None,
+    tracked_trader_name: str | None = None,
+    tracked_trader_address: str | None = None,
 ) -> str:
     side_label = _one_line(side).upper()
     share_noun = "share" if abs(float(shares) - 1.0) < 1e-9 else "shares"
     confidence_text = f", {_format_pct(confidence)} confident" if confidence is not None else ""
     position_text = f" {side_label}" if side_label else ""
     return build_lines(
-        (
+        append_tracking_detail(
             f"{_one_line(mode).lower()} bought {_format_shares(shares)}{position_text} {share_noun} "
-            f"@ {_format_cents(price)} cents for a total of {_format_usd(total_usd)}{confidence_text}"
+            f"@ {_format_cents(price)} cents for a total of {_format_usd(total_usd)}{confidence_text}",
+            tracked_trader_name,
+            tracked_trader_address,
         ),
         build_market_line(question, market_url),
     )
@@ -99,6 +153,8 @@ def build_trade_exit_alert(
     pnl_usd: float | None,
     question: str,
     market_url: str | None,
+    tracked_trader_name: str | None = None,
+    tracked_trader_address: str | None = None,
 ) -> str:
     side_label = _one_line(side).upper()
     share_noun = "share" if abs(float(shares) - 1.0) < 1e-9 else "shares"
@@ -109,9 +165,11 @@ def build_trade_exit_alert(
     )
     position_text = f" {side_label}" if side_label else ""
     return build_lines(
-        (
+        append_tracking_detail(
             f"{_one_line(mode).lower()} sold {_format_shares(shares)}{position_text} {share_noun} "
-            f"@ {_format_cents(price)} cents for a total of {_format_usd(total_usd)}{pnl_text}"
+            f"@ {_format_cents(price)} cents for a total of {_format_usd(total_usd)}{pnl_text}",
+            tracked_trader_name,
+            tracked_trader_address,
         ),
         build_market_line(question, market_url),
     )
@@ -125,6 +183,8 @@ def build_trade_resolution_alert(
     pnl_usd: float,
     question: str,
     market_url: str | None,
+    tracked_trader_name: str | None = None,
+    tracked_trader_address: str | None = None,
 ) -> str:
     side_label = _one_line(side).upper() or "POSITION"
     amount = _format_usd(abs(float(pnl_usd)))
@@ -134,7 +194,10 @@ def build_trade_resolution_alert(
         summary = f"{_one_line(mode).lower()} won {side_label}, made {amount}"
     else:
         summary = f"{_one_line(mode).lower()} lost {side_label}, lost {amount}"
-    return build_lines(summary, build_market_line(question, market_url))
+    return build_lines(
+        append_tracking_detail(summary, tracked_trader_name, tracked_trader_address),
+        build_market_line(question, market_url),
+    )
 
 
 def build_market_error_alert(
@@ -143,9 +206,11 @@ def build_market_error_alert(
     question: str | None = None,
     market_url: str | None = None,
     detail: str | None = None,
+    tracked_trader_name: str | None = None,
+    tracked_trader_address: str | None = None,
 ) -> str:
     return build_lines(
-        _one_line(summary),
+        append_tracking_detail(summary, tracked_trader_name, tracked_trader_address),
         build_market_line(question or "Market", market_url) if question or market_url else None,
         _one_line(detail) if detail else None,
     )

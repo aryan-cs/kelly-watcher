@@ -7,12 +7,32 @@ import numpy as np
 
 EXECUTED_SAMPLE_WEIGHT = 1.0
 COUNTERFACTUAL_SAMPLE_WEIGHT = 0.25
+MAX_COUNTERFACTUAL_TO_EXECUTED_WEIGHT_RATIO = 1.0
 MIN_CONFIDENCE_CLIP = 1e-4
 MAX_CONFIDENCE_CLIP = 1.0 - MIN_CONFIDENCE_CLIP
 
 
 def sample_weight_for_trade(*, skipped: Any) -> float:
     return COUNTERFACTUAL_SAMPLE_WEIGHT if bool(skipped) else EXECUTED_SAMPLE_WEIGHT
+
+
+def rebalance_training_sample_weights(skipped_flags: Any):
+    skipped = np.asarray(skipped_flags, dtype=bool).reshape(-1)
+    weights = np.where(skipped, COUNTERFACTUAL_SAMPLE_WEIGHT, EXECUTED_SAMPLE_WEIGHT).astype(float)
+    executed_count = int((~skipped).sum())
+    counterfactual_count = int(skipped.sum())
+    if executed_count <= 0 or counterfactual_count <= 0:
+        return weights
+
+    executed_total = executed_count * EXECUTED_SAMPLE_WEIGHT
+    counterfactual_total = counterfactual_count * COUNTERFACTUAL_SAMPLE_WEIGHT
+    max_counterfactual_total = executed_total * MAX_COUNTERFACTUAL_TO_EXECUTED_WEIGHT_RATIO
+    if counterfactual_total <= max_counterfactual_total:
+        return weights
+
+    scale = max_counterfactual_total / counterfactual_total
+    weights[skipped] *= scale
+    return weights
 
 
 def transform_return_target(value: float) -> float:

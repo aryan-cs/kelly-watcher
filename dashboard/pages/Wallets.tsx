@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import React, {useEffect, useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
+import {ModalOverlay} from '../components/ModalOverlay.js'
 import {dbPath, envExamplePath, envPath} from '../paths.js'
 import {fit, fitRight, formatPct, secondsAgo, shortAddress, truncate, wrapText} from '../format.js'
 import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
@@ -1222,6 +1223,9 @@ export function Wallets({
     20,
     Math.floor((modalContentWidth - detailColumnGap * (detailColumnCount - 1)) / detailColumnCount)
   )
+  const detailRowInnerWidth =
+    detailColumnWidth * detailColumnCount + detailColumnGap * (detailColumnCount - 1)
+  const detailRowRemainderWidth = Math.max(0, modalContentWidth - detailRowInnerWidth)
   const detailLabelWidth = Math.max(8, Math.floor(detailColumnWidth * 0.46))
   const detailValueWidth = Math.max(7, detailColumnWidth - detailLabelWidth - 1)
   const detailIndexLabel =
@@ -1369,8 +1373,8 @@ export function Wallets({
     )
   }
 
-  return (
-    <InkBox flexDirection="column" width="100%" height="100%">
+  const renderPageBody = () => (
+    <>
       <InkBox width="100%" flexDirection={shadowPanelsWide ? 'row' : 'column'} columnGap={1} rowGap={1} flexShrink={0}>
         {renderShadowWalletBox('Best Wallets', 'best', bestShadowWallets)}
         {renderShadowWalletBox('Worst Wallets', 'worst', worstShadowWallets)}
@@ -1549,9 +1553,14 @@ export function Wallets({
           </Box>
         </InkBox>
       </InkBox>
+    </>
+  )
 
+  return (
+    <InkBox flexDirection="column" width="100%" height="100%">
+      {renderPageBody()}
       {detailOpen && selectedWallet ? (
-        <InkBox position="absolute" width="100%" height="100%" justifyContent="center" alignItems="center">
+        <ModalOverlay backgroundColor={terminal.backgroundColor} backdrop={renderPageBody()}>
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={modalWidth}>
             <InkBox width="100%">
               <Text color={theme.accent} backgroundColor={modalBackground} bold>
@@ -1582,6 +1591,7 @@ export function Wallets({
 
                 return (
                   <InkBox key={`detail-row-${rowIndex}`} width="100%">
+                    <Text backgroundColor={modalBackground}> </Text>
                     {left.kind === 'heading' ? (
                       <Text color={theme.accent} backgroundColor={modalBackground} bold>{left.text}</Text>
                     ) : left.kind === 'metric' ? (
@@ -1609,6 +1619,10 @@ export function Wallets({
                         )}
                       </>
                     ) : null}
+                    {detailRowRemainderWidth > 0 ? (
+                      <Text backgroundColor={modalBackground}>{' '.repeat(detailRowRemainderWidth)}</Text>
+                    ) : null}
+                    <Text backgroundColor={modalBackground}> </Text>
                   </InkBox>
                 )
               })}
@@ -1628,7 +1642,7 @@ export function Wallets({
               )} `}
             </Text>
           </InkBox>
-        </InkBox>
+        </ModalOverlay>
       ) : null}
     </InkBox>
   )

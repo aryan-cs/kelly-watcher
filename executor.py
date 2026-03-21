@@ -9,6 +9,7 @@ from typing import Any, Optional
 import httpx
 
 from alerter import (
+    append_tracking_detail,
     build_lines,
     build_market_error_alert,
     build_market_line,
@@ -877,6 +878,8 @@ class PolymarketExecutor:
                 confidence=confidence,
                 question=event.question,
                 market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                tracked_trader_name=getattr(event, "trader_name", None),
+                tracked_trader_address=getattr(event, "trader_address", None),
             ),
             kind="buy",
         )
@@ -1015,6 +1018,8 @@ class PolymarketExecutor:
                     confidence=confidence,
                     question=event.question,
                     market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                    tracked_trader_name=getattr(event, "trader_name", None),
+                    tracked_trader_address=getattr(event, "trader_address", None),
                 ),
                 kind="buy",
             )
@@ -1028,6 +1033,8 @@ class PolymarketExecutor:
                     question=event.question,
                     market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
                     detail=str(exc),
+                    tracked_trader_name=getattr(event, "trader_name", None),
+                    tracked_trader_address=getattr(event, "trader_address", None),
                 ),
                 kind="error",
             )
@@ -1581,6 +1588,8 @@ class PolymarketExecutor:
                 pnl_usd=pnl,
                 question=event.question,
                 market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                tracked_trader_name=getattr(event, "trader_name", None),
+                tracked_trader_address=getattr(event, "trader_address", None),
             ),
             kind="exit",
         )
@@ -1665,7 +1674,11 @@ class PolymarketExecutor:
                     )
                     send_alert(
                         build_lines(
-                            "live exit sync is ambiguous",
+                            append_tracking_detail(
+                                "live exit sync is ambiguous",
+                                getattr(event, "trader_name", None),
+                                getattr(event, "trader_address", None),
+                            ),
                             build_market_line(
                                 event.question,
                                 _market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
@@ -1749,6 +1762,8 @@ class PolymarketExecutor:
                     pnl_usd=pnl,
                     question=event.question,
                     market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                    tracked_trader_name=getattr(event, "trader_name", None),
+                    tracked_trader_address=getattr(event, "trader_address", None),
                 ),
                 kind="exit",
             )
@@ -1775,6 +1790,8 @@ class PolymarketExecutor:
                     question=event.question,
                     market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
                     detail=str(exc),
+                    tracked_trader_name=getattr(event, "trader_name", None),
+                    tracked_trader_address=getattr(event, "trader_address", None),
                 ),
                 kind="error",
             )

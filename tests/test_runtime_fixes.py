@@ -111,6 +111,24 @@ class RuntimeFixesTest(unittest.TestCase):
             "live lost NO, lost $3.25\nWill Team A win?: https://polymarket.com/event/team-a-win",
         )
 
+    def test_build_trade_resolution_alert_includes_tracked_trader(self) -> None:
+        message = alerter.build_trade_resolution_alert(
+            mode="shadow",
+            won=True,
+            side="yes",
+            pnl_usd=4.0,
+            question="Will BTC finish March above $90k?",
+            market_url="https://polymarket.com/event/btc-above-90k",
+            tracked_trader_name="TraderOne",
+            tracked_trader_address="0x1234567890abcdef1234567890abcdef12345678",
+        )
+
+        self.assertEqual(
+            message,
+            "shadow won YES, made $4.00 | tracking TraderOne (0x123456...345678)\n"
+            "Will BTC finish March above $90k?: https://polymarket.com/event/btc-above-90k",
+        )
+
     def test_resolve_wallet_for_username_returns_wallet_and_caches_identity(self) -> None:
         class _Response:
             def __init__(self, text: str, status_code: int = 200) -> None:

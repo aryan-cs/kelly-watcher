@@ -57,6 +57,7 @@ export function restartShadowAccount(keepWallets) {
             message: 'Restart Shadow is blocked while Live Trading is enabled in config. Turn Live Trading off first.'
         };
     }
+    const previousWallets = String(envValues.WATCHED_WALLETS || '');
     try {
         if (!keepWallets) {
             writeEditableConfigValue('WATCHED_WALLETS', '');
@@ -67,6 +68,9 @@ export function restartShadowAccount(keepWallets) {
         });
         const output = combinedOutput(result.stdout, result.stderr);
         if (result.status !== 0) {
+            if (!keepWallets) {
+                writeEditableConfigValue('WATCHED_WALLETS', previousWallets);
+            }
             return {
                 ok: false,
                 message: output || `Shadow restart failed with exit code ${result.status ?? 1}.`
@@ -81,6 +85,14 @@ export function restartShadowAccount(keepWallets) {
         };
     }
     catch (error) {
+        if (!keepWallets) {
+            try {
+                writeEditableConfigValue('WATCHED_WALLETS', previousWallets);
+            }
+            catch {
+                // Keep the original failure surface as the primary error.
+            }
+        }
         return {
             ok: false,
             message: `Shadow restart failed: ${error instanceof Error ? error.message : 'unknown error'}`

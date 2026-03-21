@@ -12,6 +12,81 @@ from economic_model import COUNTERFACTUAL_SAMPLE_WEIGHT, EXECUTED_SAMPLE_WEIGHT,
 
 
 class TrainingDataContractTest(unittest.TestCase):
+    def test_load_training_data_orders_by_label_time(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, skip_reason, placed_at,
+                        actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        shadow_pnl_usd, resolved_at, label_applied_at, counterfactual_return
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        (
+                            "labeled-late",
+                            "market-1",
+                            "Placed first but labeled later",
+                            "0xaaa",
+                            "yes",
+                            "buy",
+                            0.40,
+                            10.0,
+                            0.71,
+                            0.10,
+                            0,
+                            0,
+                            None,
+                            1_700_000_000,
+                            0.40,
+                            25.0,
+                            10.0,
+                            5.0,
+                            1_700_000_300,
+                            1_700_000_300,
+                            1.5,
+                        ),
+                        (
+                            "labeled-early",
+                            "market-2",
+                            "Placed later but labeled earlier",
+                            "0xbbb",
+                            "yes",
+                            "buy",
+                            0.45,
+                            12.0,
+                            0.72,
+                            0.09,
+                            0,
+                            0,
+                            None,
+                            1_700_000_100,
+                            0.45,
+                            26.0,
+                            12.0,
+                            3.0,
+                            1_700_000_200,
+                            1_700_000_200,
+                            0.25,
+                        ),
+                    ],
+                )
+                conn.commit()
+                conn.close()
+
+                df = train.load_training_data()
+
+                self.assertEqual(list(df["trade_id"]), ["labeled-early", "labeled-late"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_load_training_data_includes_trainable_skips_but_excludes_policy_skips(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -152,6 +227,91 @@ class TrainingDataContractTest(unittest.TestCase):
                 self.assertAlmostEqual(weights["accepted-win"], EXECUTED_SAMPLE_WEIGHT, places=6)
                 self.assertAlmostEqual(weights["skip-trainable-win"], COUNTERFACTUAL_SAMPLE_WEIGHT, places=6)
                 self.assertAlmostEqual(weights["skip-trainable-loss"], COUNTERFACTUAL_SAMPLE_WEIGHT, places=6)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_load_training_data_caps_total_counterfactual_weight(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, skip_reason, placed_at,
+                        actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        shadow_pnl_usd, resolved_at, label_applied_at, counterfactual_return
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "accepted-win",
+                        "market-1",
+                        "Accepted trade",
+                        "0xaaa",
+                        "yes",
+                        "buy",
+                        0.40,
+                        10.0,
+                        0.71,
+                        0.10,
+                        0,
+                        0,
+                        None,
+                        1_700_000_000,
+                        0.40,
+                        25.0,
+                        10.0,
+                        5.0,
+                        1_700_000_100,
+                        1_700_000_100,
+                        1.5,
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, skip_reason, placed_at,
+                        resolved_at, label_applied_at, counterfactual_return
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        (
+                            f"skip-{idx}",
+                            f"market-s-{idx}",
+                            "Skipped confidence reject",
+                            f"0x{idx:03x}",
+                            "yes",
+                            "buy",
+                            0.45,
+                            12.0,
+                            0.59,
+                            0.08,
+                            0,
+                            1,
+                            "signal confidence was 59.0%, below the 60.0% minimum",
+                            1_700_000_010 + idx,
+                            1_700_000_110 + idx,
+                            1_700_000_110 + idx,
+                            1.222222,
+                        )
+                        for idx in range(8)
+                    ],
+                )
+                conn.commit()
+                conn.close()
+
+                df = train.load_training_data()
+                executed_total = float(df.loc[df["skipped"] == 0, "sample_weight"].sum())
+                counterfactual_total = float(df.loc[df["skipped"] == 1, "sample_weight"].sum())
+
+                self.assertAlmostEqual(executed_total, 1.0, places=6)
+                self.assertAlmostEqual(counterfactual_total, 1.0, places=6)
             finally:
                 db.DB_PATH = original_db_path
 

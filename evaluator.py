@@ -95,6 +95,7 @@ def resolve_shadow_trades() -> list[dict]:
     unresolved = conn.execute(
         """
         SELECT id, trade_id, market_id, question, market_url, market_metadata_json,
+               trader_address, trader_name,
                token_id, side, price_at_signal, signal_size_usd,
                actual_entry_price, actual_entry_shares, actual_entry_size_usd,
                remaining_entry_shares, remaining_entry_size_usd, realized_exit_pnl_usd,
@@ -241,6 +242,8 @@ def resolve_shadow_trades() -> list[dict]:
                         "market_id": row["market_id"],
                         "question": row["question"],
                         "market_url": row["market_url"],
+                        "trader_address": row["trader_address"],
+                        "trader_name": row["trader_name"],
                         "side": row["side"],
                         "real_money": row["real_money"],
                         "executed": bool(fill_aware),

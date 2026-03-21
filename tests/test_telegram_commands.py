@@ -4,6 +4,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import db
@@ -36,6 +37,14 @@ class _HttpClient:
     def get(self, url: str, *, params=None) -> _HttpResponse:
         self.get_calls.append((url, params))
         return _HttpResponse(self.payload)
+
+
+class _ContextClient:
+    def __enter__(self):
+        return object()
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
 
 
 class TelegramCommandTest(unittest.TestCase):
@@ -177,10 +186,10 @@ class TelegramCommandTest(unittest.TestCase):
                 self.assertAlmostEqual(summary.win_rate, 1.0)
                 self.assertAlmostEqual(summary.avg_confidence or 0.0, 0.7)
                 self.assertAlmostEqual(summary.avg_total or 0.0, 9.5)
-                self.assertIn("tracker performance", message)
-                self.assertIn("total P&L: +$3.000", message)
-                self.assertIn("current balance: $123.456", message)
-                self.assertIn("avg total: +$9.500", message)
+                self.assertIn("Tracker performance", message)
+                self.assertIn("Total P&L: +$3.000", message)
+                self.assertIn("Current balance: $123.456", message)
+                self.assertIn("Avg total: +$9.500", message)
             finally:
                 db.DB_PATH = original_db_path
                 performance_preview.BOT_STATE_FILE = original_bot_state_file
@@ -313,6 +322,86 @@ class TelegramCommandTest(unittest.TestCase):
                 telegram_runtime.BOT_STATE_FILE = original_bot_state_file
                 telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
                 telegram_runtime._next_command_poll_at = original_next_poll_at
+
+    def test_service_telegram_commands_replies_to_leaderboards(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = telegram_runtime.TELEGRAM_STATE_FILE
+            original_bot_state_file = telegram_runtime.BOT_STATE_FILE
+            original_retrain_request_file = telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE
+            original_next_poll_at = telegram_runtime._next_command_poll_at
+            try:
+                tmp_path = Path(tmpdir)
+                telegram_runtime.TELEGRAM_STATE_FILE = tmp_path / "telegram_state.json"
+                telegram_runtime.BOT_STATE_FILE = tmp_path / "bot_state.json"
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = tmp_path / "manual_retrain_request.json"
+                telegram_runtime._next_command_poll_at = 0.0
+                client = _HttpClient(
+                    {
+                        "ok": True,
+                        "result": [
+                            {
+                                "update_id": 3001,
+                                "message": {
+                                    "message_id": 77,
+                                    "chat": {"id": 123},
+                                    "text": "/leaderboards@kellywatcherbot?",
+                                },
+                            }
+                        ],
+                    }
+                )
+
+                with patch("telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("telegram_runtime.httpx.Client", return_value=client), patch(
+                    "telegram_runtime.render_leaderboards_message", return_value="leaders"
+                ), patch("telegram_runtime.send_telegram_message", return_value=True) as send_message:
+                    handled = telegram_runtime.service_telegram_commands()
+
+                self.assertEqual(handled, 1)
+                send_message.assert_called_once_with(
+                    "leaders",
+                    chat_id="123",
+                    reply_to_message_id=77,
+                )
+            finally:
+                telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
+                telegram_runtime.BOT_STATE_FILE = original_bot_state_file
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
+                telegram_runtime._next_command_poll_at = original_next_poll_at
+
+    def test_render_leaderboards_message_formats_periods(self) -> None:
+        wallet = "0x1234567890abcdef1234567890abcdef12345678"
+
+        def _fake_fetch(_client, *, time_period, **_kwargs):
+            if time_period == "DAY":
+                return [
+                    SimpleNamespace(
+                        rank=1,
+                        username="alpha",
+                        address=wallet,
+                        pnl_usd=12.34,
+                        volume_usd=56.78,
+                    )
+                ]
+            return []
+
+        with patch("telegram_runtime.httpx.Client", return_value=_ContextClient()), patch(
+            "telegram_runtime.fetch_leaderboard",
+            side_effect=_fake_fetch,
+        ):
+            message = telegram_runtime.render_leaderboards_message()
+
+        self.assertEqual(
+            message,
+            "polymarket leaderboards\n"
+            "24h:\n"
+            "1. alpha (0x123456...345678) | pnl +$12.34 | vol $56.78\n"
+            "7d:\n"
+            "- unavailable\n"
+            "30d:\n"
+            "- unavailable",
+        )
 
 
 if __name__ == "__main__":

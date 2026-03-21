@@ -12,12 +12,19 @@ import httpx
 from alerter import send_telegram_message
 from config import telegram_bot_token, telegram_chat_id
 from performance_preview import render_tracker_preview_message
+from rank_copytrade_wallets import fetch_leaderboard
 
 logger = logging.getLogger(__name__)
 TELEGRAM_STATE_FILE = Path("data/telegram_state.json")
 BOT_STATE_FILE = Path("data/bot_state.json")
 MANUAL_RETRAIN_REQUEST_FILE = Path("data/manual_retrain_request.json")
 _COMMAND_POLL_INTERVAL_S = 2.0
+_LEADERBOARD_PERIODS = (
+    ("DAY", "24h"),
+    ("WEEK", "7d"),
+    ("MONTH", "30d"),
+)
+_LEADERBOARD_ROWS_PER_PERIOD = 5
 _next_command_poll_at = 0.0
 
 
@@ -86,10 +93,73 @@ def _request_manual_retrain(*, source: str = "telegram") -> str:
         temp_path = MANUAL_RETRAIN_REQUEST_FILE.with_name(f"{MANUAL_RETRAIN_REQUEST_FILE.name}.{os.getpid()}.tmp")
         temp_path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
         temp_path.replace(MANUAL_RETRAIN_REQUEST_FILE)
-        return "manual retrain requested. The bot should pick it up within about a second."
+        return "Manual retrain requested. The bot should pick it up within about a second."
     except Exception as exc:
         logger.warning("Failed to persist manual retrain request: %s", exc)
         return f"Failed to request manual retrain: {exc}"
+
+
+def _short_wallet(wallet: str) -> str:
+    text = str(wallet or "").strip()
+    if text.lower().startswith("0x") and len(text) > 16:
+        return f"{text[:8]}...{text[-6:]}"
+    return text
+
+
+def _format_signed_usd(value: float) -> str:
+    amount = abs(float(value))
+    if value > 0:
+        return f"+${amount:.2f}"
+    if value < 0:
+        return f"-${amount:.2f}"
+    return f"${amount:.2f}"
+
+
+def _format_usd(value: float) -> str:
+    return f"${float(value):.2f}"
+
+
+def _leaderboard_entry_line(entry: Any, *, fallback_rank: int) -> str:
+    rank = int(getattr(entry, "rank", 0) or fallback_rank)
+    username = str(getattr(entry, "username", "") or "").strip()
+    wallet = str(getattr(entry, "address", "") or "").strip().lower()
+    wallet_label = _short_wallet(wallet)
+    if username and username != "-":
+        display = f"{username} ({wallet_label})" if wallet_label else username
+    else:
+        display = wallet_label or "unknown wallet"
+    return (
+        f"{rank}. {display} | pnl {_format_signed_usd(float(getattr(entry, 'pnl_usd', 0.0) or 0.0))}"
+        f" | vol {_format_usd(float(getattr(entry, 'volume_usd', 0.0) or 0.0))}"
+    )
+
+
+def render_leaderboards_message() -> str:
+    lines = ["polymarket leaderboards"]
+    try:
+        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+            for time_period, label in _LEADERBOARD_PERIODS:
+                entries = fetch_leaderboard(
+                    client,
+                    category="OVERALL",
+                    time_period=time_period,
+                    order_by="PNL",
+                    per_page=_LEADERBOARD_ROWS_PER_PERIOD,
+                    pages=1,
+                )[:_LEADERBOARD_ROWS_PER_PERIOD]
+                lines.append(f"{label}:")
+                if not entries:
+                    lines.append("- unavailable")
+                    continue
+                lines.extend(
+                    _leaderboard_entry_line(entry, fallback_rank=index)
+                    for index, entry in enumerate(entries, start=1)
+                )
+    except Exception as exc:
+        logger.warning("Failed to render leaderboards message: %s", exc)
+        return "leaderboards are unavailable right now."
+
+    return "\n".join(lines)
 
 
 def _build_command_reply(command: str) -> str | None:
@@ -97,6 +167,8 @@ def _build_command_reply(command: str) -> str | None:
         return render_tracker_preview_message()
     if command == "/train":
         return _request_manual_retrain(source="telegram")
+    if command in {"/leaderboard", "/leaderboards"}:
+        return render_leaderboards_message()
     return None
 
 
@@ -147,7 +219,7 @@ def service_telegram_commands() -> int:
             continue
 
         command = _normalize_message_command(str(message.get("text") or ""))
-        if command not in {"/balance", "/train"}:
+        if command not in {"/balance", "/train", "/leaderboard", "/leaderboards"}:
             continue
 
         chat = message.get("chat")

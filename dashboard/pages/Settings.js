@@ -82,10 +82,12 @@ export function Settings({ editor }) {
     const safeDangerIndex = Math.max(0, Math.min(editor.dangerSelectedIndex, Math.max(dangerActions.length - 1, 0)));
     const selectedDangerAction = dangerActions[safeDangerIndex];
     const panelContentWidth = Math.max(24, terminal.width - 10);
-    const configBoxWidth = stacked ? undefined : Math.max(56, Math.floor((terminal.width - 11) * 0.68));
-    const dangerBoxWidth = stacked ? undefined : Math.max(28, terminal.width - (configBoxWidth || 0) - 11);
-    const configContentWidth = Math.max(28, (configBoxWidth || terminal.width - 10) - 4);
-    const dangerContentWidth = Math.max(24, (dangerBoxWidth || terminal.width - 10) - 4);
+    const middleRowGap = stacked ? 0 : 2;
+    const middleRowWidth = Math.max(24, terminal.width - 4);
+    const configBoxWidth = stacked ? middleRowWidth : Math.max(56, Math.floor((middleRowWidth - middleRowGap) * 0.68));
+    const dangerBoxWidth = stacked ? middleRowWidth : Math.max(28, middleRowWidth - configBoxWidth - middleRowGap);
+    const configContentWidth = Math.max(28, configBoxWidth - 4);
+    const dangerContentWidth = Math.max(24, dangerBoxWidth - 4);
     const configColumnCount = configContentWidth >= 78 ? 2 : 1;
     const configColumns = useMemo(() => splitIntoColumns(editableConfigFields.map((field, index) => ({ field, index })), configColumnCount), [configColumnCount]);
     const configColumnWidth = configColumnCount === 1
@@ -100,10 +102,10 @@ export function Settings({ editor }) {
     const statusColor = dangerToneColor(editor.statusTone);
     const configDefaultStatusMessage = editor.isEditing
         ? 'Type a value. Up/down cycles preset fields. Enter saves. Esc cancels.'
-        : 'Use up/down to move. Enter edits config. Continue down into Danger Zone.';
+        : 'Use left/right to switch boxes. Use up/down to move. Enter edits config.';
     const dangerDefaultStatusMessage = editor.dangerConfirm
         ? 'Use up/down to choose an action. Enter confirms. Esc cancels.'
-        : 'Use up/down to reach this box. Enter opens the selected danger action.';
+        : 'Use left/right to switch boxes. Use up/down to choose an action. Enter opens it.';
     const configDescription = selectedField ? `${selectedField.key} - ${selectedField.description}` : '';
     const configStatusMessage = editor.focusArea === 'config' || editor.isEditing
         ? (editor.statusMessage || '').trim() || configDefaultStatusMessage
@@ -152,7 +154,7 @@ export function Settings({ editor }) {
                 React.createElement(StatRow, { label: "Started at", value: state.started_at ? new Date(state.started_at * 1000).toLocaleString() : '-' }),
                 React.createElement(StatRow, { label: "Last poll", value: state.last_poll_at ? new Date(state.last_poll_at * 1000).toLocaleTimeString() : '-' }),
                 React.createElement(StatRow, { label: "Poll duration", value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-' }))),
-        React.createElement(InkBox, { marginTop: 1, flexDirection: stacked ? 'column' : 'row' },
+        React.createElement(InkBox, { marginTop: 1, flexDirection: stacked ? 'column' : 'row', width: "100%" },
             React.createElement(Box, { title: "Editable Config", width: stacked ? '100%' : configBoxWidth, accent: true },
                 React.createElement(InkBox, { width: "100%" }, configColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `config-column-${columnIndex}` },
                     React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, column.map(({ field, index }) => {
@@ -178,8 +180,8 @@ export function Settings({ editor }) {
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
                     configDescriptionLines.map((line, index) => (React.createElement(Text, { key: `config-desc-${index}`, color: theme.dim }, line))),
                     configStatusLines.map((line, index) => (React.createElement(Text, { key: `config-status-${index}`, color: statusColor }, line))))),
-            !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(InkBox, { borderStyle: "round", borderColor: theme.red, flexDirection: "column", width: stacked ? '100%' : dangerBoxWidth, paddingX: 1 },
+            !stacked ? React.createElement(InkBox, { width: middleRowGap }) : React.createElement(InkBox, { height: 1 }),
+            React.createElement(InkBox, { borderStyle: "round", borderColor: theme.red, flexDirection: "column", width: stacked ? '100%' : undefined, flexGrow: stacked ? 0 : 1, flexShrink: 1, paddingX: 1 },
                 React.createElement(InkBox, null,
                     React.createElement(Text, { color: theme.red, bold: true }, "Danger Zone")),
                 editor.dangerConfirm ? (React.createElement(React.Fragment, null,

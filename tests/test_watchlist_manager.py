@@ -728,7 +728,7 @@ class WatchlistManagerTest(unittest.TestCase):
                         actual_entry_price=0.50,
                         actual_entry_shares=2.0,
                         actual_entry_size_usd=1.0,
-                        shadow_pnl_usd=0.05,
+                        shadow_pnl_usd=-0.05,
                     )
                 for index in range(5):
                     insert_logged_trade(
@@ -765,6 +765,183 @@ class WatchlistManagerTest(unittest.TestCase):
                 ).fetchone()
                 conn.close()
                 self.assertIn("uncopyable", row["status_reason"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_profitable_high_skip_wallet_is_not_auto_dropped_for_uncopyable_skip_rate(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                tracked_wallets = ["0xbot", "0xchamp0", "0xchamp1", "0xchamp2", "0xchamp3", "0xchamp4"]
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xbot", 0.67, 55, 0.2, 0.0, 20.0, 10, 10, 36, 0, 600.0, 0.05, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xchamp0", 0.70, 60, 0.4, 0.0, 20.0, 10, 10, 40, 0, 900.0, 0.08, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xchamp1", 0.69, 58, 0.4, 0.0, 20.0, 10, 10, 39, 0, 850.0, 0.08, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xchamp2", 0.68, 56, 0.4, 0.0, 20.0, 10, 10, 38, 0, 800.0, 0.07, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xchamp3", 0.67, 54, 0.4, 0.0, 20.0, 10, 10, 37, 0, 750.0, 0.07, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xchamp4", 0.66, 52, 0.4, 0.0, 20.0, 10, 10, 36, 0, 700.0, 0.06, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    tuple((wallet, 1_700_000_000, 1_700_000_000) for wallet in tracked_wallets),
+                )
+                for index in range(24):
+                    insert_logged_trade(
+                        conn,
+                        "0xbot",
+                        1_700_000_000 + index,
+                        skipped=True,
+                        market_veto="beyond max horizon 6h",
+                        skip_reason="market resolves too far out, beyond the 6h maximum horizon",
+                    )
+                for index in range(2):
+                    insert_logged_trade(
+                        conn,
+                        "0xbot",
+                        1_700_000_100 + index,
+                        actual_entry_price=0.50,
+                        actual_entry_shares=2.0,
+                        actual_entry_size_usd=1.0,
+                        shadow_pnl_usd=0.05,
+                    )
+                for index in range(5):
+                    insert_logged_trade(
+                        conn,
+                        f"0xchamp{index}",
+                        1_700_000_200 + index,
+                        actual_entry_price=0.50,
+                        actual_entry_shares=2.0,
+                        actual_entry_size_usd=1.0,
+                        shadow_pnl_usd=1.0 + index,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=6), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=20
+                ), patch("watchlist_manager.wallet_uncopyable_drop_max_skip_rate", return_value=0.75), patch(
+                    "watchlist_manager.wallet_uncopyable_drop_max_resolved_copied", return_value=3
+                ), patch("watchlist_manager.time.time", return_value=1_700_000_400):
+                    manager = WatchlistManager(tracked_wallets)
+                    snapshot = manager.refresh()
+
+                self.assertNotIn("0xbot", snapshot.dropped)
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    "SELECT status, status_reason FROM wallet_watch_state WHERE wallet_address=?",
+                    ("0xbot",),
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row["status"], "active")
+                self.assertIsNone(row["status_reason"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_profitable_discovery_wallet_is_not_slow_dropped(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xhot", 0.70, 50, 0.4, 0.0, 20.0, 10, 10, 35, 0, 500.0, 0.08, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xwarm", 0.60, 20, 0.2, 0.0, 20.0, 10, 10, 10, 0, 100.0, 0.02, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xprofit", 0.48, 8, -0.1, 0.0, 20.0, 10, 10, 4, 0, 10.0, -0.01, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    ("0xprofit", 1_699_990_000, 1_699_990_000),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO wallet_cursors (wallet_address, last_source_ts, last_trade_ids_json, updated_at)
+                    VALUES (?,?,?,?)
+                    """,
+                    (
+                        ("0xhot", 1_700_000_100, "[]", 1_700_000_100),
+                        ("0xwarm", 1_699_999_000, "[]", 1_699_999_000),
+                        ("0xprofit", 1_700_000_120, "[]", 1_700_000_120),
+                    ),
+                )
+                for index in range(20):
+                    insert_logged_trade(
+                        conn,
+                        "0xprofit",
+                        1_700_000_000 + index,
+                        skipped=True,
+                        market_veto="beyond max horizon 6h",
+                        skip_reason="market resolves too far out, beyond the 6h maximum horizon",
+                    )
+                insert_logged_trade(
+                    conn,
+                    "0xprofit",
+                    1_700_000_150,
+                    actual_entry_price=0.50,
+                    actual_entry_shares=2.0,
+                    actual_entry_size_usd=1.0,
+                    shadow_pnl_usd=0.25,
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
+                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                    manager = WatchlistManager(["0xhot", "0xwarm", "0xprofit"])
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.hot, ("0xhot",))
+                self.assertEqual(snapshot.warm, ("0xwarm",))
+                self.assertEqual(snapshot.discovery, ("0xprofit",))
+                self.assertEqual(snapshot.dropped, ())
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    "SELECT status, status_reason FROM wallet_watch_state WHERE wallet_address=?",
+                    ("0xprofit",),
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row["status"], "active")
+                self.assertIsNone(row["status_reason"])
             finally:
                 db.DB_PATH = original_db_path
 

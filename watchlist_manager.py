@@ -364,6 +364,44 @@ def _protected_best_wallets(wallet_addresses: list[str] | None = None) -> set[st
     return protected
 
 
+def _profitable_local_wallets(wallet_addresses: list[str] | None = None) -> set[str]:
+    wallets = _normalize_wallets(wallet_addresses or [])
+    if not wallets:
+        return set()
+
+    placeholders = ",".join("?" for _ in wallets)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                LOWER(trader_address) AS trader_address,
+                ROUND(
+                    SUM(
+                        CASE
+                            WHEN {_RESOLVED_COPIED_BUY_SQL} THEN COALESCE(actual_pnl_usd, shadow_pnl_usd, 0)
+                            ELSE 0
+                        END
+                    ),
+                    3
+                ) AS pnl
+            FROM trade_log
+            WHERE LOWER(trader_address) IN ({placeholders})
+            GROUP BY LOWER(trader_address)
+            HAVING SUM(CASE WHEN {_RESOLVED_COPIED_BUY_SQL} THEN 1 ELSE 0 END) > 0
+            """,
+            tuple(wallets),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        str(row["trader_address"] or "").strip().lower()
+        for row in rows
+        if str(row["trader_address"] or "").strip() and float(row["pnl"] or 0.0) > 0.0
+    }
+
+
 def _drop_wallets(wallet_updates: list[tuple[str, str, int, int]]) -> None:
     if not wallet_updates:
         return
@@ -799,11 +837,12 @@ class WatchlistManager:
 
     def _build_snapshot(self, *, run_auto_drop: bool = True) -> WatchTierSnapshot:
         _ensure_tracking_started(self.wallets)
-        protected_wallets = _protected_best_wallets()
+        inactivity_protected_wallets = _protected_best_wallets(self.wallets)
+        quality_protected_wallets = inactivity_protected_wallets | _profitable_local_wallets(self.wallets)
         if run_auto_drop:
-            _auto_drop_inactive_wallets(self.wallets, protected_wallets)
-            _auto_drop_underperforming_wallets(self.wallets, protected_wallets)
-            _auto_drop_uncopyable_wallets(self.wallets, protected_wallets)
+            _auto_drop_inactive_wallets(self.wallets, inactivity_protected_wallets)
+            _auto_drop_underperforming_wallets(self.wallets, quality_protected_wallets)
+            _auto_drop_uncopyable_wallets(self.wallets, quality_protected_wallets)
         status_rows = _wallet_status_rows(self.wallets)
         dropped_wallets = tuple(
             wallet for wallet in self.wallets if status_rows.get(wallet, {}).get("status") == "dropped"
@@ -817,7 +856,11 @@ class WatchlistManager:
         warm = tuple(row.wallet for row in ranked[hot_count:hot_count + warm_count])
         discovery = tuple(row.wallet for row in ranked[hot_count + warm_count:])
 
-        slow_drop_updates = _slow_wallet_drop_updates(discovery, status_rows, protected_wallets) if run_auto_drop else {}
+        slow_drop_updates = (
+            _slow_wallet_drop_updates(discovery, status_rows, quality_protected_wallets)
+            if run_auto_drop
+            else {}
+        )
         if slow_drop_updates:
             _drop_wallets(slow_drop_updates)
             status_rows = _wallet_status_rows(self.wallets)

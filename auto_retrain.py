@@ -124,13 +124,30 @@ def retrain_cycle_report(signal_engine, *, trigger: str = "manual", started_at: 
                 "metrics": metrics,
             }, trigger=trigger, started_at=started_at)
         if not metrics.get("deployed"):
+            reject_reason = str(metrics.get("reject_reason") or "").strip() or None
             message = build_lines(
                 "retrain rejected",
                 "model failed deployment checks",
+                f"reason: {reject_reason}" if reject_reason else None,
+                f"path: {metrics.get('selected_prediction_path')}",
+                f"calibration: {metrics.get('requested_calibration_mode')} -> {metrics.get('calibration_method')}",
                 f"brier: {metrics.get('brier_score')}",
                 f"log loss: {metrics.get('log_loss')}",
+                f"raw brier/log loss: {metrics.get('raw_brier_score')} / {metrics.get('raw_log_loss')}",
                 f"val trades: {metrics.get('val_selected_trades')}",
                 f"val pnl: {metrics.get('val_total_pnl')}",
+                (
+                    f"shared holdout ll/brier: {metrics.get('challenger_shared_log_loss')} / "
+                    f"{metrics.get('challenger_shared_brier_score')}"
+                )
+                if metrics.get("challenger_shared_log_loss") is not None and metrics.get("challenger_shared_brier_score") is not None
+                else None,
+                (
+                    f"incumbent ll/brier: {metrics.get('incumbent_log_loss')} / "
+                    f"{metrics.get('incumbent_brier_score')}"
+                )
+                if metrics.get("incumbent_log_loss") is not None and metrics.get("incumbent_brier_score") is not None
+                else None,
             )
             logger.warning(message)
             _send_retrain_alert(message)
@@ -150,8 +167,11 @@ def retrain_cycle_report(signal_engine, *, trigger: str = "manual", started_at: 
         message = build_lines(
             "retrain accepted",
             f"deployed new model from {sample_count} samples",
+            f"path: {metrics.get('selected_prediction_path')}",
+            f"calibration: {metrics.get('requested_calibration_mode')} -> {metrics.get('calibration_method')}",
             f"brier: {metrics['brier_score']}",
             f"log loss: {metrics['log_loss']} (baseline {metrics['log_loss_base']})",
+            f"raw brier/log loss: {metrics.get('raw_brier_score')} / {metrics.get('raw_log_loss')}",
             f"val trades: {metrics.get('val_selected_trades')}",
             f"val pnl: {metrics.get('val_total_pnl')}",
             f"edge threshold: {metrics.get('edge_threshold')}",

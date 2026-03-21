@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box as InkBox, Text } from 'ink';
 import { Box } from '../components/Box.js';
+import { ModalOverlay } from '../components/ModalOverlay.js';
 import { StatRow } from '../components/StatRow.js';
 import { editableConfigFields, formatEditableConfigValue } from '../configEditor.js';
 import { fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil } from '../format.js';
@@ -126,7 +127,10 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Scheduled in', text: 'Countdown until that scheduled retrain window.' },
             { label: 'Early check', text: 'How often the bot checks whether it should retrain sooner.' },
             { label: 'Early trigger', text: 'Minimum new labels needed to fire an unscheduled retrain.' },
-            { label: 'Trigger progress', text: 'Progress toward the next retrain trigger. With a deployed model this counts new eligible labels since that model went live; before the first model it falls back to total labeled samples versus the minimum sample gate.' },
+            {
+                label: 'Trigger progress',
+                text: 'Progress toward the next retrain trigger. With a deployed model this counts new eligible labels since that model went live; before the first model it falls back to total labeled samples versus the minimum sample gate.'
+            },
             { label: 'Manual run', text: 'Press t while this panel is selected to queue an in-process retrain through the running bot.' },
             { label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.' },
             { label: 'Runs 7d / 30d', text: 'How many retrain attempts landed recently, including failures and skips.' }
@@ -778,7 +782,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         { label: 'Scheduled in', value: timeUntil(nextScheduledRetrainTs) },
         { label: 'Early check', value: earlyCheckValue },
         { label: 'Early trigger', value: earlyTriggerValue },
-        { label: 'Trigger progress', value: triggerProgressValue, color: progressStatColor(triggerProgressCurrent, triggerProgressTarget) },
+        {
+            label: 'Trigger progress',
+            value: triggerProgressValue,
+            color: progressStatColor(triggerProgressCurrent, triggerProgressTarget)
+        },
         manualRunItem,
         { label: 'Total runs', value: formatCount(trainingSummary?.total_runs) },
         { label: 'Last gap', value: formatInterval(lastRetrainGap) },
@@ -980,7 +988,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                 React.createElement(ConfusionMatrixCell, { label: confusionCells[2].label, value: confusionCells[2].value, width: confusionCellWidth, kind: confusionCells[2].kind, scale: confusionScale }),
                 React.createElement(InkBox, { width: 1 }),
                 React.createElement(ConfusionMatrixCell, { label: confusionCells[3].label, value: confusionCells[3].value, width: confusionCellWidth, kind: confusionCells[3].kind, scale: confusionScale })))));
-    return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
+    const renderPageBody = () => (React.createElement(React.Fragment, null,
         React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
             React.createElement(Box, { title: "Prediction Quality", width: topRowBoxWidth, accent: clampedSelectedPanelIndex === 0 },
                 React.createElement(StatRow, { label: "Active path", value: latest?.deployed ? 'XGBoost' : 'Heuristic', color: latest?.deployed ? theme.green : theme.yellow }),
@@ -1053,8 +1061,10 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                     React.createElement(Text, null, " "),
                     React.createElement(Text, { color: row.log_loss == null ? theme.dim : lowerIsBetterColor(row.log_loss, 0.55, 0.69) }, fitRight(formatNumber(row.log_loss, 4), retrainWidths.lossWidth)),
                     React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: retrainRunStateColor(row.status, row.deployed) }, fitRight(retrainRunStateLabel(row.status, row.deployed), retrainWidths.stateWidth)))))) : (React.createElement(Text, { color: theme.dim }, "No retrain attempts logged yet.")))),
-        detailOpen ? (React.createElement(InkBox, { position: "absolute", width: "100%", height: "100%", justifyContent: "center", alignItems: "center" },
+                    React.createElement(Text, { color: retrainRunStateColor(row.status, row.deployed) }, fitRight(retrainRunStateLabel(row.status, row.deployed), retrainWidths.stateWidth)))))) : (React.createElement(Text, { color: theme.dim }, "No retrain attempts logged yet."))))));
+    return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
+        renderPageBody(),
+        detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor, backdrop: renderPageBody() },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: helpModalWidth },
                 React.createElement(InkBox, { width: "100%" },
                     React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(selectedPanel.title, helpTitleWidth)}`),

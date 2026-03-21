@@ -13,7 +13,7 @@ from economic_model import (
     apply_probability_calibrator,
     expected_return_to_confidence,
     inverse_return_target,
-    sample_weight_for_trade,
+    rebalance_training_sample_weights,
     transform_return_target,
 )
 from features import FEATURE_COLS, LABEL_COL, OUTCOME_COL, RETURN_COL, SAMPLE_WEIGHT_COL
@@ -67,6 +67,7 @@ def load_training_data():
             id,
             trade_id,
             placed_at,
+            COALESCE(label_applied_at, resolved_at, placed_at) AS label_ts,
             source_action,
             skipped,
             skip_reason,
@@ -80,7 +81,7 @@ def load_training_data():
             {", ".join(FEATURE_COLS)}
         FROM trade_log
         WHERE {RESOLVED_TRAINING_SAMPLE_SQL}
-        ORDER BY placed_at ASC
+        ORDER BY label_ts ASC, placed_at ASC, id ASC
         """,
         conn,
     )
@@ -95,7 +96,7 @@ def load_training_data():
 
     df[RETURN_COL] = pd.to_numeric(df[RETURN_COL], errors="coerce")
     df[OUTCOME_COL] = pd.to_numeric(df[OUTCOME_COL], errors="coerce")
-    df[SAMPLE_WEIGHT_COL] = df["skipped"].map(lambda skipped: sample_weight_for_trade(skipped=skipped)).astype(float)
+    df[SAMPLE_WEIGHT_COL] = rebalance_training_sample_weights(df["skipped"].astype(bool).values)
     df[LABEL_COL] = df[RETURN_COL].map(transform_return_target)
     df["effective_price"] = pd.to_numeric(df["effective_price"], errors="coerce")
     df["effective_size_usd"] = pd.to_numeric(df["effective_size_usd"], errors="coerce")
@@ -175,14 +176,14 @@ def train(df=None) -> dict:
             "reason": "insufficient class diversity",
         }
 
-    holdout_report = _evaluate_window(
+    calibrated_holdout_report = _evaluate_window(
         probability_calibrator=final_fit["probability_calibrator"],
         base_model=final_fit["base_model"],
         train_df=final_train_df,
         eval_df=holdout_df,
         feature_cols=feature_cols,
     )
-    if holdout_report is None:
+    if calibrated_holdout_report is None:
         logger.warning("Training skipped: holdout evaluation could not satisfy class diversity requirements")
         return {
             "skipped": True,
@@ -190,6 +191,34 @@ def train(df=None) -> dict:
             "feature_cols": feature_cols,
             "reason": "insufficient class diversity",
         }
+
+    raw_holdout_report = _evaluate_window(
+        probability_calibrator=None,
+        base_model=final_fit["base_model"],
+        train_df=final_train_df,
+        eval_df=holdout_df,
+        feature_cols=feature_cols,
+    )
+    if raw_holdout_report is None:
+        logger.warning("Training skipped: raw holdout evaluation could not satisfy class diversity requirements")
+        return {
+            "skipped": True,
+            "n_samples": len(df),
+            "feature_cols": feature_cols,
+            "reason": "insufficient class diversity",
+        }
+
+    (
+        holdout_report,
+        selected_prediction_path,
+        selected_probability_calibrator,
+        selected_calibration_method,
+    ) = _select_prediction_path(
+        calibrated_report=calibrated_holdout_report,
+        raw_report=raw_holdout_report,
+        probability_calibrator=final_fit["probability_calibrator"],
+        calibration_method=final_fit["calibration_method"],
+    )
 
     importances = _feature_ranking(final_fit["base_model"], feature_cols, final_train_df)
     top_features = sorted(importances.items(), key=lambda item: -item[1])
@@ -202,12 +231,23 @@ def train(df=None) -> dict:
         "feature_cols": feature_cols,
         "feature_count": len(feature_cols),
         "model_backend": final_fit["backend"],
-        "calibration_method": final_fit["calibration_method"],
+        "requested_calibration_mode": final_fit["requested_calibration_mode"],
+        "trained_calibration_method": final_fit["calibration_method"],
+        "calibration_method": selected_calibration_method,
+        "selected_prediction_path": selected_prediction_path,
         "prediction_mode": "expected_return",
         "log_loss": round(holdout_report["log_loss"], 4),
         "log_loss_base": round(holdout_report["log_loss_base"], 4),
         "brier_score": round(holdout_report["brier_score"], 4),
         "brier_base": round(holdout_report["brier_base"], 4),
+        "raw_log_loss": round(raw_holdout_report["log_loss"], 4),
+        "raw_brier_score": round(raw_holdout_report["brier_score"], 4),
+        "raw_selected_trades": int(raw_holdout_report["selected_trades"]),
+        "raw_total_pnl": round(raw_holdout_report["total_pnl"], 4),
+        "calibrated_log_loss": round(calibrated_holdout_report["log_loss"], 4),
+        "calibrated_brier_score": round(calibrated_holdout_report["brier_score"], 4),
+        "calibrated_selected_trades": int(calibrated_holdout_report["selected_trades"]),
+        "calibrated_total_pnl": round(calibrated_holdout_report["total_pnl"], 4),
         "beats_baseline": holdout_report["beats_baseline"],
         "val_selected_trades": holdout_report["selected_trades"],
         "val_total_pnl": round(holdout_report["total_pnl"], 4),
@@ -231,7 +271,25 @@ def train(df=None) -> dict:
         "search_avg_pnl": round(best_candidate["search_avg_pnl"], 4),
         "search_win_rate": round(best_candidate["search_win_rate"], 4),
         "search_edge_threshold": round(best_candidate["search_edge_threshold"], 4),
+        "dataset_cohorts": _cohort_summaries(df),
+        "train_cohorts": _cohort_summaries(final_train_df),
+        "calibration_cohorts": _cohort_summaries(final_cal_df),
+        "val_cohorts": _cohort_summaries(
+            holdout_df,
+            preds=holdout_report["preds"],
+            baseline_rate=float(final_train_df[OUTCOME_COL].mean()),
+        ),
     }
+    incumbent_gate = _compare_against_incumbent(
+        incumbent_artifact=_load_model_artifact(),
+        final_train_df=final_train_df,
+        holdout_df=holdout_df,
+        challenger_model=final_fit["base_model"],
+        challenger_feature_cols=feature_cols,
+        challenger_probability_calibrator=selected_probability_calibrator,
+        challenger_prediction_mode="expected_return",
+    )
+    metrics.update(incumbent_gate)
 
     deployable = (
         best_candidate["search_passed"]
@@ -239,6 +297,7 @@ def train(df=None) -> dict:
         and holdout_report["selected_trades"] >= MIN_VALIDATION_TRADES
         and holdout_report["total_pnl"] > 0
         and holdout_report["avg_pnl"] > 0
+        and bool(metrics.get("beats_incumbent", True))
     )
     if not deployable:
         logger.warning("Model failed deployment checks - not deploying")
@@ -252,21 +311,23 @@ def train(df=None) -> dict:
         "model_backend": final_fit["backend"],
         "prediction_mode": "expected_return",
         "data_contract_version": DATA_CONTRACT_VERSION,
-        "fill_aware_only": False,
-        "label_mode": MODEL_LABEL_MODE,
-        "target_transform": "signed_log1p_return",
-        "sample_weight_mode": "executed_1.0_skipped_0.25",
-        "policy": {
-            "edge_threshold": float(holdout_report["edge_threshold"]),
-            "selected_trades": int(holdout_report["selected_trades"]),
-        },
-        "candidate": {
-            "name": best_candidate["name"],
-            "backend": best_candidate["backend"],
-            "search_passed": bool(best_candidate["search_passed"]),
-        },
-        "metrics": metrics,
-    }
+            "fill_aware_only": False,
+            "label_mode": MODEL_LABEL_MODE,
+            "target_transform": "signed_log1p_return",
+            "sample_weight_mode": "executed_1.0_skipped_0.25_capped_total_ratio_1.0",
+            "policy": {
+                "edge_threshold": float(holdout_report["edge_threshold"]),
+                "selected_trades": int(holdout_report["selected_trades"]),
+            },
+            "candidate": {
+                "name": best_candidate["name"],
+                "backend": best_candidate["backend"],
+                "search_passed": bool(best_candidate["search_passed"]),
+                "requested_calibration_mode": best_candidate["calibration_mode"],
+            },
+            "metrics": metrics,
+        }
+    artifact["probability_calibrator"] = selected_probability_calibrator
     joblib.dump(artifact, path)
 
     conn = get_conn()
@@ -412,6 +473,7 @@ def _xgboost_available() -> bool:
 
 def _candidate_specs() -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
+    calibration_modes = ("identity", "auto")
     if _xgboost_available():
         xgb_configs = (
             {
@@ -473,14 +535,16 @@ def _candidate_specs() -> list[dict[str, Any]]:
         )
         for config in xgb_configs:
             for seed in (11, 42, 89):
-                candidates.append(
-                    {
-                        "name": f"xgb_return_{config['label']}_seed{seed}",
-                        "backend": "xgboost",
-                        "seed": seed,
-                        "params": config["params"] | {"random_state": seed},
-                    }
-                )
+                for calibration_mode in calibration_modes:
+                    candidates.append(
+                        {
+                            "name": f"xgb_return_{config['label']}_seed{seed}_{calibration_mode}",
+                            "backend": "xgboost",
+                            "seed": seed,
+                            "params": config["params"] | {"random_state": seed},
+                            "calibration_mode": calibration_mode,
+                        }
+                    )
 
     hist_configs = (
         {
@@ -506,14 +570,16 @@ def _candidate_specs() -> list[dict[str, Any]]:
     )
     for config in hist_configs:
         for seed in (11, 42):
-            candidates.append(
-                {
-                    "name": f"hgb_return_{config['label']}_seed{seed}",
-                    "backend": "hist_gradient_boosting",
-                    "seed": seed,
-                    "params": config["params"] | {"random_state": seed},
-                }
-            )
+            for calibration_mode in calibration_modes:
+                candidates.append(
+                    {
+                        "name": f"hgb_return_{config['label']}_seed{seed}_{calibration_mode}",
+                        "backend": "hist_gradient_boosting",
+                        "seed": seed,
+                        "params": config["params"] | {"random_state": seed},
+                        "calibration_mode": calibration_mode,
+                    }
+                )
 
     return candidates
 
@@ -589,15 +655,21 @@ def _evaluate_candidate_spec(
         "backend": str(spec["backend"]),
         "seed": int(spec["seed"]),
         "params": dict(spec["params"]),
+        "calibration_mode": str(spec.get("calibration_mode") or "auto"),
         **aggregate,
     }
 
 
-def _fit_probability_calibrator(base_confidence, outcomes, sample_weight):
+def _fit_probability_calibrator(base_confidence, outcomes, sample_weight, *, requested_mode: str = "auto"):
     from sklearn.isotonic import IsotonicRegression
     from sklearn.linear_model import LogisticRegression
 
-    method = "sigmoid" if len(base_confidence) < 400 else "isotonic"
+    if requested_mode == "identity":
+        return None, "identity"
+
+    method = requested_mode
+    if method == "auto":
+        method = "sigmoid" if len(base_confidence) < 400 else "isotonic"
     try:
         if method == "sigmoid":
             calibrator = LogisticRegression(random_state=0, solver="lbfgs")
@@ -649,11 +721,13 @@ def _fit_calibrated_model(
         base_confidence=np.asarray(base_confidence, dtype=float),
         outcomes=y_cal_outcome,
         sample_weight=cal_weights,
+        requested_mode=str(spec.get("calibration_mode") or "auto"),
     )
     return {
         "base_model": model,
         "probability_calibrator": probability_calibrator,
         "backend": backend,
+        "requested_calibration_mode": str(spec.get("calibration_mode") or "auto"),
         "calibration_method": calibration_method,
     }
 
@@ -671,6 +745,83 @@ def _predict_model_confidence(*, model, prediction_mode: str, probability_calibr
     return model.predict_proba(X)[:, 1]
 
 
+def _load_model_artifact(path: str | None = None) -> dict[str, Any] | None:
+    import joblib
+
+    selected_path = str(path or model_path() or "").strip()
+    if not selected_path:
+        return None
+    try:
+        artifact = joblib.load(selected_path)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.warning("Could not load incumbent model artifact from %s: %s", selected_path, exc)
+        return None
+
+    if not isinstance(artifact, dict):
+        logger.warning("Could not compare against incumbent model artifact from %s: legacy format", selected_path)
+        return None
+    if artifact.get("model") is None:
+        logger.warning("Could not compare against incumbent model artifact from %s: missing model", selected_path)
+        return None
+
+    raw_feature_cols = artifact.get("feature_cols")
+    feature_cols = [str(col) for col in raw_feature_cols] if isinstance(raw_feature_cols, (list, tuple)) else list(FEATURE_COLS)
+    return {
+        "model": artifact["model"],
+        "probability_calibrator": artifact.get("probability_calibrator"),
+        "prediction_mode": str(artifact.get("prediction_mode") or "probability"),
+        "feature_cols": feature_cols or list(FEATURE_COLS),
+        "path": selected_path,
+    }
+
+
+def _shared_eval_df(eval_df, feature_cols: list[str]):
+    missing = [column for column in feature_cols if column not in eval_df.columns]
+    if missing:
+        return None
+    required_cols = list(dict.fromkeys([*feature_cols, OUTCOME_COL, "effective_price"]))
+    shared = eval_df.dropna(subset=required_cols).copy()
+    if shared.empty:
+        return None
+    return shared
+
+
+def _evaluate_prediction_report(
+    *,
+    model,
+    prediction_mode: str,
+    probability_calibrator,
+    eval_df,
+    feature_cols: list[str],
+    baseline_rate: float,
+) -> dict[str, Any] | None:
+    y_eval = eval_df[OUTCOME_COL].astype(int).values
+    if len(set(y_eval)) < 2:
+        return None
+
+    prices = eval_df["effective_price"].astype(float).values
+    X_eval = eval_df[feature_cols].values
+    preds = _predict_model_confidence(
+        model=model,
+        prediction_mode=prediction_mode,
+        probability_calibrator=probability_calibrator,
+        X=X_eval,
+        prices=prices,
+    )
+    metrics = _score_predictions(
+        preds=preds,
+        outcomes=y_eval,
+        prices=prices,
+        baseline_rate=baseline_rate,
+    )
+    metrics["preds"] = preds
+    metrics["prices"] = prices
+    metrics["outcomes"] = y_eval
+    return metrics
+
+
 def _evaluate_window(
     *,
     probability_calibrator,
@@ -680,29 +831,16 @@ def _evaluate_window(
     feature_cols: list[str],
 ) -> dict[str, Any] | None:
     y_train = train_df[OUTCOME_COL].astype(int).values
-    y_eval = eval_df[OUTCOME_COL].astype(int).values
-    if len(set(y_train)) < 2 or len(set(y_eval)) < 2:
+    if len(set(y_train)) < 2:
         return None
-
-    X_eval = eval_df[feature_cols].values
-    preds = _predict_model_confidence(
+    return _evaluate_prediction_report(
         model=base_model,
         prediction_mode="expected_return",
         probability_calibrator=probability_calibrator,
-        X=X_eval,
-        prices=eval_df["effective_price"].astype(float).values,
-    )
-    metrics = _score_predictions(
-        preds=preds,
-        outcomes=y_eval,
-        prices=eval_df["effective_price"].astype(float).values,
+        eval_df=eval_df,
+        feature_cols=feature_cols,
         baseline_rate=float(y_train.mean()),
     )
-    metrics["preds"] = preds
-    metrics["prices"] = eval_df["effective_price"].astype(float).values
-    metrics["outcomes"] = y_eval
-    metrics["base_model"] = base_model
-    return metrics
 
 
 def _aggregate_search_reports(fold_reports: list[dict[str, Any]]) -> dict[str, Any]:
@@ -772,6 +910,154 @@ def _score_predictions(*, preds, outcomes, prices, baseline_rate: float) -> dict
         "avg_pnl": float(strategy["avg_pnl"]),
         "win_rate": float(strategy["win_rate"]),
         "edge_threshold": float(strategy["edge_threshold"]),
+    }
+
+
+def _report_dominates(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if left["log_loss"] > right["log_loss"] or left["brier_score"] > right["brier_score"]:
+        return False
+    return left["log_loss"] < right["log_loss"] or left["brier_score"] < right["brier_score"]
+
+
+def _compare_against_incumbent(
+    *,
+    incumbent_artifact: dict[str, Any] | None,
+    final_train_df,
+    holdout_df,
+    challenger_model,
+    challenger_feature_cols: list[str],
+    challenger_probability_calibrator,
+    challenger_prediction_mode: str,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "incumbent_present": bool(incumbent_artifact),
+        "beats_incumbent": True,
+    }
+    if incumbent_artifact is None:
+        return result
+
+    incumbent_feature_cols = [str(column) for column in incumbent_artifact.get("feature_cols") or FEATURE_COLS]
+    shared_holdout_df = _shared_eval_df(holdout_df, incumbent_feature_cols)
+    shared_rows = len(shared_holdout_df) if shared_holdout_df is not None else 0
+    result["shared_holdout_rows"] = shared_rows
+    if shared_holdout_df is None or shared_rows < MIN_FINAL_HOLDOUT_SAMPLES:
+        result["beats_incumbent"] = False
+        result["reject_reason"] = "incumbent comparison had too few shared final-holdout rows"
+        return result
+
+    baseline_rate = float(final_train_df[OUTCOME_COL].mean())
+    challenger_report = _evaluate_prediction_report(
+        model=challenger_model,
+        prediction_mode=challenger_prediction_mode,
+        probability_calibrator=challenger_probability_calibrator,
+        eval_df=shared_holdout_df,
+        feature_cols=challenger_feature_cols,
+        baseline_rate=baseline_rate,
+    )
+    incumbent_report = _evaluate_prediction_report(
+        model=incumbent_artifact["model"],
+        prediction_mode=str(incumbent_artifact.get("prediction_mode") or "probability"),
+        probability_calibrator=incumbent_artifact.get("probability_calibrator"),
+        eval_df=shared_holdout_df,
+        feature_cols=incumbent_feature_cols,
+        baseline_rate=baseline_rate,
+    )
+    if challenger_report is None or incumbent_report is None:
+        result["beats_incumbent"] = False
+        result["reject_reason"] = "incumbent comparison could not score both models on the shared final holdout"
+        return result
+
+    result.update(
+        {
+            "shared_holdout_rows": int(challenger_report["n_eval"]),
+            "challenger_shared_log_loss": round(float(challenger_report["log_loss"]), 4),
+            "challenger_shared_brier_score": round(float(challenger_report["brier_score"]), 4),
+            "challenger_shared_total_pnl": round(float(challenger_report["total_pnl"]), 4),
+            "challenger_shared_selected_trades": int(challenger_report["selected_trades"]),
+            "incumbent_log_loss": round(float(incumbent_report["log_loss"]), 4),
+            "incumbent_brier_score": round(float(incumbent_report["brier_score"]), 4),
+            "incumbent_total_pnl": round(float(incumbent_report["total_pnl"]), 4),
+            "incumbent_selected_trades": int(incumbent_report["selected_trades"]),
+        }
+    )
+
+    beats_incumbent = _report_dominates(challenger_report, incumbent_report)
+    result["beats_incumbent"] = beats_incumbent
+    if beats_incumbent:
+        return result
+
+    result["reject_reason"] = (
+        "challenger did not beat the deployed model on the shared final holdout "
+        f"(ll {float(challenger_report['log_loss']):.4f} vs {float(incumbent_report['log_loss']):.4f}, "
+        f"brier {float(challenger_report['brier_score']):.4f} vs {float(incumbent_report['brier_score']):.4f})"
+    )
+    return result
+
+
+def _select_prediction_path(
+    *,
+    calibrated_report: dict[str, Any],
+    raw_report: dict[str, Any],
+    probability_calibrator,
+    calibration_method: str,
+) -> tuple[dict[str, Any], str, Any, str]:
+    if probability_calibrator is None:
+        return raw_report, "raw", None, "identity"
+    if _report_dominates(raw_report, calibrated_report):
+        logger.info(
+            "Raw prediction path outperformed calibrated path on final holdout (raw ll=%.4f brier=%.4f; calibrated ll=%.4f brier=%.4f)",
+            raw_report["log_loss"],
+            raw_report["brier_score"],
+            calibrated_report["log_loss"],
+            calibrated_report["brier_score"],
+        )
+        return raw_report, "raw", None, "identity"
+    return calibrated_report, "calibrated", probability_calibrator, calibration_method
+
+
+def _cohort_summaries(df, *, preds=None, baseline_rate: float | None = None) -> dict[str, dict[str, Any]]:
+    import numpy as np
+
+    skipped = df["skipped"].astype(bool).to_numpy()
+    outcomes = df[OUTCOME_COL].astype(float).to_numpy()
+    returns = df[RETURN_COL].astype(float).to_numpy()
+    prices = df["effective_price"].astype(float).to_numpy()
+    weights = df[SAMPLE_WEIGHT_COL].astype(float).to_numpy() if SAMPLE_WEIGHT_COL in df.columns else None
+    pred_values = np.asarray(preds, dtype=float) if preds is not None else None
+
+    def summarize(mask: np.ndarray) -> dict[str, Any]:
+        count = int(mask.sum())
+        if count == 0:
+            return {"n": 0}
+        summary: dict[str, Any] = {
+            "n": count,
+            "weight_total": round(float(weights[mask].sum()), 4) if weights is not None else None,
+            "win_rate": round(float(outcomes[mask].mean()), 4),
+            "avg_return": round(float(returns[mask].mean()), 4),
+            "avg_price": round(float(prices[mask].mean()), 4),
+        }
+        if pred_values is not None:
+            summary["avg_pred"] = round(float(pred_values[mask].mean()), 4)
+        if pred_values is not None and baseline_rate is not None and count >= 5 and np.unique(outcomes[mask]).size >= 2:
+            report = _score_predictions(
+                preds=pred_values[mask],
+                outcomes=outcomes[mask].astype(int),
+                prices=prices[mask],
+                baseline_rate=float(baseline_rate),
+            )
+            summary.update(
+                {
+                    "log_loss": round(float(report["log_loss"]), 4),
+                    "brier_score": round(float(report["brier_score"]), 4),
+                    "selected_trades": int(report["selected_trades"]),
+                    "total_pnl": round(float(report["total_pnl"]), 4),
+                }
+            )
+        return summary
+
+    return {
+        "executed": summarize(~skipped),
+        "counterfactual": summarize(skipped),
     }
 
 

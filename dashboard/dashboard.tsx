@@ -103,7 +103,7 @@ function describeBackendStatus({
   loopInProgress: boolean
 }): string {
   if (pollIsFresh) {
-    return loopInProgress ? 'online, polling' : 'online'
+    return loopInProgress ? 'polling' : 'online'
   }
   if (startedAt <= 0) {
     return 'waiting to start'

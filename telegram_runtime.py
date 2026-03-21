@@ -67,13 +67,13 @@ def _request_manual_retrain(*, source: str = "telegram") -> str:
     heartbeat_window = max(float(bot_state.get("poll_interval") or 1.0) * 3.0, 30.0)
 
     if started_at <= 0 or last_activity_at <= 0:
-        return "Manual retrain is unavailable because bot state is missing. Start the bot first."
+        return "manual retrain is unavailable because bot state is missing. start the bot first."
     if (now_ts - last_activity_at) > heartbeat_window:
-        return "Manual retrain is unavailable because the bot state looks stale. Restart or refresh the bot first."
+        return "manual retrain is unavailable because the bot state looks stale. restart or refresh the bot first."
     if bool(bot_state.get("retrain_in_progress")):
-        return "A retrain is already running."
+        return "manual retrain is already running."
     if _request_file_is_recent(MANUAL_RETRAIN_REQUEST_FILE, 30.0):
-        return "Manual retrain already requested. Waiting for the bot to pick it up."
+        return "manual retrain already requested. waiting for the bot to pick it up."
 
     payload = {
         "action": "manual_retrain",
@@ -86,7 +86,7 @@ def _request_manual_retrain(*, source: str = "telegram") -> str:
         temp_path = MANUAL_RETRAIN_REQUEST_FILE.with_name(f"{MANUAL_RETRAIN_REQUEST_FILE.name}.{os.getpid()}.tmp")
         temp_path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
         temp_path.replace(MANUAL_RETRAIN_REQUEST_FILE)
-        return "Manual retrain requested. The bot should pick it up within about a second."
+        return "manual retrain requested. The bot should pick it up within about a second."
     except Exception as exc:
         logger.warning("Failed to persist manual retrain request: %s", exc)
         return f"Failed to request manual retrain: {exc}"

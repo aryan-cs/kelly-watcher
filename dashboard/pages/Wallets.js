@@ -5,7 +5,7 @@ import { Box as InkBox, Text } from 'ink';
 import { Box } from '../components/Box.js';
 import { ModalOverlay } from '../components/ModalOverlay.js';
 import { dbPath, envExamplePath, envPath } from '../paths.js';
-import { fit, fitRight, formatPct, secondsAgo, shortAddress, truncate, wrapText } from '../format.js';
+import { fit, fitRight, formatPct, secondsAgo, shortAddress, terminalHyperlink, truncate, wrapText } from '../format.js';
 import { isPlaceholderUsername, readIdentityMap } from '../identities.js';
 import { rowsForHeight } from '../responsive.js';
 import { useRefreshToken } from '../refresh.js';
@@ -231,6 +231,13 @@ function formatAddress(value, width) {
     const prefixWidth = Math.max(8, Math.ceil(visible * 0.65));
     const suffixWidth = Math.max(4, visible - prefixWidth);
     return `${value.slice(0, prefixWidth)}...${value.slice(-suffixWidth)}`;
+}
+function walletProfileUrl(wallet) {
+    if (!wallet.username) {
+        return null;
+    }
+    const normalizedWallet = wallet.trader_address.trim().toLowerCase();
+    return normalizedWallet ? `https://polymarket.com/profile/${normalizedWallet}` : null;
 }
 function formatSignedMoney(value, width) {
     if (value == null || Number.isNaN(value))
@@ -960,6 +967,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                         const isSelected = boxIsSelected && wallet.trader_address.toLowerCase() === activeShadowAddress;
                         const rowBackground = isSelected ? selectedRowBackground : undefined;
                         const displayLabel = `${isSelected ? '> ' : '  '}${label}`;
+                        const linkedLabel = terminalHyperlink(fit(displayLabel, shadowNameWidth), username ? walletProfileUrl({ trader_address: wallet.trader_address, username }) : null);
                         return (React.createElement(React.Fragment, null,
                             React.createElement(Text, { color: isSelected
                                     ? theme.accent
@@ -967,7 +975,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                                         ? theme.red
                                         : username
                                             ? theme.white
-                                            : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fit(displayLabel, shadowNameWidth)),
+                                            : theme.dim, backgroundColor: rowBackground, bold: isSelected }, linkedLabel),
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: isSelected ? theme.accent : copyWinRateColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(copyWinRate == null ? '-' : formatPct(copyWinRate, 1), shadowCopyWrWidth)),
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
@@ -1012,6 +1020,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                         const isSelected = wallet.trader_address === selectedTrackedWalletAddress;
                         const usernameLabel = wallet.username || '-';
                         const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`;
+                        const linkedUsername = terminalHyperlink(fit(displayUsername, layout.usernameWidth), walletProfileUrl(wallet));
                         const rowBackground = isSelected ? selectedRowBackground : undefined;
                         const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim;
                         const addressColor = isSelected ? theme.accent : theme.white;
@@ -1031,7 +1040,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                             ? theme.dim
                             : centeredGradientColor(wallet.local_pnl, maxAbsLocalPnl);
                         return (React.createElement(InkBox, { key: wallet.trader_address, width: "100%", height: 1 },
-                            React.createElement(Text, { color: usernameColor, backgroundColor: rowBackground, bold: isSelected }, fit(displayUsername, layout.usernameWidth)),
+                            React.createElement(Text, { color: usernameColor, backgroundColor: rowBackground, bold: isSelected }, linkedUsername),
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: addressColor, backgroundColor: rowBackground, bold: isSelected }, formatAddress(wallet.trader_address, layout.addressWidth)),
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
@@ -1073,11 +1082,12 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                         const isSelected = wallet.trader_address === selectedDroppedWalletAddress;
                         const usernameLabel = wallet.username || '-';
                         const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`;
+                        const linkedUsername = terminalHyperlink(fit(displayUsername, droppedLayout.usernameWidth), walletProfileUrl(wallet));
                         const rowBackground = isSelected ? selectedRowBackground : undefined;
                         const usernameColor = isSelected ? theme.accent : wallet.username ? theme.white : theme.dim;
                         const addressColor = isSelected ? theme.accent : theme.white;
                         return (React.createElement(InkBox, { key: wallet.trader_address, width: "100%", height: 1 },
-                            React.createElement(Text, { color: usernameColor, backgroundColor: rowBackground, bold: isSelected }, fit(displayUsername, droppedLayout.usernameWidth)),
+                            React.createElement(Text, { color: usernameColor, backgroundColor: rowBackground, bold: isSelected }, linkedUsername),
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: addressColor, backgroundColor: rowBackground, bold: isSelected }, formatAddress(wallet.trader_address, droppedLayout.addressWidth)),
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),

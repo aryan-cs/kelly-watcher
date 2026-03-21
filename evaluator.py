@@ -15,6 +15,7 @@ import numpy as np
 from alerter import send_alert
 from beliefs import invalidate_belief_cache, sync_belief_priors
 from db import DB_PATH, get_conn
+from performance_preview import compute_tracker_preview_summary
 from trade_contract import (
     EXECUTED_ENTRY_SQL,
     OPEN_EXECUTED_ENTRY_SQL,
@@ -427,6 +428,7 @@ def compute_performance_report(mode: str = "shadow") -> dict:
     wins = int(summary["wins"] or 0)
     day_pnls = [float(row["day_pnl"]) for row in daily_rows if row["day_pnl"] is not None]
     sharpe = float(np.mean(day_pnls) / (np.std(day_pnls) + 1e-6)) if len(day_pnls) > 1 else 0.0
+    preview = compute_tracker_preview_summary(mode=mode)
 
     return {
         "mode": mode,
@@ -435,6 +437,14 @@ def compute_performance_report(mode: str = "shadow") -> dict:
         "resolved": resolved,
         "win_rate": round((wins / resolved) if resolved else 0.0, 3),
         "total_pnl_usd": float(summary["total_pnl"] or 0.0),
+        "current_balance_usd": preview.current_balance,
+        "current_equity_usd": preview.current_equity,
+        "return_pct": preview.return_pct,
+        "profit_factor": preview.profit_factor,
+        "expectancy_usd": preview.expectancy_usd,
+        "expectancy_pct": preview.expectancy_pct,
+        "exposure_pct": preview.exposure_pct,
+        "max_drawdown_pct": preview.max_drawdown_pct,
         "weekly_pnl_usd": float(weekly["pnl"] or 0.0),
         "avg_confidence": float(summary["avg_confidence"] or 0.0),
         "avg_size_usd": float(summary["avg_size"] or 0.0),
@@ -480,13 +490,44 @@ def daily_report() -> None:
     persist_performance_snapshot("shadow")
     persist_performance_snapshot("live")
 
+    def _fmt_pct(value: float | None, digits: int = 1) -> str:
+        if value is None:
+            return "-"
+        return f"{value * 100:.{digits}f}%"
+
+    def _fmt_ratio(value: float | None) -> str:
+        if value is None:
+            return "-"
+        if value == float("inf"):
+            return "inf"
+        return f"{value:.2f}"
+
+    def _fmt_expectancy(report: dict) -> str:
+        parts: list[str] = []
+        expectancy_usd = report.get("expectancy_usd")
+        expectancy_pct = report.get("expectancy_pct")
+        if expectancy_usd is not None:
+            parts.append(f"${float(expectancy_usd):+.2f}")
+        if expectancy_pct is not None:
+            parts.append(_fmt_pct(float(expectancy_pct)))
+        return " / ".join(parts) if parts else "-"
+
     lines = [
         "daily performance report",
         (
             f"shadow: {shadow['resolved']} resolved | win rate {shadow['win_rate']:.0%} | "
-            f"pnl ${shadow['total_pnl_usd']:.2f} | 7d ${shadow['weekly_pnl_usd']:.2f}"
+            f"pnl ${shadow['total_pnl_usd']:.2f} | return {_fmt_pct(shadow['return_pct'])} | "
+            f"7d ${shadow['weekly_pnl_usd']:.2f}"
         ),
-        f"shadow: sharpe {shadow['sharpe']:.2f} | avg confidence {shadow['avg_confidence']:.3f}",
+        (
+            f"shadow: profit factor {_fmt_ratio(shadow['profit_factor'])} | "
+            f"expectancy {_fmt_expectancy(shadow)} | exposure {_fmt_pct(shadow['exposure_pct'])}"
+        ),
+        (
+            f"shadow: max drawdown {_fmt_pct(shadow['max_drawdown_pct'])} | "
+            f"sharpe {shadow['sharpe']:.2f} | avg confidence {shadow['avg_confidence']:.3f} | "
+            f"avg total ${shadow['avg_size_usd']:.2f}"
+        ),
     ]
 
     if live["acted"] > 0:
@@ -494,7 +535,15 @@ def daily_report() -> None:
             [
                 (
                     f"live: {live['resolved']} resolved | win rate {live['win_rate']:.0%} | "
-                    f"pnl ${live['total_pnl_usd']:.2f}"
+                    f"pnl ${live['total_pnl_usd']:.2f} | return {_fmt_pct(live['return_pct'])}"
+                ),
+                (
+                    f"live: profit factor {_fmt_ratio(live['profit_factor'])} | "
+                    f"expectancy {_fmt_expectancy(live)} | exposure {_fmt_pct(live['exposure_pct'])}"
+                ),
+                (
+                    f"live: max drawdown {_fmt_pct(live['max_drawdown_pct'])} | "
+                    f"avg confidence {live['avg_confidence']:.3f} | avg total ${live['avg_size_usd']:.2f}"
                 ),
             ]
         )

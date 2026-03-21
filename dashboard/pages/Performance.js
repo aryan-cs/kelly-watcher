@@ -1345,12 +1345,12 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         .filter((row) => row.status !== 'open')
         .sort((a, b) => Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
         Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions]);
+    const resolvedPerformancePositions = useMemo(() => effectivePositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), [effectivePositions]);
+    const confidenceRows = useMemo(() => effectivePositions.filter((row) => row.confidence != null), [effectivePositions]);
     const activeSummary = useMemo(() => {
         const acted = effectivePositions.length;
-        const resolved = effectivePositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit');
-        const wins = resolved.filter((row) => (row.pnl_usd ?? 0) > 0).length;
-        const totalPnl = roundTo(resolved.reduce((sum, row) => sum + (row.pnl_usd || 0), 0), 3);
-        const confidenceRows = effectivePositions.filter((row) => row.confidence != null);
+        const wins = resolvedPerformancePositions.filter((row) => (row.pnl_usd ?? 0) > 0).length;
+        const totalPnl = roundTo(resolvedPerformancePositions.reduce((sum, row) => sum + (row.pnl_usd || 0), 0), 3);
         const avgConfidence = confidenceRows.length > 0
             ? roundTo(confidenceRows.reduce((sum, row) => sum + Number(row.confidence || 0), 0) / confidenceRows.length, 3)
             : null;
@@ -1359,13 +1359,13 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             : null;
         return {
             acted,
-            resolved: resolved.length,
+            resolved: resolvedPerformancePositions.length,
             wins,
-            total_pnl: resolved.length ? totalPnl : 0,
+            total_pnl: resolvedPerformancePositions.length ? totalPnl : 0,
             avg_confidence: avgConfidence,
             avg_size: avgSize
         };
-    }, [effectivePositions]);
+    }, [confidenceRows, effectivePositions, resolvedPerformancePositions]);
     const dailyEntries = useMemo(() => groupDailyPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), currentHourBucketTs), [currentHourBucketTs, pastPositions]);
     const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
     const dailyPreviewCapacity = useMemo(() => dailyEntries.length
@@ -1391,6 +1391,149 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const shadowBalance = botState.mode === 'shadow' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const liveBalance = botState.mode === 'live' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
     const activeBalance = activeMode === 'live' ? liveBalance : shadowBalance;
+    const deployedCapital = useMemo(() => roundTo(currentPositionsTotal + waitingPositionsTotal, 3), [currentPositionsTotal, waitingPositionsTotal]);
+    const activeEquity = useMemo(() => (activeBalance == null ? null : roundTo(activeBalance + deployedCapital, 3)), [activeBalance, deployedCapital]);
+    const activeStartingBankroll = useMemo(() => activeEquity != null
+        ? roundTo(activeEquity - Number(activeSummary?.total_pnl || 0), 3)
+        : null, [activeEquity, activeSummary?.total_pnl]);
+    const activePerformanceStats = useMemo(() => {
+        const totalPnl = Number(activeSummary?.total_pnl || 0);
+        const grossProfit = roundTo(resolvedPerformancePositions.reduce((sum, row) => sum + Math.max(Number(row.pnl_usd || 0), 0), 0), 3);
+        const grossLoss = roundTo(resolvedPerformancePositions.reduce((sum, row) => sum + Math.abs(Math.min(Number(row.pnl_usd || 0), 0)), 0), 3);
+        const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Number.POSITIVE_INFINITY : null;
+        const expectancyUsd = resolvedPerformancePositions.length > 0 ? roundTo(totalPnl / resolvedPerformancePositions.length, 3) : null;
+        const expectancyReturns = resolvedPerformancePositions
+            .filter((row) => row.pnl_usd != null && row.size_usd > 0)
+            .map((row) => Number(row.pnl_usd || 0) / row.size_usd);
+        const expectancyPct = expectancyReturns.length > 0
+            ? roundTo(expectancyReturns.reduce((sum, value) => sum + value, 0) / expectancyReturns.length, 4)
+            : null;
+        const returnPct = activeStartingBankroll != null && activeStartingBankroll > 0
+            ? roundTo(totalPnl / activeStartingBankroll, 4)
+            : null;
+        const exposurePct = activeEquity != null && activeEquity > 0 ? roundTo(deployedCapital / activeEquity, 4) : null;
+        const orderedResolved = [...resolvedPerformancePositions].sort((left, right) => {
+            const leftTs = left.resolution_ts || left.market_close_ts || left.entered_at || 0;
+            const rightTs = right.resolution_ts || right.market_close_ts || right.entered_at || 0;
+            if (leftTs !== rightTs) {
+                return leftTs - rightTs;
+            }
+            if (left.entered_at !== right.entered_at) {
+                return left.entered_at - right.entered_at;
+            }
+            return left.row_key.localeCompare(right.row_key);
+        });
+        let maxDrawdownPct = 0;
+        if (activeStartingBankroll != null && activeStartingBankroll > 0) {
+            let runningEquity = activeStartingBankroll;
+            let peakEquity = activeStartingBankroll;
+            for (const row of orderedResolved) {
+                runningEquity += Number(row.pnl_usd || 0);
+                peakEquity = Math.max(peakEquity, runningEquity);
+                if (peakEquity > 0) {
+                    maxDrawdownPct = Math.max(maxDrawdownPct, (peakEquity - runningEquity) / peakEquity);
+                }
+            }
+        }
+        return {
+            exposurePct,
+            expectancyPct,
+            expectancyUsd,
+            maxDrawdownPct: activeStartingBankroll != null && activeStartingBankroll > 0
+                ? roundTo(maxDrawdownPct, 4)
+                : null,
+            profitFactor,
+            returnPct
+        };
+    }, [activeEquity, activeStartingBankroll, activeSummary?.total_pnl, deployedCapital, resolvedPerformancePositions]);
+    const expectancyValue = activePerformanceStats.expectancyUsd == null && activePerformanceStats.expectancyPct == null
+        ? '-'
+        : [
+            activePerformanceStats.expectancyUsd != null
+                ? formatDollar(activePerformanceStats.expectancyUsd)
+                : null,
+            activePerformanceStats.expectancyPct != null
+                ? formatPct(activePerformanceStats.expectancyPct, 1)
+                : null
+        ]
+            .filter(Boolean)
+            .join(' / ');
+    const profitFactorValue = activePerformanceStats.profitFactor == null
+        ? '-'
+        : Number.isFinite(activePerformanceStats.profitFactor)
+            ? formatNumber(activePerformanceStats.profitFactor, 2)
+            : 'inf';
+    const summaryLeftStats = [
+        {
+            label: 'Total P&L',
+            value: formatDollar(activeSummary?.total_pnl),
+            color: (activeSummary?.total_pnl || 0) >= 0 ? theme.green : theme.red
+        },
+        {
+            label: 'Return %',
+            value: formatPct(activePerformanceStats.returnPct, 1),
+            color: activePerformanceStats.returnPct == null
+                ? theme.dim
+                : activePerformanceStats.returnPct >= 0
+                    ? theme.green
+                    : theme.red
+        },
+        {
+            label: 'Win rate',
+            value: activeSummary ? formatPct(activeSummary.resolved ? activeSummary.wins / activeSummary.resolved : 0) : '-'
+        },
+        {
+            label: 'Profit factor',
+            value: profitFactorValue,
+            color: activePerformanceStats.profitFactor == null
+                ? theme.dim
+                : activePerformanceStats.profitFactor >= 1
+                    ? theme.green
+                    : theme.red
+        },
+        {
+            label: 'Expectancy',
+            value: expectancyValue,
+            color: activePerformanceStats.expectancyUsd == null
+                ? theme.dim
+                : activePerformanceStats.expectancyUsd >= 0
+                    ? theme.green
+                    : theme.red
+        },
+        {
+            label: 'Resolved',
+            value: String(activeSummary?.resolved || 0)
+        }
+    ];
+    const summaryRightStats = [
+        {
+            label: 'Current balance',
+            value: activeBalance == null ? '-' : `$${activeBalance.toFixed(3)}`,
+            color: activeBalance != null ? theme.white : theme.dim
+        },
+        {
+            label: 'Exposure',
+            value: formatPct(activePerformanceStats.exposurePct, 1),
+            color: activePerformanceStats.exposurePct != null ? theme.yellow : theme.dim
+        },
+        {
+            label: 'Max drawdown',
+            value: formatPct(activePerformanceStats.maxDrawdownPct, 1),
+            color: activePerformanceStats.maxDrawdownPct == null
+                ? theme.dim
+                : activePerformanceStats.maxDrawdownPct > 0
+                    ? theme.red
+                    : theme.white
+        },
+        {
+            label: 'Avg confidence',
+            value: formatPct(activeSummary?.avg_confidence)
+        },
+        {
+            label: 'Avg total',
+            value: formatDollar(activeSummary?.avg_size)
+        }
+    ];
     const modalBackground = terminal.backgroundColor || theme.modalBackground;
     const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);
     const detailModalWidth = Math.max(60, Math.min(terminal.width - 8, terminal.wide ? 110 : 88));
@@ -1620,12 +1763,10 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const renderPageBody = () => (React.createElement(React.Fragment, null,
         React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
             React.createElement(Box, { title: activeTitle, width: stacked ? '100%' : '50%', accent: selectedBox === 'summary' },
-                React.createElement(StatRow, { label: "Total P&L", value: formatDollar(activeSummary?.total_pnl), color: (activeSummary?.total_pnl || 0) >= 0 ? theme.green : theme.red }),
-                React.createElement(StatRow, { label: "Current balance", value: activeBalance == null ? '-' : `$${activeBalance.toFixed(3)}`, color: activeBalance != null ? theme.white : theme.dim }),
-                React.createElement(StatRow, { label: "Win rate", value: activeSummary ? formatPct(activeSummary.resolved ? activeSummary.wins / activeSummary.resolved : 0) : '-' }),
-                React.createElement(StatRow, { label: "Resolved", value: String(activeSummary?.resolved || 0) }),
-                React.createElement(StatRow, { label: "Avg confidence", value: formatPct(activeSummary?.avg_confidence) }),
-                React.createElement(StatRow, { label: "Avg total", value: formatDollar(activeSummary?.avg_size) })),
+                React.createElement(InkBox, { width: "100%", flexDirection: "row" },
+                    React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, summaryLeftStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color })))),
+                    React.createElement(InkBox, { width: 2 }),
+                    React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, summaryRightStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color })))))),
             !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
             React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeTitle.toLowerCase()} trades yet.`)))),
         React.createElement(InkBox, { marginTop: 1, flexDirection: "column", height: paneMetrics.paneHeight * 2 + 1 },

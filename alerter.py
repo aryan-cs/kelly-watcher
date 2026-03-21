@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Iterable
 
 import httpx
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_ALLOWED_KINDS = frozenset(
     {"buy", "resolution", "retrain", "exit", "status", "error", "warning", "report"}
 )
+_URL_RE = re.compile(r"https?://\S+")
 
 
 def _one_line(value: object) -> str:
@@ -189,11 +191,11 @@ def build_trade_resolution_alert(
     side_label = _one_line(side).upper() or "POSITION"
     amount = _format_usd(abs(float(pnl_usd)))
     if abs(float(pnl_usd)) < 1e-9:
-        summary = f"{_one_line(mode).lower()} resolved {side_label}, broke even"
+        summary = f"➖ {_one_line(mode).lower()} resolved {side_label}, broke even"
     elif won:
-        summary = f"{_one_line(mode).lower()} won {side_label}, made {amount}"
+        summary = f"✅ {_one_line(mode).lower()} won {side_label}, made {amount}"
     else:
-        summary = f"{_one_line(mode).lower()} lost {side_label}, lost {amount}"
+        summary = f"❌ {_one_line(mode).lower()} lost {side_label}, lost {amount}"
     return build_lines(
         append_tracking_detail(summary, tracked_trader_name, tracked_trader_address),
         build_market_line(question, market_url),
@@ -228,7 +230,8 @@ def send_telegram_message(
         logger.debug("Telegram not configured. Message: %s", message[:100])
         return False
 
-    payload: dict[str, object] = {"chat_id": target_chat_id, "text": message[:4096]}
+    normalized_message = _normalize_telegram_text(message)
+    payload: dict[str, object] = {"chat_id": target_chat_id, "text": normalized_message[:4096]}
     if reply_to_message_id is not None:
         payload["reply_to_message_id"] = int(reply_to_message_id)
         payload["allow_sending_without_reply"] = True
@@ -255,3 +258,18 @@ def send_alert(message: str, silent: bool = False, *, kind: str = "other") -> No
         return
 
     send_telegram_message(message)
+
+
+def _normalize_telegram_text(message: str) -> str:
+    text = str(message or "").strip()
+    if not text:
+        return ""
+
+    chunks: list[str] = []
+    last_index = 0
+    for match in _URL_RE.finditer(text):
+        chunks.append(text[last_index:match.start()].lower())
+        chunks.append(match.group(0))
+        last_index = match.end()
+    chunks.append(text[last_index:].lower())
+    return "".join(chunks)

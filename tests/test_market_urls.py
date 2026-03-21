@@ -25,18 +25,19 @@ class MarketUrlsTest(unittest.TestCase):
             "DELETE",
         )
 
-    def test_market_url_from_metadata_uses_sports_route_for_esports_child_market(self) -> None:
+    def test_market_url_from_metadata_uses_direct_polymarket_url_when_present(self) -> None:
         meta = {
-            "slug": "cs2-fav-esc1-2026-03-19-game2",
-            "events": [{"slug": "cs2-fav-esc1-2026-03-19"}],
+            "slug": "wta-cirstea-mertens-2026-03-21",
+            "marketUrl": "https://polymarket.com/event/wta-cirstea-mertens-2026-03-21",
+            "events": [{"slug": "wta-cirstea-mertens-2026-03-21"}],
         }
 
         self.assertEqual(
             market_url_from_metadata(meta),
-            "https://polymarket.com/sports/counter-strike/cs2-fav-esc1-2026-03-19",
+            "https://polymarket.com/event/wta-cirstea-mertens-2026-03-21",
         )
 
-    def test_market_url_from_metadata_keeps_single_slug_markets_flat(self) -> None:
+    def test_market_url_from_metadata_uses_market_slug_for_documented_event_route(self) -> None:
         meta = {
             "slug": "xrp-updown-15m-1773963000",
             "events": [{"slug": "xrp-updown-15m-1773963000"}],
@@ -47,18 +48,18 @@ class MarketUrlsTest(unittest.TestCase):
             "https://polymarket.com/event/xrp-updown-15m-1773963000",
         )
 
-    def test_market_url_from_metadata_uses_sports_route_for_sports_child_market(self) -> None:
+    def test_market_url_from_metadata_does_not_guess_sports_route(self) -> None:
         meta = {
-            "slug": "ere-fey-aja-2026-03-22-aja",
-            "events": [{"slug": "ere-fey-aja-2026-03-22"}],
+            "slug": "wta-cirstea-mertens-2026-03-21",
+            "events": [{"slug": "wta-cirstea-mertens-2026-03-21"}],
         }
 
         self.assertEqual(
             market_url_from_metadata(meta),
-            "https://polymarket.com/sports/ere/ere-fey-aja-2026-03-22",
+            "https://polymarket.com/event/wta-cirstea-mertens-2026-03-21",
         )
 
-    def test_market_url_from_metadata_normalizes_more_markets_event_slug(self) -> None:
+    def test_market_url_from_metadata_prefers_market_slug_over_event_slug(self) -> None:
         meta = {
             "slug": "bra-fla-cre-2026-03-19-btts",
             "events": [{"slug": "bra-fla-cre-2026-03-19-more-markets"}],
@@ -66,18 +67,17 @@ class MarketUrlsTest(unittest.TestCase):
 
         self.assertEqual(
             market_url_from_metadata(meta),
-            "https://polymarket.com/sports/bra/bra-fla-cre-2026-03-19",
+            "https://polymarket.com/event/bra-fla-cre-2026-03-19-btts",
         )
 
-    def test_market_url_from_metadata_keeps_nested_event_route_for_non_sports_child_market(self) -> None:
+    def test_market_url_from_metadata_falls_back_to_event_slug_when_market_slug_missing(self) -> None:
         meta = {
-            "slug": "ethereum-above-2100-on-march-22",
             "events": [{"slug": "ethereum-above-on-march-22"}],
         }
 
         self.assertEqual(
             market_url_from_metadata(meta),
-            "https://polymarket.com/event/ethereum-above-on-march-22/ethereum-above-2100-on-march-22",
+            "https://polymarket.com/event/ethereum-above-on-march-22",
         )
 
     def test_init_db_repairs_existing_trade_log_market_urls(self) -> None:
@@ -132,7 +132,7 @@ class MarketUrlsTest(unittest.TestCase):
 
                 self.assertEqual(
                     row["market_url"],
-                    "https://polymarket.com/sports/counter-strike/cs2-fav-esc1-2026-03-19",
+                    "https://polymarket.com/event/cs2-fav-esc1-2026-03-19-game2",
                 )
             finally:
                 db.DB_PATH = original_db_path

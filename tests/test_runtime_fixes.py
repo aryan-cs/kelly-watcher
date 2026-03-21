@@ -51,6 +51,7 @@ class RuntimeFixesTest(unittest.TestCase):
             alerter.send_alert("Bought", kind="buy")
 
         client.post.assert_called_once()
+        self.assertEqual(client.post.call_args.kwargs["json"]["text"], "bought")
 
     def test_send_alert_allows_retrain_notifications(self) -> None:
         client = Mock()
@@ -108,7 +109,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertEqual(
             message,
-            "live lost NO, lost $3.25\nWill Team A win?: https://polymarket.com/event/team-a-win",
+            "❌ live lost NO, lost $3.25\nWill Team A win?: https://polymarket.com/event/team-a-win",
         )
 
     def test_build_trade_resolution_alert_includes_tracked_trader(self) -> None:
@@ -125,8 +126,28 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertEqual(
             message,
-            "shadow won YES, made $4.00 | tracking TraderOne (0x123456...345678)\n"
+            "✅ shadow won YES, made $4.00 | tracking TraderOne (0x123456...345678)\n"
             "Will BTC finish March above $90k?: https://polymarket.com/event/btc-above-90k",
+        )
+
+    def test_send_telegram_message_lowercases_non_url_text(self) -> None:
+        client = Mock()
+        response = Mock()
+        response.raise_for_status = Mock(return_value=None)
+        client.post.return_value = response
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=False)
+
+        with patch("alerter.telegram_bot_token", return_value="token"), patch(
+            "alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("alerter.httpx.Client", return_value=client_context):
+            ok = alerter.send_telegram_message("Hello Trader\nWill BTC Win? https://polymarket.com/Event/ABC")
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            client.post.call_args.kwargs["json"]["text"],
+            "hello trader\nwill btc win? https://polymarket.com/Event/ABC",
         )
 
     def test_resolve_wallet_for_username_returns_wallet_and_caches_identity(self) -> None:
@@ -336,7 +357,7 @@ class RuntimeFixesTest(unittest.TestCase):
         alert_mock.assert_called_once()
         self.assertEqual(
             alert_mock.call_args.args[0],
-            "shadow won YES, made $3.50\nWill it happen?: https://polymarket.com/event/will-it-happen",
+            "✅ shadow won YES, made $3.50\nWill it happen?: https://polymarket.com/event/will-it-happen",
         )
         self.assertEqual(alert_mock.call_args.kwargs["kind"], "resolution")
 

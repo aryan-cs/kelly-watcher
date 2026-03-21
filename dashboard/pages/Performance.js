@@ -426,6 +426,11 @@ function formatHourlyBucketKey(date) {
     const hour = String(date.getHours()).padStart(2, '0');
     return `${year}-${month}-${day} ${hour}:00`;
 }
+function floorToHour(date) {
+    const bucketDate = new Date(date.getTime());
+    bucketDate.setMinutes(0, 0, 0);
+    return bucketDate;
+}
 function formatHourlyBucketLabel(bucket, compact = false) {
     const bucketDate = parseHourlyBucket(bucket);
     if (!bucketDate) {
@@ -500,6 +505,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const live = rows.find((row) => row.real_money === 1);
     const activeSummary = activeMode === 'live' ? live : shadow;
     const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker';
+    const currentHourBucketTs = Math.floor(nowTs / 3600) * 3600;
     const usernames = useMemo(() => {
         const lookup = new Map();
         for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -556,7 +562,9 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             });
         }
         const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]));
-        const newest = new Date(parsedEntries[0].bucketDate.getTime());
+        const newestResolved = new Date(parsedEntries[0].bucketDate.getTime());
+        const currentBucket = floorToHour(new Date(currentHourBucketTs * 1000));
+        const newest = currentBucket.getTime() > newestResolved.getTime() ? currentBucket : newestResolved;
         const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime());
         const filledEntries = [];
         for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
@@ -570,7 +578,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             cursor = nextCursor;
         }
         return filledEntries;
-    }, [activeDailyRows]);
+    }, [activeDailyRows, currentHourBucketTs]);
     const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
     const dailyPreviewCapacity = useMemo(() => dailyEntries.length
         ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))

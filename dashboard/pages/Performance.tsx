@@ -642,6 +642,12 @@ function formatHourlyBucketKey(date: Date): string {
   return `${year}-${month}-${day} ${hour}:00`
 }
 
+function floorToHour(date: Date): Date {
+  const bucketDate = new Date(date.getTime())
+  bucketDate.setMinutes(0, 0, 0)
+  return bucketDate
+}
+
 function formatHourlyBucketLabel(bucket: string, compact = false): string {
   const bucketDate = parseHourlyBucket(bucket)
   if (!bucketDate) {
@@ -750,7 +756,7 @@ function normalizeEffectivePosition(
   }
 }
 
-function groupDailyPnl(rows: PositionRow[]): DailyPnlEntry[] {
+function groupDailyPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
   const totals = new Map<string, number>()
 
   rows.forEach((row) => {
@@ -783,7 +789,10 @@ function groupDailyPnl(rows: PositionRow[]): DailyPnlEntry[] {
   }
 
   const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]))
-  const newest = new Date(parsedEntries[0].bucketDate.getTime())
+  const newestResolved = new Date(parsedEntries[0].bucketDate.getTime())
+  const currentBucket = floorToHour(new Date(nowTs * 1000))
+  const newest =
+    currentBucket.getTime() > newestResolved.getTime() ? currentBucket : newestResolved
   const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime())
   const filledEntries: DailyPnlEntry[] = []
 
@@ -883,6 +892,7 @@ export function Performance({
   const activeMode = botState.mode === 'live' ? 'live' : 'shadow'
   const activeRealMoney = activeMode === 'live' ? 1 : 0
   const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker'
+  const currentHourBucketTs = Math.floor(nowTs / 3600) * 3600
   const usernames = useMemo(() => {
     const lookup = new Map<string, string>()
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -1006,8 +1016,12 @@ export function Performance({
     [effectivePositions]
   )
   const dailyEntries = useMemo<DailyPnlEntry[]>(
-    () => groupDailyPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit')),
-    [pastPositions]
+    () =>
+      groupDailyPnl(
+        pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'),
+        currentHourBucketTs
+      ),
+    [currentHourBucketTs, pastPositions]
   )
   const dailyPanelContentWidth = useMemo(
     () => getDailyPanelContentWidth(terminal.width, stacked),

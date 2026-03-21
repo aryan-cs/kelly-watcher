@@ -69,6 +69,7 @@ from kelly import size_signal
 from market_scorer import build_market_features
 from market_urls import market_url_from_metadata
 from signal_engine import SignalEngine
+from telegram_runtime import service_telegram_commands
 from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
 from tracker import PolymarketTracker
 from trader_scorer import get_trader_features, refresh_trader_cache
@@ -92,6 +93,7 @@ logger = logging.getLogger(__name__)
 
 EVENT_FILE = Path("data/events.jsonl")
 BOT_STATE_FILE = Path("data/bot_state.json")
+MANUAL_RETRAIN_REQUEST_FILE = Path("data/manual_retrain_request.json")
 _emit_count = 0
 _event_lock = threading.Lock()
 WATCHED_WALLETS = watched_wallets()
@@ -380,10 +382,13 @@ def _humanize_reason(reason: str) -> str:
     return text
 
 
-def _wait_for_next_poll(loop_started_at: float, state_snapshot: dict) -> None:
+def _wait_for_next_poll(loop_started_at: float, state_snapshot: dict, on_tick=None) -> None:
     last_interval = poll_interval()
 
     while True:
+        if on_tick is not None:
+            on_tick()
+
         current_interval = poll_interval()
         if current_interval != last_interval:
             logger.info("Poll interval updated to %ss", current_interval)
@@ -395,6 +400,58 @@ def _wait_for_next_poll(loop_started_at: float, state_snapshot: dict) -> None:
             return
 
         time.sleep(min(remaining, 1.0))
+
+
+def _run_telegram_command_loop(stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            service_telegram_commands()
+        except Exception:
+            logger.exception("Telegram command service crashed")
+        stop_event.wait(0.5)
+
+
+def _consume_manual_retrain_request(run_retrain_job) -> bool:
+    if not MANUAL_RETRAIN_REQUEST_FILE.exists():
+        return False
+
+    try:
+        payload = json.loads(MANUAL_RETRAIN_REQUEST_FILE.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("request payload must be an object")
+    except Exception as exc:
+        logger.warning("Discarding invalid manual retrain request: %s", exc)
+        try:
+            MANUAL_RETRAIN_REQUEST_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return False
+
+    try:
+        MANUAL_RETRAIN_REQUEST_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+    requested_at = int(payload.get("requested_at") or 0)
+    source = str(payload.get("source") or "unknown").strip().lower() or "unknown"
+    request_id = str(payload.get("request_id") or "").strip()
+    now_ts = int(time.time())
+    if requested_at > 0 and (now_ts - requested_at) > 900:
+        logger.info(
+            "Ignoring stale manual retrain request from %s (age=%ss, request_id=%s)",
+            source,
+            now_ts - requested_at,
+            request_id or "-",
+        )
+        return False
+
+    logger.info(
+        "Manual retrain requested by %s (request_id=%s)",
+        source,
+        request_id or "-",
+    )
+    run_retrain_job(f"manual_{source}")
+    return True
 
 
 def _reject_event(event, confidence: float, amount_usd: float, reason: str) -> None:
@@ -1261,13 +1318,25 @@ def main() -> None:
             _heartbeat(force=True)
             retrain_lock.release()
 
+    def _service_runtime_requests() -> None:
+        _consume_manual_retrain_request(_run_retrain_job)
+
     _persist_bot_state(**watchlist.state_fields())
     sync_belief_priors()
 
+    telegram_command_stop = threading.Event()
+    telegram_command_thread: threading.Thread | None = None
     tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
     executor = PolymarketExecutor()
     executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
     _persist_bot_state(bankroll_usd=round(executor.get_usdc_balance(), 2))
+    telegram_command_thread = threading.Thread(
+        target=_run_telegram_command_loop,
+        args=(telegram_command_stop,),
+        name="telegram-command-loop",
+        daemon=True,
+    )
+    telegram_command_thread.start()
     tracker.prime_identities(watchlist.startup_wallets())
     live_entry_guard = _init_live_entry_guard(executor)
     daily_loss_guard = _init_daily_loss_guard(executor)
@@ -1457,11 +1526,15 @@ def main() -> None:
             }
             current_loop_started_at = 0
             _persist_bot_state(**state_snapshot)
-            _wait_for_next_poll(loop_start, state_snapshot)
+            _service_runtime_requests()
+            _wait_for_next_poll(loop_start, state_snapshot, _service_runtime_requests)
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         send_alert("Bot stopped")
     finally:
+        telegram_command_stop.set()
+        if telegram_command_thread is not None:
+            telegram_command_thread.join(timeout=1.0)
         scheduler.shutdown(wait=False)
         tracker.close()
 

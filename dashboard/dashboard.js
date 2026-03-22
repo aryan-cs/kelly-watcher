@@ -114,21 +114,27 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
     const pollIsFresh = lastPollAt > 0 && (now - lastPollAt) <= heartbeatWindow;
     const activityIsFresh = lastActivityAt > 0 && (now - lastActivityAt) <= activityWindow;
     const startupDetail = String(botState.startup_detail || '').trim();
+    const apiError = String(botState.api_error || '').trim();
+    const apiIssueTag = /token|unauthorized/i.test(apiError) ? 'api auth error' : 'api offline';
     const startupInProgress = startedAt > 0 && activityIsFresh && lastPollAt <= 0;
-    const backendDotColor = pollIsFresh
-        ? theme.green
-        : startedAt > 0 && activityIsFresh && (loopInProgress || lastPollAt <= 0)
-            ? theme.yellow
-            : theme.red;
-    const backendStatusText = startupInProgress && startupDetail
-        ? startupDetail
-        : describeBackendStatus({
-            startedAt,
-            lastPollAt,
-            activityIsFresh,
-            pollIsFresh,
-            loopInProgress
-        });
+    const backendDotColor = apiError
+        ? theme.red
+        : pollIsFresh
+            ? theme.green
+            : startedAt > 0 && activityIsFresh && (loopInProgress || lastPollAt <= 0)
+                ? theme.yellow
+                : theme.red;
+    const backendStatusText = apiError
+        ? apiIssueTag
+        : startupInProgress && startupDetail
+            ? startupDetail
+            : describeBackendStatus({
+                startedAt,
+                lastPollAt,
+                activityIsFresh,
+                pollIsFresh,
+                loopInProgress
+            });
     const backendStatusTag = formatHeaderStatusTag(backendStatusText);
     const navLabels = terminal.compact
         ? { 1: 'F', 2: 'S', 3: 'P', 4: 'M', 5: 'W', 6: 'C' }
@@ -148,26 +154,30 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
         : null;
     const footerStatusText = isRefreshing
         ? 'refreshing...'
-        : retrainInProgress
-            ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
-            : startupInProgress
-                ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
-                : recentRetrainText
-                    ? `${recentRetrainText} | ${lastPollText}`
-                    : lastPollText;
-    const footerStatusColor = activeTransientNotice
-        ? activeTransientNotice.tone === 'error'
-            ? theme.red
-            : activeTransientNotice.tone === 'success'
-                ? theme.green
-                : theme.accent
-        : isRefreshing
-            ? theme.accent
+        : apiError
+            ? apiError
             : retrainInProgress
-                ? theme.yellow
+                ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
                 : startupInProgress
+                    ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
+                    : recentRetrainText
+                        ? `${recentRetrainText} | ${lastPollText}`
+                        : lastPollText;
+    const footerStatusColor = apiError
+        ? theme.red
+        : activeTransientNotice
+            ? activeTransientNotice.tone === 'error'
+                ? theme.red
+                : activeTransientNotice.tone === 'success'
+                    ? theme.green
+                    : theme.accent
+            : isRefreshing
+                ? theme.accent
+                : retrainInProgress
                     ? theme.yellow
-                    : theme.dim;
+                    : startupInProgress
+                        ? theme.yellow
+                        : theme.dim;
     const footerControls = page === 1
         ? terminal.compact
             ? '↑↓ scroll  ↑↑ latest  r refresh  q exit'
@@ -244,7 +254,10 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
             React.createElement(Text, { color: backendDotColor, bold: true }, backendStatusTag),
             React.createElement(Text, { color: theme.dim }, " "),
             React.createElement(Text, { color: modeColor, bold: true }, mode)),
-        React.createElement(Box, { padding: 1, flexGrow: 1 }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
+        React.createElement(Box, { padding: 1, flexGrow: 1, flexDirection: "column" },
+            apiError ? (React.createElement(Box, { marginBottom: 1 },
+                React.createElement(Text, { color: theme.red }, apiError))) : null,
+            React.createElement(Box, { flexGrow: 1 }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange))),
         React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1 }, footerCompact ? (React.createElement(React.Fragment, null,
             React.createElement(Text, { color: theme.dim }, footerControls),
             React.createElement(Spacer, null),

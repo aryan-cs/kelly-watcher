@@ -82,10 +82,18 @@ export async function fetchApiJson(path, init = {}) {
     if (apiToken) {
         headers.set('Authorization', `Bearer ${apiToken}`);
     }
-    const response = await fetch(apiUrl(path), {
-        ...init,
-        headers
-    });
+    let response;
+    try {
+        response = await fetch(apiUrl(path), {
+            ...init,
+            headers
+        });
+    }
+    catch (error) {
+        const detail = error instanceof Error ? String(error.message || '').trim() : '';
+        const suffix = detail ? ` ${detail}` : '';
+        throw new ApiError(`Could not reach backend API at ${apiBaseUrl}.${suffix}`.trim(), 0);
+    }
     return parseJsonResponse(response);
 }
 export async function postApiJson(path, payload = {}) {

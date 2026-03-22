@@ -310,14 +310,20 @@ function AppContent({
   const pollIsFresh = lastPollAt > 0 && (now - lastPollAt) <= heartbeatWindow
   const activityIsFresh = lastActivityAt > 0 && (now - lastActivityAt) <= activityWindow
   const startupDetail = String(botState.startup_detail || '').trim()
+  const apiError = String(botState.api_error || '').trim()
+  const apiIssueTag = /token|unauthorized/i.test(apiError) ? 'api auth error' : 'api offline'
   const startupInProgress = startedAt > 0 && activityIsFresh && lastPollAt <= 0
-  const backendDotColor = pollIsFresh
-    ? theme.green
-    : startedAt > 0 && activityIsFresh && (loopInProgress || lastPollAt <= 0)
-      ? theme.yellow
-      : theme.red
+  const backendDotColor = apiError
+    ? theme.red
+    : pollIsFresh
+      ? theme.green
+      : startedAt > 0 && activityIsFresh && (loopInProgress || lastPollAt <= 0)
+        ? theme.yellow
+        : theme.red
   const backendStatusText =
-    startupInProgress && startupDetail
+    apiError
+      ? apiIssueTag
+      : startupInProgress && startupDetail
       ? startupDetail
       : describeBackendStatus({
           startedAt,
@@ -347,19 +353,23 @@ function AppContent({
       : null
   const footerStatusText = isRefreshing
     ? 'refreshing...'
-    : retrainInProgress
-      ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
-      : startupInProgress
-        ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
-      : recentRetrainText
-        ? `${recentRetrainText} | ${lastPollText}`
-        : lastPollText
-  const footerStatusColor = activeTransientNotice
-    ? activeTransientNotice.tone === 'error'
-      ? theme.red
-      : activeTransientNotice.tone === 'success'
-        ? theme.green
-        : theme.accent
+    : apiError
+      ? apiError
+      : retrainInProgress
+        ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
+        : startupInProgress
+          ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
+          : recentRetrainText
+            ? `${recentRetrainText} | ${lastPollText}`
+            : lastPollText
+  const footerStatusColor = apiError
+    ? theme.red
+    : activeTransientNotice
+      ? activeTransientNotice.tone === 'error'
+        ? theme.red
+        : activeTransientNotice.tone === 'success'
+          ? theme.green
+          : theme.accent
     : isRefreshing
       ? theme.accent
       : retrainInProgress
@@ -453,41 +463,48 @@ function AppContent({
         <Text color={modeColor} bold>{mode}</Text>
       </Box>
 
-      <Box padding={1} flexGrow={1}>
-        {renderPage(
-          page,
-          settingsEditor,
-          feedScrollOffset,
-          onFeedScrollOffsetChange,
-          signalsScrollOffset,
-          onSignalsScrollOffsetChange,
-          signalsHorizontalOffset,
-          onSignalsHorizontalOffsetChange,
-          perfCurrentScrollOffset,
-          perfPastScrollOffset,
-          perfActivePane,
-          perfSelectedBox,
-          perfDailyDetailOpen,
-          perfDailyDetailScrollOffset,
-          perfPositionAction,
-          perfPositionEdit,
-          onPerfCurrentScrollOffsetChange,
-          onPerfPastScrollOffsetChange,
-          onPerfDailyDetailScrollOffsetChange,
-          onPerfSelectionMetaChange,
-          onPerfDetailHistoryMetaChange,
-          modelSelectionIndex,
-          modelDetailOpen,
-          modelSettingSelectionIndex,
-          settingsEditor.values,
-          walletPane,
-          walletBestSelectionIndex,
-          walletWorstSelectionIndex,
-          walletTrackedSelectionIndex,
-          walletDroppedSelectionIndex,
-          walletDetailOpen,
-          onWalletMetaChange
-        )}
+      <Box padding={1} flexGrow={1} flexDirection="column">
+        {apiError ? (
+          <Box marginBottom={1}>
+            <Text color={theme.red}>{apiError}</Text>
+          </Box>
+        ) : null}
+        <Box flexGrow={1}>
+          {renderPage(
+            page,
+            settingsEditor,
+            feedScrollOffset,
+            onFeedScrollOffsetChange,
+            signalsScrollOffset,
+            onSignalsScrollOffsetChange,
+            signalsHorizontalOffset,
+            onSignalsHorizontalOffsetChange,
+            perfCurrentScrollOffset,
+            perfPastScrollOffset,
+            perfActivePane,
+            perfSelectedBox,
+            perfDailyDetailOpen,
+            perfDailyDetailScrollOffset,
+            perfPositionAction,
+            perfPositionEdit,
+            onPerfCurrentScrollOffsetChange,
+            onPerfPastScrollOffsetChange,
+            onPerfDailyDetailScrollOffsetChange,
+            onPerfSelectionMetaChange,
+            onPerfDetailHistoryMetaChange,
+            modelSelectionIndex,
+            modelDetailOpen,
+            modelSettingSelectionIndex,
+            settingsEditor.values,
+            walletPane,
+            walletBestSelectionIndex,
+            walletWorstSelectionIndex,
+            walletTrackedSelectionIndex,
+            walletDroppedSelectionIndex,
+            walletDetailOpen,
+            onWalletMetaChange
+          )}
+        </Box>
       </Box>
 
       <Box borderStyle="round" borderColor={theme.border} paddingX={1}>

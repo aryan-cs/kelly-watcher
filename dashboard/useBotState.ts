@@ -1,5 +1,5 @@
 import {useEffect, useState} from 'react'
-import {fetchApiJson} from './api.js'
+import {ApiError, apiBaseUrl, fetchApiJson} from './api.js'
 import {useRefreshToken} from './refresh.js'
 
 export interface BotState {
@@ -25,6 +25,8 @@ export interface BotState {
   last_retrain_min_samples?: number
   last_retrain_trigger?: string
   last_retrain_deployed?: boolean
+  api_base_url?: string
+  api_error?: string
 }
 
 interface BotStateResponse {
@@ -42,11 +44,24 @@ export function useBotState(intervalMs = 2000): BotState {
       try {
         const response = await fetchApiJson<BotStateResponse>('/api/bot-state')
         if (!cancelled) {
-          setState(response.state || {})
+          setState({
+            ...(response.state || {}),
+            api_base_url: apiBaseUrl,
+            api_error: ''
+          })
         }
-      } catch {
+      } catch (error) {
+        const message =
+          error instanceof ApiError && error.status === 401
+            ? `Backend API rejected the dashboard at ${apiBaseUrl}. Check KELLY_API_TOKEN.`
+            : error instanceof Error && String(error.message || '').trim()
+              ? String(error.message || '').trim()
+              : `Could not reach backend API at ${apiBaseUrl}.`
         if (!cancelled) {
-          setState({})
+          setState({
+            api_base_url: apiBaseUrl,
+            api_error: message
+          })
         }
       }
     }

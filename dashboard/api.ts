@@ -95,10 +95,17 @@ export async function fetchApiJson<T>(path: string, init: RequestInit = {}): Pro
     headers.set('Authorization', `Bearer ${apiToken}`)
   }
 
-  const response = await fetch(apiUrl(path), {
-    ...init,
-    headers
-  })
+  let response: Response
+  try {
+    response = await fetch(apiUrl(path), {
+      ...init,
+      headers
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? String(error.message || '').trim() : ''
+    const suffix = detail ? ` ${detail}` : ''
+    throw new ApiError(`Could not reach backend API at ${apiBaseUrl}.${suffix}`.trim(), 0)
+  }
   return parseJsonResponse<T>(response)
 }
 

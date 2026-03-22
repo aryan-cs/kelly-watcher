@@ -113,7 +113,7 @@ function describeBackendStatus({
   if (startedAt <= 0) {
     return 'waiting to start'
   }
-  if (activityIsFresh && lastPollAt <= 0) {
+  if (lastPollAt <= 0) {
     return 'starting up'
   }
   if (activityIsFresh && loopInProgress) {
@@ -312,12 +312,12 @@ function AppContent({
   const startupDetail = String(botState.startup_detail || '').trim()
   const apiError = String(botState.api_error || '').trim()
   const apiIssueTag = /token|unauthorized/i.test(apiError) ? 'api auth error' : 'api offline'
-  const startupInProgress = startedAt > 0 && activityIsFresh && lastPollAt <= 0
+  const startupInProgress = startedAt > 0 && lastPollAt <= 0
   const backendDotColor = apiError
     ? theme.red
     : pollIsFresh
       ? theme.green
-      : startedAt > 0 && activityIsFresh && (loopInProgress || lastPollAt <= 0)
+      : startupInProgress || (startedAt > 0 && activityIsFresh && loopInProgress)
         ? theme.yellow
         : theme.red
   const backendStatusText =

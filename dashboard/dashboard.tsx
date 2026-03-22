@@ -117,7 +117,7 @@ function describeBackendStatus({
     return 'starting up'
   }
   if (activityIsFresh && loopInProgress) {
-    return 'polling now'
+    return 'polling'
   }
   if (lastPollAt > 0) {
     return 'poll stalled'

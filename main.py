@@ -1913,8 +1913,9 @@ def main() -> None:
             )
         )
 
-    _set_startup_detail("loading watchlist")
     _persist_bot_state(**watchlist.state_fields())
+    dashboard_api_server = start_dashboard_api_server()
+    _set_startup_detail("loading watchlist")
     _set_startup_detail("syncing belief priors")
     sync_belief_priors()
 
@@ -2049,7 +2050,6 @@ def main() -> None:
         ),
         kind="status",
     )
-    dashboard_api_server = start_dashboard_api_server()
 
     try:
         entry_pause_alerts = EntryPauseAlertTracker()

@@ -463,48 +463,41 @@ function AppContent({
         <Text color={modeColor} bold>{mode}</Text>
       </Box>
 
-      <Box padding={1} flexGrow={1} flexDirection="column">
-        {apiError ? (
-          <Box marginBottom={1}>
-            <Text color={theme.red}>{apiError}</Text>
-          </Box>
-        ) : null}
-        <Box flexGrow={1}>
-          {renderPage(
-            page,
-            settingsEditor,
-            feedScrollOffset,
-            onFeedScrollOffsetChange,
-            signalsScrollOffset,
-            onSignalsScrollOffsetChange,
-            signalsHorizontalOffset,
-            onSignalsHorizontalOffsetChange,
-            perfCurrentScrollOffset,
-            perfPastScrollOffset,
-            perfActivePane,
-            perfSelectedBox,
-            perfDailyDetailOpen,
-            perfDailyDetailScrollOffset,
-            perfPositionAction,
-            perfPositionEdit,
-            onPerfCurrentScrollOffsetChange,
-            onPerfPastScrollOffsetChange,
-            onPerfDailyDetailScrollOffsetChange,
-            onPerfSelectionMetaChange,
-            onPerfDetailHistoryMetaChange,
-            modelSelectionIndex,
-            modelDetailOpen,
-            modelSettingSelectionIndex,
-            settingsEditor.values,
-            walletPane,
-            walletBestSelectionIndex,
-            walletWorstSelectionIndex,
-            walletTrackedSelectionIndex,
-            walletDroppedSelectionIndex,
-            walletDetailOpen,
-            onWalletMetaChange
-          )}
-        </Box>
+      <Box padding={1} flexGrow={1}>
+        {renderPage(
+          page,
+          settingsEditor,
+          feedScrollOffset,
+          onFeedScrollOffsetChange,
+          signalsScrollOffset,
+          onSignalsScrollOffsetChange,
+          signalsHorizontalOffset,
+          onSignalsHorizontalOffsetChange,
+          perfCurrentScrollOffset,
+          perfPastScrollOffset,
+          perfActivePane,
+          perfSelectedBox,
+          perfDailyDetailOpen,
+          perfDailyDetailScrollOffset,
+          perfPositionAction,
+          perfPositionEdit,
+          onPerfCurrentScrollOffsetChange,
+          onPerfPastScrollOffsetChange,
+          onPerfDailyDetailScrollOffsetChange,
+          onPerfSelectionMetaChange,
+          onPerfDetailHistoryMetaChange,
+          modelSelectionIndex,
+          modelDetailOpen,
+          modelSettingSelectionIndex,
+          settingsEditor.values,
+          walletPane,
+          walletBestSelectionIndex,
+          walletWorstSelectionIndex,
+          walletTrackedSelectionIndex,
+          walletDroppedSelectionIndex,
+          walletDetailOpen,
+          onWalletMetaChange
+        )}
       </Box>
 
       <Box borderStyle="round" borderColor={theme.border} paddingX={1}>

@@ -70,6 +70,18 @@ class MarketUrlsTest(unittest.TestCase):
             "https://polymarket.com/event/bra-fla-cre-2026-03-19-btts",
         )
 
+    def test_market_url_from_metadata_prefers_sports_event_slug_over_outcome_slug(self) -> None:
+        meta = {
+            "slug": "mls-aus-laf-2026-03-21-laf",
+            "sportsMarketType": "moneyline",
+            "events": [{"slug": "mls-aus-laf-2026-03-21"}],
+        }
+
+        self.assertEqual(
+            market_url_from_metadata(meta),
+            "https://polymarket.com/event/mls-aus-laf-2026-03-21",
+        )
+
     def test_market_url_from_metadata_falls_back_to_event_slug_when_market_slug_missing(self) -> None:
         meta = {
             "events": [{"slug": "ethereum-above-on-march-22"}],

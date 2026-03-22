@@ -1,8 +1,6 @@
-import fs from 'fs'
-import {useEffect, useMemo, useState} from 'react'
-import {eventsPath} from './paths.js'
-import {useRefreshToken} from './refresh.js'
+import {useMemo} from 'react'
 import {useQuery} from './useDb.js'
+import {useEventStream} from './useEventStream.js'
 
 const TRADE_LOG_TRADE_IDS_SQL = `
 SELECT trade_id
@@ -18,53 +16,8 @@ function normalizeTradeId(value: unknown): string | null {
 }
 
 export function useTradeIdIndex(): {lookup: Map<string, number>; maxId: number} {
-  const [eventTradeIds, setEventTradeIds] = useState<string[]>([])
-  const refreshToken = useRefreshToken()
   const tradeLogTradeIds = useQuery<{trade_id: string}>(TRADE_LOG_TRADE_IDS_SQL, [], 2000)
-
-  useEffect(() => {
-    let lastMtimeMs = 0
-
-    const read = () => {
-      try {
-        if (!fs.existsSync(eventsPath)) {
-          setEventTradeIds([])
-          lastMtimeMs = 0
-          return
-        }
-
-        const stat = fs.statSync(eventsPath)
-        if (stat.mtimeMs === lastMtimeMs) return
-        lastMtimeMs = stat.mtimeMs
-
-        const content = fs.readFileSync(eventsPath, 'utf8').trim()
-        const lines = content ? content.split('\n').filter(Boolean) : []
-        const tradeIds: string[] = []
-        const seen = new Set<string>()
-
-        for (const line of lines) {
-          const payload = JSON.parse(line) as {trade_id?: string}
-          const tradeId = normalizeTradeId(payload.trade_id)
-          if (!tradeId || seen.has(tradeId)) {
-            continue
-          }
-          seen.add(tradeId)
-          tradeIds.push(tradeId)
-        }
-
-        setEventTradeIds(tradeIds)
-      } catch {
-        setEventTradeIds([])
-      }
-    }
-
-    lastMtimeMs = 0
-    read()
-    fs.watchFile(eventsPath, {interval: 500}, read)
-    return () => {
-      fs.unwatchFile(eventsPath, read)
-    }
-  }, [refreshToken])
+  const events = useEventStream(1000)
 
   return useMemo(() => {
     const lookup = new Map<string, number>()
@@ -78,15 +31,13 @@ export function useTradeIdIndex(): {lookup: Map<string, number>; maxId: number} 
       lookup.set(tradeId, maxId)
     }
 
-    // Preserve the live-feed numbering, then backfill historical trades from the DB
-    // so current and past positions keep stable IDs after the event log rolls over.
-    for (const tradeId of eventTradeIds) {
-      assign(tradeId)
+    for (const event of events) {
+      assign(normalizeTradeId(event.trade_id))
     }
     for (const row of tradeLogTradeIds) {
       assign(normalizeTradeId(row.trade_id))
     }
 
     return {lookup, maxId}
-  }, [eventTradeIds, tradeLogTradeIds])
+  }, [events, tradeLogTradeIds])
 }

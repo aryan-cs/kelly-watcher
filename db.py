@@ -415,6 +415,28 @@ def init_db() -> None:
             updated_at               INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS trade_log_manual_edits (
+            trade_log_id INTEGER PRIMARY KEY,
+            entry_price  REAL,
+            shares       REAL,
+            size_usd     REAL,
+            status       TEXT,
+            updated_at   INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS position_manual_edits (
+            market_id   TEXT NOT NULL,
+            token_id    TEXT NOT NULL DEFAULT '',
+            side        TEXT NOT NULL,
+            real_money  INTEGER NOT NULL DEFAULT 0,
+            entry_price REAL,
+            shares      REAL,
+            size_usd    REAL,
+            status      TEXT,
+            updated_at  INTEGER NOT NULL,
+            PRIMARY KEY (market_id, token_id, side, real_money)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_seen_trades_seen_at ON seen_trades(seen_at);
         CREATE INDEX IF NOT EXISTS idx_trade_log_placed_at ON trade_log(placed_at);
         CREATE INDEX IF NOT EXISTS idx_trade_log_outcome ON trade_log(outcome);
@@ -511,6 +533,30 @@ def init_db() -> None:
             "reactivated_at": "INTEGER",
             "tracking_started_at": "INTEGER NOT NULL DEFAULT 0",
             "last_source_ts_at_status": "INTEGER NOT NULL DEFAULT 0",
+            "updated_at": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    _ensure_table_columns(
+        conn,
+        "trade_log_manual_edits",
+        {
+            "entry_price": "REAL",
+            "shares": "REAL",
+            "size_usd": "REAL",
+            "status": "TEXT",
+            "updated_at": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    _ensure_table_columns(
+        conn,
+        "position_manual_edits",
+        {
+            "token_id": "TEXT NOT NULL DEFAULT ''",
+            "real_money": "INTEGER NOT NULL DEFAULT 0",
+            "entry_price": "REAL",
+            "shares": "REAL",
+            "size_usd": "REAL",
+            "status": "TEXT",
             "updated_at": "INTEGER NOT NULL DEFAULT 0",
         },
     )

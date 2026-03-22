@@ -43,6 +43,29 @@ def _event_slug(meta: dict[str, Any]) -> str:
     return ""
 
 
+def _is_sports_market(meta: dict[str, Any]) -> bool:
+    for key in ("sportsMarketType", "sportSlug", "leagueSlug", "seriesSlug"):
+        if _normalize_slug(meta.get(key)):
+            return True
+
+    events = meta.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            for key in ("sportSlug", "leagueSlug", "seriesSlug"):
+                if _normalize_slug(event.get(key)):
+                    return True
+
+    nested_event = meta.get("event")
+    if isinstance(nested_event, dict):
+        for key in ("sportSlug", "leagueSlug", "seriesSlug"):
+            if _normalize_slug(nested_event.get(key)):
+                return True
+
+    return False
+
+
 def market_url_from_metadata(meta: Any) -> str | None:
     if not isinstance(meta, dict):
         return None
@@ -57,11 +80,14 @@ def market_url_from_metadata(meta: Any) -> str | None:
         if nested_direct_url:
             return nested_direct_url
 
+    event_slug = _event_slug(meta)
+    if event_slug and _is_sports_market(meta):
+        return f"{POLYMARKET_EVENT_BASE_URL}/{event_slug}"
+
     market_slug = _market_slug(meta)
     if market_slug:
         return f"{POLYMARKET_EVENT_BASE_URL}/{market_slug}"
 
-    event_slug = _event_slug(meta)
     if event_slug:
         return f"{POLYMARKET_EVENT_BASE_URL}/{event_slug}"
 

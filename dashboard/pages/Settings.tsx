@@ -1,4 +1,3 @@
-import fs from 'fs'
 import React, {useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
@@ -6,12 +5,11 @@ import {StatRow} from '../components/StatRow.js'
 import {
   editableConfigFields,
   formatEditableConfigValue,
-  readEnvValues,
+  useDashboardConfig,
   type EditableConfigValues
 } from '../configEditor.js'
 import {fit, fitRight, formatNumber, shortAddress, truncate, wrapText} from '../format.js'
-import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
-import {envExamplePath, envPath} from '../paths.js'
+import {isPlaceholderUsername, useIdentityMap} from '../identities.js'
 import {rowsForHeight, stackPanels} from '../responsive.js'
 import {
   dangerActions,
@@ -53,31 +51,11 @@ interface EnvData {
   rawValues: Record<string, string>
 }
 
-function readEnvData(): EnvData {
-  const path = fs.existsSync(envPath) ? envPath : envExamplePath
-  const rawValues = readEnvValues()
-  try {
-    return fs
-      .readFileSync(path, 'utf8')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith('#') && line.includes('='))
-      .reduce<EnvData>((acc, line) => {
-        const [key, ...rest] = line.split('=')
-        const value = rest.join('=')
-        if (key === 'WATCHED_WALLETS') {
-          acc.watchedWallets = value
-            .split(',')
-            .map((wallet) => wallet.trim())
-            .filter(Boolean)
-          return acc
-        }
-        const redacted = /(KEY|TOKEN|PRIVATE)/.test(key) ? '************' : (value || 'unset')
-        acc.rows.push({key, value: redacted})
-        return acc
-      }, {rows: [], watchedWallets: [], rawValues})
-  } catch {
-    return {rows: [], watchedWallets: [], rawValues}
+function envDataFromConfig(config: ReturnType<typeof useDashboardConfig>): EnvData {
+  return {
+    rows: config.rows,
+    watchedWallets: config.watchedWallets,
+    rawValues: config.safeValues
   }
 }
 
@@ -106,7 +84,9 @@ export function Settings({editor}: SettingsProps) {
   const state = useBotState()
   const counts = useQuery<CountRow>(COUNT_SQL)
   const events = useEventStream(1000)
-  const envData = readEnvData()
+  const config = useDashboardConfig()
+  const envData = useMemo(() => envDataFromConfig(config), [config])
+  const identityMap = useIdentityMap()
   const environmentBudget = rowsForHeight(terminal.height, stacked ? 40 : 30, 6, 14)
   const walletSectionHeaderRows = envData.watchedWallets.length ? 2 : 0
   const maxWalletLines = envData.watchedWallets.length ? Math.max(2, Math.min(6, Math.floor(environmentBudget / 2))) : 0
@@ -168,7 +148,7 @@ export function Settings({editor}: SettingsProps) {
   const dangerDescriptionLines = wrapText(dangerDescription, dangerContentWidth)
   const dangerStatusLines = wrapText(dangerStatusMessage, dangerContentWidth)
   const usernames = useMemo(() => {
-    const lookup = readIdentityMap()
+    const lookup = new Map(identityMap)
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index]
       const wallet = event.trader?.trim().toLowerCase()
@@ -179,7 +159,7 @@ export function Settings({editor}: SettingsProps) {
       lookup.set(wallet, username)
     }
     return lookup
-  }, [events])
+  }, [events, identityMap])
   const walletTableWidth = Math.max(24, panelContentWidth)
   const walletIndexWidth = Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1)
   const walletAddressWidth = Math.max(18, Math.min(42, Math.floor(walletTableWidth * 0.62)))

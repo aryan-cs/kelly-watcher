@@ -251,6 +251,72 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIsNone(reason)
         self.assertEqual(guard.loss_limit_pct, 0.0)
 
+    def test_entry_pause_alert_tracker_debounces_state_flaps(self) -> None:
+        tracker = main.EntryPauseAlertTracker(required_stable_loops=2)
+        first_state = main.EntryPauseState(
+            key="trade_feed_stale",
+            reason="source trade feed is stale; the last successful trade poll was 181s ago",
+        )
+        second_state = main.EntryPauseState(
+            key="trade_feed_stale",
+            reason="source trade feed is stale; the last successful trade poll was 192s ago",
+        )
+
+        self.assertIsNone(tracker.update(first_state))
+
+        paused_transition = tracker.update(second_state)
+        self.assertEqual(paused_transition, ("paused", second_state))
+
+        self.assertIsNone(tracker.update(second_state))
+        self.assertIsNone(tracker.update(None))
+
+        resumed_transition = tracker.update(None)
+        self.assertEqual(resumed_transition[0], "resumed")
+        self.assertEqual(resumed_transition[1], second_state)
+
+    def test_entry_pause_state_uses_stable_live_health_key(self) -> None:
+        now_ts = int(time.time())
+        guard = main.DailyLossGuard(
+            start_equity=100.0,
+            loss_limit_pct=0.10,
+            day_key=time.strftime("%Y-%m-%d", time.localtime(now_ts)),
+            _equity_locked=True,
+        )
+        tracker_stub = SimpleNamespace(trade_feed_health=lambda: (now_ts, 0))
+        executor_stub = SimpleNamespace(
+            live_entry_health_status=lambda: (
+                "wallet_balance_failures",
+                "live balance health degraded after 4 consecutive wallet-balance failures",
+            )
+        )
+
+        with patch("main.use_real_money", return_value=True):
+            state = main._entry_pause_state(
+                tracker_stub,
+                executor_stub,
+                None,
+                guard,
+                100.0,
+            )
+
+        self.assertIsNotNone(state)
+        self.assertEqual(state.key, "live_health:wallet_balance_failures")
+        self.assertIn("wallet-balance failures", state.reason)
+
+    def test_live_entry_health_status_keeps_key_stable_as_failure_count_changes(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._consecutive_live_balance_failures = 3
+        executor._consecutive_live_position_sync_failures = 0
+
+        with patch("executor.max_live_health_failures", return_value=3):
+            first_status = executor.live_entry_health_status()
+            executor._consecutive_live_balance_failures = 5
+            second_status = executor.live_entry_health_status()
+
+        self.assertEqual(first_status[0], "wallet_balance_failures")
+        self.assertEqual(second_status[0], "wallet_balance_failures")
+        self.assertNotEqual(first_status[1], second_status[1])
+
     def test_resolve_shadow_trades_labels_exited_rows_without_overwriting_realized_pnl(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

@@ -1,5 +1,6 @@
-import fs from 'fs'
-import {envExamplePath, envPath} from './paths.js'
+import {useEffect, useState} from 'react'
+import {fetchApiJson, postApiJson} from './api.js'
+import {useRefreshToken} from './refresh.js'
 
 export type EditableConfigKind = 'int' | 'float' | 'bool' | 'duration' | 'choice'
 
@@ -190,8 +191,35 @@ export const editableConfigFields: EditableConfigField[] = [
 ]
 
 export type EditableConfigValues = Record<string, string>
+export interface DashboardConfigRow {
+  key: string
+  value: string
+}
+
+export interface DashboardConfigData {
+  safeValues: Record<string, string>
+  watchedWallets: string[]
+  rows: DashboardConfigRow[]
+  editableValues: EditableConfigValues
+}
+
+interface DashboardConfigResponse {
+  safe_values?: Record<string, string>
+  watched_wallets?: string[]
+  rows?: DashboardConfigRow[]
+}
+
 const durationPattern = /^(\d+(\.\d+)?)([smhdw])$/i
 const percentEditableFieldKeys = new Set(['MAX_DAILY_LOSS_PCT'])
+let dashboardConfigCache: DashboardConfigData = {
+  safeValues: {},
+  watchedWallets: [],
+  rows: [],
+  editableValues: editableConfigFields.reduce<EditableConfigValues>((acc, field) => {
+    acc[field.key] = field.defaultValue
+    return acc
+  }, {})
+}
 
 function isPercentEditableField(field: EditableConfigField): boolean {
   return percentEditableFieldKeys.has(field.key)
@@ -234,64 +262,85 @@ function storedValueFromEditableValue(field: EditableConfigField, raw: string): 
   return serializeNumericValue(numeric / 100)
 }
 
-function sourcePath(): string {
-  return fs.existsSync(envPath) ? envPath : envExamplePath
-}
+function normalizeDashboardConfig(payload: DashboardConfigResponse = {}): DashboardConfigData {
+  const safeValues = {...(payload.safe_values || {})}
+  const watchedWallets = Array.isArray(payload.watched_wallets)
+    ? payload.watched_wallets
+      .map((wallet) => String(wallet || '').trim().toLowerCase())
+      .filter(Boolean)
+    : []
+  const rows = Array.isArray(payload.rows)
+    ? payload.rows
+      .map((row) => ({key: String(row.key || '').trim(), value: String(row.value || '')}))
+      .filter((row) => row.key)
+    : []
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-export function readEnvValues(): Record<string, string> {
-  try {
-    return fs
-      .readFileSync(sourcePath(), 'utf8')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith('#') && line.includes('='))
-      .reduce<Record<string, string>>((acc, line) => {
-        const [key, ...rest] = line.split('=')
-        acc[key.trim()] = rest.join('=').trim()
-        return acc
-      }, {})
-  } catch {
-    return {}
-  }
-}
-
-export function readEditableConfigValues(): EditableConfigValues {
-  const envValues = readEnvValues()
-  return editableConfigFields.reduce<EditableConfigValues>((acc, field) => {
-    const rawValue = envValues[field.key] || field.defaultValue
+  const editableValues = editableConfigFields.reduce<EditableConfigValues>((acc, field) => {
+    const rawValue = safeValues[field.key] || field.defaultValue
     acc[field.key] = editableValueFromStoredValue(field, rawValue)
     return acc
   }, {})
+
+  return {safeValues, watchedWallets, rows, editableValues}
 }
 
-export function writeEditableConfigValue(key: string, value: string): void {
+function updateDashboardConfigCache(payload: DashboardConfigResponse = {}): DashboardConfigData {
+  dashboardConfigCache = normalizeDashboardConfig(payload)
+  return dashboardConfigCache
+}
+
+export async function refreshDashboardConfig(): Promise<DashboardConfigData> {
+  const payload = await fetchApiJson<DashboardConfigResponse>('/api/config')
+  return updateDashboardConfigCache(payload)
+}
+
+export function useDashboardConfig(intervalMs = 2000): DashboardConfigData {
+  const [config, setConfig] = useState<DashboardConfigData>(() => dashboardConfigCache)
+  const refreshToken = useRefreshToken()
+
+  useEffect(() => {
+    let cancelled = false
+
+    const read = async () => {
+      try {
+        const nextConfig = await refreshDashboardConfig()
+        if (!cancelled) {
+          setConfig(nextConfig)
+        }
+      } catch {
+        if (!cancelled) {
+          setConfig(dashboardConfigCache)
+        }
+      }
+    }
+
+    void read()
+    const timer = setInterval(() => {
+      void read()
+    }, Math.max(intervalMs, 250))
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [intervalMs, refreshToken])
+
+  return config
+}
+
+export function readEnvValues(): Record<string, string> {
+  return {...dashboardConfigCache.safeValues}
+}
+
+export function readEditableConfigValues(): EditableConfigValues {
+  return {...dashboardConfigCache.editableValues}
+}
+
+export async function writeEditableConfigValue(key: string, value: string): Promise<DashboardConfigData> {
   const field = editableConfigFields.find((candidate) => candidate.key === key)
   const storedValue = field ? storedValueFromEditableValue(field, value) : value
-  const basePath = sourcePath()
-  const lines = fs.existsSync(basePath) ? fs.readFileSync(basePath, 'utf8').split(/\r?\n/) : []
-  const pattern = new RegExp(`^${escapeRegExp(key)}\\s*=`)
-  let found = false
-
-  const updated = lines.map((line) => {
-    if (pattern.test(line.trim())) {
-      found = true
-      return `${key}=${storedValue}`
-    }
-    return line
-  })
-
-  if (!found) {
-    if (updated.length && updated[updated.length - 1] !== '') {
-      updated.push('')
-    }
-    updated.push(`${key}=${storedValue}`)
-  }
-
-  fs.writeFileSync(envPath, updated.join('\n'))
+  const payload = await postApiJson<DashboardConfigResponse>('/api/config/value', {key, value: storedValue})
+  return updateDashboardConfigCache(payload)
 }
 
 export function validateEditableConfigValue(field: EditableConfigField, raw: string): {ok: true; value: string} | {ok: false; error: string} {

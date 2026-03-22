@@ -1,5 +1,7 @@
-import fs from 'fs';
-import { identityPath } from './paths.js';
+import { useEffect, useState } from 'react';
+import { fetchApiJson } from './api.js';
+import { useRefreshToken } from './refresh.js';
+let identityCache = new Map();
 export function isPlaceholderUsername(username, wallet) {
     const display = (username || '').trim();
     if (!display) {
@@ -18,21 +20,49 @@ export function isPlaceholderUsername(username, wallet) {
     }
     return false;
 }
-export function readIdentityMap() {
-    try {
-        const payload = JSON.parse(fs.readFileSync(identityPath, 'utf8'));
-        const lookup = new Map();
-        for (const [wallet, entry] of Object.entries(payload.wallets || {})) {
-            const username = (entry?.username || '').trim();
-            const normalizedWallet = wallet.trim().toLowerCase();
-            if (!normalizedWallet || isPlaceholderUsername(username, normalizedWallet)) {
-                continue;
-            }
-            lookup.set(normalizedWallet, username);
+function normalizeIdentityMap(payload) {
+    const lookup = new Map();
+    for (const [wallet, usernameValue] of Object.entries(payload.wallets || {})) {
+        const normalizedWallet = wallet.trim().toLowerCase();
+        const username = String(usernameValue || '').trim();
+        if (!normalizedWallet || isPlaceholderUsername(username, normalizedWallet)) {
+            continue;
         }
-        return lookup;
+        lookup.set(normalizedWallet, username);
     }
-    catch {
-        return new Map();
-    }
+    return lookup;
+}
+export function readIdentityMap() {
+    return new Map(identityCache);
+}
+export function useIdentityMap(intervalMs = 2000) {
+    const [lookup, setLookup] = useState(() => readIdentityMap());
+    const refreshToken = useRefreshToken();
+    useEffect(() => {
+        let cancelled = false;
+        const read = async () => {
+            try {
+                const payload = await fetchApiJson('/api/identities');
+                const nextLookup = normalizeIdentityMap(payload);
+                identityCache = nextLookup;
+                if (!cancelled) {
+                    setLookup(new Map(nextLookup));
+                }
+            }
+            catch {
+                if (!cancelled) {
+                    setLookup(new Map(identityCache));
+                }
+            }
+        };
+        void read();
+        const timer = setInterval(() => {
+            void read();
+        }, Math.max(intervalMs, 250));
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+        };
+    }, [intervalMs, refreshToken]);
+    return lookup;
 }

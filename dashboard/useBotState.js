@@ -1,29 +1,32 @@
-import fs from 'fs';
 import { useEffect, useState } from 'react';
-import { botStatePath } from './paths.js';
+import { fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
 export function useBotState(intervalMs = 2000) {
     const [state, setState] = useState({});
     const refreshToken = useRefreshToken();
     useEffect(() => {
-        let lastMtimeMs = 0;
-        const read = () => {
+        let cancelled = false;
+        const read = async () => {
             try {
-                const stat = fs.statSync(botStatePath);
-                if (stat.mtimeMs === lastMtimeMs)
-                    return;
-                lastMtimeMs = stat.mtimeMs;
-                const payload = JSON.parse(fs.readFileSync(botStatePath, 'utf8'));
-                setState(payload);
+                const response = await fetchApiJson('/api/bot-state');
+                if (!cancelled) {
+                    setState(response.state || {});
+                }
             }
             catch {
-                setState({});
+                if (!cancelled) {
+                    setState({});
+                }
             }
         };
-        lastMtimeMs = 0;
-        read();
-        fs.watchFile(botStatePath, { interval: Math.min(intervalMs, 500) }, read);
-        return () => fs.unwatchFile(botStatePath, read);
+        void read();
+        const timer = setInterval(() => {
+            void read();
+        }, Math.max(intervalMs, 250));
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+        };
     }, [intervalMs, refreshToken]);
     return state;
 }

@@ -41,7 +41,7 @@ At a high level, the system works like this:
    - simulates a shadow order from the order book, or
    - posts a real Polymarket order in live mode.
 6. `db.py` writes the durable record into `data/trading.db`.
-7. `main.py` also emits a lightweight JSON event stream and bot state file for the dashboard.
+7. `main.py` also emits a lightweight JSON event stream, bot state file, and an HTTP API for the dashboard.
 8. `evaluator.py` resolves finished markets, computes PnL, and closes positions.
 9. `train.py` and `auto_retrain.py` periodically retrain and optionally deploy a new model.
 
@@ -67,7 +67,7 @@ Optional for live trading:
 
 Notes:
 
-- The dashboard uses `better-sqlite3`. On some machines, `npm install` may require platform build tools.
+- The dashboard talks to the backend over HTTP, so it no longer needs direct SQLite access.
 - The repository includes `uv.lock` and `dashboard/package-lock.json` so installs are reproducible.
 
 ## Quick Start
@@ -159,6 +159,12 @@ The backend will automatically:
 - validate startup config
 - start the polling loop
 - emit `data/events.jsonl` and `data/bot_state.json`
+- start the dashboard API on `http://127.0.0.1:8765` by default
+
+If you want to run the dashboard on another computer, set:
+
+- `DASHBOARD_API_HOST=0.0.0.0`
+- optionally `DASHBOARD_API_TOKEN=some-shared-secret`
 
 ### 7. Start the dashboard
 
@@ -168,6 +174,29 @@ In a second terminal:
 cd dashboard
 npm start
 ```
+
+To run the dashboard on another computer, point it at the backend API:
+
+```bash
+cd dashboard
+KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm start
+```
+
+If the backend sets `DASHBOARD_API_TOKEN`, also set:
+
+```bash
+cd dashboard
+KELLY_API_BASE_URL=http://BACKEND_HOST:8765 KELLY_API_TOKEN=some-shared-secret npm start
+```
+
+You can also put those in the dashboard machine's repo-level `.env` instead of exporting them every time:
+
+```env
+KELLY_API_BASE_URL=http://windows-box.tailnet-name.ts.net:8765
+KELLY_API_TOKEN=some-shared-secret
+```
+
+The dashboard now reads `KELLY_API_BASE_URL` and `KELLY_API_TOKEN` from `.env`, with shell environment variables taking precedence if you set both.
 
 For dashboard development from the TypeScript sources instead of the checked-in runtime JS:
 

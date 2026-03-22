@@ -16,6 +16,8 @@ from db import init_db
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 LOG_DIR = REPO_ROOT / "logs"
+ENV_PATH = REPO_ROOT / ".env"
+ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 PID_FILE = DATA_DIR / "shadow_bot.pid"
 BACKGROUND_LOG = LOG_DIR / "shadow_runtime.out"
 RESET_FILES = (
@@ -26,6 +28,51 @@ RESET_FILES = (
     DATA_DIR / "bot_state.json",
     PID_FILE,
 )
+
+
+def _source_env_path() -> Path:
+    return ENV_PATH if ENV_PATH.exists() else ENV_EXAMPLE_PATH
+
+
+def _read_env_value(key: str) -> str:
+    try:
+        lines = _source_env_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        current_key, value = line.split("=", 1)
+        if current_key.strip() == key:
+            return value.strip()
+    return ""
+
+
+def _write_env_value(key: str, value: str) -> None:
+    source_path = _source_env_path()
+    try:
+        lines = source_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+
+    updated: list[str] = []
+    found = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{key}="):
+            updated.append(f"{key}={value}")
+            found = True
+        else:
+            updated.append(line)
+
+    if not found:
+        if updated and updated[-1] != "":
+            updated.append("")
+        updated.append(f"{key}={value}")
+
+    ENV_PATH.write_text("\n".join(updated) + "\n", encoding="utf-8")
 
 
 def _normalize_command(command: str) -> str:
@@ -279,42 +326,60 @@ def launch_background_bot() -> int:
     return int(process.pid)
 
 
-def run(*, foreground: bool, start_bot: bool) -> int:
+def run(*, foreground: bool, start_bot: bool, clear_wallets: bool) -> int:
     if use_real_money():
         print("Refusing to reset while USE_REAL_MONEY=true. Switch back to shadow mode first.")
         return 1
 
     bankroll = shadow_bankroll_usd()
-    stop_existing_bot()
-    print(f"Resetting shadow runtime state back to the configured bankroll of ${bankroll:.2f}...")
-    print("Preserving config/settings files, logs, model artifacts, identity cache, and WATCHED_WALLETS.")
-    reset_shadow_runtime()
+    previous_wallets = _read_env_value("WATCHED_WALLETS")
 
-    if not start_bot:
-        print("Shadow runtime reset.")
+    try:
+        if clear_wallets:
+            _write_env_value("WATCHED_WALLETS", "")
+
+        stop_existing_bot()
+        print(f"Resetting shadow runtime state back to the configured bankroll of ${bankroll:.2f}...")
+        if clear_wallets:
+            print("Preserving config/settings files, logs, model artifacts, and identity cache.")
+            print("Clearing WATCHED_WALLETS before restarting shadow mode.")
+        else:
+            print("Preserving config/settings files, logs, model artifacts, identity cache, and WATCHED_WALLETS.")
+        reset_shadow_runtime()
+
+        if not start_bot:
+            print("Shadow runtime reset.")
+            print(f"Initial bankroll: ${bankroll:.2f}")
+            print("WATCHED_WALLETS cleared." if clear_wallets else "WATCHED_WALLETS preserved.")
+            print("Start the bot manually with: uv run main")
+            return 0
+
+        if foreground:
+            print("Starting shadow bot in foreground...")
+            result = subprocess.run(
+                _bot_command(),
+                cwd=REPO_ROOT,
+                env=runtime_env(),
+                check=False,
+            )
+            return int(result.returncode)
+
+        print("Starting shadow bot in background...")
+        pid = launch_background_bot()
+        print("Shadow bot restarted.")
+        print(f"PID: {pid}")
         print(f"Initial bankroll: ${bankroll:.2f}")
-        print("WATCHED_WALLETS preserved.")
-        print("Start the bot manually with: uv run main")
+        print("WATCHED_WALLETS cleared." if clear_wallets else "WATCHED_WALLETS preserved.")
+        print(f"Background log: {BACKGROUND_LOG.relative_to(REPO_ROOT)}")
+        print(f"PID file: {PID_FILE.relative_to(REPO_ROOT)}")
         return 0
-
-    if foreground:
-        print("Starting shadow bot in foreground...")
-        result = subprocess.run(
-            _bot_command(),
-            cwd=REPO_ROOT,
-            env=runtime_env(),
-            check=False,
-        )
-        return int(result.returncode)
-
-    print("Starting shadow bot in background...")
-    pid = launch_background_bot()
-    print("Shadow bot restarted.")
-    print(f"PID: {pid}")
-    print(f"Initial bankroll: ${bankroll:.2f}")
-    print(f"Background log: {BACKGROUND_LOG.relative_to(REPO_ROOT)}")
-    print(f"PID file: {PID_FILE.relative_to(REPO_ROOT)}")
-    return 0
+    except Exception:
+        if clear_wallets:
+            try:
+                _write_env_value("WATCHED_WALLETS", previous_wallets)
+            except OSError:
+                pass
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -332,8 +397,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Reset shadow runtime state without starting the bot.",
     )
+    parser.add_argument(
+        "--clear-wallets",
+        action="store_true",
+        help="Clear WATCHED_WALLETS in .env before restarting shadow mode.",
+    )
     args = parser.parse_args(argv)
-    return run(foreground=bool(args.foreground), start_bot=not bool(args.reset_only))
+    return run(
+        foreground=bool(args.foreground),
+        start_bot=not bool(args.reset_only),
+        clear_wallets=bool(args.clear_wallets),
+    )
 
 
 if __name__ == "__main__":

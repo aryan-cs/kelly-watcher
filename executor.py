@@ -657,19 +657,29 @@ class PolymarketExecutor:
                 time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
         return None
 
-    def live_entry_health_reason(self) -> str | None:
+    def live_entry_health_status(self) -> tuple[str, str] | None:
         threshold = max_live_health_failures()
         if self._consecutive_live_balance_failures >= threshold:
             return (
-                f"live balance health degraded after {self._consecutive_live_balance_failures} "
-                "consecutive wallet-balance failures"
+                "wallet_balance_failures",
+                (
+                    f"live balance health degraded after {self._consecutive_live_balance_failures} "
+                    "consecutive wallet-balance failures"
+                ),
             )
         if self._consecutive_live_position_sync_failures >= threshold:
             return (
-                f"live exchange sync degraded after {self._consecutive_live_position_sync_failures} "
-                "consecutive position-sync failures"
+                "position_sync_failures",
+                (
+                    f"live exchange sync degraded after {self._consecutive_live_position_sync_failures} "
+                    "consecutive position-sync failures"
+                ),
             )
         return None
+
+    def live_entry_health_reason(self) -> str | None:
+        status = self.live_entry_health_status()
+        return status[1] if status is not None else None
 
     def _open_risk_snapshot(self, *, real_money: bool) -> tuple[float, dict[str, float], dict[str, float]]:
         mode_flag = 1 if real_money else 0

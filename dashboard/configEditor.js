@@ -1,5 +1,6 @@
-import fs from 'fs';
-import { envExamplePath, envPath } from './paths.js';
+import { useEffect, useState } from 'react';
+import { fetchApiJson, postApiJson } from './api.js';
+import { useRefreshToken } from './refresh.js';
 export const maxMarketHorizonPresets = [
     '5m',
     '1h',
@@ -175,6 +176,15 @@ export const editableConfigFields = [
 ];
 const durationPattern = /^(\d+(\.\d+)?)([smhdw])$/i;
 const percentEditableFieldKeys = new Set(['MAX_DAILY_LOSS_PCT']);
+let dashboardConfigCache = {
+    safeValues: {},
+    watchedWallets: [],
+    rows: [],
+    editableValues: editableConfigFields.reduce((acc, field) => {
+        acc[field.key] = field.defaultValue;
+        return acc;
+    }, {})
+};
 function isPercentEditableField(field) {
     return percentEditableFieldKeys.has(field.key);
 }
@@ -207,58 +217,73 @@ function storedValueFromEditableValue(field, raw) {
     }
     return serializeNumericValue(numeric / 100);
 }
-function sourcePath() {
-    return fs.existsSync(envPath) ? envPath : envExamplePath;
-}
-function escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-export function readEnvValues() {
-    try {
-        return fs
-            .readFileSync(sourcePath(), 'utf8')
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter((line) => line && !line.startsWith('#') && line.includes('='))
-            .reduce((acc, line) => {
-            const [key, ...rest] = line.split('=');
-            acc[key.trim()] = rest.join('=').trim();
-            return acc;
-        }, {});
-    }
-    catch {
-        return {};
-    }
-}
-export function readEditableConfigValues() {
-    const envValues = readEnvValues();
-    return editableConfigFields.reduce((acc, field) => {
-        const rawValue = envValues[field.key] || field.defaultValue;
+function normalizeDashboardConfig(payload = {}) {
+    const safeValues = { ...(payload.safe_values || {}) };
+    const watchedWallets = Array.isArray(payload.watched_wallets)
+        ? payload.watched_wallets
+            .map((wallet) => String(wallet || '').trim().toLowerCase())
+            .filter(Boolean)
+        : [];
+    const rows = Array.isArray(payload.rows)
+        ? payload.rows
+            .map((row) => ({ key: String(row.key || '').trim(), value: String(row.value || '') }))
+            .filter((row) => row.key)
+        : [];
+    const editableValues = editableConfigFields.reduce((acc, field) => {
+        const rawValue = safeValues[field.key] || field.defaultValue;
         acc[field.key] = editableValueFromStoredValue(field, rawValue);
         return acc;
     }, {});
+    return { safeValues, watchedWallets, rows, editableValues };
 }
-export function writeEditableConfigValue(key, value) {
+function updateDashboardConfigCache(payload = {}) {
+    dashboardConfigCache = normalizeDashboardConfig(payload);
+    return dashboardConfigCache;
+}
+export async function refreshDashboardConfig() {
+    const payload = await fetchApiJson('/api/config');
+    return updateDashboardConfigCache(payload);
+}
+export function useDashboardConfig(intervalMs = 2000) {
+    const [config, setConfig] = useState(() => dashboardConfigCache);
+    const refreshToken = useRefreshToken();
+    useEffect(() => {
+        let cancelled = false;
+        const read = async () => {
+            try {
+                const nextConfig = await refreshDashboardConfig();
+                if (!cancelled) {
+                    setConfig(nextConfig);
+                }
+            }
+            catch {
+                if (!cancelled) {
+                    setConfig(dashboardConfigCache);
+                }
+            }
+        };
+        void read();
+        const timer = setInterval(() => {
+            void read();
+        }, Math.max(intervalMs, 250));
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+        };
+    }, [intervalMs, refreshToken]);
+    return config;
+}
+export function readEnvValues() {
+    return { ...dashboardConfigCache.safeValues };
+}
+export function readEditableConfigValues() {
+    return { ...dashboardConfigCache.editableValues };
+}
+export async function writeEditableConfigValue(key, value) {
     const field = editableConfigFields.find((candidate) => candidate.key === key);
     const storedValue = field ? storedValueFromEditableValue(field, value) : value;
-    const basePath = sourcePath();
-    const lines = fs.existsSync(basePath) ? fs.readFileSync(basePath, 'utf8').split(/\r?\n/) : [];
-    const pattern = new RegExp(`^${escapeRegExp(key)}\\s*=`);
-    let found = false;
-    const updated = lines.map((line) => {
-        if (pattern.test(line.trim())) {
-            found = true;
-            return `${key}=${storedValue}`;
-        }
-        return line;
-    });
-    if (!found) {
-        if (updated.length && updated[updated.length - 1] !== '') {
-            updated.push('');
-        }
-        updated.push(`${key}=${storedValue}`);
-    }
-    fs.writeFileSync(envPath, updated.join('\n'));
+    const payload = await postApiJson('/api/config/value', { key, value: storedValue });
+    return updateDashboardConfigCache(payload);
 }
 export function validateEditableConfigValue(field, raw) {
     const value = raw.trim();

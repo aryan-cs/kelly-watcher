@@ -1,6 +1,5 @@
-import fs from 'fs'
 import {useEffect, useState} from 'react'
-import {botStatePath} from './paths.js'
+import {fetchApiJson} from './api.js'
 import {useRefreshToken} from './refresh.js'
 
 export interface BotState {
@@ -28,29 +27,39 @@ export interface BotState {
   last_retrain_deployed?: boolean
 }
 
+interface BotStateResponse {
+  state?: BotState
+}
+
 export function useBotState(intervalMs = 2000): BotState {
   const [state, setState] = useState<BotState>({})
   const refreshToken = useRefreshToken()
 
   useEffect(() => {
-    let lastMtimeMs = 0
+    let cancelled = false
 
-    const read = () => {
+    const read = async () => {
       try {
-        const stat = fs.statSync(botStatePath)
-        if (stat.mtimeMs === lastMtimeMs) return
-        lastMtimeMs = stat.mtimeMs
-        const payload = JSON.parse(fs.readFileSync(botStatePath, 'utf8')) as BotState
-        setState(payload)
+        const response = await fetchApiJson<BotStateResponse>('/api/bot-state')
+        if (!cancelled) {
+          setState(response.state || {})
+        }
       } catch {
-        setState({})
+        if (!cancelled) {
+          setState({})
+        }
       }
     }
 
-    lastMtimeMs = 0
-    read()
-    fs.watchFile(botStatePath, {interval: Math.min(intervalMs, 500)}, read)
-    return () => fs.unwatchFile(botStatePath, read)
+    void read()
+    const timer = setInterval(() => {
+      void read()
+    }, Math.max(intervalMs, 250))
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
   }, [intervalMs, refreshToken])
 
   return state

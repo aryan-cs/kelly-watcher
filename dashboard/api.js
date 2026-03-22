@@ -1,0 +1,99 @@
+import fs from 'fs';
+import { envExamplePath, envPath } from './paths.js';
+export class ApiError extends Error {
+    status;
+    constructor(message, status = 500) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+    }
+}
+function sourceEnvPath() {
+    return fs.existsSync(envPath) ? envPath : envExamplePath;
+}
+function stripMatchingQuotes(value) {
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        return value.slice(1, -1);
+    }
+    return value;
+}
+function readEnvFileValue(key) {
+    try {
+        const lines = fs.readFileSync(sourceEnvPath(), 'utf8').split(/\r?\n/);
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#') || !line.includes('=')) {
+                continue;
+            }
+            const [currentKey, ...rest] = line.split('=');
+            if (currentKey.trim() !== key) {
+                continue;
+            }
+            return stripMatchingQuotes(rest.join('=').trim());
+        }
+    }
+    catch {
+        return '';
+    }
+    return '';
+}
+function readRuntimeEnv(key, fallback = '') {
+    const processValue = String(process.env[key] || '').trim();
+    if (processValue) {
+        return processValue;
+    }
+    const fileValue = readEnvFileValue(key).trim();
+    return fileValue || fallback;
+}
+const rawApiBaseUrl = readRuntimeEnv('KELLY_API_BASE_URL', 'http://127.0.0.1:8765');
+export const apiBaseUrl = rawApiBaseUrl.replace(/\/+$/, '');
+const apiToken = readRuntimeEnv('KELLY_API_TOKEN');
+function apiUrl(path) {
+    if (/^https?:\/\//i.test(path)) {
+        return path;
+    }
+    return `${apiBaseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+}
+async function parseJsonResponse(response) {
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+        try {
+            payload = JSON.parse(text);
+        }
+        catch {
+            if (!response.ok) {
+                throw new ApiError(text, response.status);
+            }
+            throw new ApiError('Invalid JSON response from backend API.', response.status);
+        }
+    }
+    if (!response.ok) {
+        const message = typeof payload === 'object' && payload && 'message' in payload
+            ? String(payload.message || '')
+            : '';
+        throw new ApiError(message || `Backend API request failed with status ${response.status}.`, response.status);
+    }
+    return payload;
+}
+export async function fetchApiJson(path, init = {}) {
+    const headers = new Headers(init.headers || {});
+    headers.set('Accept', 'application/json');
+    if (apiToken) {
+        headers.set('Authorization', `Bearer ${apiToken}`);
+    }
+    const response = await fetch(apiUrl(path), {
+        ...init,
+        headers
+    });
+    return parseJsonResponse(response);
+}
+export async function postApiJson(path, payload = {}) {
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    return fetchApiJson(path, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+    });
+}

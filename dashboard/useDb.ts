@@ -1,8 +1,10 @@
 import {useEffect, useState} from 'react'
-import Database from 'better-sqlite3'
-import fs from 'fs'
-import {dbPath} from './paths.js'
+import {postApiJson} from './api.js'
 import {useRefreshToken} from './refresh.js'
+
+interface QueryResponse<T> {
+  rows?: T[]
+}
 
 export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 2000): T[] {
   const [rows, setRows] = useState<T[]>([])
@@ -10,26 +12,30 @@ export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 20
   const refreshToken = useRefreshToken()
 
   useEffect(() => {
-    let lastMtimeMs = 0
+    let cancelled = false
 
-    const run = () => {
+    const run = async () => {
       try {
-        const stat = fs.statSync(dbPath)
-        if (stat.mtimeMs === lastMtimeMs) return
-        lastMtimeMs = stat.mtimeMs
-        const db = new Database(dbPath, {readonly: true, fileMustExist: true})
-        const result = db.prepare(sql).all(...params) as T[]
-        db.close()
-        setRows(result)
+        const response = await postApiJson<QueryResponse<T>>('/api/query', {sql, params})
+        if (!cancelled) {
+          setRows(Array.isArray(response.rows) ? response.rows : [])
+        }
       } catch {
-        setRows([])
+        if (!cancelled) {
+          setRows([])
+        }
       }
     }
 
-    lastMtimeMs = 0
-    run()
-    fs.watchFile(dbPath, {interval: Math.min(intervalMs, 500)}, run)
-    return () => fs.unwatchFile(dbPath, run)
+    void run()
+    const timer = setInterval(() => {
+      void run()
+    }, Math.max(intervalMs, 250))
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
   }, [sql, paramsKey, intervalMs, refreshToken])
 
   return rows

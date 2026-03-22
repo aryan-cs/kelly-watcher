@@ -1,6 +1,6 @@
 import React, { startTransition, useEffect, useRef, useState } from 'react';
 import { Box, Spacer, Text, render, useInput } from 'ink';
-import { cycleDurationPreset, editableConfigFields, isPresetDurationField, readEnvValues, readEditableConfigValues, validateEditableConfigValue, writeEditableConfigValue } from './configEditor.js';
+import { cycleDurationPreset, editableConfigFields, isPresetDurationField, readEnvValues, readEditableConfigValues, useDashboardConfig, validateEditableConfigValue, writeEditableConfigValue } from './configEditor.js';
 import { MODEL_PANEL_DEFS, Models } from './pages/Models.js';
 import { requestManualRetrain } from './retrainControl.js';
 import { stackPanels } from './responsive.js';
@@ -313,6 +313,20 @@ function App() {
         dangerSelectedIndex: 0,
         dangerConfirm: null
     }));
+    const dashboardConfig = useDashboardConfig();
+    useEffect(() => {
+        setSettingsEditor((current) => {
+            const nextValues = readEditableConfigValues();
+            const valuesChanged = JSON.stringify(current.values) !== JSON.stringify(nextValues);
+            if (!valuesChanged && current.dangerConfirm == null) {
+                return current;
+            }
+            if (current.isEditing || current.dangerConfirm) {
+                return current;
+            }
+            return { ...current, values: nextValues };
+        });
+    }, [dashboardConfig]);
     const selectedField = editableConfigFields[settingsEditor.selectedIndex];
     const selectedDangerAction = dangerActions[settingsEditor.dangerSelectedIndex];
     const selectedModelPanel = MODEL_PANEL_DEFS[Math.max(0, Math.min(modelSelectionIndex, MODEL_PANEL_DEFS.length - 1))];
@@ -509,7 +523,7 @@ function App() {
             };
         });
     };
-    const submitPerfPositionAction = () => {
+    const submitPerfPositionAction = async () => {
         if (!perfPositionAction) {
             return;
         }
@@ -525,15 +539,29 @@ function App() {
                 : current);
             return;
         }
-        const result = requestManualTrade({
-            action: perfPositionAction.action,
-            marketId: perfPositionAction.row.market_id,
-            tokenId: perfPositionAction.row.token_id,
-            side: perfPositionAction.row.side,
-            question: perfPositionAction.row.question,
-            traderAddress: perfPositionAction.row.trader_address,
-            amountUsd: perfPositionAction.action === 'buy_more' ? amountUsd : null
-        });
+        let result;
+        try {
+            result = await requestManualTrade({
+                action: perfPositionAction.action,
+                marketId: perfPositionAction.row.market_id,
+                tokenId: perfPositionAction.row.token_id,
+                side: perfPositionAction.row.side,
+                question: perfPositionAction.row.question,
+                traderAddress: perfPositionAction.row.trader_address,
+                amountUsd: perfPositionAction.action === 'buy_more' ? amountUsd : null
+            });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown manual trade error';
+            setPerfPositionAction((current) => current
+                ? {
+                    ...current,
+                    statusMessage: message,
+                    statusTone: 'error'
+                }
+                : current);
+            return;
+        }
         if (!result.ok) {
             setPerfPositionAction((current) => current
                 ? {
@@ -605,7 +633,7 @@ function App() {
             };
         });
     };
-    const savePerfPositionEdit = () => {
+    const savePerfPositionEdit = async () => {
         if (!perfPositionEdit) {
             return;
         }
@@ -631,7 +659,7 @@ function App() {
             return;
         }
         try {
-            savePositionManualEdit({
+            await savePositionManualEdit({
                 sourceKind: perfPositionEdit.row.source_kind,
                 sourceTradeLogId: perfPositionEdit.row.source_trade_log_id,
                 marketId: perfPositionEdit.row.market_id,
@@ -661,7 +689,7 @@ function App() {
                 : current);
         }
     };
-    const saveConfigValue = (rawValue) => {
+    const saveConfigValue = async (rawValue) => {
         const validation = validateEditableConfigValue(selectedField, rawValue);
         if (!validation.ok) {
             setSettingsEditor((current) => ({
@@ -672,7 +700,7 @@ function App() {
             return;
         }
         try {
-            writeEditableConfigValue(selectedField.key, validation.value);
+            await writeEditableConfigValue(selectedField.key, validation.value);
             const values = readEditableConfigValues();
             setSettingsEditor((current) => ({
                 ...current,
@@ -701,7 +729,7 @@ function App() {
         const currentValue = settingsEditor.values[selectedField.key] || selectedField.defaultValue;
         if (selectedField.kind === 'bool') {
             const nextValue = currentValue.toLowerCase() === 'true' ? 'false' : 'true';
-            saveConfigValue(nextValue);
+            void saveConfigValue(nextValue);
             return;
         }
         setSettingsEditor((current) => ({
@@ -845,7 +873,7 @@ function App() {
             statusTone: 'info'
         }));
     };
-    const executeDangerAction = () => {
+    const executeDangerAction = async () => {
         const confirm = settingsEditor.dangerConfirm;
         if (!confirm) {
             return;
@@ -861,8 +889,8 @@ function App() {
             return;
         }
         const result = confirm.actionId === 'live_trading'
-            ? setLiveTradingEnabled(selectedOption.id === 'confirm_enable')
-            : restartShadowAccount(selectedOption.id === 'keep_wallets');
+            ? await setLiveTradingEnabled(selectedOption.id === 'confirm_enable')
+            : await restartShadowAccount(selectedOption.id === 'keep_wallets');
         setSettingsEditor((current) => ({
             ...current,
             values: readEditableConfigValues(),
@@ -1055,7 +1083,7 @@ function App() {
                     return;
                 }
                 if (key.return) {
-                    executeDangerAction();
+                    void executeDangerAction();
                     return;
                 }
                 if (key.upArrow || normalized === 'k') {
@@ -1111,7 +1139,7 @@ function App() {
                     return;
                 }
                 if (key.return) {
-                    saveConfigValue(settingsEditor.draft);
+                    void saveConfigValue(settingsEditor.draft);
                     return;
                 }
                 if (isPresetDurationField(selectedField) && (key.upArrow || normalized === 'k')) {
@@ -1177,12 +1205,20 @@ function App() {
         }
         if (page === 4) {
             if (normalized === 't' && selectedModelPanel.id === 'training_cycle') {
-                const result = requestManualRetrain();
-                showTransientNotice(result.message, result.ok ? 'success' : 'error');
-                if (result.ok) {
-                    setIsRefreshing(true);
-                    setRefreshToken((current) => current + 1);
-                }
+                void (async () => {
+                    try {
+                        const result = await requestManualRetrain();
+                        showTransientNotice(result.message, result.ok ? 'success' : 'error');
+                        if (result.ok) {
+                            setIsRefreshing(true);
+                            setRefreshToken((current) => current + 1);
+                        }
+                    }
+                    catch (error) {
+                        const message = error instanceof Error ? error.message : 'Unknown retrain request error';
+                        showTransientNotice(message, 'error');
+                    }
+                })();
                 return;
             }
             if (modelDetailOpen) {
@@ -1286,17 +1322,21 @@ function App() {
                 }
             }
             if (normalized === 'a' && walletPane === 'dropped' && selectedDroppedWalletAddress) {
-                if (reactivateDroppedWallet(selectedDroppedWalletAddress)) {
-                    setWalletDetailOpen(false);
-                    setRefreshToken((current) => current + 1);
-                }
+                void (async () => {
+                    if (await reactivateDroppedWallet(selectedDroppedWalletAddress)) {
+                        setWalletDetailOpen(false);
+                        setRefreshToken((current) => current + 1);
+                    }
+                })();
                 return;
             }
             if (normalized === 'd' && walletPane === 'tracked' && selectedTrackedWalletAddress) {
-                if (dropTrackedWallet(selectedTrackedWalletAddress)) {
-                    setWalletDetailOpen(false);
-                    setRefreshToken((current) => current + 1);
-                }
+                void (async () => {
+                    if (await dropTrackedWallet(selectedTrackedWalletAddress)) {
+                        setWalletDetailOpen(false);
+                        setRefreshToken((current) => current + 1);
+                    }
+                })();
                 return;
             }
             if (key.return && activeWalletCount > 0) {
@@ -1378,7 +1418,7 @@ function App() {
                     return;
                 }
                 if (normalized === 's') {
-                    submitPerfPositionAction();
+                    void submitPerfPositionAction();
                     return;
                 }
                 if (key.return) {
@@ -1413,7 +1453,7 @@ function App() {
                         openPerfPositionEditor(row);
                         return;
                     }
-                    submitPerfPositionAction();
+                    void submitPerfPositionAction();
                     return;
                 }
                 return;
@@ -1507,7 +1547,7 @@ function App() {
                     return;
                 }
                 if (normalized === 's') {
-                    savePerfPositionEdit();
+                    void savePerfPositionEdit();
                     return;
                 }
                 if (key.return) {

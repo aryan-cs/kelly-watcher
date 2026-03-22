@@ -67,6 +67,7 @@ from config import (
     warm_wallet_count,
     watched_wallets,
 )
+from dashboard_api import DashboardApiServer, start_dashboard_api_server
 from db import DB_PATH, get_conn, init_db
 from dedup import DedupeCache
 from evaluator import daily_report, resolve_shadow_trades
@@ -115,6 +116,37 @@ _SCORE_RE = re.compile(r"score ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
 _INVALID_PRICE_RE = re.compile(r"invalid price ([0-9.]+)", re.IGNORECASE)
 _EXPIRES_RE = re.compile(r"expires in <([0-9]+)s", re.IGNORECASE)
 _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECASE)
+
+
+def _disable_windows_console_quick_edit() -> None:
+    if os.name != "nt":
+        return
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return
+
+    kernel32 = ctypes.windll.kernel32
+    std_input_handle = -10
+    enable_quick_edit_mode = 0x0040
+    enable_extended_flags = 0x0080
+
+    handle = kernel32.GetStdHandle(std_input_handle)
+    if handle in (0, -1):
+        return
+
+    mode = wintypes.DWORD()
+    if kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
+        return
+
+    current_mode = int(mode.value)
+    next_mode = (current_mode | enable_extended_flags) & ~enable_quick_edit_mode
+    if next_mode == current_mode:
+        return
+
+    kernel32.SetConsoleMode(handle, next_mode)
 
 
 def _write_bot_pid_file() -> None:
@@ -199,6 +231,42 @@ class ManualTradeRequest:
     request_id: str
     requested_at: int
     source: str
+
+
+@dataclass(frozen=True)
+class EntryPauseState:
+    key: str
+    reason: str
+
+
+@dataclass
+class EntryPauseAlertTracker:
+    required_stable_loops: int = 2
+    observed_state: EntryPauseState | None = None
+    observed_count: int = 0
+    notified_state: EntryPauseState | None = None
+
+    def update(self, state: EntryPauseState | None) -> tuple[str, EntryPauseState | None] | None:
+        current_key = state.key if state is not None else None
+        observed_key = self.observed_state.key if self.observed_state is not None else None
+        if current_key == observed_key:
+            self.observed_count += 1
+        else:
+            self.observed_count = 1
+        self.observed_state = state
+
+        notified_key = self.notified_state.key if self.notified_state is not None else None
+        if current_key == notified_key:
+            self.notified_state = state
+            return None
+        if self.observed_count < max(int(self.required_stable_loops or 1), 1):
+            return None
+
+        previous_state = self.notified_state
+        self.notified_state = state
+        if state is None:
+            return ("resumed", previous_state)
+        return ("paused", state)
 
 
 def _emit_event(payload: dict) -> None:
@@ -1642,6 +1710,55 @@ def _init_daily_loss_guard(executor: PolymarketExecutor) -> DailyLossGuard:
     )
 
 
+def _entry_pause_state(
+    tracker: PolymarketTracker,
+    executor: PolymarketExecutor,
+    live_entry_guard: LiveEntryGuard | None,
+    daily_loss_guard: DailyLossGuard,
+    account_equity: float,
+) -> EntryPauseState | None:
+    now_ts = int(time.time())
+    if live_entry_guard is not None:
+        reason = live_entry_guard.block_reason(account_equity)
+        if reason:
+            return EntryPauseState(key="live_drawdown_guard", reason=reason)
+
+    daily_loss_guard.loss_limit_pct = max_daily_loss_pct()
+    reason = daily_loss_guard.block_reason(account_equity, now_ts)
+    if reason:
+        return EntryPauseState(key="daily_loss_guard", reason=reason)
+
+    last_ok_at, consecutive_failures = tracker.trade_feed_health()
+    if consecutive_failures >= max_live_health_failures():
+        return EntryPauseState(
+            key="trade_feed_failures",
+            reason=(
+                f"source trade feed degraded after {consecutive_failures} consecutive trade-feed failures"
+            ),
+        )
+    if last_ok_at > 0 and (now_ts - last_ok_at) > max_feed_staleness_seconds():
+        return EntryPauseState(
+            key="trade_feed_stale",
+            reason=(
+                f"source trade feed is stale; the last successful trade poll was {now_ts - last_ok_at}s ago"
+            ),
+        )
+
+    if use_real_money():
+        live_status = getattr(executor, "live_entry_health_status", None)
+        if callable(live_status):
+            status = live_status()
+            if status:
+                status_key, live_reason = status
+                return EntryPauseState(key=f"live_health:{status_key}", reason=live_reason)
+        else:
+            live_reason = executor.live_entry_health_reason()
+            if live_reason:
+                return EntryPauseState(key="live_health", reason=live_reason)
+
+    return None
+
+
 def _entry_pause_reason(
     tracker: PolymarketTracker,
     executor: PolymarketExecutor,
@@ -1649,36 +1766,18 @@ def _entry_pause_reason(
     daily_loss_guard: DailyLossGuard,
     account_equity: float,
 ) -> str | None:
-    now_ts = int(time.time())
-    if live_entry_guard is not None:
-        reason = live_entry_guard.block_reason(account_equity)
-        if reason:
-            return reason
-
-    daily_loss_guard.loss_limit_pct = max_daily_loss_pct()
-    reason = daily_loss_guard.block_reason(account_equity, now_ts)
-    if reason:
-        return reason
-
-    last_ok_at, consecutive_failures = tracker.trade_feed_health()
-    if consecutive_failures >= max_live_health_failures():
-        return (
-            f"source trade feed degraded after {consecutive_failures} consecutive trade-feed failures"
-        )
-    if last_ok_at > 0 and (now_ts - last_ok_at) > max_feed_staleness_seconds():
-        return (
-            f"source trade feed is stale; the last successful trade poll was {now_ts - last_ok_at}s ago"
-        )
-
-    if use_real_money():
-        live_reason = executor.live_entry_health_reason()
-        if live_reason:
-            return live_reason
-
-    return None
+    state = _entry_pause_state(
+        tracker,
+        executor,
+        live_entry_guard,
+        daily_loss_guard,
+        account_equity,
+    )
+    return state.reason if state is not None else None
 
 
 def main() -> None:
+    _disable_windows_console_quick_edit()
     logger.info("=" * 60)
     logger.info("Polymarket copy-trading bot starting")
     logger.info("Mode: %s", "LIVE (REAL MONEY)" if use_real_money() else "SHADOW (no real money)")
@@ -1686,6 +1785,7 @@ def main() -> None:
 
     tracker: PolymarketTracker | None = None
     scheduler: BackgroundScheduler | None = None
+    dashboard_api_server: DashboardApiServer | None = None
     telegram_command_stop: threading.Event | None = None
     telegram_command_thread: threading.Thread | None = None
 
@@ -1949,9 +2049,10 @@ def main() -> None:
         ),
         kind="status",
     )
+    dashboard_api_server = start_dashboard_api_server()
 
     try:
-        last_entry_pause_reason: str | None = None
+        entry_pause_alerts = EntryPauseAlertTracker()
         first_poll_logged = False
         while True:
             loop_start = time.time()
@@ -1982,36 +2083,39 @@ def main() -> None:
                             continue
                         events.extend(tracker.poll(list(batch.wallets), trade_limit=batch.trade_limit))
                     event_count = len(events)
+                    entry_pause_state = _entry_pause_state(
+                        tracker,
+                        executor,
+                        live_entry_guard,
+                        daily_loss_guard,
+                        account_equity,
+                    )
+                    entry_block_reason = entry_pause_state.reason if entry_pause_state is not None else None
+                    entry_pause_alert = entry_pause_alerts.update(entry_pause_state)
+                    if entry_pause_alert is not None:
+                        transition, alert_state = entry_pause_alert
+                        if transition == "paused" and alert_state is not None:
+                            logger.error(alert_state.reason)
+                            send_alert(
+                                build_lines(
+                                    "entries paused",
+                                    alert_state.reason,
+                                    "new entries are paused until the condition clears",
+                                ),
+                                kind="warning",
+                            )
+                        elif transition == "resumed":
+                            if alert_state is not None:
+                                logger.info("Entry pause cleared: %s", alert_state.reason)
+                            send_alert(
+                                build_lines(
+                                    "entries resumed",
+                                    "the pause condition cleared and new entries are enabled again",
+                                ),
+                                kind="status",
+                            )
                     for event in events:
                         _heartbeat()
-                        entry_block_reason = _entry_pause_reason(
-                            tracker,
-                            executor,
-                            live_entry_guard,
-                            daily_loss_guard,
-                            account_equity,
-                        )
-                        if entry_block_reason != last_entry_pause_reason:
-                            if entry_block_reason:
-                                logger.error(entry_block_reason)
-                                send_alert(
-                                    build_lines(
-                                        "entries paused",
-                                        entry_block_reason,
-                                        "new entries are paused until the condition clears",
-                                    ),
-                                    kind="warning",
-                                )
-                            elif last_entry_pause_reason:
-                                logger.info("Entry pause cleared: %s", last_entry_pause_reason)
-                                send_alert(
-                                    build_lines(
-                                        "entries resumed",
-                                        "the pause condition cleared and new entries are enabled again",
-                                    ),
-                                    kind="status",
-                                )
-                            last_entry_pause_reason = entry_block_reason
                         try:
                             bankroll = max(
                                 bankroll
@@ -2086,6 +2190,8 @@ def main() -> None:
         logger.info("Shutting down...")
         send_alert("bot stopped", kind="status")
     finally:
+        if dashboard_api_server is not None:
+            dashboard_api_server.stop()
         _clear_bot_pid_file()
         if telegram_command_stop is not None:
             telegram_command_stop.set()

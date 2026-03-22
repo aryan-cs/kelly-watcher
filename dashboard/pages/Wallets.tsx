@@ -1,14 +1,11 @@
-import fs from 'fs'
-import Database from 'better-sqlite3'
 import React, {useEffect, useMemo} from 'react'
 import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
 import {ModalOverlay} from '../components/ModalOverlay.js'
-import {dbPath, envExamplePath, envPath} from '../paths.js'
+import {useDashboardConfig} from '../configEditor.js'
 import {fit, fitRight, formatPct, secondsAgo, shortAddress, terminalHyperlink, truncate, wrapText} from '../format.js'
-import {isPlaceholderUsername, readIdentityMap} from '../identities.js'
+import {isPlaceholderUsername, useIdentityMap} from '../identities.js'
 import {rowsForHeight} from '../responsive.js'
-import {useRefreshToken} from '../refresh.js'
 import {useTerminalSize} from '../terminal.js'
 import {centeredGradientColor, negativeHeatColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
 import {useQuery} from '../useDb.js'
@@ -298,40 +295,6 @@ SELECT
 FROM wallet_watch_state
 `
 
-let walletWatchStateSchemaReady = false
-
-function ensureWalletWatchStateSchema(): void {
-  if (walletWatchStateSchemaReady) {
-    return
-  }
-
-  const db = new Database(dbPath)
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS wallet_watch_state (
-        wallet_address           TEXT PRIMARY KEY,
-        status                   TEXT NOT NULL DEFAULT 'active',
-        status_reason            TEXT,
-        dropped_at               INTEGER,
-        reactivated_at           INTEGER,
-        tracking_started_at      INTEGER NOT NULL DEFAULT 0,
-        last_source_ts_at_status INTEGER NOT NULL DEFAULT 0,
-        updated_at               INTEGER NOT NULL
-      )
-    `)
-    const columns = new Set(
-      (db.prepare('PRAGMA table_info(wallet_watch_state)').all() as Array<{name: string}>)
-        .map((row) => String(row.name))
-    )
-    if (!columns.has('tracking_started_at')) {
-      db.exec("ALTER TABLE wallet_watch_state ADD COLUMN tracking_started_at INTEGER NOT NULL DEFAULT 0")
-    }
-    walletWatchStateSchemaReady = true
-  } finally {
-    db.close()
-  }
-}
-
 const SHADOW_WALLETS_SQL = `
 SELECT
   trader_address,
@@ -347,57 +310,37 @@ GROUP BY trader_address
 HAVING SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) > 0
 `
 
-function readWatchConfig(): {
+function readWatchConfig(envValues: Record<string, string>): {
   wallets: string[]
   hotCount: number
   warmCount: number
   uncopyablePenaltyMinBuys: number
   uncopyablePenaltyWeight: number
 } {
-  const path = fs.existsSync(envPath) ? envPath : envExamplePath
-  let wallets: string[] = []
+  const wallets = String(envValues.WATCHED_WALLETS || '')
+    .split(',')
+    .map((wallet) => wallet.trim().toLowerCase())
+    .filter(Boolean)
+
   let hotCount = 12
   let warmCount = 24
   let uncopyablePenaltyMinBuys = 12
   let uncopyablePenaltyWeight = 0.25
-  try {
-    const lines = fs.readFileSync(path, 'utf8').split('\n')
-    for (const rawLine of lines) {
-      const line = rawLine.trim()
-      if (!line || line.startsWith('#') || !line.includes('=')) {
-        continue
-      }
-      const [key, ...valueParts] = line.split('=')
-      const value = valueParts.join('=').trim()
-      if (key === 'WATCHED_WALLETS') {
-        wallets = value
-          .split(',')
-          .map((wallet) => wallet.trim().toLowerCase())
-          .filter(Boolean)
-      } else if (key === 'HOT_WALLET_COUNT') {
-        const parsed = Number.parseInt(value, 10)
-        if (Number.isFinite(parsed) && parsed > 0) {
-          hotCount = parsed
-        }
-      } else if (key === 'WARM_WALLET_COUNT') {
-        const parsed = Number.parseInt(value, 10)
-        if (Number.isFinite(parsed) && parsed >= 0) {
-          warmCount = parsed
-        }
-      } else if (key === 'WALLET_UNCOPYABLE_PENALTY_MIN_BUYS') {
-        const parsed = Number.parseInt(value, 10)
-        if (Number.isFinite(parsed) && parsed >= 0) {
-          uncopyablePenaltyMinBuys = parsed
-        }
-      } else if (key === 'WALLET_UNCOPYABLE_PENALTY_WEIGHT') {
-        const parsed = Number.parseFloat(value)
-        if (Number.isFinite(parsed) && parsed >= 0) {
-          uncopyablePenaltyWeight = parsed
-        }
-      }
-    }
-  } catch {
-    return {wallets: [], hotCount, warmCount, uncopyablePenaltyMinBuys, uncopyablePenaltyWeight}
+  const parsedHotCount = Number.parseInt(String(envValues.HOT_WALLET_COUNT || ''), 10)
+  if (Number.isFinite(parsedHotCount) && parsedHotCount > 0) {
+    hotCount = parsedHotCount
+  }
+  const parsedWarmCount = Number.parseInt(String(envValues.WARM_WALLET_COUNT || ''), 10)
+  if (Number.isFinite(parsedWarmCount) && parsedWarmCount >= 0) {
+    warmCount = parsedWarmCount
+  }
+  const parsedPenaltyMinBuys = Number.parseInt(String(envValues.WALLET_UNCOPYABLE_PENALTY_MIN_BUYS || ''), 10)
+  if (Number.isFinite(parsedPenaltyMinBuys) && parsedPenaltyMinBuys >= 0) {
+    uncopyablePenaltyMinBuys = parsedPenaltyMinBuys
+  }
+  const parsedPenaltyWeight = Number.parseFloat(String(envValues.WALLET_UNCOPYABLE_PENALTY_WEIGHT || ''))
+  if (Number.isFinite(parsedPenaltyWeight) && parsedPenaltyWeight >= 0) {
+    uncopyablePenaltyWeight = parsedPenaltyWeight
   }
   return {wallets, hotCount, warmCount, uncopyablePenaltyMinBuys, uncopyablePenaltyWeight}
 }
@@ -677,7 +620,6 @@ export function Wallets({
   detailOpen,
   onWalletMetaChange
 }: WalletsProps) {
-  ensureWalletWatchStateSchema()
   const terminal = useTerminalSize()
   const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
   const footerRows = 1
@@ -695,10 +637,11 @@ export function Wallets({
   const watchStateRows = useQuery<WalletWatchStateRow>(WALLET_WATCH_STATE_SQL)
   const shadowWalletRows = useQuery<TopShadowRow>(SHADOW_WALLETS_SQL)
   const events = useEventStream(1000)
-  const refreshToken = useRefreshToken()
+  const config = useDashboardConfig()
+  const identityMap = useIdentityMap()
 
   const usernames = useMemo(() => {
-    const lookup = readIdentityMap()
+    const lookup = new Map(identityMap)
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index]
       const wallet = event.trader?.trim().toLowerCase()
@@ -709,9 +652,9 @@ export function Wallets({
       lookup.set(wallet, username)
     }
     return lookup
-  }, [events, refreshToken])
+  }, [events, identityMap])
 
-  const watchConfig = useMemo(() => readWatchConfig(), [refreshToken])
+  const watchConfig = useMemo(() => readWatchConfig(config.safeValues), [config.safeValues])
   const watchedWallets = watchConfig.wallets
   const sourceWallets = useMemo(() => {
     const fallbackWallets = Array.from(new Set([

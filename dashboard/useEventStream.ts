@@ -1,7 +1,5 @@
-import fs from 'fs'
 import {useEffect, useState} from 'react'
-import {readIdentityMap} from './identities.js'
-import {eventsPath, identityPath} from './paths.js'
+import {fetchApiJson} from './api.js'
 import {useRefreshToken} from './refresh.js'
 
 export interface LiveEvent {
@@ -26,8 +24,8 @@ export interface LiveEvent {
   ts: number
 }
 
-function eventIdentity(event: LiveEvent): string {
-  return `${event.type}|${event.trade_id}|${event.ts}`
+interface EventsResponse {
+  events?: LiveEvent[]
 }
 
 export function useEventStream(maxEvents = 50): LiveEvent[] {
@@ -35,48 +33,29 @@ export function useEventStream(maxEvents = 50): LiveEvent[] {
   const refreshToken = useRefreshToken()
 
   useEffect(() => {
-    let lastMtimeMs = 0
-    let lastIdentityMtimeMs = 0
+    let cancelled = false
 
-    const read = () => {
+    const read = async () => {
       try {
-        const stat = fs.statSync(eventsPath)
-        const identityMtimeMs = fs.existsSync(identityPath) ? fs.statSync(identityPath).mtimeMs : 0
-        if (stat.mtimeMs === lastMtimeMs && identityMtimeMs === lastIdentityMtimeMs) return
-        lastMtimeMs = stat.mtimeMs
-        lastIdentityMtimeMs = identityMtimeMs
-        const identities = readIdentityMap()
-        const lines = fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean)
-        const parsed = lines.map((line) => {
-          const event = JSON.parse(line) as LiveEvent
-          const wallet = event.trader?.trim().toLowerCase()
-          if (wallet && !event.username?.trim()) {
-            event.username = identities.get(wallet) || event.username
-          }
-          return event
-        })
-        const deduped: LiveEvent[] = []
-        const seen = new Set<string>()
-        for (const event of parsed) {
-          const key = eventIdentity(event)
-          if (seen.has(key)) continue
-          seen.add(key)
-          deduped.push(event)
+        const response = await fetchApiJson<EventsResponse>(`/api/events?max=${Math.max(1, Math.min(maxEvents, 1000))}`)
+        if (!cancelled) {
+          setEvents(Array.isArray(response.events) ? response.events : [])
         }
-        setEvents(deduped.slice(-maxEvents))
       } catch {
-        setEvents([])
+        if (!cancelled) {
+          setEvents([])
+        }
       }
     }
 
-    lastMtimeMs = 0
-    lastIdentityMtimeMs = 0
-    read()
-    fs.watchFile(eventsPath, {interval: 500}, read)
-    fs.watchFile(identityPath, {interval: 500}, read)
+    void read()
+    const timer = setInterval(() => {
+      void read()
+    }, 500)
+
     return () => {
-      fs.unwatchFile(eventsPath, read)
-      fs.unwatchFile(identityPath, read)
+      cancelled = true
+      clearInterval(timer)
     }
   }, [maxEvents, refreshToken])
 

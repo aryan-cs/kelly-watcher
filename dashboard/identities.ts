@@ -1,9 +1,12 @@
-import fs from 'fs'
-import {identityPath} from './paths.js'
+import {useEffect, useState} from 'react'
+import {fetchApiJson} from './api.js'
+import {useRefreshToken} from './refresh.js'
 
-interface IdentityCachePayload {
-  wallets?: Record<string, {username?: string}>
+interface IdentityResponse {
+  wallets?: Record<string, string>
 }
+
+let identityCache = new Map<string, string>()
 
 export function isPlaceholderUsername(username: string | undefined, wallet?: string): boolean {
   const display = (username || '').trim()
@@ -27,20 +30,55 @@ export function isPlaceholderUsername(username: string | undefined, wallet?: str
   return false
 }
 
-export function readIdentityMap(): Map<string, string> {
-  try {
-    const payload = JSON.parse(fs.readFileSync(identityPath, 'utf8')) as IdentityCachePayload
-    const lookup = new Map<string, string>()
-    for (const [wallet, entry] of Object.entries(payload.wallets || {})) {
-      const username = (entry?.username || '').trim()
-      const normalizedWallet = wallet.trim().toLowerCase()
-      if (!normalizedWallet || isPlaceholderUsername(username, normalizedWallet)) {
-        continue
-      }
-      lookup.set(normalizedWallet, username)
+function normalizeIdentityMap(payload: IdentityResponse): Map<string, string> {
+  const lookup = new Map<string, string>()
+  for (const [wallet, usernameValue] of Object.entries(payload.wallets || {})) {
+    const normalizedWallet = wallet.trim().toLowerCase()
+    const username = String(usernameValue || '').trim()
+    if (!normalizedWallet || isPlaceholderUsername(username, normalizedWallet)) {
+      continue
     }
-    return lookup
-  } catch {
-    return new Map()
+    lookup.set(normalizedWallet, username)
   }
+  return lookup
+}
+
+export function readIdentityMap(): Map<string, string> {
+  return new Map(identityCache)
+}
+
+export function useIdentityMap(intervalMs = 2000): Map<string, string> {
+  const [lookup, setLookup] = useState<Map<string, string>>(() => readIdentityMap())
+  const refreshToken = useRefreshToken()
+
+  useEffect(() => {
+    let cancelled = false
+
+    const read = async () => {
+      try {
+        const payload = await fetchApiJson<IdentityResponse>('/api/identities')
+        const nextLookup = normalizeIdentityMap(payload)
+        identityCache = nextLookup
+        if (!cancelled) {
+          setLookup(new Map(nextLookup))
+        }
+      } catch {
+        if (!cancelled) {
+          setLookup(new Map(identityCache))
+        }
+      }
+    }
+
+    void read()
+    const timer = setInterval(() => {
+      void read()
+    }, Math.max(intervalMs, 250))
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [intervalMs, refreshToken])
+
+  return lookup
 }

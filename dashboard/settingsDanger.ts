@@ -1,6 +1,5 @@
-import {spawnSync} from 'child_process'
+import {postApiJson} from './api.js'
 import {readEnvValues, writeEditableConfigValue} from './configEditor.js'
-import {projectRoot} from './paths.js'
 
 export type DangerActionId = 'live_trading' | 'restart_shadow'
 
@@ -23,6 +22,11 @@ export interface DangerConfirmState {
   message: string
   options: DangerConfirmOption[]
   selectedIndex: number
+}
+
+interface DangerActionResult {
+  ok: boolean
+  message: string
 }
 
 export const dangerActions: DangerActionDefinition[] = [
@@ -51,21 +55,9 @@ export function watchedWalletCount(envValues: Record<string, string> = readEnvVa
     .filter(Boolean).length
 }
 
-function bankrollSummary(output: string): string {
-  const match = output.match(/Initial bankroll:\s*\$([0-9.]+)/i)
-  return match ? `$${match[1]}` : 'the configured bankroll'
-}
-
-function combinedOutput(stdout: string | null | undefined, stderr: string | null | undefined): string {
-  return [stdout || '', stderr || '']
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .join('\n')
-}
-
-export function setLiveTradingEnabled(enabled: boolean): {ok: boolean; message: string} {
+export async function setLiveTradingEnabled(enabled: boolean): Promise<DangerActionResult> {
   try {
-    writeEditableConfigValue('USE_REAL_MONEY', enabled ? 'true' : 'false')
+    await writeEditableConfigValue('USE_REAL_MONEY', enabled ? 'true' : 'false')
     return {
       ok: true,
       message: `Live Trading saved as ${enabled ? 'ON' : 'OFF'}. Restart the bot to apply it safely.`
@@ -78,56 +70,10 @@ export function setLiveTradingEnabled(enabled: boolean): {ok: boolean; message: 
   }
 }
 
-export function restartShadowAccount(keepWallets: boolean): {ok: boolean; message: string} {
-  const envValues = readEnvValues()
-  if (isLiveTradingEnabled(envValues)) {
-    return {
-      ok: false,
-      message: 'Restart Shadow is blocked while Live Trading is enabled in config. Turn Live Trading off first.'
-    }
-  }
-
-  const previousWallets = String(envValues.WATCHED_WALLETS || '')
-
+export async function restartShadowAccount(keepWallets: boolean): Promise<DangerActionResult> {
   try {
-    if (!keepWallets) {
-      writeEditableConfigValue('WATCHED_WALLETS', '')
-    }
-
-    const result = spawnSync('uv', ['run', 'python', 'restart_shadow.py'], {
-      cwd: projectRoot,
-      encoding: 'utf8'
-    })
-    if (result.error) {
-      throw result.error
-    }
-    const output = combinedOutput(result.stdout, result.stderr)
-
-    if (result.status !== 0) {
-      if (!keepWallets) {
-        writeEditableConfigValue('WATCHED_WALLETS', previousWallets)
-      }
-      return {
-        ok: false,
-        message: output || `Shadow restart failed with exit code ${result.status ?? 1}.`
-      }
-    }
-
-    const bankroll = bankrollSummary(output)
-    return {
-      ok: true,
-      message: keepWallets
-        ? `Shadow account restarted from ${bankroll} and kept the current watched wallets.`
-        : `Shadow account restarted from ${bankroll} and cleared WATCHED_WALLETS.`
-    }
+    return await postApiJson<DangerActionResult>('/api/shadow/restart', {keepWallets})
   } catch (error) {
-    if (!keepWallets) {
-      try {
-        writeEditableConfigValue('WATCHED_WALLETS', previousWallets)
-      } catch {
-        // Keep the original failure surface as the primary error.
-      }
-    }
     return {
       ok: false,
       message: `Shadow restart failed: ${error instanceof Error ? error.message : 'unknown error'}`

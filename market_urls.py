@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 POLYMARKET_EVENT_BASE_URL = "https://polymarket.com/event"
+POLYMARKET_SPORTS_BASE_URL = "https://polymarket.com/sports"
 
 
 def _normalize_slug(value: Any) -> str:
@@ -66,6 +67,13 @@ def _is_sports_market(meta: dict[str, Any]) -> bool:
     return False
 
 
+def _sports_event_url(meta: dict[str, Any], event_slug: str) -> str | None:
+    prefix = _normalize_slug(event_slug).split("-", 1)[0].strip().lower()
+    if prefix == "mls":
+        return f"{POLYMARKET_SPORTS_BASE_URL}/mls/{event_slug}"
+    return None
+
+
 def market_url_from_metadata(meta: Any) -> str | None:
     if not isinstance(meta, dict):
         return None
@@ -82,6 +90,9 @@ def market_url_from_metadata(meta: Any) -> str | None:
 
     event_slug = _event_slug(meta)
     if event_slug and _is_sports_market(meta):
+        sports_event_url = _sports_event_url(meta, event_slug)
+        if sports_event_url:
+            return sports_event_url
         return f"{POLYMARKET_EVENT_BASE_URL}/{event_slug}"
 
     market_slug = _market_slug(meta)

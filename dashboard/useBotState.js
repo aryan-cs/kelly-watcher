@@ -52,7 +52,17 @@ export function beginShadowRestartBotState() {
         loop_in_progress: false,
         last_poll_at: 0,
         last_activity_at: 0,
-        bankroll_usd: undefined
+        bankroll_usd: undefined,
+        last_event_count: 0,
+        retrain_in_progress: false,
+        last_retrain_started_at: 0,
+        last_retrain_finished_at: 0,
+        last_retrain_status: '',
+        last_retrain_message: '',
+        last_retrain_sample_count: 0,
+        last_retrain_min_samples: 0,
+        last_retrain_trigger: '',
+        last_retrain_deployed: false
     };
 }
 export function isShadowRestartPending() {

@@ -192,7 +192,7 @@ class ShadowResetTest(unittest.TestCase):
 
         self.assertEqual(active_wallets, ["0xactive", "0xunknown"])
 
-    def test_reset_shadow_runtime_clears_shadow_runtime_but_preserves_learning_state(self) -> None:
+    def test_reset_shadow_runtime_rebuilds_fresh_runtime_state(self) -> None:
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
             log_dir = Path(tmpdir) / "logs"
@@ -228,10 +228,12 @@ class ShadowResetTest(unittest.TestCase):
                     event_file,
                     bot_state_file,
                     pid_file,
+                    identity_file,
                     manual_retrain_file,
                     manual_trade_file,
                     telegram_state_file,
                     background_log,
+                    model_artifact,
                 ),
             ):
                 db.init_db()
@@ -324,6 +326,49 @@ class ShadowResetTest(unittest.TestCase):
                         """,
                         (1, 1774252900),
                     )
+                    conn.execute(
+                        """
+                        INSERT INTO trader_cache (
+                            trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                            diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                            open_positions, open_value_usd, open_pnl_usd, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "0xabc",
+                            0.58,
+                            12,
+                            0.21,
+                            420.0,
+                            35.0,
+                            6,
+                            90,
+                            7,
+                            1,
+                            18.5,
+                            0.06,
+                            2,
+                            44.0,
+                            3.0,
+                            1774252900,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO wallet_cursors (
+                            wallet_address, last_source_ts, last_trade_ids_json, updated_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        ("0xabc", 1774252800, '["trade-1"]', 1774252900),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO wallet_watch_state (
+                            wallet_address, status, tracking_started_at, updated_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        ("0xabc", "dropped", 1774252000, 1774252900),
+                    )
                     conn.commit()
                 finally:
                     conn.close()
@@ -334,41 +379,40 @@ class ShadowResetTest(unittest.TestCase):
                 try:
                     model_history_count = conn.execute("SELECT COUNT(*) FROM model_history").fetchone()[0]
                     retrain_runs_count = conn.execute("SELECT COUNT(*) FROM retrain_runs").fetchone()[0]
-                    preserved_manual_retrain_count = conn.execute(
-                        """
-                        SELECT COUNT(*)
-                        FROM retrain_runs
-                        WHERE status='completed_not_deployed'
-                          AND message LIKE 'shared holdout ll/brier:%'
-                        """
-                    ).fetchone()[0]
                     trade_log_count = conn.execute("SELECT COUNT(*) FROM trade_log").fetchone()[0]
                     positions_count = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
                     perf_snapshot_count = conn.execute("SELECT COUNT(*) FROM perf_snapshots").fetchone()[0]
                     belief_prior_count = conn.execute("SELECT COUNT(*) FROM belief_priors").fetchone()[0]
                     belief_update_count = conn.execute("SELECT COUNT(*) FROM belief_updates").fetchone()[0]
+                    trader_cache_count = conn.execute("SELECT COUNT(*) FROM trader_cache").fetchone()[0]
+                    wallet_cursor_count = conn.execute("SELECT COUNT(*) FROM wallet_cursors").fetchone()[0]
+                    wallet_watch_state_count = conn.execute("SELECT COUNT(*) FROM wallet_watch_state").fetchone()[0]
                     manual_trade_edit_count = conn.execute("SELECT COUNT(*) FROM trade_log_manual_edits").fetchone()[0]
                     manual_position_edit_count = conn.execute("SELECT COUNT(*) FROM position_manual_edits").fetchone()[0]
                 finally:
                     conn.close()
 
-        self.assertEqual(model_history_count, 1)
-        self.assertGreaterEqual(retrain_runs_count, 1)
-        self.assertEqual(preserved_manual_retrain_count, 1)
+        self.assertEqual(model_history_count, 0)
+        self.assertEqual(retrain_runs_count, 0)
         self.assertEqual(trade_log_count, 0)
         self.assertEqual(positions_count, 0)
         self.assertEqual(perf_snapshot_count, 0)
-        self.assertEqual(belief_prior_count, 1)
+        self.assertEqual(belief_prior_count, 0)
         self.assertEqual(belief_update_count, 0)
+        self.assertEqual(trader_cache_count, 0)
+        self.assertEqual(wallet_cursor_count, 0)
+        self.assertEqual(wallet_watch_state_count, 0)
         self.assertEqual(manual_trade_edit_count, 0)
         self.assertEqual(manual_position_edit_count, 0)
         self.assertFalse(event_file.exists())
         self.assertFalse(bot_state_file.exists())
         self.assertFalse(pid_file.exists())
+        self.assertFalse(identity_file.exists())
         self.assertFalse(manual_retrain_file.exists())
         self.assertFalse(manual_trade_file.exists())
         self.assertFalse(telegram_state_file.exists())
         self.assertFalse(background_log.exists())
+        self.assertFalse(model_artifact.exists())
 
 
 if __name__ == "__main__":

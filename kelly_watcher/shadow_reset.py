@@ -28,9 +28,11 @@ from runtime_paths import (
     BOT_STATE_FILE,
     DATA_DIR,
     EVENT_FILE,
+    IDENTITY_CACHE_PATH,
     LOG_DIR,
     MANUAL_RETRAIN_REQUEST_FILE,
     MANUAL_TRADE_REQUEST_FILE,
+    MODEL_ARTIFACT_PATH,
     REPO_ROOT,
     TELEGRAM_STATE_FILE,
 )
@@ -322,10 +324,22 @@ def _reset_file_paths() -> tuple[Path, ...]:
         EVENT_FILE,
         BOT_STATE_FILE,
         PID_FILE,
+        IDENTITY_CACHE_PATH,
         MANUAL_RETRAIN_REQUEST_FILE,
         MANUAL_TRADE_REQUEST_FILE,
         TELEGRAM_STATE_FILE,
         BACKGROUND_LOG,
+        MODEL_ARTIFACT_PATH,
+    )
+
+
+def _reset_db_paths() -> tuple[Path, ...]:
+    db_path = Path(db.DB_PATH)
+    return (
+        db_path,
+        Path(f"{db_path}-wal"),
+        Path(f"{db_path}-shm"),
+        Path(f"{db_path}-journal"),
     )
 
 
@@ -359,9 +373,9 @@ def _active_watched_wallets(watched_wallets: list[str]) -> list[str]:
 
 def _wallet_mode_intro_lines(wallet_mode: RestartWalletMode) -> tuple[str, ...]:
     reset_line = (
-        "Fresh shadow reset: clearing shadow trade history, signals, positions, perf snapshots, "
-        "events, and bot state while preserving config, watched-wallet settings, learned priors, "
-        "and training history."
+        "Fresh shadow reset: clearing tracker history, signals, positions, performance snapshots, "
+        "model artifacts, training cycles, wallet watch-state memory, events, and bot state while "
+        "preserving config settings."
     )
     if wallet_mode == "keep_active":
         return (
@@ -387,36 +401,26 @@ def _wallet_mode_result_line(wallet_mode: RestartWalletMode) -> str:
     return "WATCHED_WALLETS preserved."
 
 
-def _clear_shadow_runtime_tables() -> None:
-    db.init_db()
-    conn = db.get_conn()
-    try:
-        conn.executescript(
-            """
-            DELETE FROM trade_log_manual_edits
-            WHERE trade_log_id IN (SELECT id FROM trade_log WHERE real_money=0);
-            DELETE FROM position_manual_edits WHERE real_money=0;
-            DELETE FROM positions WHERE real_money=0;
-            DELETE FROM perf_snapshots WHERE LOWER(COALESCE(mode, ''))='shadow';
-            DELETE FROM trade_log WHERE real_money=0;
-            DELETE FROM belief_updates WHERE trade_log_id NOT IN (SELECT id FROM trade_log);
-            DELETE FROM seen_trades;
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def reset_shadow_runtime() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _clear_shadow_runtime_tables()
+    for path in _reset_db_paths():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
     for path in _reset_file_paths():
         try:
             path.unlink()
         except FileNotFoundError:
             continue
+    db.init_db()
+    try:
+        from beliefs import invalidate_belief_cache
+
+        invalidate_belief_cache()
+    except Exception:
+        pass
 
 
 def runtime_env(base_env: dict[str, str] | None = None) -> dict[str, str]:

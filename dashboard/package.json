@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node dashboard.js",
-    "dev": "tsx dashboard.tsx"
+    "start": "node bootstrap.js",
+    "dev": "tsx bootstrap.ts"
   },
   "dependencies": {
     "ink": "^5.0.1",

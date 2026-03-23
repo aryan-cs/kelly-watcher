@@ -12,15 +12,15 @@ export function BarSparkline({ value, width = 20, label, positive, centered = fa
         const rightEmpty = ' '.repeat(empty);
         const leftBlank = ' '.repeat(halfWidth);
         const rightBlank = ' '.repeat(halfWidth);
-        const filledBar = '█'.repeat(filled);
+        const filledBar = ' '.repeat(filled);
         return (React.createElement(Text, null,
             (positive ?? value >= 0) ? (React.createElement(React.Fragment, null,
                 React.createElement(Text, null, leftBlank),
                 React.createElement(Text, { color: theme.dim }, axisChar),
-                React.createElement(Text, { color: color }, filledBar),
+                React.createElement(Text, { backgroundColor: color }, filledBar),
                 React.createElement(Text, null, rightEmpty))) : (React.createElement(React.Fragment, null,
                 React.createElement(Text, null, leftEmpty),
-                React.createElement(Text, { color: color }, filledBar),
+                React.createElement(Text, { backgroundColor: color }, filledBar),
                 React.createElement(Text, { color: theme.dim }, axisChar),
                 React.createElement(Text, null, rightBlank))),
             label ? React.createElement(Text, { color: theme.dim },

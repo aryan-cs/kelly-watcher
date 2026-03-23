@@ -30,7 +30,7 @@ export function BarSparkline({
     const rightEmpty = ' '.repeat(empty)
     const leftBlank = ' '.repeat(halfWidth)
     const rightBlank = ' '.repeat(halfWidth)
-    const filledBar = '█'.repeat(filled)
+    const filledBar = ' '.repeat(filled)
 
     return (
       <Text>
@@ -38,13 +38,13 @@ export function BarSparkline({
           <>
             <Text>{leftBlank}</Text>
             <Text color={theme.dim}>{axisChar}</Text>
-            <Text color={color}>{filledBar}</Text>
+            <Text backgroundColor={color}>{filledBar}</Text>
             <Text>{rightEmpty}</Text>
           </>
         ) : (
           <>
             <Text>{leftEmpty}</Text>
-            <Text color={color}>{filledBar}</Text>
+            <Text backgroundColor={color}>{filledBar}</Text>
             <Text color={theme.dim}>{axisChar}</Text>
             <Text>{rightBlank}</Text>
           </>

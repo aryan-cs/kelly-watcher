@@ -77,9 +77,11 @@ class ShadowResetTest(unittest.TestCase):
         ), patch.object(shadow_reset, "stop_existing_bot") as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
         ) as reset_runtime, patch.object(
+            shadow_reset, "_ensure_trading_db_ready"
+        ), patch.object(
             shadow_reset, "launch_background_bot", return_value=4321
         ), redirect_stdout(stdout):
-            exit_code = shadow_reset.run(foreground=False, start_bot=True, clear_wallets=False)
+            exit_code = shadow_reset.run(foreground=False, start_bot=True, wallet_mode="keep_all")
 
         self.assertEqual(exit_code, 0)
         stop_bot.assert_called_once_with()
@@ -96,9 +98,11 @@ class ShadowResetTest(unittest.TestCase):
         ), patch.object(shadow_reset, "stop_existing_bot") as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
         ) as reset_runtime, patch.object(
+            shadow_reset, "_ensure_trading_db_ready"
+        ), patch.object(
             shadow_reset, "launch_background_bot"
         ) as launch_background_bot, redirect_stdout(stdout):
-            exit_code = shadow_reset.run(foreground=False, start_bot=False, clear_wallets=False)
+            exit_code = shadow_reset.run(foreground=False, start_bot=False, wallet_mode="keep_all")
 
         self.assertEqual(exit_code, 0)
         stop_bot.assert_called_once_with()
@@ -108,6 +112,67 @@ class ShadowResetTest(unittest.TestCase):
         self.assertIn("Shadow runtime reset.", output)
         self.assertIn("Initial bankroll: $3000.00", output)
         self.assertIn("WATCHED_WALLETS preserved.", output)
+
+    def test_run_keep_active_wallets_rewrites_watchlist_before_restart(self) -> None:
+        stdout = io.StringIO()
+        with patch.object(shadow_reset, "use_real_money", return_value=False), patch.object(
+            shadow_reset, "shadow_bankroll_usd", return_value=3000.0
+        ), patch.object(shadow_reset, "_read_env_value", return_value="0xactive,0xdropped"), patch.object(
+            shadow_reset, "_ensure_trading_db_ready"
+        ), patch.object(
+            shadow_reset, "_active_watched_wallets", return_value=["0xactive"]
+        ) as active_wallets, patch.object(
+            shadow_reset, "_write_env_value"
+        ) as write_env_value, patch.object(
+            shadow_reset, "stop_existing_bot"
+        ) as stop_bot, patch.object(
+            shadow_reset, "reset_shadow_runtime"
+        ) as reset_runtime, patch.object(
+            shadow_reset, "launch_background_bot", return_value=4321
+        ), redirect_stdout(stdout):
+            exit_code = shadow_reset.run(foreground=False, start_bot=True, wallet_mode="keep_active")
+
+        self.assertEqual(exit_code, 0)
+        stop_bot.assert_called_once_with()
+        reset_runtime.assert_called_once_with()
+        active_wallets.assert_called_once_with(["0xactive", "0xdropped"])
+        write_env_value.assert_called_once_with("WATCHED_WALLETS", "0xactive")
+        output = stdout.getvalue()
+        self.assertIn("Reducing WATCHED_WALLETS to currently active wallets", output)
+        self.assertIn("WATCHED_WALLETS reduced to active wallets.", output)
+
+    def test_active_watched_wallets_excludes_only_dropped_wallets(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, ?, ?, ?), (?, ?, ?, ?)
+                    """,
+                    (
+                        "0xdropped",
+                        "dropped",
+                        1_700_000_000,
+                        1_700_000_000,
+                        "0xactive",
+                        "active",
+                        1_700_000_000,
+                        1_700_000_000,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                active_wallets = shadow_reset._active_watched_wallets(["0xactive", "0xdropped", "0xunknown"])
+            finally:
+                db.DB_PATH = original_db_path
+
+        self.assertEqual(active_wallets, ["0xactive", "0xunknown"])
 
     def test_reset_shadow_runtime_preserves_training_history(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -131,6 +131,14 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: false
   },
   {
+    key: 'MAX_TOTAL_OPEN_EXPOSURE_FRACTION',
+    label: 'Open Exposure Cap',
+    kind: 'float',
+    description: 'Caps total deployed capital across all open positions as a percent of bankroll. Enter 0 to disable or any percent from 1 through 100. Applies live on the next loop.',
+    defaultValue: '60',
+    liveApplies: true
+  },
+  {
     key: 'SHADOW_BANKROLL_USD',
     label: 'Tracker Bankroll',
     kind: 'float',
@@ -210,7 +218,7 @@ interface DashboardConfigResponse {
 }
 
 const durationPattern = /^(\d+(\.\d+)?)([smhdw])$/i
-const percentEditableFieldKeys = new Set(['MAX_DAILY_LOSS_PCT'])
+const percentEditableFieldKeys = new Set(['MAX_DAILY_LOSS_PCT', 'MAX_TOTAL_OPEN_EXPOSURE_FRACTION'])
 let dashboardConfigCache: DashboardConfigData = {
   safeValues: {},
   watchedWallets: [],

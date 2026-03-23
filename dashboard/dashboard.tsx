@@ -13,7 +13,7 @@ import {
 import {MODEL_PANEL_DEFS, Models} from './pages/Models.js'
 import {requestManualRetrain} from './retrainControl.js'
 import {stackPanels} from './responsive.js'
-import {dangerActions, restartShadowAccount, setLiveTradingEnabled} from './settingsDanger.js'
+import {dangerActions, restartShadowAccount, setLiveTradingEnabled, type RestartShadowWalletMode} from './settingsDanger.js'
 import {theme} from './theme.js'
 import {LiveFeed} from './pages/LiveFeed.js'
 import {Signals} from './pages/Signals.js'
@@ -1218,10 +1218,11 @@ function App() {
       dangerConfirm: {
         actionId: 'restart_shadow',
         title: 'Restart Shadow Account?',
-        message: 'This clears tracker history, events, bot state, and SQLite data, then restarts shadow mode from the configured bankroll.',
+        message: 'This clears tracker history, events, bot state, and shadow runtime state, then restarts shadow mode from the configured bankroll. Training history stays intact.',
         options: [
-          {id: 'keep_wallets', label: 'Keep current wallets', description: 'Reset data but preserve WATCHED_WALLETS.'},
-          {id: 'clear_wallets', label: 'Clear current wallets', description: 'Reset data and blank WATCHED_WALLETS.'},
+          {id: 'keep_active', label: 'Keep active wallets', description: 'Reset data and keep only wallets that are not currently auto-dropped.'},
+          {id: 'keep_all', label: 'Keep all wallets', description: 'Reset data but preserve the full WATCHED_WALLETS list.'},
+          {id: 'clear_all', label: 'Clear all wallets', description: 'Reset data and blank WATCHED_WALLETS.'},
           {id: 'cancel', label: 'Cancel', description: 'Leave everything unchanged.'}
         ],
         selectedIndex: 0
@@ -1251,7 +1252,7 @@ function App() {
     const result =
       confirm.actionId === 'live_trading'
         ? await setLiveTradingEnabled(selectedOption.id === 'confirm_enable')
-        : await restartShadowAccount(selectedOption.id === 'keep_wallets')
+        : await restartShadowAccount(selectedOption.id as RestartShadowWalletMode)
 
     setSettingsEditor((current) => ({
       ...current,

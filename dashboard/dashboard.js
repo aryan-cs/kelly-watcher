@@ -871,10 +871,11 @@ function App() {
             dangerConfirm: {
                 actionId: 'restart_shadow',
                 title: 'Restart Shadow Account?',
-                message: 'This clears tracker history, events, bot state, and SQLite data, then restarts shadow mode from the configured bankroll.',
+                message: 'This clears tracker history, events, bot state, and shadow runtime state, then restarts shadow mode from the configured bankroll. Training history stays intact.',
                 options: [
-                    { id: 'keep_wallets', label: 'Keep current wallets', description: 'Reset data but preserve WATCHED_WALLETS.' },
-                    { id: 'clear_wallets', label: 'Clear current wallets', description: 'Reset data and blank WATCHED_WALLETS.' },
+                    { id: 'keep_active', label: 'Keep active wallets', description: 'Reset data and keep only wallets that are not currently auto-dropped.' },
+                    { id: 'keep_all', label: 'Keep all wallets', description: 'Reset data but preserve the full WATCHED_WALLETS list.' },
+                    { id: 'clear_all', label: 'Clear all wallets', description: 'Reset data and blank WATCHED_WALLETS.' },
                     { id: 'cancel', label: 'Cancel', description: 'Leave everything unchanged.' }
                 ],
                 selectedIndex: 0
@@ -900,7 +901,7 @@ function App() {
         }
         const result = confirm.actionId === 'live_trading'
             ? await setLiveTradingEnabled(selectedOption.id === 'confirm_enable')
-            : await restartShadowAccount(selectedOption.id === 'keep_wallets');
+            : await restartShadowAccount(selectedOption.id);
         setSettingsEditor((current) => ({
             ...current,
             values: readEditableConfigValues(),

@@ -245,6 +245,22 @@ class RuntimeFixesTest(unittest.TestCase):
             self.assertEqual(snapshot["safe_values"]["MAX_MARKET_HORIZON"], "7d")
             self.assertIn("MAX_MARKET_HORIZON=7d", env_path.read_text(encoding="utf-8"))
 
+    def test_dashboard_config_snapshot_includes_open_exposure_cap_after_write(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_example_path = Path(tmpdir) / ".env.example"
+            env_path.write_text("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.60\n", encoding="utf-8")
+            env_example_path.write_text("", encoding="utf-8")
+
+            with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
+            ):
+                dashboard_api._write_env_value("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.42")
+                snapshot = dashboard_api._config_snapshot()
+
+            self.assertEqual(snapshot["safe_values"]["MAX_TOTAL_OPEN_EXPOSURE_FRACTION"], "0.42")
+            self.assertIn("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.42", env_path.read_text(encoding="utf-8"))
+
     def test_dashboard_spawn_shadow_restart_process_uses_repo_python_and_log(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "repo"
@@ -261,7 +277,7 @@ class RuntimeFixesTest(unittest.TestCase):
             ), patch.object(dashboard_api, "active_env_flag", return_value="--prod"), patch.object(
                 dashboard_api, "runtime_env", return_value={"TEST_ENV": "1"}
             ), patch.object(dashboard_api.subprocess, "Popen", return_value=launched) as popen_mock:
-                result = dashboard_api._spawn_shadow_restart_process(keep_wallets=False)
+                result = dashboard_api._spawn_shadow_restart_process(wallet_mode="clear_all")
 
         self.assertTrue(result["ok"])
         popen_command = popen_mock.call_args.args[0]
@@ -274,6 +290,30 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(popen_mock.call_args.kwargs["stderr"], dashboard_api.subprocess.STDOUT)
         self.assertEqual(Path(popen_mock.call_args.kwargs["stdout"].name), restart_log)
 
+    def test_dashboard_spawn_shadow_restart_process_supports_keep_active_mode(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            restart_log = Path(tmpdir) / "shadow_restart.out"
+            restart_script = repo_root / "restart_shadow.py"
+            restart_script.write_text("print('restart')\n", encoding="utf-8")
+            launched = SimpleNamespace(pid=4321)
+
+            with patch.object(dashboard_api, "REPO_ROOT", repo_root), patch.object(
+                dashboard_api, "RESTART_SHADOW_SCRIPT", restart_script
+            ), patch.object(dashboard_api, "SHADOW_RESTART_LOG", restart_log), patch.object(
+                dashboard_api, "preferred_python_executable", return_value=str(repo_root / ".venv" / "bin" / "python")
+            ), patch.object(dashboard_api, "active_env_flag", return_value="--prod"), patch.object(
+                dashboard_api, "runtime_env", return_value={"TEST_ENV": "1"}
+            ), patch.object(dashboard_api.subprocess, "Popen", return_value=launched) as popen_mock:
+                result = dashboard_api._spawn_shadow_restart_process(wallet_mode="keep_active")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            popen_mock.call_args.args[0],
+            [str(repo_root / ".venv" / "bin" / "python"), str(restart_script), "--prod", "--keep-active-wallets"],
+        )
+
     def test_dashboard_launch_shadow_restart_defers_helper_spawn(self) -> None:
         thread_instance = Mock()
 
@@ -282,7 +322,7 @@ class RuntimeFixesTest(unittest.TestCase):
         ), patch.object(dashboard_api, "use_real_money", return_value=False), patch.object(
             dashboard_api.threading, "Thread", return_value=thread_instance
         ) as thread_mock:
-            result = dashboard_api._launch_shadow_restart(keep_wallets=True)
+            result = dashboard_api._launch_shadow_restart(wallet_mode="keep_all")
 
         self.assertTrue(result["ok"])
         self.assertIn("Helper log:", result["message"])

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Literal, cast
 
 from config import shadow_bankroll_usd, use_real_money
 import db
@@ -44,6 +45,7 @@ SHADOW_RUNTIME_TABLES = (
     "wallet_cursors",
     "wallet_watch_state",
 )
+RestartWalletMode = Literal["keep_active", "keep_all", "clear_all"]
 
 
 def _source_env_path() -> Path:
@@ -93,6 +95,35 @@ def _write_env_value(key: str, value: str) -> None:
         updated.append(f"{key}={value}")
 
     ENV_PATH.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+
+def _parse_watched_wallets(raw: str) -> list[str]:
+    seen: set[str] = set()
+    wallets: list[str] = []
+    for wallet in str(raw or "").split(","):
+        normalized = wallet.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        wallets.append(normalized)
+        seen.add(normalized)
+    return wallets
+
+
+def _serialize_watched_wallets(wallets: list[str]) -> str:
+    return ",".join(wallets)
+
+
+def _normalize_wallet_mode(
+    wallet_mode: str | None = None,
+    *,
+    clear_wallets: bool | None = None,
+) -> RestartWalletMode:
+    if clear_wallets is not None:
+        return "clear_all" if clear_wallets else "keep_all"
+    normalized = str(wallet_mode or "keep_all").strip().lower()
+    if normalized in {"keep_active", "keep_all", "clear_all"}:
+        return cast(RestartWalletMode, normalized)
+    raise ValueError("wallet_mode must be keep_active, keep_all, or clear_all")
 
 
 def _normalize_command(command: str) -> str:
@@ -350,6 +381,54 @@ def _clear_shadow_runtime_db_state() -> None:
         conn.close()
 
 
+def _active_watched_wallets(watched_wallets: list[str]) -> list[str]:
+    if not watched_wallets:
+        return []
+    conn = db.get_conn()
+    try:
+        placeholders = ",".join("?" for _ in watched_wallets)
+        rows = conn.execute(
+            f"""
+            SELECT wallet_address, status
+            FROM wallet_watch_state
+            WHERE LOWER(wallet_address) IN ({placeholders})
+            """,
+            tuple(wallet.lower() for wallet in watched_wallets),
+        ).fetchall()
+    finally:
+        conn.close()
+    dropped_wallets = {
+        str(row["wallet_address"] or "").strip().lower()
+        for row in rows
+        if str(row["status"] or "").strip().lower() == "dropped"
+    }
+    return [wallet for wallet in watched_wallets if wallet not in dropped_wallets]
+
+
+def _wallet_mode_intro_lines(wallet_mode: RestartWalletMode) -> tuple[str, ...]:
+    if wallet_mode == "keep_active":
+        return (
+            "Preserving config/settings files, logs, model artifacts, identity cache, and training history.",
+            "Reducing WATCHED_WALLETS to currently active wallets before restarting shadow mode.",
+        )
+    if wallet_mode == "clear_all":
+        return (
+            "Preserving config/settings files, logs, model artifacts, identity cache, and training history.",
+            "Clearing WATCHED_WALLETS before restarting shadow mode.",
+        )
+    return (
+        "Preserving config/settings files, logs, model artifacts, identity cache, training history, and WATCHED_WALLETS.",
+    )
+
+
+def _wallet_mode_result_line(wallet_mode: RestartWalletMode) -> str:
+    if wallet_mode == "keep_active":
+        return "WATCHED_WALLETS reduced to active wallets."
+    if wallet_mode == "clear_all":
+        return "WATCHED_WALLETS cleared."
+    return "WATCHED_WALLETS preserved."
+
+
 def reset_shadow_runtime() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -422,31 +501,42 @@ def launch_background_bot() -> int:
     return int(process.pid)
 
 
-def run(*, foreground: bool, start_bot: bool, clear_wallets: bool) -> int:
+def run(
+    *,
+    foreground: bool,
+    start_bot: bool,
+    wallet_mode: str = "keep_all",
+    clear_wallets: bool | None = None,
+) -> int:
     if use_real_money():
         print("Refusing to reset while USE_REAL_MONEY=true. Switch back to shadow mode first.")
         return 1
 
+    normalized_wallet_mode = _normalize_wallet_mode(wallet_mode, clear_wallets=clear_wallets)
     bankroll = shadow_bankroll_usd()
     previous_wallets = _read_env_value("WATCHED_WALLETS")
+    wallets_updated = False
 
     try:
-        if clear_wallets:
-            _write_env_value("WATCHED_WALLETS", "")
-
         stop_existing_bot()
+        _ensure_trading_db_ready()
+        if normalized_wallet_mode == "keep_active":
+            active_wallets = _active_watched_wallets(_parse_watched_wallets(previous_wallets))
+            _write_env_value("WATCHED_WALLETS", _serialize_watched_wallets(active_wallets))
+            wallets_updated = True
+        elif normalized_wallet_mode == "clear_all":
+            _write_env_value("WATCHED_WALLETS", "")
+            wallets_updated = True
+
         print(f"Resetting shadow runtime state back to the configured bankroll of ${bankroll:.2f}...")
-        if clear_wallets:
-            print("Preserving config/settings files, logs, model artifacts, identity cache, and training history.")
-            print("Clearing WATCHED_WALLETS before restarting shadow mode.")
-        else:
-            print("Preserving config/settings files, logs, model artifacts, identity cache, training history, and WATCHED_WALLETS.")
+        for line in _wallet_mode_intro_lines(normalized_wallet_mode):
+            print(line)
         reset_shadow_runtime()
 
         if not start_bot:
             print("Shadow runtime reset.")
             print(f"Initial bankroll: ${bankroll:.2f}")
-            print("WATCHED_WALLETS cleared." if clear_wallets else "WATCHED_WALLETS preserved.")
+            print(_wallet_mode_result_line(normalized_wallet_mode))
             print("Start the bot manually with: uv run main")
             return 0
 
@@ -465,12 +555,12 @@ def run(*, foreground: bool, start_bot: bool, clear_wallets: bool) -> int:
         print("Shadow bot restarted.")
         print(f"PID: {pid}")
         print(f"Initial bankroll: ${bankroll:.2f}")
-        print("WATCHED_WALLETS cleared." if clear_wallets else "WATCHED_WALLETS preserved.")
+        print(_wallet_mode_result_line(normalized_wallet_mode))
         print(f"Background log: {BACKGROUND_LOG.relative_to(REPO_ROOT)}")
         print(f"PID file: {PID_FILE.relative_to(REPO_ROOT)}")
         return 0
     except Exception:
-        if clear_wallets:
+        if wallets_updated:
             try:
                 _write_env_value("WATCHED_WALLETS", previous_wallets)
             except OSError:
@@ -494,16 +584,25 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Reset shadow runtime state without starting the bot.",
     )
-    parser.add_argument(
+    wallet_mode_group = parser.add_mutually_exclusive_group()
+    wallet_mode_group.add_argument(
+        "--keep-active-wallets",
+        action="store_true",
+        help="Reduce WATCHED_WALLETS to currently active wallets before restarting shadow mode.",
+    )
+    wallet_mode_group.add_argument(
         "--clear-wallets",
         action="store_true",
         help="Clear WATCHED_WALLETS in .env before restarting shadow mode.",
     )
     args = parser.parse_args(argv)
+    wallet_mode: RestartWalletMode = (
+        "keep_active" if args.keep_active_wallets else "clear_all" if args.clear_wallets else "keep_all"
+    )
     return run(
         foreground=bool(args.foreground),
         start_bot=not bool(args.reset_only),
-        clear_wallets=bool(args.clear_wallets),
+        wallet_mode=wallet_mode,
     )
 
 

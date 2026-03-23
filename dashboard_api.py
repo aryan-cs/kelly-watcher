@@ -56,6 +56,7 @@ SAFE_ENV_KEYS = {
     "MIN_CONFIDENCE",
     "MIN_BET_USD",
     "MAX_BET_FRACTION",
+    "MAX_TOTAL_OPEN_EXPOSURE_FRACTION",
     "SHADOW_BANKROLL_USD",
     "MAX_DAILY_LOSS_PCT",
     "RETRAIN_BASE_CADENCE",
@@ -84,6 +85,7 @@ AND shadow_pnl_usd IS NOT NULL
 
 _env_lock = threading.Lock()
 _request_lock = threading.Lock()
+SHADOW_RESTART_WALLET_MODES = {"keep_active", "keep_all", "clear_all"}
 
 
 def _api_host() -> str:
@@ -652,15 +654,27 @@ def _current_bot_mode() -> str:
     return str(_bot_state_snapshot().get("mode") or "").strip().lower()
 
 
-def _shadow_restart_command(keep_wallets: bool) -> list[str]:
+def _normalize_shadow_restart_wallet_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in SHADOW_RESTART_WALLET_MODES:
+        return normalized
+    raise ValueError(
+        "Invalid shadow restart wallet mode. Expected keep_active, keep_all, or clear_all."
+    )
+
+
+def _shadow_restart_command(wallet_mode: str) -> list[str]:
+    wallet_mode = _normalize_shadow_restart_wallet_mode(wallet_mode)
     command = [preferred_python_executable(), str(RESTART_SHADOW_SCRIPT), active_env_flag()]
-    if not keep_wallets:
+    if wallet_mode == "keep_active":
+        command.append("--keep-active-wallets")
+    elif wallet_mode == "clear_all":
         command.append("--clear-wallets")
     return command
 
 
-def _spawn_shadow_restart_process(keep_wallets: bool) -> dict[str, Any]:
-    command = _shadow_restart_command(keep_wallets)
+def _spawn_shadow_restart_process(wallet_mode: str) -> dict[str, Any]:
+    command = _shadow_restart_command(wallet_mode)
     SHADOW_RESTART_LOG.parent.mkdir(parents=True, exist_ok=True)
     log_handle = SHADOW_RESTART_LOG.open("a", encoding="utf-8")
     popen_kwargs: dict[str, Any] = {
@@ -696,7 +710,7 @@ def _spawn_shadow_restart_process(keep_wallets: bool) -> dict[str, Any]:
     return {"ok": True, "message": "Shadow restart helper launched."}
 
 
-def _launch_shadow_restart(keep_wallets: bool) -> dict[str, Any]:
+def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
     if _live_trading_enabled_in_config() or _current_bot_mode() == "live" or use_real_money():
         return {
             "ok": False,
@@ -706,7 +720,7 @@ def _launch_shadow_restart(keep_wallets: bool) -> dict[str, Any]:
     def _deferred_launch() -> None:
         if SHADOW_RESTART_DELAY_SECONDS > 0:
             time.sleep(SHADOW_RESTART_DELAY_SECONDS)
-        result = _spawn_shadow_restart_process(keep_wallets)
+        result = _spawn_shadow_restart_process(wallet_mode)
         if not result.get("ok"):
             logger.error("Shadow restart helper launch failed: %s", result.get("message"))
 
@@ -868,8 +882,13 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/shadow/restart":
-                keep_wallets = bool(body.get("keepWallets", body.get("keep_wallets", True)))
-                self._send_json(202, _launch_shadow_restart(keep_wallets))
+                raw_wallet_mode = body.get("walletMode", body.get("wallet_mode"))
+                if raw_wallet_mode is None:
+                    keep_wallets = body.get("keepWallets", body.get("keep_wallets", True))
+                    wallet_mode = "keep_all" if bool(keep_wallets) else "clear_all"
+                else:
+                    wallet_mode = _normalize_shadow_restart_wallet_mode(raw_wallet_mode)
+                self._send_json(202, _launch_shadow_restart(wallet_mode))
                 return
         except ValueError as exc:
             self._send_json(400, {"ok": False, "message": str(exc)})

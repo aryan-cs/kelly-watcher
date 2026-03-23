@@ -2,6 +2,7 @@ import {postApiJson} from './api.js'
 import {readEnvValues, writeEditableConfigValue} from './configEditor.js'
 
 export type DangerActionId = 'live_trading' | 'restart_shadow'
+export type RestartShadowWalletMode = 'keep_active' | 'keep_all' | 'clear_all'
 
 export interface DangerActionDefinition {
   id: DangerActionId
@@ -39,7 +40,7 @@ export const dangerActions: DangerActionDefinition[] = [
   {
     id: 'restart_shadow',
     label: 'Restart Shadow',
-    description: 'Clear shadow tracker state, event history, and SQLite data, then restart the bot from the configured shadow bankroll. Confirmation lets you keep or clear WATCHED_WALLETS.',
+    description: 'Clear shadow tracker state, event history, and runtime rows, then restart the bot from the configured shadow bankroll. Confirmation lets you keep active wallets, keep all wallets, or clear all wallets.',
     value: (envValues) => `${watchedWalletCount(envValues)} wlts`
   }
 ]
@@ -70,9 +71,9 @@ export async function setLiveTradingEnabled(enabled: boolean): Promise<DangerAct
   }
 }
 
-export async function restartShadowAccount(keepWallets: boolean): Promise<DangerActionResult> {
+export async function restartShadowAccount(walletMode: RestartShadowWalletMode): Promise<DangerActionResult> {
   try {
-    return await postApiJson<DangerActionResult>('/api/shadow/restart', {keepWallets})
+    return await postApiJson<DangerActionResult>('/api/shadow/restart', {walletMode})
   } catch (error) {
     return {
       ok: false,

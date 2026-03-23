@@ -665,7 +665,13 @@ def _normalize_shadow_restart_wallet_mode(value: Any) -> str:
 
 def _shadow_restart_command(wallet_mode: str) -> list[str]:
     wallet_mode = _normalize_shadow_restart_wallet_mode(wallet_mode)
-    command = [preferred_python_executable(), str(RESTART_SHADOW_SCRIPT), active_env_flag()]
+    command = [
+        preferred_python_executable(),
+        str(RESTART_SHADOW_SCRIPT),
+        active_env_flag(),
+        "--target-pid",
+        str(os.getpid()),
+    ]
     if SHADOW_RESTART_HELPER_DELAY_SECONDS > 0:
         command.extend(["--delay-seconds", f"{SHADOW_RESTART_HELPER_DELAY_SECONDS:.2f}"])
     if wallet_mode == "keep_active":

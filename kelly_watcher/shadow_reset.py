@@ -263,6 +263,20 @@ def find_bot_pids() -> list[int]:
     return sorted(matches)
 
 
+def _normalize_target_pids(target_pids: list[int] | tuple[int, ...] | set[int] | None = None) -> list[int]:
+    current_pid = os.getpid()
+    normalized: set[int] = set()
+    for raw_pid in target_pids or ():
+        try:
+            pid = int(raw_pid)
+        except (TypeError, ValueError):
+            continue
+        if pid <= 0 or pid == current_pid or not _process_exists(pid):
+            continue
+        normalized.add(pid)
+    return sorted(normalized)
+
+
 def _terminate_process(pid: int, *, force: bool) -> None:
     if os.name == "nt":
         if force:
@@ -294,8 +308,8 @@ def _wait_for_exit(pids: list[int], timeout_seconds: float) -> list[int]:
     return remaining
 
 
-def stop_existing_bot() -> None:
-    pids = find_bot_pids()
+def stop_existing_bot(target_pids: list[int] | tuple[int, ...] | set[int] | None = None) -> None:
+    pids = sorted(set(find_bot_pids()) | set(_normalize_target_pids(target_pids)))
     if not pids:
         return
 
@@ -483,6 +497,20 @@ def launch_background_bot() -> int:
     return int(process.pid)
 
 
+def _launch_background_bot_verified() -> int:
+    pid = launch_background_bot()
+    time.sleep(1.5)
+    if not _process_exists(pid):
+        try:
+            PID_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        raise RuntimeError(
+            "Shadow bot exited immediately after restart. Check save/logs/shadow_runtime.out for details."
+        )
+    return pid
+
+
 def run(
     *,
     foreground: bool,
@@ -490,6 +518,7 @@ def run(
     wallet_mode: str = "keep_all",
     clear_wallets: bool | None = None,
     delay_seconds: float = 0.0,
+    target_pids: list[int] | tuple[int, ...] | set[int] | None = None,
 ) -> int:
     if use_real_money():
         print("Refusing to reset while USE_REAL_MONEY=true. Switch back to shadow mode first.")
@@ -505,7 +534,7 @@ def run(
         if normalized_delay_seconds > 0:
             print(f"Waiting {normalized_delay_seconds:.2f}s before stopping the current bot...")
             time.sleep(normalized_delay_seconds)
-        stop_existing_bot()
+        stop_existing_bot(target_pids=target_pids)
         if normalized_wallet_mode == "keep_active":
             active_wallets = _active_watched_wallets(_parse_watched_wallets(previous_wallets))
             _write_env_value("WATCHED_WALLETS", _serialize_watched_wallets(active_wallets))
@@ -537,7 +566,7 @@ def run(
             return int(result.returncode)
 
         print("Starting shadow bot in background...")
-        pid = launch_background_bot()
+        pid = _launch_background_bot_verified()
         print("Shadow bot restarted.")
         print(f"PID: {pid}")
         print(f"Initial bankroll: ${bankroll:.2f}")
@@ -576,6 +605,12 @@ def main(argv: list[str] | None = None) -> int:
         default=0.0,
         help="Wait this many seconds before stopping the current bot.",
     )
+    parser.add_argument(
+        "--target-pid",
+        action="append",
+        default=[],
+        help="Specific bot PID to stop before resetting. May be passed multiple times.",
+    )
     wallet_mode_group = parser.add_mutually_exclusive_group()
     wallet_mode_group.add_argument(
         "--keep-active-wallets",
@@ -596,6 +631,7 @@ def main(argv: list[str] | None = None) -> int:
         start_bot=not bool(args.reset_only),
         wallet_mode=wallet_mode,
         delay_seconds=float(args.delay_seconds or 0.0),
+        target_pids=[int(pid) for pid in args.target_pid],
     )
 
 

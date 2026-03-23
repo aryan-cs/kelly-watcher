@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import unittest
 from pathlib import Path
@@ -289,6 +290,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 str(repo_root / ".venv" / "bin" / "python"),
                 str(restart_script),
                 "--prod",
+                "--target-pid",
+                str(os.getpid()),
                 "--delay-seconds",
                 "0.75",
                 "--clear-wallets",
@@ -326,6 +329,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 str(repo_root / ".venv" / "bin" / "python"),
                 str(restart_script),
                 "--prod",
+                "--target-pid",
+                str(os.getpid()),
                 "--delay-seconds",
                 "0.75",
                 "--keep-active-wallets",

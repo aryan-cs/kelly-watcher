@@ -77,12 +77,12 @@ class ShadowResetTest(unittest.TestCase):
         ), patch.object(shadow_reset, "stop_existing_bot") as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
         ) as reset_runtime, patch.object(
-            shadow_reset, "launch_background_bot", return_value=4321
+            shadow_reset, "_launch_background_bot_verified", return_value=4321
         ), redirect_stdout(stdout):
             exit_code = shadow_reset.run(foreground=False, start_bot=True, wallet_mode="keep_all")
 
         self.assertEqual(exit_code, 0)
-        stop_bot.assert_called_once_with()
+        stop_bot.assert_called_once_with(target_pids=None)
         reset_runtime.assert_called_once_with()
         output = stdout.getvalue()
         self.assertIn("Resetting shadow runtime state back to the configured bankroll of $3000.00", output)
@@ -98,7 +98,7 @@ class ShadowResetTest(unittest.TestCase):
         ) as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
         ) as reset_runtime, patch.object(
-            shadow_reset, "launch_background_bot", return_value=4321
+            shadow_reset, "_launch_background_bot_verified", return_value=4321
         ), redirect_stdout(stdout):
             exit_code = shadow_reset.run(
                 foreground=False,
@@ -109,7 +109,7 @@ class ShadowResetTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         sleep_mock.assert_called_once_with(0.75)
-        stop_bot.assert_called_once_with()
+        stop_bot.assert_called_once_with(target_pids=None)
         reset_runtime.assert_called_once_with()
         self.assertIn("Waiting 0.75s before stopping the current bot...", stdout.getvalue())
 
@@ -120,12 +120,12 @@ class ShadowResetTest(unittest.TestCase):
         ), patch.object(shadow_reset, "stop_existing_bot") as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
         ) as reset_runtime, patch.object(
-            shadow_reset, "launch_background_bot"
+            shadow_reset, "_launch_background_bot_verified"
         ) as launch_background_bot, redirect_stdout(stdout):
             exit_code = shadow_reset.run(foreground=False, start_bot=False, wallet_mode="keep_all")
 
         self.assertEqual(exit_code, 0)
-        stop_bot.assert_called_once_with()
+        stop_bot.assert_called_once_with(target_pids=None)
         reset_runtime.assert_called_once_with()
         launch_background_bot.assert_not_called()
         output = stdout.getvalue()
@@ -146,18 +146,51 @@ class ShadowResetTest(unittest.TestCase):
         ) as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
         ) as reset_runtime, patch.object(
-            shadow_reset, "launch_background_bot", return_value=4321
+            shadow_reset, "_launch_background_bot_verified", return_value=4321
         ), redirect_stdout(stdout):
             exit_code = shadow_reset.run(foreground=False, start_bot=True, wallet_mode="keep_active")
 
         self.assertEqual(exit_code, 0)
-        stop_bot.assert_called_once_with()
+        stop_bot.assert_called_once_with(target_pids=None)
         reset_runtime.assert_called_once_with()
         active_wallets.assert_called_once_with(["0xactive", "0xdropped"])
         write_env_value.assert_called_once_with("WATCHED_WALLETS", "0xactive")
         output = stdout.getvalue()
         self.assertIn("Reducing WATCHED_WALLETS to currently active wallets", output)
         self.assertIn("WATCHED_WALLETS reduced to active wallets.", output)
+
+    def test_run_forwards_target_pids_to_stop_existing_bot(self) -> None:
+        stdout = io.StringIO()
+        with patch.object(shadow_reset, "use_real_money", return_value=False), patch.object(
+            shadow_reset, "shadow_bankroll_usd", return_value=3000.0
+        ), patch.object(shadow_reset, "stop_existing_bot") as stop_bot, patch.object(
+            shadow_reset, "reset_shadow_runtime"
+        ) as reset_runtime, patch.object(
+            shadow_reset, "_launch_background_bot_verified", return_value=4321
+        ), redirect_stdout(stdout):
+            exit_code = shadow_reset.run(
+                foreground=False,
+                start_bot=True,
+                wallet_mode="keep_all",
+                target_pids=[111, 222],
+            )
+
+        self.assertEqual(exit_code, 0)
+        stop_bot.assert_called_once_with(target_pids=[111, 222])
+        reset_runtime.assert_called_once_with()
+
+    def test_launch_background_bot_verified_raises_when_child_exits_immediately(self) -> None:
+        with patch.object(shadow_reset, "launch_background_bot", return_value=4321), patch.object(
+            shadow_reset.time, "sleep"
+        ) as sleep_mock, patch.object(
+            shadow_reset, "_process_exists", return_value=False
+        ), patch.object(
+            shadow_reset, "PID_FILE", Path("/tmp/test-shadow.pid")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "exited immediately"):
+                shadow_reset._launch_background_bot_verified()
+
+        sleep_mock.assert_called_once_with(1.5)
 
     def test_active_watched_wallets_excludes_only_dropped_wallets(self) -> None:
         with TemporaryDirectory() as tmpdir:

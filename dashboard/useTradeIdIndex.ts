@@ -1,6 +1,6 @@
 import {useMemo} from 'react'
 import {useQuery} from './useDb.js'
-import {useEventStream} from './useEventStream.js'
+import {type LiveEvent, useEventStream} from './useEventStream.js'
 
 const TRADE_LOG_TRADE_IDS_SQL = `
 SELECT trade_id
@@ -15,9 +15,10 @@ function normalizeTradeId(value: unknown): string | null {
   return tradeId || null
 }
 
-export function useTradeIdIndex(): {lookup: Map<string, number>; maxId: number} {
+export function useTradeIdIndex(eventsOverride?: LiveEvent[]): {lookup: Map<string, number>; maxId: number} {
   const tradeLogTradeIds = useQuery<{trade_id: string}>(TRADE_LOG_TRADE_IDS_SQL, [], 2000)
-  const events = useEventStream(1000)
+  const polledEvents = useEventStream(1000)
+  const events = eventsOverride || polledEvents
 
   return useMemo(() => {
     const lookup = new Map<string, number>()

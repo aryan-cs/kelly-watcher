@@ -28,34 +28,63 @@ interface EventsResponse {
   events?: LiveEvent[]
 }
 
+const eventCache = new Map<number, LiveEvent[]>()
+
 export function useEventStream(maxEvents = 50): LiveEvent[] {
-  const [events, setEvents] = useState<LiveEvent[]>([])
+  const [events, setEvents] = useState<LiveEvent[]>(() => eventCache.get(maxEvents) || [])
   const refreshToken = useRefreshToken()
 
   useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let activeController: AbortController | null = null
+
+    const schedule = () => {
+      if (cancelled) {
+        return
+      }
+      timer = setTimeout(() => {
+        void read()
+      }, Math.max(500, 250))
+    }
 
     const read = async () => {
+      const controller = new AbortController()
+      activeController = controller
       try {
-        const response = await fetchApiJson<EventsResponse>(`/api/events?max=${Math.max(1, Math.min(maxEvents, 1000))}`)
+        const response = await fetchApiJson<EventsResponse>(
+          `/api/events?max=${Math.max(1, Math.min(maxEvents, 1000))}`,
+          {signal: controller.signal}
+        )
+        const nextEvents = Array.isArray(response.events) ? response.events : []
+        eventCache.set(maxEvents, nextEvents)
         if (!cancelled) {
-          setEvents(Array.isArray(response.events) ? response.events : [])
+          setEvents(nextEvents)
         }
-      } catch {
-        if (!cancelled) {
-          setEvents([])
+      } catch (error) {
+        if (cancelled || controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          return
         }
+        const cachedEvents = eventCache.get(maxEvents)
+        if (!cancelled && cachedEvents) {
+          setEvents(cachedEvents)
+        }
+      } finally {
+        if (activeController === controller) {
+          activeController = null
+        }
+        schedule()
       }
     }
 
     void read()
-    const timer = setInterval(() => {
-      void read()
-    }, 500)
 
     return () => {
       cancelled = true
-      clearInterval(timer)
+      if (timer) {
+        clearTimeout(timer)
+      }
+      activeController?.abort()
     }
   }, [maxEvents, refreshToken])
 

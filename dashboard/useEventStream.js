@@ -1,31 +1,56 @@
 import { useEffect, useState } from 'react';
 import { fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
+const eventCache = new Map();
 export function useEventStream(maxEvents = 50) {
-    const [events, setEvents] = useState([]);
+    const [events, setEvents] = useState(() => eventCache.get(maxEvents) || []);
     const refreshToken = useRefreshToken();
     useEffect(() => {
         let cancelled = false;
+        let timer = null;
+        let activeController = null;
+        const schedule = () => {
+            if (cancelled) {
+                return;
+            }
+            timer = setTimeout(() => {
+                void read();
+            }, 500);
+        };
         const read = async () => {
+            const controller = new AbortController();
+            activeController = controller;
             try {
-                const response = await fetchApiJson(`/api/events?max=${Math.max(1, Math.min(maxEvents, 1000))}`);
+                const response = await fetchApiJson(`/api/events?max=${Math.max(1, Math.min(maxEvents, 1000))}`, { signal: controller.signal });
+                const nextEvents = Array.isArray(response.events) ? response.events : [];
+                eventCache.set(maxEvents, nextEvents);
                 if (!cancelled) {
-                    setEvents(Array.isArray(response.events) ? response.events : []);
+                    setEvents(nextEvents);
                 }
             }
-            catch {
-                if (!cancelled) {
-                    setEvents([]);
+            catch (error) {
+                if (cancelled || controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+                    return;
                 }
+                const cachedEvents = eventCache.get(maxEvents);
+                if (!cancelled && cachedEvents) {
+                    setEvents(cachedEvents);
+                }
+            }
+            finally {
+                if (activeController === controller) {
+                    activeController = null;
+                }
+                schedule();
             }
         };
         void read();
-        const timer = setInterval(() => {
-            void read();
-        }, 500);
         return () => {
             cancelled = true;
-            clearInterval(timer);
+            if (timer) {
+                clearTimeout(timer);
+            }
+            activeController?.abort();
         };
     }, [maxEvents, refreshToken]);
     return events;

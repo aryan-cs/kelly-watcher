@@ -53,6 +53,16 @@ export function useIdentityMap(intervalMs = 2000): Map<string, string> {
 
   useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const schedule = () => {
+      if (cancelled) {
+        return
+      }
+      timer = setTimeout(() => {
+        void read()
+      }, Math.max(intervalMs, 250))
+    }
 
     const read = async () => {
       try {
@@ -66,17 +76,18 @@ export function useIdentityMap(intervalMs = 2000): Map<string, string> {
         if (!cancelled) {
           setLookup(new Map(identityCache))
         }
+      } finally {
+        schedule()
       }
     }
 
     void read()
-    const timer = setInterval(() => {
-      void read()
-    }, Math.max(intervalMs, 250))
 
     return () => {
       cancelled = true
-      clearInterval(timer)
+      if (timer) {
+        clearTimeout(timer)
+      }
     }
   }, [intervalMs, refreshToken])
 

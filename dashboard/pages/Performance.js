@@ -1387,7 +1387,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const tradeLogManualEdits = useQuery(TRADE_LOG_MANUAL_EDITS_SQL);
     const positionManualEdits = useQuery(POSITION_MANUAL_EDITS_SQL);
     const events = useEventStream(1000);
-    const { lookup: tradeIdLookup } = useTradeIdIndex();
+    const { lookup: tradeIdLookup } = useTradeIdIndex(events);
     const botState = useBotState(1000);
     const detailHistoryRow = actionState?.row ?? editState?.row ?? null;
     const positionPriceHistory = usePositionPriceHistory(detailHistoryRow);

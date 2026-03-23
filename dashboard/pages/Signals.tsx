@@ -26,8 +26,8 @@ export function Signals({
   const terminal = useTerminalSize()
   const lineBudget = rowsForHeight(terminal.height, 10, 4)
   const visibleWidth = Math.max(56, terminal.width - 8)
-  const {lookup: tradeIdLookup} = useTradeIdIndex()
   const events = useEventStream(1000)
+  const {lookup: tradeIdLookup} = useTradeIdIndex(events)
   const incomingActionByTradeId = useMemo(() => {
     const lookup = new Map<string, string>()
     for (const event of events) {

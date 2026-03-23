@@ -249,6 +249,15 @@ export function useDashboardConfig(intervalMs = 2000) {
     const refreshToken = useRefreshToken();
     useEffect(() => {
         let cancelled = false;
+        let timer = null;
+        const schedule = () => {
+            if (cancelled) {
+                return;
+            }
+            timer = setTimeout(() => {
+                void read();
+            }, Math.max(intervalMs, 250));
+        };
         const read = async () => {
             try {
                 const nextConfig = await refreshDashboardConfig();
@@ -261,14 +270,16 @@ export function useDashboardConfig(intervalMs = 2000) {
                     setConfig(dashboardConfigCache);
                 }
             }
+            finally {
+                schedule();
+            }
         };
         void read();
-        const timer = setInterval(() => {
-            void read();
-        }, Math.max(intervalMs, 250));
         return () => {
             cancelled = true;
-            clearInterval(timer);
+            if (timer) {
+                clearTimeout(timer);
+            }
         };
     }, [intervalMs, refreshToken]);
     return config;

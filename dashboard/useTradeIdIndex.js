@@ -12,9 +12,10 @@ function normalizeTradeId(value) {
     const tradeId = String(value ?? '').trim();
     return tradeId || null;
 }
-export function useTradeIdIndex() {
+export function useTradeIdIndex(eventsOverride) {
     const tradeLogTradeIds = useQuery(TRADE_LOG_TRADE_IDS_SQL, [], 2000);
-    const events = useEventStream(1000);
+    const polledEvents = useEventStream(1000);
+    const events = eventsOverride || polledEvents;
     return useMemo(() => {
         const lookup = new Map();
         let maxId = 0;

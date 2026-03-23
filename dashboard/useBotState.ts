@@ -33,47 +33,75 @@ interface BotStateResponse {
   state?: BotState
 }
 
+let botStateCache: BotState = {api_base_url: apiBaseUrl, api_error: ''}
+
 export function useBotState(intervalMs = 2000): BotState {
-  const [state, setState] = useState<BotState>({})
+  const [state, setState] = useState<BotState>(() => ({...botStateCache}))
   const refreshToken = useRefreshToken()
 
   useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let activeController: AbortController | null = null
+
+    const schedule = () => {
+      if (cancelled) {
+        return
+      }
+      timer = setTimeout(() => {
+        void read()
+      }, Math.max(intervalMs, 250))
+    }
 
     const read = async () => {
+      const controller = new AbortController()
+      activeController = controller
       try {
-        const response = await fetchApiJson<BotStateResponse>('/api/bot-state')
+        const response = await fetchApiJson<BotStateResponse>('/api/bot-state', {signal: controller.signal})
+        const nextState = {
+          ...(response.state || {}),
+          api_base_url: apiBaseUrl,
+          api_error: ''
+        }
+        botStateCache = nextState
         if (!cancelled) {
-          setState({
-            ...(response.state || {}),
-            api_base_url: apiBaseUrl,
-            api_error: ''
-          })
+          setState(nextState)
         }
       } catch (error) {
+        if (cancelled || controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          return
+        }
         const message =
           error instanceof ApiError && error.status === 401
             ? `Backend API rejected the dashboard at ${apiBaseUrl}. Check KELLY_API_TOKEN.`
             : error instanceof Error && String(error.message || '').trim()
               ? String(error.message || '').trim()
               : `Could not reach backend API at ${apiBaseUrl}.`
-        if (!cancelled) {
-          setState({
-            api_base_url: apiBaseUrl,
-            api_error: message
-          })
+        const nextState = {
+          ...botStateCache,
+          api_base_url: apiBaseUrl,
+          api_error: message
         }
+        botStateCache = nextState
+        if (!cancelled) {
+          setState(nextState)
+        }
+      } finally {
+        if (activeController === controller) {
+          activeController = null
+        }
+        schedule()
       }
     }
 
     void read()
-    const timer = setInterval(() => {
-      void read()
-    }, Math.max(intervalMs, 250))
 
     return () => {
       cancelled = true
-      clearInterval(timer)
+      if (timer) {
+        clearTimeout(timer)
+      }
+      activeController?.abort()
     }
   }, [intervalMs, refreshToken])
 

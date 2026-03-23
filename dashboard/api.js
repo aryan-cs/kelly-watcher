@@ -90,16 +90,20 @@ export async function fetchApiJson(path, init = {}) {
         });
     }
     catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+            throw error;
+        }
         const detail = error instanceof Error ? String(error.message || '').trim() : '';
         const suffix = detail ? ` ${detail}` : '';
         throw new ApiError(`Could not reach backend API at ${apiBaseUrl}.${suffix}`.trim(), 0);
     }
     return parseJsonResponse(response);
 }
-export async function postApiJson(path, payload = {}) {
-    const headers = new Headers();
+export async function postApiJson(path, payload = {}, init = {}) {
+    const headers = new Headers(init.headers || {});
     headers.set('Content-Type', 'application/json');
     return fetchApiJson(path, {
+        ...init,
         method: 'POST',
         headers,
         body: JSON.stringify(payload)

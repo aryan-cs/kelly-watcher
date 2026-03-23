@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import signal
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -11,7 +13,7 @@ import time
 from pathlib import Path
 
 from config import shadow_bankroll_usd, use_real_money
-from db import init_db
+import db
 from env_profile import (
     ENV_EXAMPLE_PATH,
     LEGACY_ENV_PATH,
@@ -20,19 +22,27 @@ from env_profile import (
     add_env_profile_flags,
     env_path_for_profile,
 )
-from runtime_paths import BACKGROUND_LOG_PATH, BOT_PID_FILE, DATA_DIR, LOG_DIR, REPO_ROOT
+from runtime_paths import BACKGROUND_LOG_PATH, BOT_PID_FILE, BOT_STATE_FILE, DATA_DIR, EVENT_FILE, LOG_DIR, REPO_ROOT
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
 PID_FILE = BOT_PID_FILE
 BACKGROUND_LOG = BACKGROUND_LOG_PATH
-RESET_FILES = (
-    DATA_DIR / "trading.db",
-    DATA_DIR / "trading.db-shm",
-    DATA_DIR / "trading.db-wal",
-    DATA_DIR / "events.jsonl",
-    DATA_DIR / "bot_state.json",
+NON_DB_RESET_FILES = (
+    EVENT_FILE,
+    BOT_STATE_FILE,
     PID_FILE,
+)
+SHADOW_RUNTIME_TABLES = (
+    "seen_trades",
+    "trade_log_manual_edits",
+    "position_manual_edits",
+    "belief_updates",
+    "positions",
+    "trade_log",
+    "perf_snapshots",
+    "wallet_cursors",
+    "wallet_watch_state",
 )
 
 
@@ -282,15 +292,74 @@ def stop_existing_bot() -> None:
         )
 
 
+def _sqlite_file_is_usable(path: Path) -> bool:
+    if not path.exists():
+        return False
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(path)
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+    return bool(row) and str(row[0]).strip().lower() == "ok"
+
+
+def _db_sidecar_paths() -> tuple[Path, ...]:
+    base = str(db.DB_PATH)
+    return (db.DB_PATH, Path(f"{base}-shm"), Path(f"{base}-wal"))
+
+
+def _restore_trading_db_from_backup() -> bool:
+    backup_path = db.DB_PATH.with_suffix(".db.bak")
+    if not _sqlite_file_is_usable(backup_path):
+        return False
+
+    archive_dir = DATA_DIR / "reset_backups"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+
+    for source in _db_sidecar_paths():
+        if not source.exists():
+            continue
+        archived = archive_dir / f"{source.name}.corrupt_{stamp}"
+        source.replace(archived)
+
+    shutil.copy2(backup_path, db.DB_PATH)
+    return True
+
+
+def _ensure_trading_db_ready() -> None:
+    try:
+        db.init_db()
+    except sqlite3.DatabaseError:
+        if not _restore_trading_db_from_backup():
+            raise
+        db.init_db()
+
+
+def _clear_shadow_runtime_db_state() -> None:
+    conn = db.get_conn()
+    try:
+        for table in SHADOW_RUNTIME_TABLES:
+            conn.execute(f"DELETE FROM {table}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def reset_shadow_runtime() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    for path in RESET_FILES:
+    _ensure_trading_db_ready()
+    _clear_shadow_runtime_db_state()
+    for path in NON_DB_RESET_FILES:
         try:
             path.unlink()
         except FileNotFoundError:
             continue
-    init_db()
 
 
 def runtime_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -368,10 +437,10 @@ def run(*, foreground: bool, start_bot: bool, clear_wallets: bool) -> int:
         stop_existing_bot()
         print(f"Resetting shadow runtime state back to the configured bankroll of ${bankroll:.2f}...")
         if clear_wallets:
-            print("Preserving config/settings files, logs, model artifacts, and identity cache.")
+            print("Preserving config/settings files, logs, model artifacts, identity cache, and training history.")
             print("Clearing WATCHED_WALLETS before restarting shadow mode.")
         else:
-            print("Preserving config/settings files, logs, model artifacts, identity cache, and WATCHED_WALLETS.")
+            print("Preserving config/settings files, logs, model artifacts, identity cache, training history, and WATCHED_WALLETS.")
         reset_shadow_runtime()
 
         if not start_bot:

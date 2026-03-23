@@ -25,12 +25,16 @@ interface RetrainRunRow {
   sample_count: number
   brier_score: number | null
   log_loss: number | null
-  challenger_shared_log_loss: number | null
-  challenger_shared_brier_score: number | null
-  incumbent_log_loss: number | null
-  incumbent_brier_score: number | null
   status: string | null
   deployed: number
+  message: string | null
+}
+
+interface SharedHoldoutComparison {
+  challenger_log_loss: number
+  challenger_brier_score: number
+  incumbent_log_loss: number
+  incumbent_brier_score: number
 }
 
 interface TrackerRow {
@@ -357,16 +361,15 @@ SELECT
   sample_count,
   brier_score,
   log_loss,
-  challenger_shared_log_loss,
-  challenger_shared_brier_score,
-  incumbent_log_loss,
-  incumbent_brier_score,
   status,
-  deployed
+  deployed,
+  message
 FROM retrain_runs
 ORDER BY finished_at DESC, id DESC
 LIMIT 48
 `
+
+const SHARED_HOLDOUT_MESSAGE_RE = /shared holdout ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)[\s\S]*?incumbent ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)/i
 
 const TRACKER_SQL = `
 SELECT
@@ -649,29 +652,43 @@ function retrainRunStateColor(status: string | null | undefined, deployed: numbe
   return theme.white
 }
 
-function hasSharedHoldoutComparison(row: RetrainRunRow | null | undefined): row is RetrainRunRow & {
-  challenger_shared_log_loss: number
-  challenger_shared_brier_score: number
-  incumbent_log_loss: number
-  incumbent_brier_score: number
-} {
-  return row?.challenger_shared_log_loss != null
-    && row?.challenger_shared_brier_score != null
-    && row?.incumbent_log_loss != null
-    && row?.incumbent_brier_score != null
+function sharedHoldoutComparison(row: RetrainRunRow | null | undefined): SharedHoldoutComparison | null {
+  const message = String(row?.message || '').trim()
+  if (!message) return null
+  const match = message.match(SHARED_HOLDOUT_MESSAGE_RE)
+  if (!match) return null
+  const challengerLogLoss = Number.parseFloat(match[1] || '')
+  const challengerBrierScore = Number.parseFloat(match[2] || '')
+  const incumbentLogLoss = Number.parseFloat(match[3] || '')
+  const incumbentBrierScore = Number.parseFloat(match[4] || '')
+  if (
+    Number.isNaN(challengerLogLoss)
+    || Number.isNaN(challengerBrierScore)
+    || Number.isNaN(incumbentLogLoss)
+    || Number.isNaN(incumbentBrierScore)
+  ) {
+    return null
+  }
+  return {
+    challenger_log_loss: challengerLogLoss,
+    challenger_brier_score: challengerBrierScore,
+    incumbent_log_loss: incumbentLogLoss,
+    incumbent_brier_score: incumbentBrierScore
+  }
 }
 
 function sharedHoldoutGateRead(row: RetrainRunRow | null | undefined): string {
-  if (!hasSharedHoldoutComparison(row)) return '-'
+  const comparison = sharedHoldoutComparison(row)
+  if (!comparison) return '-'
   const outcomes = [
-    row.challenger_shared_log_loss < row.incumbent_log_loss
+    comparison.challenger_log_loss < comparison.incumbent_log_loss
       ? 'LL better'
-      : row.challenger_shared_log_loss > row.incumbent_log_loss
+      : comparison.challenger_log_loss > comparison.incumbent_log_loss
         ? 'LL worse'
         : 'LL tied',
-    row.challenger_shared_brier_score < row.incumbent_brier_score
+    comparison.challenger_brier_score < comparison.incumbent_brier_score
       ? 'Brier better'
-      : row.challenger_shared_brier_score > row.incumbent_brier_score
+      : comparison.challenger_brier_score > comparison.incumbent_brier_score
         ? 'Brier worse'
         : 'Brier tied'
   ]
@@ -679,9 +696,10 @@ function sharedHoldoutGateRead(row: RetrainRunRow | null | undefined): string {
 }
 
 function sharedHoldoutGateReadColor(row: RetrainRunRow | null | undefined): string {
-  if (!hasSharedHoldoutComparison(row)) return theme.dim
-  const llDelta = row.challenger_shared_log_loss - row.incumbent_log_loss
-  const brierDelta = row.challenger_shared_brier_score - row.incumbent_brier_score
+  const comparison = sharedHoldoutComparison(row)
+  if (!comparison) return theme.dim
+  const llDelta = comparison.challenger_log_loss - comparison.incumbent_log_loss
+  const brierDelta = comparison.challenger_brier_score - comparison.incumbent_brier_score
   if (llDelta < 0 && brierDelta < 0) return theme.green
   if (llDelta > 0 && brierDelta > 0) return theme.red
   if (llDelta === 0 && brierDelta === 0) return theme.dim
@@ -822,7 +840,8 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const flow = flowRows[0]
   const trainingSummary = trainingSummaryRows[0]
   const trainingProgress = trainingProgressRows[0]
-  const latestSharedHoldoutRun = retrainRuns.find((row) => hasSharedHoldoutComparison(row))
+  const latestSharedHoldoutRun = retrainRuns.find((row) => sharedHoldoutComparison(row) != null)
+  const latestSharedHoldout = sharedHoldoutComparison(latestSharedHoldoutRun)
   const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0]
   const configFieldByKey = useMemo(
     () => new Map(editableConfigFields.map((field) => [field.key, field])),
@@ -1523,17 +1542,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
               </React.Fragment>
             ))}
           </InkBox>
-          {latestSharedHoldoutRun ? (
+          {latestSharedHoldoutRun && latestSharedHoldout ? (
             <InkBox width="100%" marginTop={1} flexDirection="column">
               <Text color={theme.accent} bold>Latest Shared Holdout Gate</Text>
               <StatRow label="Run" value={formatShortDateTime(latestSharedHoldoutRun.finished_at)} />
               <StatRow
                 label="Challenger"
-                value={`LL ${formatNumber(latestSharedHoldoutRun.challenger_shared_log_loss, 4)} | BR ${formatNumber(latestSharedHoldoutRun.challenger_shared_brier_score, 4)}`}
+                value={`LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}`}
               />
               <StatRow
                 label="Incumbent"
-                value={`LL ${formatNumber(latestSharedHoldoutRun.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldoutRun.incumbent_brier_score, 4)}`}
+                value={`LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`}
               />
               <StatRow
                 label="Gate read"

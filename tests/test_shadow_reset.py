@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import db
 from kelly_watcher import shadow_reset
 
 
@@ -107,6 +108,98 @@ class ShadowResetTest(unittest.TestCase):
         self.assertIn("Shadow runtime reset.", output)
         self.assertIn("Initial bankroll: $3000.00", output)
         self.assertIn("WATCHED_WALLETS preserved.", output)
+
+    def test_reset_shadow_runtime_preserves_training_history(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            log_dir = Path(tmpdir) / "logs"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "trading.db"
+            event_file = data_dir / "events.jsonl"
+            bot_state_file = data_dir / "bot_state.json"
+            pid_file = data_dir / "shadow_bot.pid"
+            event_file.write_text("event\n", encoding="utf-8")
+            bot_state_file.write_text("{}", encoding="utf-8")
+            pid_file.write_text("123\n", encoding="utf-8")
+
+            with patch("db.DB_PATH", db_path), patch.object(shadow_reset, "DATA_DIR", data_dir), patch.object(
+                shadow_reset, "LOG_DIR", log_dir
+            ), patch.object(
+                shadow_reset, "NON_DB_RESET_FILES", (event_file, bot_state_file, pid_file)
+            ):
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO model_history (
+                            trained_at, n_samples, brier_score, log_loss, feature_cols, model_path, deployed
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (1774252800, 3211, 0.1799, 0.5219, "confidence", "save/model.joblib", 1),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO retrain_runs (
+                            started_at, finished_at, trigger, status, ok, deployed, sample_count, min_samples,
+                            brier_score, log_loss, message
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            1774252500,
+                            1774252848,
+                            "manual",
+                            "completed_not_deployed",
+                            1,
+                            0,
+                            3211,
+                            100,
+                            0.1799,
+                            0.5219,
+                            "shared holdout ll/brier: 0.5219 / 0.1799 | incumbent ll/brier: 0.5233 / 0.1785",
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO trade_log (
+                            trade_id, market_id, trader_address, side, source_action,
+                            price_at_signal, signal_size_usd, confidence, kelly_fraction, placed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        ("trade-1", "market-1", "0xabc", "yes", "buy", 0.61, 10.0, 0.66, 0.05, 1774252900),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO perf_snapshots (
+                            snapshot_at, mode, n_signals, n_acted, n_resolved, win_rate,
+                            total_pnl_usd, avg_confidence, sharpe
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (1774252900, "shadow", 10, 3, 2, 0.5, 12.0, 0.67, 1.2),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                shadow_reset.reset_shadow_runtime()
+
+                conn = db.get_conn()
+                try:
+                    model_history_count = conn.execute("SELECT COUNT(*) FROM model_history").fetchone()[0]
+                    retrain_runs_count = conn.execute("SELECT COUNT(*) FROM retrain_runs").fetchone()[0]
+                    trade_log_count = conn.execute("SELECT COUNT(*) FROM trade_log").fetchone()[0]
+                    perf_snapshot_count = conn.execute("SELECT COUNT(*) FROM perf_snapshots").fetchone()[0]
+                finally:
+                    conn.close()
+
+        self.assertEqual(model_history_count, 1)
+        self.assertEqual(retrain_runs_count, 2)
+        self.assertEqual(trade_log_count, 0)
+        self.assertEqual(perf_snapshot_count, 0)
+        self.assertFalse(event_file.exists())
+        self.assertFalse(bot_state_file.exists())
+        self.assertFalse(pid_file.exists())
 
 
 if __name__ == "__main__":

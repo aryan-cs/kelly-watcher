@@ -199,16 +199,14 @@ SELECT
   sample_count,
   brier_score,
   log_loss,
-  challenger_shared_log_loss,
-  challenger_shared_brier_score,
-  incumbent_log_loss,
-  incumbent_brier_score,
   status,
-  deployed
+  deployed,
+  message
 FROM retrain_runs
 ORDER BY finished_at DESC, id DESC
 LIMIT 48
 `;
+const SHARED_HOLDOUT_MESSAGE_RE = /shared holdout ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)[\s\S]*?incumbent ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)/i;
 const TRACKER_SQL = `
 SELECT
   COUNT(*) AS signals,
@@ -487,34 +485,54 @@ function retrainRunStateColor(status, deployed) {
         return theme.yellow;
     return theme.white;
 }
-function hasSharedHoldoutComparison(row) {
-    return row?.challenger_shared_log_loss != null
-        && row?.challenger_shared_brier_score != null
-        && row?.incumbent_log_loss != null
-        && row?.incumbent_brier_score != null;
+function sharedHoldoutComparison(row) {
+    const message = String(row?.message || '').trim();
+    if (!message)
+        return null;
+    const match = message.match(SHARED_HOLDOUT_MESSAGE_RE);
+    if (!match)
+        return null;
+    const challengerLogLoss = Number.parseFloat(match[1] || '');
+    const challengerBrierScore = Number.parseFloat(match[2] || '');
+    const incumbentLogLoss = Number.parseFloat(match[3] || '');
+    const incumbentBrierScore = Number.parseFloat(match[4] || '');
+    if (Number.isNaN(challengerLogLoss)
+        || Number.isNaN(challengerBrierScore)
+        || Number.isNaN(incumbentLogLoss)
+        || Number.isNaN(incumbentBrierScore)) {
+        return null;
+    }
+    return {
+        challenger_log_loss: challengerLogLoss,
+        challenger_brier_score: challengerBrierScore,
+        incumbent_log_loss: incumbentLogLoss,
+        incumbent_brier_score: incumbentBrierScore,
+    };
 }
 function sharedHoldoutGateRead(row) {
-    if (!hasSharedHoldoutComparison(row))
+    const comparison = sharedHoldoutComparison(row);
+    if (!comparison)
         return '-';
     const outcomes = [
-        row.challenger_shared_log_loss < row.incumbent_log_loss
+        comparison.challenger_log_loss < comparison.incumbent_log_loss
             ? 'LL better'
-            : row.challenger_shared_log_loss > row.incumbent_log_loss
+            : comparison.challenger_log_loss > comparison.incumbent_log_loss
                 ? 'LL worse'
                 : 'LL tied',
-        row.challenger_shared_brier_score < row.incumbent_brier_score
+        comparison.challenger_brier_score < comparison.incumbent_brier_score
             ? 'Brier better'
-            : row.challenger_shared_brier_score > row.incumbent_brier_score
+            : comparison.challenger_brier_score > comparison.incumbent_brier_score
                 ? 'Brier worse'
                 : 'Brier tied'
     ];
     return outcomes.join(', ');
 }
 function sharedHoldoutGateReadColor(row) {
-    if (!hasSharedHoldoutComparison(row))
+    const comparison = sharedHoldoutComparison(row);
+    if (!comparison)
         return theme.dim;
-    const llDelta = row.challenger_shared_log_loss - row.incumbent_log_loss;
-    const brierDelta = row.challenger_shared_brier_score - row.incumbent_brier_score;
+    const llDelta = comparison.challenger_log_loss - comparison.incumbent_log_loss;
+    const brierDelta = comparison.challenger_brier_score - comparison.incumbent_brier_score;
     if (llDelta < 0 && brierDelta < 0)
         return theme.green;
     if (llDelta > 0 && brierDelta > 0)
@@ -647,7 +665,8 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const flow = flowRows[0];
     const trainingSummary = trainingSummaryRows[0];
     const trainingProgress = trainingProgressRows[0];
-    const latestSharedHoldoutRun = retrainRuns.find((row) => hasSharedHoldoutComparison(row));
+    const latestSharedHoldoutRun = retrainRuns.find((row) => sharedHoldoutComparison(row) != null);
+    const latestSharedHoldout = sharedHoldoutComparison(latestSharedHoldoutRun);
     const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0];
     const configFieldByKey = useMemo(() => new Map(editableConfigFields.map((field) => [field.key, field])), []);
     const featureCount = useMemo(() => parseFeatureCount(latest?.feature_cols), [latest?.feature_cols]);
@@ -1090,11 +1109,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                 React.createElement(InkBox, { width: "100%" }, trainingCycleColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `training-cycle-column-${columnIndex}` },
                     React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, column.map((item) => (React.createElement(StatRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white })))),
                     columnIndex < trainingCycleColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
-                latestSharedHoldoutRun ? (React.createElement(InkBox, { width: "100%", marginTop: 1, flexDirection: "column" },
+                latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(InkBox, { width: "100%", marginTop: 1, flexDirection: "column" },
                     React.createElement(Text, { color: theme.accent, bold: true }, "Latest Shared Holdout Gate"),
                     React.createElement(StatRow, { label: "Run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at) }),
-                    React.createElement(StatRow, { label: "Challenger", value: `LL ${formatNumber(latestSharedHoldoutRun.challenger_shared_log_loss, 4)} | BR ${formatNumber(latestSharedHoldoutRun.challenger_shared_brier_score, 4)}` }),
-                    React.createElement(StatRow, { label: "Incumbent", value: `LL ${formatNumber(latestSharedHoldoutRun.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldoutRun.incumbent_brier_score, 4)}` }),
+                    React.createElement(StatRow, { label: "Challenger", value: `LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}` }),
+                    React.createElement(StatRow, { label: "Incumbent", value: `LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}` }),
                     React.createElement(StatRow, { label: "Gate read", value: sharedHoldoutGateRead(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun) }))) : null,
                 React.createElement(InkBox, { width: "100%", marginTop: 1 },
                     React.createElement(Text, { color: theme.dim }, fit('TIME', retrainWidths.timeWidth)),

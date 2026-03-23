@@ -1454,6 +1454,56 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertIsNone(reason)
 
+    def test_entry_risk_does_not_hard_block_after_total_exposure_clip(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._open_risk_snapshot = lambda **kwargs: (680.0, {"other-market": 120.0}, {"0xother": 120.0})
+
+        with patch("executor.use_real_money", return_value=True), patch(
+            "executor.max_total_open_exposure_fraction", return_value=0.30
+        ), patch("executor.max_market_exposure_fraction", return_value=0.20), patch(
+            "executor.max_trader_exposure_fraction", return_value=0.20
+        ):
+            reason = executor.entry_risk_block_reason(
+                market_id="market-1",
+                trader_address="0xabc",
+                proposed_size_usd=11.59,
+                account_equity=2305.31,
+            )
+
+        self.assertIsNone(reason)
+
+    def test_entry_risk_still_blocks_market_concentration(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._open_risk_snapshot = lambda **kwargs: (50.0, {"market-1": 15.0}, {"0xother": 5.0})
+
+        with patch("executor.use_real_money", return_value=True), patch(
+            "executor.max_market_exposure_fraction", return_value=0.20
+        ), patch("executor.max_trader_exposure_fraction", return_value=0.30):
+            reason = executor.entry_risk_block_reason(
+                market_id="market-1",
+                trader_address="0xabc",
+                proposed_size_usd=10.5,
+                account_equity=100.0,
+            )
+
+        self.assertIn("market exposure for market-1 would be $25.50", str(reason))
+
+    def test_entry_risk_still_blocks_trader_concentration(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._open_risk_snapshot = lambda **kwargs: (50.0, {"other-market": 5.0}, {"0xabc": 25.0})
+
+        with patch("executor.use_real_money", return_value=True), patch(
+            "executor.max_market_exposure_fraction", return_value=0.40
+        ), patch("executor.max_trader_exposure_fraction", return_value=0.30):
+            reason = executor.entry_risk_block_reason(
+                market_id="market-1",
+                trader_address="0xabc",
+                proposed_size_usd=6.0,
+                account_equity=100.0,
+            )
+
+        self.assertIn("trader exposure for 0xabc would be $31.00", str(reason))
+
     def test_total_open_exposure_decision_clips_to_remaining_headroom(self) -> None:
         executor = object.__new__(PolymarketExecutor)
         executor._open_risk_snapshot = lambda **kwargs: (260.0, {}, {})

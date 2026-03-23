@@ -739,14 +739,7 @@ class PolymarketExecutor:
         if account_equity <= 0:
             return "account equity was unavailable for exposure checks, so the trade was blocked"
 
-        total_open, by_market, by_trader = self._open_risk_snapshot(real_money=use_real_money())
-        total_cap = account_equity * max_total_open_exposure_fraction()
-        total_after = total_open + proposed_size_usd
-        if total_after > total_cap + 1e-9:
-            return (
-                f"total open exposure would be ${total_after:.2f} on ${account_equity:.2f} equity, "
-                f"above the {max_total_open_exposure_fraction() * 100:.1f}% cap"
-            )
+        _, by_market, by_trader = self._open_risk_snapshot(real_money=use_real_money())
 
         market_key = str(market_id or "").strip()
         market_after = by_market.get(market_key, 0.0) + proposed_size_usd

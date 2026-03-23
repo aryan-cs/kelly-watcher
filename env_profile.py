@@ -41,11 +41,8 @@ def active_env_profile(
     argv: list[str] | tuple[str, ...] | None = None,
     environ: dict[str, str] | None = None,
 ) -> str:
-    return (
-        profile_from_argv(argv)
-        or profile_from_environ(environ)
-        or DEFAULT_ENV_PROFILE
-    )
+    del environ
+    return profile_from_argv(argv) or DEFAULT_ENV_PROFILE
 
 
 def env_path_for_profile(profile: str, repo_root: Path = REPO_ROOT) -> Path:
@@ -96,7 +93,7 @@ def add_env_profile_flags(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--dev",
         action="store_true",
-        help="Use .env.dev for config.",
+        help="Use .env.dev for config (default).",
     )
     group.add_argument(
         "--prod",

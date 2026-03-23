@@ -9,6 +9,12 @@ import runtime_paths
 
 
 class EnvProfileTests(unittest.TestCase):
+    def test_no_flag_defaults_to_dev_even_if_env_requests_prod(self) -> None:
+        self.assertEqual(
+            env_profile.active_env_profile(argv=[], environ={env_profile.ENV_PROFILE_ENV_VAR: "prod"}),
+            "dev",
+        )
+
     def test_prod_flag_selects_dot_env_prod(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)

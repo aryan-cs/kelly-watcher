@@ -30,6 +30,10 @@ interface EventsResponse {
 
 const eventCache = new Map<number, LiveEvent[]>()
 
+export function clearEventStreamCache(): void {
+  eventCache.clear()
+}
+
 export function useEventStream(maxEvents = 50): LiveEvent[] {
   const [events, setEvents] = useState<LiveEvent[]>(() => eventCache.get(maxEvents) || [])
   const refreshToken = useRefreshToken()
@@ -38,6 +42,8 @@ export function useEventStream(maxEvents = 50): LiveEvent[] {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
     let activeController: AbortController | null = null
+
+    setEvents(eventCache.get(maxEvents) || [])
 
     const schedule = () => {
       if (cancelled) {

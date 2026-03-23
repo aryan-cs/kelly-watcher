@@ -35,6 +35,18 @@ interface BotStateResponse {
 
 let botStateCache: BotState = {api_base_url: apiBaseUrl, api_error: ''}
 
+export function beginShadowRestartBotState(): void {
+  botStateCache = {
+    ...botStateCache,
+    api_base_url: apiBaseUrl,
+    api_error: 'Shadow restart in progress. Waiting for backend to come back.',
+    mode: 'shadow',
+    loop_in_progress: false,
+    last_poll_at: 0,
+    last_activity_at: 0
+  }
+}
+
 export function useBotState(intervalMs = 2000): BotState {
   const [state, setState] = useState<BotState>(() => ({...botStateCache}))
   const refreshToken = useRefreshToken()
@@ -43,6 +55,8 @@ export function useBotState(intervalMs = 2000): BotState {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
     let activeController: AbortController | null = null
+
+    setState({...botStateCache})
 
     const schedule = () => {
       if (cancelled) {

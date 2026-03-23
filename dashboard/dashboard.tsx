@@ -36,6 +36,10 @@ import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} fr
 import {useBotState} from './useBotState.js'
 import {dropTrackedWallet, reactivateDroppedWallet} from './walletWatchState.js'
 import {editablePositionStatuses, savePositionManualEdit, type PositionManualEditStatus} from './positionEditor.js'
+import {clearEventStreamCache} from './useEventStream.js'
+import {clearQueryCache} from './useDb.js'
+import {clearIdentityCache} from './identities.js'
+import {beginShadowRestartBotState} from './useBotState.js'
 
 type Page = 1 | 2 | 3 | 4 | 5 | 6
 type PerfPane = 'current' | 'past'
@@ -580,6 +584,40 @@ function App() {
     dangerConfirm: null
   }))
   const dashboardConfig = useDashboardConfig()
+
+  const beginShadowRestartUiReset = () => {
+    clearEventStreamCache()
+    clearQueryCache()
+    clearIdentityCache()
+    beginShadowRestartBotState()
+    setFeedScrollOffset(0)
+    setSignalsScrollOffset(0)
+    setSignalsHorizontalOffset(0)
+    setPerfCurrentScrollOffset(0)
+    setPerfPastScrollOffset(0)
+    setPerfDailyDetailScrollOffset(0)
+    setPerfDailyDetailOpen(false)
+    setPerfPositionAction(null)
+    setPerfPositionEdit(null)
+    setPerfSelectionMeta({
+      currentCount: 0,
+      pastCount: 0,
+      selectedCurrentRow: null,
+      selectedPastRow: null
+    })
+    setPerfDetailHistoryMeta({timelineCount: 0})
+    setWalletDetailOpen(false)
+    setWalletMeta({
+      bestCount: 0,
+      worstCount: 0,
+      trackedCount: 0,
+      droppedCount: 0,
+      bestWalletAddresses: [],
+      worstWalletAddresses: [],
+      trackedWalletAddresses: [],
+      droppedWalletAddresses: []
+    })
+  }
 
   useEffect(() => {
     setSettingsEditor((current) => {
@@ -1264,6 +1302,9 @@ function App() {
     }))
 
     if (result.ok) {
+      if (confirm.actionId === 'restart_shadow') {
+        beginShadowRestartUiReset()
+      }
       setIsRefreshing(true)
       setRefreshToken((current) => current + 1)
     }

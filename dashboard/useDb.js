@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { postApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
 const queryCache = new Map();
+export function clearQueryCache() {
+    queryCache.clear();
+}
 export function useQuery(sql, params = [], intervalMs = 2000) {
     const paramsKey = JSON.stringify(params);
     const cacheKey = `${sql}\u0000${paramsKey}`;
@@ -11,6 +14,7 @@ export function useQuery(sql, params = [], intervalMs = 2000) {
         let cancelled = false;
         let timer = null;
         let activeController = null;
+        setRows(queryCache.get(cacheKey) || []);
         const schedule = () => {
             if (cancelled) {
                 return;

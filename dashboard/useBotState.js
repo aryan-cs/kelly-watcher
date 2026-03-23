@@ -2,6 +2,17 @@ import { useEffect, useState } from 'react';
 import { ApiError, apiBaseUrl, fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
 let botStateCache = { api_base_url: apiBaseUrl, api_error: '' };
+export function beginShadowRestartBotState() {
+    botStateCache = {
+        ...botStateCache,
+        api_base_url: apiBaseUrl,
+        api_error: 'Shadow restart in progress. Waiting for backend to come back.',
+        mode: 'shadow',
+        loop_in_progress: false,
+        last_poll_at: 0,
+        last_activity_at: 0
+    };
+}
 export function useBotState(intervalMs = 2000) {
     const [state, setState] = useState(() => ({ ...botStateCache }));
     const refreshToken = useRefreshToken();
@@ -9,6 +20,7 @@ export function useBotState(intervalMs = 2000) {
         let cancelled = false;
         let timer = null;
         let activeController = null;
+        setState({ ...botStateCache });
         const schedule = () => {
             if (cancelled) {
                 return;

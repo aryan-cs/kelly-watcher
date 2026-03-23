@@ -18,6 +18,10 @@ import { detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize } 
 import { useBotState } from './useBotState.js';
 import { dropTrackedWallet, reactivateDroppedWallet } from './walletWatchState.js';
 import { editablePositionStatuses, savePositionManualEdit } from './positionEditor.js';
+import { clearEventStreamCache } from './useEventStream.js';
+import { clearQueryCache } from './useDb.js';
+import { clearIdentityCache } from './identities.js';
+import { beginShadowRestartBotState } from './useBotState.js';
 const DOUBLE_UP_JUMP_MS = 350;
 const DOUBLE_UP_CONFIRM_MS = 140;
 const HORIZONTAL_SCROLL_STEP = 8;
@@ -324,6 +328,39 @@ function App() {
         dangerConfirm: null
     }));
     const dashboardConfig = useDashboardConfig();
+    const beginShadowRestartUiReset = () => {
+        clearEventStreamCache();
+        clearQueryCache();
+        clearIdentityCache();
+        beginShadowRestartBotState();
+        setFeedScrollOffset(0);
+        setSignalsScrollOffset(0);
+        setSignalsHorizontalOffset(0);
+        setPerfCurrentScrollOffset(0);
+        setPerfPastScrollOffset(0);
+        setPerfDailyDetailScrollOffset(0);
+        setPerfDailyDetailOpen(false);
+        setPerfPositionAction(null);
+        setPerfPositionEdit(null);
+        setPerfSelectionMeta({
+            currentCount: 0,
+            pastCount: 0,
+            selectedCurrentRow: null,
+            selectedPastRow: null
+        });
+        setPerfDetailHistoryMeta({ timelineCount: 0 });
+        setWalletDetailOpen(false);
+        setWalletMeta({
+            bestCount: 0,
+            worstCount: 0,
+            trackedCount: 0,
+            droppedCount: 0,
+            bestWalletAddresses: [],
+            worstWalletAddresses: [],
+            trackedWalletAddresses: [],
+            droppedWalletAddresses: []
+        });
+    };
     useEffect(() => {
         setSettingsEditor((current) => {
             const nextValues = readEditableConfigValues();
@@ -911,6 +948,9 @@ function App() {
             statusTone: result.ok ? 'success' : 'error'
         }));
         if (result.ok) {
+            if (confirm.actionId === 'restart_shadow') {
+                beginShadowRestartUiReset();
+            }
             setIsRefreshing(true);
             setRefreshToken((current) => current + 1);
         }

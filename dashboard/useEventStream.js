@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
 const eventCache = new Map();
+export function clearEventStreamCache() {
+    eventCache.clear();
+}
 export function useEventStream(maxEvents = 50) {
     const [events, setEvents] = useState(() => eventCache.get(maxEvents) || []);
     const refreshToken = useRefreshToken();
@@ -9,6 +12,7 @@ export function useEventStream(maxEvents = 50) {
         let cancelled = false;
         let timer = null;
         let activeController = null;
+        setEvents(eventCache.get(maxEvents) || []);
         const schedule = () => {
             if (cancelled) {
                 return;

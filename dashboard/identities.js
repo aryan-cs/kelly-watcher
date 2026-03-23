@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
 let identityCache = new Map();
+export function clearIdentityCache() {
+    identityCache = new Map();
+}
 export function isPlaceholderUsername(username, wallet) {
     const display = (username || '').trim();
     if (!display) {
@@ -41,6 +44,7 @@ export function useIdentityMap(intervalMs = 2000) {
     useEffect(() => {
         let cancelled = false;
         let timer = null;
+        setLookup(new Map(identityCache));
         const schedule = () => {
             if (cancelled) {
                 return;

@@ -8,6 +8,10 @@ interface QueryResponse<T> {
 
 const queryCache = new Map<string, unknown[]>()
 
+export function clearQueryCache(): void {
+  queryCache.clear()
+}
+
 export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 2000): T[] {
   const paramsKey = JSON.stringify(params)
   const cacheKey = `${sql}\u0000${paramsKey}`
@@ -18,6 +22,8 @@ export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 20
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
     let activeController: AbortController | null = null
+
+    setRows((queryCache.get(cacheKey) as T[] | undefined) || [])
 
     const schedule = () => {
       if (cancelled) {

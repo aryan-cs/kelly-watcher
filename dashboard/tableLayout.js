@@ -72,7 +72,7 @@ export function getSignalsLayout(width) {
     const sharesWidth = showShares ? 7 : 0;
     const sizeWidth = showSize ? 8 : 0;
     const decisionWidth = showDecision ? 6 : 0;
-    const confidenceWidth = showConfidence ? 5 : 0;
+    const confidenceWidth = showConfidence ? 6 : 0;
     const fixedWidths = [
         idWidth,
         timeWidth,

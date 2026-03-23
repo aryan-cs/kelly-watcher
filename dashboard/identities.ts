@@ -8,6 +8,10 @@ interface IdentityResponse {
 
 let identityCache = new Map<string, string>()
 
+export function clearIdentityCache(): void {
+  identityCache = new Map<string, string>()
+}
+
 export function isPlaceholderUsername(username: string | undefined, wallet?: string): boolean {
   const display = (username || '').trim()
   if (!display) {
@@ -54,6 +58,8 @@ export function useIdentityMap(intervalMs = 2000): Map<string, string> {
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
+
+    setLookup(new Map(identityCache))
 
     const schedule = () => {
       if (cancelled) {

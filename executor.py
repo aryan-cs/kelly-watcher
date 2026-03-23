@@ -61,6 +61,13 @@ class SimulatedFill:
     avg_price: float
 
 
+@dataclass(frozen=True)
+class TotalExposureDecision:
+    allowed_size_usd: float
+    clipped: bool
+    block_reason: str | None = None
+
+
 @dataclass
 class LiveWalletStatus:
     balance_usd: float
@@ -761,6 +768,47 @@ class PolymarketExecutor:
             )
 
         return None
+
+    def total_open_exposure_decision(
+        self,
+        *,
+        proposed_size_usd: float,
+        account_equity: float,
+    ) -> TotalExposureDecision:
+        if proposed_size_usd <= 0:
+            return TotalExposureDecision(allowed_size_usd=0.0, clipped=False)
+        if account_equity <= 0:
+            return TotalExposureDecision(
+                allowed_size_usd=0.0,
+                clipped=False,
+                block_reason="account equity was unavailable for exposure checks, so the trade was blocked",
+            )
+
+        total_open, _, _ = self._open_risk_snapshot(real_money=use_real_money())
+        total_cap = account_equity * max_total_open_exposure_fraction()
+        total_after = total_open + proposed_size_usd
+        if total_after <= total_cap + 1e-9:
+            return TotalExposureDecision(
+                allowed_size_usd=round(proposed_size_usd, 2),
+                clipped=False,
+            )
+
+        remaining_headroom = max(total_cap - total_open, 0.0)
+        allowed_size_usd = max(0.0, int((remaining_headroom + 1e-9) * 100.0) / 100.0)
+        if allowed_size_usd <= 0:
+            return TotalExposureDecision(
+                allowed_size_usd=0.0,
+                clipped=False,
+                block_reason=(
+                    f"total open exposure would be ${total_after:.2f} on ${account_equity:.2f} equity, "
+                    f"above the {max_total_open_exposure_fraction() * 100:.1f}% cap"
+                ),
+            )
+
+        return TotalExposureDecision(
+            allowed_size_usd=allowed_size_usd,
+            clipped=allowed_size_usd + 1e-9 < proposed_size_usd,
+        )
 
     def estimate_entry_fill(
         self,

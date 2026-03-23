@@ -495,6 +495,64 @@ def _humanize_reason(reason: str) -> str:
     return text
 
 
+def _apply_total_exposure_cap_to_size(
+    executor: PolymarketExecutor,
+    *,
+    requested_size_usd: float,
+    account_equity: float,
+) -> tuple[float, str | None, str | None]:
+    decision = executor.total_open_exposure_decision(
+        proposed_size_usd=requested_size_usd,
+        account_equity=account_equity,
+    )
+    if decision.block_reason:
+        return 0.0, decision.block_reason, None
+
+    allowed_size_usd = float(decision.allowed_size_usd or 0.0)
+    if decision.clipped and allowed_size_usd + 1e-9 < min_bet_usd():
+        return (
+            0.0,
+            (
+                f"remaining total exposure headroom was ${allowed_size_usd:.2f}, "
+                f"below the ${min_bet_usd():.2f} minimum bet size"
+            ),
+            None,
+        )
+
+    clip_note = None
+    if decision.clipped and allowed_size_usd + 1e-9 < requested_size_usd:
+        clip_note = f"total exposure cap clipped size from ${requested_size_usd:.2f} to ${allowed_size_usd:.2f}"
+    return allowed_size_usd, None, clip_note
+
+
+def _apply_total_exposure_cap_to_sizing(
+    executor: PolymarketExecutor,
+    sizing: dict,
+    *,
+    bankroll: float,
+    account_equity: float,
+) -> tuple[dict, str | None]:
+    requested_size_usd = float(sizing.get("dollar_size") or 0.0)
+    allowed_size_usd, block_reason, clip_note = _apply_total_exposure_cap_to_size(
+        executor,
+        requested_size_usd=requested_size_usd,
+        account_equity=account_equity,
+    )
+    if block_reason:
+        blocked = dict(sizing)
+        blocked["dollar_size"] = 0.0
+        blocked["kelly_f"] = 0.0
+        blocked["reason"] = block_reason
+        return blocked, None
+    if allowed_size_usd + 1e-9 >= requested_size_usd:
+        return sizing, None
+
+    capped = dict(sizing)
+    capped["dollar_size"] = allowed_size_usd
+    capped["kelly_f"] = round(allowed_size_usd / bankroll, 5) if bankroll > 0 else 0.0
+    return capped, clip_note
+
+
 def _wait_for_next_poll(loop_started_at: float, state_snapshot: dict, on_tick=None) -> None:
     last_interval = poll_interval()
 
@@ -761,6 +819,32 @@ def _process_manual_trade_request(
             )
             _pause_event(event, amount_usd, entry_block_reason)
             return
+
+        capped_amount_usd, exposure_block_reason, clip_note = _apply_total_exposure_cap_to_size(
+            executor,
+            requested_size_usd=amount_usd,
+            account_equity=account_equity,
+        )
+        if clip_note:
+            logger.info("Manual buy %s: %s", manual_trade_id, clip_note)
+        if exposure_block_reason:
+            event = _manual_trade_event(
+                request,
+                trade_id=manual_trade_id,
+                question=question,
+                price=float(snapshot.get("best_ask") or snapshot.get("mid") or 0.0),
+                shares=0.0,
+                size_usd=amount_usd,
+                close_time=close_time,
+                snapshot=snapshot,
+                raw_market_metadata=meta,
+                raw_orderbook=raw_book,
+                metadata_fetched_at=metadata_fetched_at,
+                orderbook_fetched_at=orderbook_fetched_at,
+            )
+            _skip_event(event, amount_usd, exposure_block_reason, decision="MANUAL")
+            return
+        amount_usd = capped_amount_usd
 
         fill_estimate, fill_reason = executor.estimate_entry_fill(raw_book, amount_usd)
         if fill_estimate is None:
@@ -1329,6 +1413,14 @@ def process_event(
         quality_score=wallet_quality_score,
         max_size_usd=max_wallet_size_usd,
     )
+    sizing, clip_note = _apply_total_exposure_cap_to_sizing(
+        executor,
+        sizing,
+        bankroll=bankroll,
+        account_equity=account_equity,
+    )
+    if clip_note:
+        logger.info("Trade %s: %s", event.trade_id, clip_note)
     fill_estimate = rough_fill
     fill_reason = None
     for _ in range(3):
@@ -1353,6 +1445,14 @@ def process_event(
             quality_score=wallet_quality_score,
             max_size_usd=max_wallet_size_usd,
         )
+        next_sizing, clip_note = _apply_total_exposure_cap_to_sizing(
+            executor,
+            next_sizing,
+            bankroll=bankroll,
+            account_equity=account_equity,
+        )
+        if clip_note:
+            logger.info("Trade %s: %s", event.trade_id, clip_note)
         if (
             next_sizing["dollar_size"] == sizing["dollar_size"]
             and abs(next_sizing.get("kelly_f", 0.0) - sizing.get("kelly_f", 0.0)) < 1e-9

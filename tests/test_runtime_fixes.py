@@ -21,7 +21,7 @@ import identity_cache
 import main
 import tracker
 import trader_scorer
-from executor import PolymarketExecutor, log_trade
+from executor import PolymarketExecutor, TotalExposureDecision, log_trade
 from market_scorer import MarketScorer, build_market_features
 from trader_scorer import TraderScorer
 
@@ -1451,6 +1451,61 @@ class RuntimeFixesTest(unittest.TestCase):
             )
 
         self.assertIsNone(reason)
+
+    def test_total_open_exposure_decision_clips_to_remaining_headroom(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._open_risk_snapshot = lambda **kwargs: (260.0, {}, {})
+
+        with patch("executor.use_real_money", return_value=True), patch(
+            "executor.max_total_open_exposure_fraction", return_value=0.30
+        ):
+            decision = executor.total_open_exposure_decision(
+                proposed_size_usd=80.0,
+                account_equity=1000.0,
+            )
+
+        self.assertTrue(decision.clipped)
+        self.assertIsNone(decision.block_reason)
+        self.assertEqual(decision.allowed_size_usd, 40.0)
+
+    def test_apply_total_exposure_cap_to_sizing_rescales_effective_fraction(self) -> None:
+        executor = Mock()
+        executor.total_open_exposure_decision.return_value = TotalExposureDecision(
+            allowed_size_usd=40.0,
+            clipped=True,
+        )
+
+        sizing, clip_note = main._apply_total_exposure_cap_to_sizing(
+            executor,
+            {"dollar_size": 80.0, "kelly_f": 0.08, "reason": "ok"},
+            bankroll=1000.0,
+            account_equity=1000.0,
+        )
+
+        self.assertEqual(sizing["dollar_size"], 40.0)
+        self.assertAlmostEqual(sizing["kelly_f"], 0.04, places=6)
+        self.assertEqual(sizing["reason"], "ok")
+        self.assertEqual(clip_note, "total exposure cap clipped size from $80.00 to $40.00")
+
+    def test_apply_total_exposure_cap_to_sizing_blocks_when_headroom_falls_below_minimum_bet(self) -> None:
+        executor = Mock()
+        executor.total_open_exposure_decision.return_value = TotalExposureDecision(
+            allowed_size_usd=0.75,
+            clipped=True,
+        )
+
+        with patch("main.min_bet_usd", return_value=1.0):
+            sizing, clip_note = main._apply_total_exposure_cap_to_sizing(
+                executor,
+                {"dollar_size": 10.0, "kelly_f": 0.01, "reason": "ok"},
+                bankroll=1000.0,
+                account_equity=1000.0,
+            )
+
+        self.assertEqual(sizing["dollar_size"], 0.0)
+        self.assertEqual(sizing["kelly_f"], 0.0)
+        self.assertIn("remaining total exposure headroom was $0.75", sizing["reason"])
+        self.assertIsNone(clip_note)
 
     def test_trader_cache_refresh_rotates_batched_wallets(self) -> None:
         wallets = ["0x1", "0x2", "0x3"]

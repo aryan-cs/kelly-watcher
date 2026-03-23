@@ -168,15 +168,13 @@ class ShadowResetTest(unittest.TestCase):
 
         self.assertEqual(active_wallets, ["0xactive", "0xunknown"])
 
-    def test_reset_shadow_runtime_clears_training_history_and_runtime_files(self) -> None:
+    def test_reset_shadow_runtime_clears_shadow_runtime_but_preserves_learning_state(self) -> None:
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
             log_dir = Path(tmpdir) / "logs"
             data_dir.mkdir(parents=True, exist_ok=True)
             log_dir.mkdir(parents=True, exist_ok=True)
             db_path = data_dir / "trading.db"
-            db_wal_path = Path(f"{db_path}-wal")
-            db_shm_path = Path(f"{db_path}-shm")
             event_file = data_dir / "events.jsonl"
             bot_state_file = data_dir / "bot_state.json"
             pid_file = data_dir / "shadow_bot.pid"
@@ -203,18 +201,13 @@ class ShadowResetTest(unittest.TestCase):
                 shadow_reset,
                 "_reset_file_paths",
                 return_value=(
-                    db_path,
-                    db_shm_path,
-                    db_wal_path,
                     event_file,
                     bot_state_file,
                     pid_file,
-                    identity_file,
                     manual_retrain_file,
                     manual_trade_file,
                     telegram_state_file,
                     background_log,
-                    model_artifact,
                 ),
             ):
                 db.init_db()
@@ -253,10 +246,34 @@ class ShadowResetTest(unittest.TestCase):
                         """
                         INSERT INTO trade_log (
                             trade_id, market_id, trader_address, side, source_action,
-                            price_at_signal, signal_size_usd, confidence, kelly_fraction, placed_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            price_at_signal, signal_size_usd, confidence, kelly_fraction, placed_at, real_money
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        ("trade-1", "market-1", "0xabc", "yes", "buy", 0.61, 10.0, 0.66, 0.05, 1774252900),
+                        ("trade-1", "market-1", "0xabc", "yes", "buy", 0.61, 10.0, 0.66, 0.05, 1774252900, 0),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO trade_log_manual_edits (
+                            trade_log_id, entry_price, shares, size_usd, status, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (1, 0.62, 16.0, 10.0, "shadow", 1774252901),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO positions (
+                            market_id, side, size_usd, avg_price, token_id, entered_at, real_money
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        ("market-1", "yes", 10.0, 0.61, "token-1", 1774252900, 0),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO position_manual_edits (
+                            market_id, token_id, side, real_money, entry_price, shares, size_usd, status, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        ("market-1", "token-1", "yes", 0, 0.61, 16.0, 10.0, "shadow", 1774252901),
                     )
                     conn.execute(
                         """
@@ -266,6 +283,22 @@ class ShadowResetTest(unittest.TestCase):
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (1774252900, "shadow", 10, 3, 2, 0.5, 12.0, 0.67, 1.2),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO belief_priors (
+                            feature_name, bucket, wins, losses, updated_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("days_to_res", "15m_1h", 4.0, 2.0, 1774252900),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO belief_updates (
+                            trade_log_id, applied_at
+                        ) VALUES (?, ?)
+                        """,
+                        (1, 1774252900),
                     )
                     conn.commit()
                 finally:
@@ -277,24 +310,41 @@ class ShadowResetTest(unittest.TestCase):
                 try:
                     model_history_count = conn.execute("SELECT COUNT(*) FROM model_history").fetchone()[0]
                     retrain_runs_count = conn.execute("SELECT COUNT(*) FROM retrain_runs").fetchone()[0]
+                    preserved_manual_retrain_count = conn.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM retrain_runs
+                        WHERE status='completed_not_deployed'
+                          AND message LIKE 'shared holdout ll/brier:%'
+                        """
+                    ).fetchone()[0]
                     trade_log_count = conn.execute("SELECT COUNT(*) FROM trade_log").fetchone()[0]
+                    positions_count = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
                     perf_snapshot_count = conn.execute("SELECT COUNT(*) FROM perf_snapshots").fetchone()[0]
+                    belief_prior_count = conn.execute("SELECT COUNT(*) FROM belief_priors").fetchone()[0]
+                    belief_update_count = conn.execute("SELECT COUNT(*) FROM belief_updates").fetchone()[0]
+                    manual_trade_edit_count = conn.execute("SELECT COUNT(*) FROM trade_log_manual_edits").fetchone()[0]
+                    manual_position_edit_count = conn.execute("SELECT COUNT(*) FROM position_manual_edits").fetchone()[0]
                 finally:
                     conn.close()
 
-        self.assertEqual(model_history_count, 0)
-        self.assertEqual(retrain_runs_count, 0)
+        self.assertEqual(model_history_count, 1)
+        self.assertGreaterEqual(retrain_runs_count, 1)
+        self.assertEqual(preserved_manual_retrain_count, 1)
         self.assertEqual(trade_log_count, 0)
+        self.assertEqual(positions_count, 0)
         self.assertEqual(perf_snapshot_count, 0)
+        self.assertEqual(belief_prior_count, 1)
+        self.assertEqual(belief_update_count, 0)
+        self.assertEqual(manual_trade_edit_count, 0)
+        self.assertEqual(manual_position_edit_count, 0)
         self.assertFalse(event_file.exists())
         self.assertFalse(bot_state_file.exists())
         self.assertFalse(pid_file.exists())
-        self.assertFalse(identity_file.exists())
         self.assertFalse(manual_retrain_file.exists())
         self.assertFalse(manual_trade_file.exists())
         self.assertFalse(telegram_state_file.exists())
         self.assertFalse(background_log.exists())
-        self.assertFalse(model_artifact.exists())
 
 
 if __name__ == "__main__":

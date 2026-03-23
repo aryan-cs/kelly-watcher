@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 from adaptive_confidence import (
     BucketStats,
@@ -93,8 +95,9 @@ class AdaptiveConfidenceFloorTest(unittest.TestCase):
         self.assertGreater(decision.adjustment, 0.0)
 
     def test_heuristic_size_respects_min_confidence_override(self) -> None:
-        rejected = heuristic_size(0.59, 100.0)
-        accepted = heuristic_size(0.59, 100.0, min_confidence_override=0.585)
+        with patch.dict(os.environ, {"MIN_CONFIDENCE": "0.60"}, clear=False):
+            rejected = heuristic_size(0.59, 100.0)
+            accepted = heuristic_size(0.59, 100.0, min_confidence_override=0.585)
 
         self.assertEqual(rejected["dollar_size"], 0.0)
         self.assertGreater(accepted["dollar_size"], 0.0)

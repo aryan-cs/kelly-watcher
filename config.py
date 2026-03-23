@@ -130,7 +130,7 @@ def max_bet_fraction() -> float:
 
 
 def min_confidence() -> float:
-    return _get_float("MIN_CONFIDENCE", "0.60")
+    return _get_float("MIN_CONFIDENCE", "0.55")
 
 
 def min_bet_usd() -> float:

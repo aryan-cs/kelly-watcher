@@ -1218,11 +1218,11 @@ function App() {
       dangerConfirm: {
         actionId: 'restart_shadow',
         title: 'Restart Shadow Account?',
-        message: 'This does a fresh reset. Tracker history, training history, SQLite data, model artifacts, identity cache, events, and bot state are wiped before shadow mode restarts from the configured bankroll.',
+        message: 'This does a fresh shadow reset. Shadow trade history, signals, open positions, events, and bot state are cleared before shadow mode restarts from the configured bankroll. Config settings, learned priors, and training history are preserved.',
         options: [
-          {id: 'keep_active', label: 'Keep active wallets', description: 'Reset data and keep only wallets that are not currently auto-dropped.'},
-          {id: 'keep_all', label: 'Keep all wallets', description: 'Reset data but preserve the full WATCHED_WALLETS list.'},
-          {id: 'clear_all', label: 'Clear all wallets', description: 'Reset data and blank WATCHED_WALLETS.'},
+          {id: 'keep_active', label: 'Keep active wallets', description: 'Clear runtime data and keep only wallets that are not currently auto-dropped.'},
+          {id: 'keep_all', label: 'Keep all wallets', description: 'Clear runtime data but preserve the full WATCHED_WALLETS list.'},
+          {id: 'clear_all', label: 'Clear all wallets', description: 'Clear runtime data and blank WATCHED_WALLETS.'},
           {id: 'cancel', label: 'Cancel', description: 'Leave everything unchanged.'}
         ],
         selectedIndex: 0

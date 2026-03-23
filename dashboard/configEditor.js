@@ -96,7 +96,7 @@ export const editableConfigFields = [
         label: 'Min Confidence',
         kind: 'float',
         description: 'Minimum confidence needed to accept a copied trade. Restart bot to apply.',
-        defaultValue: '0.60',
+        defaultValue: '0.55',
         liveApplies: false
     },
     {

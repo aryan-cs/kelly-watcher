@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -23,7 +24,6 @@ from runtime_paths import (
     DATA_DIR,
     EVENT_FILE,
     IDENTITY_CACHE_PATH,
-    LOG_DIR,
     MANUAL_RETRAIN_REQUEST_FILE,
     MANUAL_TRADE_REQUEST_FILE,
     REPO_ROOT,
@@ -36,7 +36,7 @@ ENV_PATH = env_path_for_profile(ENV_PROFILE)
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 IDENTITY_FILE = IDENTITY_CACHE_PATH
 RESTART_SHADOW_SCRIPT = REPO_ROOT / "restart_shadow.py"
-SHADOW_RESTART_LOG = LOG_DIR / "shadow_restart.out"
+SHADOW_RESTART_LOG = Path(tempfile.gettempdir()) / "kelly_watcher_shadow_restart.out"
 SHADOW_RESTART_HELPER_DELAY_SECONDS = 0.75
 
 SAFE_ENV_KEYS = {
@@ -718,6 +718,13 @@ def _spawn_shadow_restart_process(wallet_mode: str) -> dict[str, Any]:
     return {"ok": True, "message": "Shadow restart helper launched."}
 
 
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
     if _live_trading_enabled_in_config() or _current_bot_mode() == "live" or use_real_money():
         return {
@@ -732,7 +739,7 @@ def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
         "ok": True,
         "message": (
             "Shadow restart requested. The API should come back after the bot resets and starts again. "
-            f"Helper log: {SHADOW_RESTART_LOG.relative_to(REPO_ROOT)}"
+            f"Helper log: {_display_path(SHADOW_RESTART_LOG)}"
         ),
     }
 

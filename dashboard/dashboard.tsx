@@ -1256,11 +1256,11 @@ function App() {
       dangerConfirm: {
         actionId: 'restart_shadow',
         title: 'Restart Shadow Account?',
-        message: 'This does a fresh shadow reset. Tracker history, signals, positions, performance history, model state, training cycles, events, and bot state are cleared before shadow mode restarts from the configured bankroll. Config settings are preserved.',
+        message: 'This deletes the entire save directory for the shadow account before restarting. Tracker history, signals, positions, performance history, logs, model state, training cycles, events, and bot state are all wiped. Config settings stay in place.',
         options: [
-          {id: 'keep_active', label: 'Keep active wallets', description: 'Clear runtime and model/training state, then keep only wallets that are not currently auto-dropped.'},
-          {id: 'keep_all', label: 'Keep all wallets', description: 'Clear runtime and model/training state, but preserve the full WATCHED_WALLETS list.'},
-          {id: 'clear_all', label: 'Clear all wallets', description: 'Clear runtime and model/training state, then blank WATCHED_WALLETS.'},
+          {id: 'keep_active', label: 'Keep active wallets', description: 'Delete the entire save directory, then keep only wallets that are not currently auto-dropped.'},
+          {id: 'keep_all', label: 'Keep all wallets', description: 'Delete the entire save directory, but preserve the full WATCHED_WALLETS list.'},
+          {id: 'clear_all', label: 'Clear all wallets', description: 'Delete the entire save directory, then blank WATCHED_WALLETS.'},
           {id: 'cancel', label: 'Cancel', description: 'Leave everything unchanged.'}
         ],
         selectedIndex: 0

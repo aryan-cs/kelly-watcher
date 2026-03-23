@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -25,16 +26,10 @@ from env_profile import (
 from runtime_paths import (
     BACKGROUND_LOG_PATH,
     BOT_PID_FILE,
-    BOT_STATE_FILE,
     DATA_DIR,
-    EVENT_FILE,
-    IDENTITY_CACHE_PATH,
     LOG_DIR,
-    MANUAL_RETRAIN_REQUEST_FILE,
-    MANUAL_TRADE_REQUEST_FILE,
-    MODEL_ARTIFACT_PATH,
     REPO_ROOT,
-    TELEGRAM_STATE_FILE,
+    SAVE_DIR,
 )
 
 ENV_PROFILE = active_env_profile()
@@ -333,30 +328,6 @@ def stop_existing_bot(target_pids: list[int] | tuple[int, ...] | set[int] | None
         )
 
 
-def _reset_file_paths() -> tuple[Path, ...]:
-    return (
-        EVENT_FILE,
-        BOT_STATE_FILE,
-        PID_FILE,
-        IDENTITY_CACHE_PATH,
-        MANUAL_RETRAIN_REQUEST_FILE,
-        MANUAL_TRADE_REQUEST_FILE,
-        TELEGRAM_STATE_FILE,
-        BACKGROUND_LOG,
-        MODEL_ARTIFACT_PATH,
-    )
-
-
-def _reset_db_paths() -> tuple[Path, ...]:
-    db_path = Path(db.DB_PATH)
-    return (
-        db_path,
-        Path(f"{db_path}-wal"),
-        Path(f"{db_path}-shm"),
-        Path(f"{db_path}-journal"),
-    )
-
-
 def _active_watched_wallets(watched_wallets: list[str]) -> list[str]:
     if not watched_wallets:
         return []
@@ -387,9 +358,9 @@ def _active_watched_wallets(watched_wallets: list[str]) -> list[str]:
 
 def _wallet_mode_intro_lines(wallet_mode: RestartWalletMode) -> tuple[str, ...]:
     reset_line = (
-        "Fresh shadow reset: clearing tracker history, signals, positions, performance snapshots, "
-        "model artifacts, training cycles, wallet watch-state memory, events, and bot state while "
-        "preserving config settings."
+        "Full shadow account reset: deleting the entire save directory and all shadow runtime state, "
+        "including tracker history, signals, positions, performance snapshots, logs, model artifacts, "
+        "training cycles, wallet watch-state memory, events, and bot state. Config settings stay in place."
     )
     if wallet_mode == "keep_active":
         return (
@@ -416,18 +387,12 @@ def _wallet_mode_result_line(wallet_mode: RestartWalletMode) -> str:
 
 
 def reset_shadow_runtime() -> None:
+    try:
+        shutil.rmtree(SAVE_DIR)
+    except FileNotFoundError:
+        pass
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    for path in _reset_db_paths():
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            continue
-    for path in _reset_file_paths():
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            continue
     db.init_db()
     try:
         from beliefs import invalidate_belief_cache
@@ -543,7 +508,9 @@ def run(
             _write_env_value("WATCHED_WALLETS", "")
             wallets_updated = True
 
-        print(f"Resetting shadow runtime state back to the configured bankroll of ${bankroll:.2f}...")
+        print(
+            f"Resetting shadow account by deleting the entire save directory and returning to the configured bankroll of ${bankroll:.2f}..."
+        )
         for line in _wallet_mode_intro_lines(normalized_wallet_mode):
             print(line)
         reset_shadow_runtime()

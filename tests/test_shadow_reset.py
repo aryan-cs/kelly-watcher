@@ -85,7 +85,7 @@ class ShadowResetTest(unittest.TestCase):
         stop_bot.assert_called_once_with(target_pids=None)
         reset_runtime.assert_called_once_with()
         output = stdout.getvalue()
-        self.assertIn("Resetting shadow runtime state back to the configured bankroll of $3000.00", output)
+        self.assertIn("Resetting shadow account by deleting the entire save directory", output)
         self.assertIn("PID: 4321", output)
         self.assertIn("Initial bankroll: $3000.00", output)
 
@@ -227,11 +227,15 @@ class ShadowResetTest(unittest.TestCase):
 
     def test_reset_shadow_runtime_rebuilds_fresh_runtime_state(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir) / "data"
-            log_dir = Path(tmpdir) / "logs"
+            save_dir = Path(tmpdir) / "save"
+            data_dir = save_dir / "data"
+            log_dir = save_dir / "logs"
+            backups_dir = data_dir / "backups"
             data_dir.mkdir(parents=True, exist_ok=True)
             log_dir.mkdir(parents=True, exist_ok=True)
+            backups_dir.mkdir(parents=True, exist_ok=True)
             db_path = data_dir / "trading.db"
+            extra_db_path = data_dir / "polymarket.db"
             event_file = data_dir / "events.jsonl"
             bot_state_file = data_dir / "bot_state.json"
             pid_file = data_dir / "shadow_bot.pid"
@@ -240,8 +244,8 @@ class ShadowResetTest(unittest.TestCase):
             manual_trade_file = data_dir / "manual_trade_request.json"
             telegram_state_file = data_dir / "telegram_state.json"
             background_log = log_dir / "shadow_runtime.out"
-            model_artifact = Path(tmpdir) / "save" / "model.joblib"
-            model_artifact.parent.mkdir(parents=True, exist_ok=True)
+            backup_db = backups_dir / "trading_before_shadow_reset.db"
+            model_artifact = save_dir / "model.joblib"
             event_file.write_text("event\n", encoding="utf-8")
             bot_state_file.write_text("{}", encoding="utf-8")
             pid_file.write_text("123\n", encoding="utf-8")
@@ -251,23 +255,15 @@ class ShadowResetTest(unittest.TestCase):
             telegram_state_file.write_text("{}", encoding="utf-8")
             background_log.write_text("runtime log\n", encoding="utf-8")
             model_artifact.write_text("model\n", encoding="utf-8")
+            extra_db_path.write_text("extra db\n", encoding="utf-8")
+            backup_db.write_text("backup db\n", encoding="utf-8")
 
-            with patch("db.DB_PATH", db_path), patch.object(shadow_reset, "DATA_DIR", data_dir), patch.object(
+            with patch("db.DB_PATH", db_path), patch.object(shadow_reset, "SAVE_DIR", save_dir), patch.object(
+                shadow_reset, "DATA_DIR", data_dir
+            ), patch.object(
                 shadow_reset, "LOG_DIR", log_dir
             ), patch.object(
-                shadow_reset,
-                "_reset_file_paths",
-                return_value=(
-                    event_file,
-                    bot_state_file,
-                    pid_file,
-                    identity_file,
-                    manual_retrain_file,
-                    manual_trade_file,
-                    telegram_state_file,
-                    background_log,
-                    model_artifact,
-                ),
+                shadow_reset, "BACKGROUND_LOG", background_log
             ):
                 db.init_db()
                 conn = db.get_conn()
@@ -425,27 +421,33 @@ class ShadowResetTest(unittest.TestCase):
                 finally:
                     conn.close()
 
-        self.assertEqual(model_history_count, 0)
-        self.assertEqual(retrain_runs_count, 0)
-        self.assertEqual(trade_log_count, 0)
-        self.assertEqual(positions_count, 0)
-        self.assertEqual(perf_snapshot_count, 0)
-        self.assertEqual(belief_prior_count, 0)
-        self.assertEqual(belief_update_count, 0)
-        self.assertEqual(trader_cache_count, 0)
-        self.assertEqual(wallet_cursor_count, 0)
-        self.assertEqual(wallet_watch_state_count, 0)
-        self.assertEqual(manual_trade_edit_count, 0)
-        self.assertEqual(manual_position_edit_count, 0)
-        self.assertFalse(event_file.exists())
-        self.assertFalse(bot_state_file.exists())
-        self.assertFalse(pid_file.exists())
-        self.assertFalse(identity_file.exists())
-        self.assertFalse(manual_retrain_file.exists())
-        self.assertFalse(manual_trade_file.exists())
-        self.assertFalse(telegram_state_file.exists())
-        self.assertFalse(background_log.exists())
-        self.assertFalse(model_artifact.exists())
+            self.assertEqual(model_history_count, 0)
+            self.assertEqual(retrain_runs_count, 0)
+            self.assertEqual(trade_log_count, 0)
+            self.assertEqual(positions_count, 0)
+            self.assertEqual(perf_snapshot_count, 0)
+            self.assertEqual(belief_prior_count, 0)
+            self.assertEqual(belief_update_count, 0)
+            self.assertEqual(trader_cache_count, 0)
+            self.assertEqual(wallet_cursor_count, 0)
+            self.assertEqual(wallet_watch_state_count, 0)
+            self.assertEqual(manual_trade_edit_count, 0)
+            self.assertEqual(manual_position_edit_count, 0)
+            self.assertTrue(save_dir.exists())
+            self.assertTrue(data_dir.exists())
+            self.assertTrue(log_dir.exists())
+            self.assertTrue(db_path.exists())
+            self.assertFalse(event_file.exists())
+            self.assertFalse(bot_state_file.exists())
+            self.assertFalse(pid_file.exists())
+            self.assertFalse(identity_file.exists())
+            self.assertFalse(manual_retrain_file.exists())
+            self.assertFalse(manual_trade_file.exists())
+            self.assertFalse(telegram_state_file.exists())
+            self.assertFalse(background_log.exists())
+            self.assertFalse(model_artifact.exists())
+            self.assertFalse(extra_db_path.exists())
+            self.assertFalse(backup_db.exists())
 
 
 if __name__ == "__main__":

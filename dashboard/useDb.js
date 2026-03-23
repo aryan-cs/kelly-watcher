@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { postApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
+import { isShadowRestartPending } from './useBotState.js';
 const queryCache = new Map();
 export function clearQueryCache() {
     queryCache.clear();
@@ -24,6 +25,13 @@ export function useQuery(sql, params = [], intervalMs = 2000) {
             }, Math.max(intervalMs, 250));
         };
         const run = async () => {
+            if (isShadowRestartPending()) {
+                if (!cancelled) {
+                    setRows(queryCache.get(cacheKey) || []);
+                }
+                schedule();
+                return;
+            }
             const controller = new AbortController();
             activeController = controller;
             try {

@@ -1,6 +1,7 @@
 import {useEffect, useState} from 'react'
 import {postApiJson} from './api.js'
 import {useRefreshToken} from './refresh.js'
+import {isShadowRestartPending} from './useBotState.js'
 
 interface QueryResponse<T> {
   rows?: T[]
@@ -35,6 +36,13 @@ export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 20
     }
 
     const run = async () => {
+      if (isShadowRestartPending()) {
+        if (!cancelled) {
+          setRows((queryCache.get(cacheKey) as T[] | undefined) || [])
+        }
+        schedule()
+        return
+      }
       const controller = new AbortController()
       activeController = controller
       try {

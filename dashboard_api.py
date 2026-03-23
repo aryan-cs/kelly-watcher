@@ -37,7 +37,7 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 IDENTITY_FILE = IDENTITY_CACHE_PATH
 RESTART_SHADOW_SCRIPT = REPO_ROOT / "restart_shadow.py"
 SHADOW_RESTART_LOG = LOG_DIR / "shadow_restart.out"
-SHADOW_RESTART_DELAY_SECONDS = 0.25
+SHADOW_RESTART_HELPER_DELAY_SECONDS = 0.75
 
 SAFE_ENV_KEYS = {
     "WATCHED_WALLETS",
@@ -666,6 +666,8 @@ def _normalize_shadow_restart_wallet_mode(value: Any) -> str:
 def _shadow_restart_command(wallet_mode: str) -> list[str]:
     wallet_mode = _normalize_shadow_restart_wallet_mode(wallet_mode)
     command = [preferred_python_executable(), str(RESTART_SHADOW_SCRIPT), active_env_flag()]
+    if SHADOW_RESTART_HELPER_DELAY_SECONDS > 0:
+        command.extend(["--delay-seconds", f"{SHADOW_RESTART_HELPER_DELAY_SECONDS:.2f}"])
     if wallet_mode == "keep_active":
         command.append("--keep-active-wallets")
     elif wallet_mode == "clear_all":
@@ -716,20 +718,10 @@ def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
             "ok": False,
             "message": "Restart Shadow is blocked while live trading is enabled or the running bot is live.",
         }
-
-    def _deferred_launch() -> None:
-        if SHADOW_RESTART_DELAY_SECONDS > 0:
-            time.sleep(SHADOW_RESTART_DELAY_SECONDS)
-        result = _spawn_shadow_restart_process(wallet_mode)
-        if not result.get("ok"):
-            logger.error("Shadow restart helper launch failed: %s", result.get("message"))
-
-    threading.Thread(
-        target=_deferred_launch,
-        name="shadow-restart-launcher",
-        daemon=True,
-    ).start()
-
+    result = _spawn_shadow_restart_process(wallet_mode)
+    if not result.get("ok"):
+        logger.error("Shadow restart helper launch failed: %s", result.get("message"))
+        return result
     return {
         "ok": True,
         "message": (
@@ -888,7 +880,8 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
                     wallet_mode = "keep_all" if bool(keep_wallets) else "clear_all"
                 else:
                     wallet_mode = _normalize_shadow_restart_wallet_mode(raw_wallet_mode)
-                self._send_json(202, _launch_shadow_restart(wallet_mode))
+                result = _launch_shadow_restart(wallet_mode)
+                self._send_json(202 if result.get("ok") else 500, result)
                 return
         except ValueError as exc:
             self._send_json(400, {"ok": False, "message": str(exc)})

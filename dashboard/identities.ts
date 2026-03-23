@@ -1,6 +1,7 @@
 import {useEffect, useState} from 'react'
 import {fetchApiJson} from './api.js'
 import {useRefreshToken} from './refresh.js'
+import {isShadowRestartPending} from './useBotState.js'
 
 interface IdentityResponse {
   wallets?: Record<string, string>
@@ -71,6 +72,13 @@ export function useIdentityMap(intervalMs = 2000): Map<string, string> {
     }
 
     const read = async () => {
+      if (isShadowRestartPending()) {
+        if (!cancelled) {
+          setLookup(new Map(identityCache))
+        }
+        schedule()
+        return
+      }
       try {
         const payload = await fetchApiJson<IdentityResponse>('/api/identities')
         const nextLookup = normalizeIdentityMap(payload)

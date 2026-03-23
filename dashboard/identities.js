@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
+import { isShadowRestartPending } from './useBotState.js';
 let identityCache = new Map();
 export function clearIdentityCache() {
     identityCache = new Map();
@@ -54,6 +55,13 @@ export function useIdentityMap(intervalMs = 2000) {
             }, Math.max(intervalMs, 250));
         };
         const read = async () => {
+            if (isShadowRestartPending()) {
+                if (!cancelled) {
+                    setLookup(new Map(identityCache));
+                }
+                schedule();
+                return;
+            }
             try {
                 const payload = await fetchApiJson('/api/identities');
                 const nextLookup = normalizeIdentityMap(payload);

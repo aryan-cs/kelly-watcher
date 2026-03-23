@@ -89,6 +89,30 @@ class ShadowResetTest(unittest.TestCase):
         self.assertIn("PID: 4321", output)
         self.assertIn("Initial bankroll: $3000.00", output)
 
+    def test_run_honors_delay_seconds_before_stopping_existing_bot(self) -> None:
+        stdout = io.StringIO()
+        with patch.object(shadow_reset, "use_real_money", return_value=False), patch.object(
+            shadow_reset, "shadow_bankroll_usd", return_value=3000.0
+        ), patch.object(shadow_reset.time, "sleep") as sleep_mock, patch.object(
+            shadow_reset, "stop_existing_bot"
+        ) as stop_bot, patch.object(
+            shadow_reset, "reset_shadow_runtime"
+        ) as reset_runtime, patch.object(
+            shadow_reset, "launch_background_bot", return_value=4321
+        ), redirect_stdout(stdout):
+            exit_code = shadow_reset.run(
+                foreground=False,
+                start_bot=True,
+                wallet_mode="keep_all",
+                delay_seconds=0.75,
+            )
+
+        self.assertEqual(exit_code, 0)
+        sleep_mock.assert_called_once_with(0.75)
+        stop_bot.assert_called_once_with()
+        reset_runtime.assert_called_once_with()
+        self.assertIn("Waiting 0.75s before stopping the current bot...", stdout.getvalue())
+
     def test_run_reset_only_resets_without_starting(self) -> None:
         stdout = io.StringIO()
         with patch.object(shadow_reset, "use_real_money", return_value=False), patch.object(

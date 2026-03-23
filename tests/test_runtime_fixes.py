@@ -273,6 +273,8 @@ class RuntimeFixesTest(unittest.TestCase):
             with patch.object(dashboard_api, "REPO_ROOT", repo_root), patch.object(
                 dashboard_api, "RESTART_SHADOW_SCRIPT", restart_script
             ), patch.object(dashboard_api, "SHADOW_RESTART_LOG", restart_log), patch.object(
+                dashboard_api, "SHADOW_RESTART_HELPER_DELAY_SECONDS", 0.75
+            ), patch.object(
                 dashboard_api, "preferred_python_executable", return_value=str(repo_root / ".venv" / "bin" / "python")
             ), patch.object(dashboard_api, "active_env_flag", return_value="--prod"), patch.object(
                 dashboard_api, "runtime_env", return_value={"TEST_ENV": "1"}
@@ -283,7 +285,14 @@ class RuntimeFixesTest(unittest.TestCase):
         popen_command = popen_mock.call_args.args[0]
         self.assertEqual(
             popen_command,
-            [str(repo_root / ".venv" / "bin" / "python"), str(restart_script), "--prod", "--clear-wallets"],
+            [
+                str(repo_root / ".venv" / "bin" / "python"),
+                str(restart_script),
+                "--prod",
+                "--delay-seconds",
+                "0.75",
+                "--clear-wallets",
+            ],
         )
         self.assertEqual(popen_mock.call_args.kwargs["cwd"], str(repo_root))
         self.assertEqual(popen_mock.call_args.kwargs["env"], {"TEST_ENV": "1"})
@@ -302,6 +311,8 @@ class RuntimeFixesTest(unittest.TestCase):
             with patch.object(dashboard_api, "REPO_ROOT", repo_root), patch.object(
                 dashboard_api, "RESTART_SHADOW_SCRIPT", restart_script
             ), patch.object(dashboard_api, "SHADOW_RESTART_LOG", restart_log), patch.object(
+                dashboard_api, "SHADOW_RESTART_HELPER_DELAY_SECONDS", 0.75
+            ), patch.object(
                 dashboard_api, "preferred_python_executable", return_value=str(repo_root / ".venv" / "bin" / "python")
             ), patch.object(dashboard_api, "active_env_flag", return_value="--prod"), patch.object(
                 dashboard_api, "runtime_env", return_value={"TEST_ENV": "1"}
@@ -311,25 +322,27 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(
             popen_mock.call_args.args[0],
-            [str(repo_root / ".venv" / "bin" / "python"), str(restart_script), "--prod", "--keep-active-wallets"],
+            [
+                str(repo_root / ".venv" / "bin" / "python"),
+                str(restart_script),
+                "--prod",
+                "--delay-seconds",
+                "0.75",
+                "--keep-active-wallets",
+            ],
         )
 
-    def test_dashboard_launch_shadow_restart_defers_helper_spawn(self) -> None:
-        thread_instance = Mock()
-
+    def test_dashboard_launch_shadow_restart_spawns_helper_immediately(self) -> None:
         with patch.object(dashboard_api, "_live_trading_enabled_in_config", return_value=False), patch.object(
             dashboard_api, "_current_bot_mode", return_value="shadow"
         ), patch.object(dashboard_api, "use_real_money", return_value=False), patch.object(
-            dashboard_api.threading, "Thread", return_value=thread_instance
-        ) as thread_mock:
+            dashboard_api, "_spawn_shadow_restart_process", return_value={"ok": True, "message": "launched"}
+        ) as spawn_mock:
             result = dashboard_api._launch_shadow_restart(wallet_mode="keep_all")
 
         self.assertTrue(result["ok"])
         self.assertIn("Helper log:", result["message"])
-        thread_mock.assert_called_once()
-        self.assertEqual(thread_mock.call_args.kwargs["name"], "shadow-restart-launcher")
-        self.assertTrue(thread_mock.call_args.kwargs["daemon"])
-        thread_instance.start.assert_called_once_with()
+        spawn_mock.assert_called_once_with("keep_all")
 
     def test_entry_pause_reason_refreshes_daily_loss_guard_from_config(self) -> None:
         now_ts = int(time.time())

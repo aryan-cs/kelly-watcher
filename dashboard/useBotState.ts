@@ -34,17 +34,65 @@ interface BotStateResponse {
 }
 
 let botStateCache: BotState = {api_base_url: apiBaseUrl, api_error: ''}
+let shadowRestartPending = false
+let shadowRestartRequestedAtMs = 0
+let shadowRestartPreviousStartedAt: number | null = null
+const SHADOW_RESTART_PENDING_TIMEOUT_MS = 45000
+
+function shadowRestartPendingMessage(): string {
+  if (!shadowRestartPending) {
+    return ''
+  }
+  if (shadowRestartRequestedAtMs > 0 && Date.now() - shadowRestartRequestedAtMs > SHADOW_RESTART_PENDING_TIMEOUT_MS) {
+    return 'Shadow restart is taking longer than expected. Waiting for a new backend session.'
+  }
+  return 'Shadow restart in progress. Waiting for backend to come back.'
+}
+
+function hasShadowRestartCompleted(nextState: BotState): boolean {
+  if (!shadowRestartPending) {
+    return true
+  }
+  const nextStartedAt = Number(nextState.started_at || 0)
+  if (nextStartedAt <= 0) {
+    return false
+  }
+  if (shadowRestartPreviousStartedAt == null) {
+    shadowRestartPending = false
+    shadowRestartRequestedAtMs = 0
+    shadowRestartPreviousStartedAt = null
+    return true
+  }
+  if (nextStartedAt !== shadowRestartPreviousStartedAt) {
+    shadowRestartPending = false
+    shadowRestartRequestedAtMs = 0
+    shadowRestartPreviousStartedAt = null
+    return true
+  }
+  return false
+}
 
 export function beginShadowRestartBotState(): void {
+  shadowRestartPending = true
+  shadowRestartRequestedAtMs = Date.now()
+  shadowRestartPreviousStartedAt = Number(botStateCache.started_at || 0) || null
   botStateCache = {
     ...botStateCache,
     api_base_url: apiBaseUrl,
-    api_error: 'Shadow restart in progress. Waiting for backend to come back.',
+    api_error: shadowRestartPendingMessage(),
+    started_at: 0,
+    startup_detail: 'Restarting shadow bot',
     mode: 'shadow',
+    n_wallets: 0,
     loop_in_progress: false,
     last_poll_at: 0,
-    last_activity_at: 0
+    last_activity_at: 0,
+    bankroll_usd: undefined
   }
+}
+
+export function isShadowRestartPending(): boolean {
+  return shadowRestartPending
 }
 
 export function useBotState(intervalMs = 2000): BotState {
@@ -77,6 +125,18 @@ export function useBotState(intervalMs = 2000): BotState {
           api_base_url: apiBaseUrl,
           api_error: ''
         }
+        if (!hasShadowRestartCompleted(nextState)) {
+          const waitingState = {
+            ...botStateCache,
+            api_base_url: apiBaseUrl,
+            api_error: shadowRestartPendingMessage()
+          }
+          botStateCache = waitingState
+          if (!cancelled) {
+            setState(waitingState)
+          }
+          return
+        }
         botStateCache = nextState
         if (!cancelled) {
           setState(nextState)
@@ -94,7 +154,7 @@ export function useBotState(intervalMs = 2000): BotState {
         const nextState = {
           ...botStateCache,
           api_base_url: apiBaseUrl,
-          api_error: message
+          api_error: shadowRestartPending ? shadowRestartPendingMessage() : message
         }
         botStateCache = nextState
         if (!cancelled) {

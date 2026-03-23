@@ -485,17 +485,22 @@ def run(
     start_bot: bool,
     wallet_mode: str = "keep_all",
     clear_wallets: bool | None = None,
+    delay_seconds: float = 0.0,
 ) -> int:
     if use_real_money():
         print("Refusing to reset while USE_REAL_MONEY=true. Switch back to shadow mode first.")
         return 1
 
     normalized_wallet_mode = _normalize_wallet_mode(wallet_mode, clear_wallets=clear_wallets)
+    normalized_delay_seconds = max(float(delay_seconds or 0.0), 0.0)
     bankroll = shadow_bankroll_usd()
     previous_wallets = _read_env_value("WATCHED_WALLETS")
     wallets_updated = False
 
     try:
+        if normalized_delay_seconds > 0:
+            print(f"Waiting {normalized_delay_seconds:.2f}s before stopping the current bot...")
+            time.sleep(normalized_delay_seconds)
         stop_existing_bot()
         if normalized_wallet_mode == "keep_active":
             active_wallets = _active_watched_wallets(_parse_watched_wallets(previous_wallets))
@@ -561,6 +566,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Reset shadow runtime state without starting the bot.",
     )
+    parser.add_argument(
+        "--delay-seconds",
+        type=float,
+        default=0.0,
+        help="Wait this many seconds before stopping the current bot.",
+    )
     wallet_mode_group = parser.add_mutually_exclusive_group()
     wallet_mode_group.add_argument(
         "--keep-active-wallets",
@@ -580,6 +591,7 @@ def main(argv: list[str] | None = None) -> int:
         foreground=bool(args.foreground),
         start_bot=not bool(args.reset_only),
         wallet_mode=wallet_mode,
+        delay_seconds=float(args.delay_seconds or 0.0),
     )
 
 

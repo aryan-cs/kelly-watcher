@@ -1,6 +1,7 @@
 import {useEffect, useState} from 'react'
 import {fetchApiJson} from './api.js'
 import {useRefreshToken} from './refresh.js'
+import {isShadowRestartPending} from './useBotState.js'
 
 export interface LiveEvent {
   type: 'incoming' | 'signal'
@@ -55,6 +56,13 @@ export function useEventStream(maxEvents = 50): LiveEvent[] {
     }
 
     const read = async () => {
+      if (isShadowRestartPending()) {
+        if (!cancelled) {
+          setEvents(eventCache.get(maxEvents) || [])
+        }
+        schedule()
+        return
+      }
       const controller = new AbortController()
       activeController = controller
       try {

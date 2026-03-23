@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
+import { isShadowRestartPending } from './useBotState.js';
 const eventCache = new Map();
 export function clearEventStreamCache() {
     eventCache.clear();
@@ -22,6 +23,13 @@ export function useEventStream(maxEvents = 50) {
             }, 500);
         };
         const read = async () => {
+            if (isShadowRestartPending()) {
+                if (!cancelled) {
+                    setEvents(eventCache.get(maxEvents) || []);
+                }
+                schedule();
+                return;
+            }
             const controller = new AbortController();
             activeController = controller;
             try {

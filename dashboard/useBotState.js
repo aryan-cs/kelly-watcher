@@ -4,6 +4,7 @@ import { useRefreshToken } from './refresh.js';
 let botStateCache = { api_base_url: apiBaseUrl, api_error: '' };
 let shadowRestartPending = false;
 let shadowRestartRequestedAtMs = 0;
+let shadowRestartPreviousSessionId = null;
 let shadowRestartPreviousStartedAt = null;
 const SHADOW_RESTART_PENDING_TIMEOUT_MS = 45000;
 function shadowRestartPendingMessage() {
@@ -19,19 +20,31 @@ function hasShadowRestartCompleted(nextState) {
     if (!shadowRestartPending) {
         return true;
     }
+    const nextSessionId = String(nextState.session_id || '').trim();
+    if (nextSessionId) {
+        if (shadowRestartPreviousSessionId == null || nextSessionId !== shadowRestartPreviousSessionId) {
+            shadowRestartPending = false;
+            shadowRestartRequestedAtMs = 0;
+            shadowRestartPreviousSessionId = null;
+            shadowRestartPreviousStartedAt = null;
+            return true;
+        }
+    }
     const nextStartedAt = Number(nextState.started_at || 0);
     if (nextStartedAt <= 0) {
         return false;
     }
-    if (shadowRestartPreviousStartedAt == null) {
+    if (shadowRestartPreviousSessionId == null && shadowRestartPreviousStartedAt == null) {
         shadowRestartPending = false;
         shadowRestartRequestedAtMs = 0;
+        shadowRestartPreviousSessionId = null;
         shadowRestartPreviousStartedAt = null;
         return true;
     }
     if (nextStartedAt !== shadowRestartPreviousStartedAt) {
         shadowRestartPending = false;
         shadowRestartRequestedAtMs = 0;
+        shadowRestartPreviousSessionId = null;
         shadowRestartPreviousStartedAt = null;
         return true;
     }
@@ -40,6 +53,7 @@ function hasShadowRestartCompleted(nextState) {
 export function beginShadowRestartBotState() {
     shadowRestartPending = true;
     shadowRestartRequestedAtMs = Date.now();
+    shadowRestartPreviousSessionId = String(botStateCache.session_id || '').trim() || null;
     shadowRestartPreviousStartedAt = Number(botStateCache.started_at || 0) || null;
     botStateCache = {
         ...botStateCache,

@@ -5,8 +5,6 @@ import logging
 import os
 import re
 import sqlite3
-import subprocess
-import tempfile
 import threading
 import time
 from collections import deque
@@ -17,8 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from config import use_real_money
 from db import DB_PATH, get_conn
-from env_profile import LEGACY_ENV_PATH, active_env_flag, active_env_profile, env_path_for_profile
-from kelly_watcher.shadow_reset import preferred_python_executable, runtime_env
+from env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile
 from runtime_paths import (
     BOT_STATE_FILE,
     DATA_DIR,
@@ -27,6 +24,7 @@ from runtime_paths import (
     MANUAL_RETRAIN_REQUEST_FILE,
     MANUAL_TRADE_REQUEST_FILE,
     REPO_ROOT,
+    SHADOW_RESET_REQUEST_FILE,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,9 +33,6 @@ ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 IDENTITY_FILE = IDENTITY_CACHE_PATH
-RESTART_SHADOW_SCRIPT = REPO_ROOT / "restart_shadow.py"
-SHADOW_RESTART_LOG = Path(tempfile.gettempdir()) / "kelly_watcher_shadow_restart.out"
-SHADOW_RESTART_HELPER_DELAY_SECONDS = 0.75
 
 SAFE_ENV_KEYS = {
     "WATCHED_WALLETS",
@@ -665,64 +660,24 @@ def _normalize_shadow_restart_wallet_mode(value: Any) -> str:
 
 def _shadow_restart_command(wallet_mode: str) -> list[str]:
     wallet_mode = _normalize_shadow_restart_wallet_mode(wallet_mode)
-    command = [
-        preferred_python_executable(),
-        str(RESTART_SHADOW_SCRIPT),
-        active_env_flag(),
-        "--target-pid",
-        str(os.getpid()),
-    ]
-    if SHADOW_RESTART_HELPER_DELAY_SECONDS > 0:
-        command.extend(["--delay-seconds", f"{SHADOW_RESTART_HELPER_DELAY_SECONDS:.2f}"])
-    if wallet_mode == "keep_active":
-        command.append("--keep-active-wallets")
-    elif wallet_mode == "clear_all":
-        command.append("--clear-wallets")
-    return command
+    return [wallet_mode]
 
 
 def _spawn_shadow_restart_process(wallet_mode: str) -> dict[str, Any]:
-    command = _shadow_restart_command(wallet_mode)
-    SHADOW_RESTART_LOG.parent.mkdir(parents=True, exist_ok=True)
-    log_handle = SHADOW_RESTART_LOG.open("a", encoding="utf-8")
-    popen_kwargs: dict[str, Any] = {
-        "cwd": str(REPO_ROOT),
-        "env": runtime_env(),
-        "stdin": subprocess.DEVNULL,
-        "stdout": log_handle,
-        "stderr": subprocess.STDOUT,
+    wallet_mode = _normalize_shadow_restart_wallet_mode(wallet_mode)
+    request_payload = {
+        "wallet_mode": wallet_mode,
+        "requested_at": int(time.time()),
+        "request_id": f"shadow-reset-{int(time.time() * 1000)}-{os.getpid()}",
     }
-    if os.name == "nt":
-        creationflags = 0
-        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        if creationflags:
-            popen_kwargs["creationflags"] = creationflags
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    try:
-        process = subprocess.Popen(command, **popen_kwargs)
-    except OSError as exc:
-        log_handle.close()
-        return {"ok": False, "message": f"Shadow restart failed to launch: {exc}"}
-    finally:
-        log_handle.close()
-
-    logger.info(
-        "Launched shadow restart helper pid=%s command=%s log=%s",
-        getattr(process, "pid", "?"),
-        command,
-        SHADOW_RESTART_LOG,
-    )
-    return {"ok": True, "message": "Shadow restart helper launched."}
-
-
-def _display_path(path: Path) -> str:
-    try:
-        return str(path.relative_to(REPO_ROOT))
-    except ValueError:
-        return str(path)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with _request_lock:
+        SHADOW_RESET_REQUEST_FILE.write_text(
+            json.dumps(request_payload, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    logger.info("Queued shadow reset request %s", request_payload)
+    return {"ok": True, "message": "Shadow reset queued."}
 
 
 def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
@@ -733,14 +688,11 @@ def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
         }
     result = _spawn_shadow_restart_process(wallet_mode)
     if not result.get("ok"):
-        logger.error("Shadow restart helper launch failed: %s", result.get("message"))
+        logger.error("Shadow reset queue failed: %s", result.get("message"))
         return result
     return {
         "ok": True,
-        "message": (
-            "Shadow restart requested. The API should come back after the bot resets and starts again. "
-            f"Helper log: {_display_path(SHADOW_RESTART_LOG)}"
-        ),
+        "message": "Shadow reset requested. The bot will wipe state and restart itself.",
     }
 
 

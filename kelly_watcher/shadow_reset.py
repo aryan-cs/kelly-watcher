@@ -386,6 +386,24 @@ def _wallet_mode_result_line(wallet_mode: RestartWalletMode) -> str:
     return "WATCHED_WALLETS preserved."
 
 
+def apply_wallet_mode_for_reset(wallet_mode: str) -> tuple[RestartWalletMode, str, bool]:
+    normalized_wallet_mode = _normalize_wallet_mode(wallet_mode)
+    previous_wallets = _read_env_value("WATCHED_WALLETS")
+    wallets_updated = False
+    if normalized_wallet_mode == "keep_active":
+        active_wallets = _active_watched_wallets(_parse_watched_wallets(previous_wallets))
+        _write_env_value("WATCHED_WALLETS", _serialize_watched_wallets(active_wallets))
+        wallets_updated = True
+    elif normalized_wallet_mode == "clear_all":
+        _write_env_value("WATCHED_WALLETS", "")
+        wallets_updated = True
+    return normalized_wallet_mode, previous_wallets, wallets_updated
+
+
+def restore_watched_wallets(previous_wallets: str) -> None:
+    _write_env_value("WATCHED_WALLETS", previous_wallets)
+
+
 def reset_shadow_runtime() -> None:
     try:
         shutil.rmtree(SAVE_DIR)
@@ -429,6 +447,10 @@ def preferred_python_executable() -> str:
 
 def _bot_command() -> list[str]:
     return [preferred_python_executable(), str(REPO_ROOT / "main.py"), active_env_flag()]
+
+
+def exec_restarted_bot() -> None:
+    os.execvpe(_bot_command()[0], _bot_command(), runtime_env())
 
 
 def launch_background_bot() -> int:
@@ -500,13 +522,9 @@ def run(
             print(f"Waiting {normalized_delay_seconds:.2f}s before stopping the current bot...")
             time.sleep(normalized_delay_seconds)
         stop_existing_bot(target_pids=target_pids)
-        if normalized_wallet_mode == "keep_active":
-            active_wallets = _active_watched_wallets(_parse_watched_wallets(previous_wallets))
-            _write_env_value("WATCHED_WALLETS", _serialize_watched_wallets(active_wallets))
-            wallets_updated = True
-        elif normalized_wallet_mode == "clear_all":
-            _write_env_value("WATCHED_WALLETS", "")
-            wallets_updated = True
+        normalized_wallet_mode, previous_wallets, wallets_updated = apply_wallet_mode_for_reset(
+            normalized_wallet_mode
+        )
 
         print(
             f"Resetting shadow account by deleting the entire save directory and returning to the configured bankroll of ${bankroll:.2f}..."
@@ -544,7 +562,7 @@ def run(
     except Exception:
         if wallets_updated:
             try:
-                _write_env_value("WATCHED_WALLETS", previous_wallets)
+                restore_watched_wallets(previous_wallets)
             except OSError:
                 pass
         raise

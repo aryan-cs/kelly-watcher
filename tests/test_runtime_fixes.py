@@ -262,92 +262,76 @@ class RuntimeFixesTest(unittest.TestCase):
             self.assertEqual(snapshot["safe_values"]["MAX_TOTAL_OPEN_EXPOSURE_FRACTION"], "0.42")
             self.assertIn("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.42", env_path.read_text(encoding="utf-8"))
 
-    def test_dashboard_spawn_shadow_restart_process_uses_repo_python_and_log(self) -> None:
+    def test_dashboard_spawn_shadow_restart_process_writes_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            repo_root = Path(tmpdir) / "repo"
-            repo_root.mkdir(parents=True, exist_ok=True)
-            restart_log = Path(tmpdir) / "shadow_restart.out"
-            restart_script = repo_root / "restart_shadow.py"
-            restart_script.write_text("print('restart')\n", encoding="utf-8")
-            launched = SimpleNamespace(pid=4321)
-
-            with patch.object(dashboard_api, "REPO_ROOT", repo_root), patch.object(
-                dashboard_api, "RESTART_SHADOW_SCRIPT", restart_script
-            ), patch.object(dashboard_api, "SHADOW_RESTART_LOG", restart_log), patch.object(
-                dashboard_api, "SHADOW_RESTART_HELPER_DELAY_SECONDS", 0.75
-            ), patch.object(
-                dashboard_api, "preferred_python_executable", return_value=str(repo_root / ".venv" / "bin" / "python")
-            ), patch.object(dashboard_api, "active_env_flag", return_value="--prod"), patch.object(
-                dashboard_api, "runtime_env", return_value={"TEST_ENV": "1"}
-            ), patch.object(dashboard_api.subprocess, "Popen", return_value=launched) as popen_mock:
+            data_dir = Path(tmpdir) / "data"
+            request_file = data_dir / "shadow_reset_request.json"
+            with patch.object(dashboard_api, "DATA_DIR", data_dir), patch.object(
+                dashboard_api, "SHADOW_RESET_REQUEST_FILE", request_file
+            ):
                 result = dashboard_api._spawn_shadow_restart_process(wallet_mode="clear_all")
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
 
-        self.assertTrue(result["ok"])
-        popen_command = popen_mock.call_args.args[0]
-        self.assertEqual(
-            popen_command,
-            [
-                str(repo_root / ".venv" / "bin" / "python"),
-                str(restart_script),
-                "--prod",
-                "--target-pid",
-                str(os.getpid()),
-                "--delay-seconds",
-                "0.75",
-                "--clear-wallets",
-            ],
-        )
-        self.assertEqual(popen_mock.call_args.kwargs["cwd"], str(repo_root))
-        self.assertEqual(popen_mock.call_args.kwargs["env"], {"TEST_ENV": "1"})
-        self.assertEqual(popen_mock.call_args.kwargs["stderr"], dashboard_api.subprocess.STDOUT)
-        self.assertEqual(Path(popen_mock.call_args.kwargs["stdout"].name), restart_log)
+            self.assertTrue(result["ok"])
+            self.assertEqual(payload["wallet_mode"], "clear_all")
+            self.assertTrue(str(payload["request_id"]).startswith("shadow-reset-"))
 
     def test_dashboard_spawn_shadow_restart_process_supports_keep_active_mode(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            repo_root = Path(tmpdir) / "repo"
-            repo_root.mkdir(parents=True, exist_ok=True)
-            restart_log = Path(tmpdir) / "shadow_restart.out"
-            restart_script = repo_root / "restart_shadow.py"
-            restart_script.write_text("print('restart')\n", encoding="utf-8")
-            launched = SimpleNamespace(pid=4321)
-
-            with patch.object(dashboard_api, "REPO_ROOT", repo_root), patch.object(
-                dashboard_api, "RESTART_SHADOW_SCRIPT", restart_script
-            ), patch.object(dashboard_api, "SHADOW_RESTART_LOG", restart_log), patch.object(
-                dashboard_api, "SHADOW_RESTART_HELPER_DELAY_SECONDS", 0.75
-            ), patch.object(
-                dashboard_api, "preferred_python_executable", return_value=str(repo_root / ".venv" / "bin" / "python")
-            ), patch.object(dashboard_api, "active_env_flag", return_value="--prod"), patch.object(
-                dashboard_api, "runtime_env", return_value={"TEST_ENV": "1"}
-            ), patch.object(dashboard_api.subprocess, "Popen", return_value=launched) as popen_mock:
+            data_dir = Path(tmpdir) / "data"
+            request_file = data_dir / "shadow_reset_request.json"
+            with patch.object(dashboard_api, "DATA_DIR", data_dir), patch.object(
+                dashboard_api, "SHADOW_RESET_REQUEST_FILE", request_file
+            ):
                 result = dashboard_api._spawn_shadow_restart_process(wallet_mode="keep_active")
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(
-            popen_mock.call_args.args[0],
-            [
-                str(repo_root / ".venv" / "bin" / "python"),
-                str(restart_script),
-                "--prod",
-                "--target-pid",
-                str(os.getpid()),
-                "--delay-seconds",
-                "0.75",
-                "--keep-active-wallets",
-            ],
-        )
+            self.assertTrue(result["ok"])
+            self.assertEqual(payload["wallet_mode"], "keep_active")
 
-    def test_dashboard_launch_shadow_restart_spawns_helper_immediately(self) -> None:
+    def test_dashboard_launch_shadow_restart_queues_request(self) -> None:
         with patch.object(dashboard_api, "_live_trading_enabled_in_config", return_value=False), patch.object(
             dashboard_api, "_current_bot_mode", return_value="shadow"
         ), patch.object(dashboard_api, "use_real_money", return_value=False), patch.object(
-            dashboard_api, "_spawn_shadow_restart_process", return_value={"ok": True, "message": "launched"}
+            dashboard_api, "_spawn_shadow_restart_process", return_value={"ok": True, "message": "queued"}
         ) as spawn_mock:
             result = dashboard_api._launch_shadow_restart(wallet_mode="keep_all")
 
         self.assertTrue(result["ok"])
-        self.assertIn("Helper log:", result["message"])
+        self.assertIn("wipe state and restart itself", result["message"])
         spawn_mock.assert_called_once_with("keep_all")
+
+    def test_consume_shadow_reset_request_reads_valid_request(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "shadow_reset_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "wallet_mode": "keep_all",
+                        "request_id": "shadow-reset-1",
+                        "requested_at": int(time.time()),
+                        "source": "dashboard",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(main, "SHADOW_RESET_REQUEST_FILE", request_file):
+                request = main._consume_shadow_reset_request()
+
+        self.assertIsNotNone(request)
+        assert request is not None
+        self.assertEqual(request.wallet_mode, "keep_all")
+        self.assertEqual(request.request_id, "shadow-reset-1")
+        self.assertFalse(request_file.exists())
+
+    def test_wait_for_next_poll_returns_when_shutdown_requested(self) -> None:
+        stop_event = main.threading.Event()
+        stop_event.set()
+        started_at = time.time()
+
+        main._wait_for_next_poll(started_at, {"started_at": 1}, stop_event=stop_event)
+
+        self.assertLess(time.time() - started_at, 0.5)
 
     def test_entry_pause_reason_refreshes_daily_loss_guard_from_config(self) -> None:
         now_ts = int(time.time())

@@ -5,11 +5,14 @@ import logging
 import os
 import re
 import shutil
+import signal
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -72,6 +75,12 @@ from dedup import DedupeCache
 from evaluator import daily_report, resolve_shadow_trades
 from executor import PolymarketExecutor
 from kelly import size_signal
+from kelly_watcher.shadow_reset import (
+    apply_wallet_mode_for_reset,
+    exec_restarted_bot,
+    reset_shadow_runtime,
+    restore_watched_wallets,
+)
 from market_scorer import build_market_features
 from market_urls import market_url_from_metadata
 from signal_engine import SignalEngine
@@ -87,6 +96,7 @@ from runtime_paths import (
     LOG_DIR,
     MANUAL_RETRAIN_REQUEST_FILE,
     MANUAL_TRADE_REQUEST_FILE,
+    SHADOW_RESET_REQUEST_FILE,
 )
 from wallet_trust import apply_wallet_trust_sizing, get_wallet_trust_state
 from watchlist_manager import WatchlistManager
@@ -116,6 +126,12 @@ _SCORE_RE = re.compile(r"score ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
 _INVALID_PRICE_RE = re.compile(r"invalid price ([0-9.]+)", re.IGNORECASE)
 _EXPIRES_RE = re.compile(r"expires in <([0-9]+)s", re.IGNORECASE)
 _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECASE)
+
+
+class ShadowResetRequested(Exception):
+    def __init__(self, request: ShadowResetRequest) -> None:
+        super().__init__(f"shadow reset requested ({request.wallet_mode})")
+        self.request = request
 
 
 def _disable_windows_console_quick_edit() -> None:
@@ -169,6 +185,39 @@ def _clear_bot_pid_file() -> None:
         BOT_PID_FILE.unlink()
     except FileNotFoundError:
         return
+
+
+def _install_shutdown_signal_handlers(stop_event: threading.Event) -> dict[int, Any]:
+    previous_handlers: dict[int, Any] = {}
+    signal_counts = {"count": 0}
+
+    def _handler(signum, _frame) -> None:
+        signal_counts["count"] += 1
+        if signal_counts["count"] <= 1:
+            logger.warning("Received signal %s. Shutting down...", signum)
+            stop_event.set()
+            return
+        logger.error("Received signal %s again. Forcing process exit.", signum)
+        os._exit(128 + int(signum))
+
+    for sig_name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            previous_handlers[int(sig)] = signal.getsignal(sig)
+            signal.signal(sig, _handler)
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return previous_handlers
+
+
+def _restore_shutdown_signal_handlers(previous_handlers: dict[int, Any]) -> None:
+    for signum, handler in previous_handlers.items():
+        try:
+            signal.signal(signum, handler)
+        except (OSError, RuntimeError, ValueError):
+            continue
 
 
 @dataclass
@@ -228,6 +277,14 @@ class ManualTradeRequest:
     question: str
     trader_address: str
     amount_usd: float | None
+    request_id: str
+    requested_at: int
+    source: str
+
+
+@dataclass(frozen=True)
+class ShadowResetRequest:
+    wallet_mode: str
     request_id: str
     requested_at: int
     source: str
@@ -553,10 +610,17 @@ def _apply_total_exposure_cap_to_sizing(
     return capped, clip_note
 
 
-def _wait_for_next_poll(loop_started_at: float, state_snapshot: dict, on_tick=None) -> None:
+def _wait_for_next_poll(
+    loop_started_at: float,
+    state_snapshot: dict,
+    on_tick=None,
+    stop_event: threading.Event | None = None,
+) -> None:
     last_interval = poll_interval()
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            return
         if on_tick is not None:
             on_tick()
 
@@ -715,6 +779,61 @@ def _consume_manual_trade_request(handle_request) -> bool:
     )
     handle_request(request)
     return True
+
+
+def _parse_shadow_reset_request_payload(payload: dict) -> ShadowResetRequest:
+    if not isinstance(payload, dict):
+        raise ValueError("shadow reset request payload must be an object")
+
+    wallet_mode = str(payload.get("wallet_mode") or payload.get("walletMode") or "").strip().lower()
+    if wallet_mode not in {"keep_active", "keep_all", "clear_all"}:
+        raise ValueError("shadow reset request must include wallet_mode")
+
+    return ShadowResetRequest(
+        wallet_mode=wallet_mode,
+        request_id=str(payload.get("request_id") or "").strip(),
+        requested_at=int(payload.get("requested_at") or 0),
+        source=str(payload.get("source") or "dashboard").strip().lower() or "dashboard",
+    )
+
+
+def _consume_shadow_reset_request() -> ShadowResetRequest | None:
+    if not SHADOW_RESET_REQUEST_FILE.exists():
+        return None
+
+    try:
+        payload = json.loads(SHADOW_RESET_REQUEST_FILE.read_text(encoding="utf-8"))
+        request = _parse_shadow_reset_request_payload(payload)
+    except Exception as exc:
+        logger.warning("Discarding invalid shadow reset request: %s", exc)
+        try:
+            SHADOW_RESET_REQUEST_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return None
+
+    try:
+        SHADOW_RESET_REQUEST_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+    now_ts = int(time.time())
+    if request.requested_at > 0 and (now_ts - request.requested_at) > 900:
+        logger.info(
+            "Ignoring stale shadow reset request from %s (age=%ss request_id=%s)",
+            request.source,
+            now_ts - request.requested_at,
+            request.request_id or "-",
+        )
+        return None
+
+    logger.warning(
+        "Shadow reset requested by %s (wallet_mode=%s request_id=%s)",
+        request.source,
+        request.wallet_mode,
+        request.request_id or "-",
+    )
+    return request
 
 
 def _manual_trade_event(
@@ -1888,6 +2007,9 @@ def main() -> None:
     dashboard_api_server: DashboardApiServer | None = None
     telegram_command_stop: threading.Event | None = None
     telegram_command_thread: threading.Thread | None = None
+    shutdown_event = threading.Event()
+    previous_signal_handlers = _install_shutdown_signal_handlers(shutdown_event)
+    pending_shadow_reset: ShadowResetRequest | None = None
 
     init_db()
     _validate_startup()
@@ -1895,8 +2017,10 @@ def main() -> None:
     EVENT_FILE.touch(exist_ok=True)
     _repair_event_file_market_urls()
     start_ts = int(time.time())
+    session_id = uuid.uuid4().hex
     watchlist = WatchlistManager(WATCHED_WALLETS)
     bot_state_snapshot: dict[str, object] = {
+        "session_id": session_id,
         "started_at": start_ts,
         "last_loop_started_at": 0,
         "last_activity_at": start_ts,
@@ -2001,6 +2125,9 @@ def main() -> None:
             retrain_lock.release()
 
     def _service_runtime_requests() -> None:
+        request = _consume_shadow_reset_request()
+        if request is not None:
+            raise ShadowResetRequested(request)
         _consume_manual_retrain_request(_run_retrain_job)
         _consume_manual_trade_request(
             lambda request: _process_manual_trade_request(
@@ -2154,7 +2281,7 @@ def main() -> None:
     try:
         entry_pause_alerts = EntryPauseAlertTracker()
         first_poll_logged = False
-        while True:
+        while not shutdown_event.is_set():
             loop_start = time.time()
             current_loop_started_at = int(loop_start)
             _heartbeat(force=True)
@@ -2179,6 +2306,8 @@ def main() -> None:
                     )
                     events = []
                     for batch in poll_batches:
+                        if shutdown_event.is_set():
+                            break
                         if not batch.wallets:
                             continue
                         events.extend(tracker.poll(list(batch.wallets), trade_limit=batch.trade_limit))
@@ -2215,6 +2344,8 @@ def main() -> None:
                                 kind="status",
                             )
                     for event in events:
+                        if shutdown_event.is_set():
+                            break
                         _heartbeat()
                         try:
                             bankroll = max(
@@ -2285,8 +2416,24 @@ def main() -> None:
                     bankroll=bankroll,
                 )
                 first_poll_logged = True
-            _wait_for_next_poll(loop_start, state_snapshot, _service_runtime_requests)
+            _wait_for_next_poll(
+                loop_start,
+                state_snapshot,
+                _service_runtime_requests,
+                stop_event=shutdown_event,
+            )
+        logger.info("Shutdown requested. Exiting main loop.")
+    except ShadowResetRequested as exc:
+        pending_shadow_reset = exc.request
+        shutdown_event.set()
+        logger.warning(
+            "Processing shadow reset request from %s (wallet_mode=%s request_id=%s)",
+            exc.request.source,
+            exc.request.wallet_mode,
+            exc.request.request_id or "-",
+        )
     except KeyboardInterrupt:
+        shutdown_event.set()
         logger.info("Shutting down...")
         send_alert("bot stopped", kind="status")
     finally:
@@ -2299,7 +2446,7 @@ def main() -> None:
             telegram_command_thread.join(timeout=1.0)
         if scheduler is not None:
             try:
-                scheduler.shutdown(wait=False)
+                scheduler.shutdown(wait=True)
             except Exception:
                 logger.debug("Scheduler shutdown skipped during cleanup", exc_info=True)
         if tracker is not None:
@@ -2307,6 +2454,25 @@ def main() -> None:
                 tracker.close()
             except Exception:
                 logger.debug("Tracker close skipped during cleanup", exc_info=True)
+        _restore_shutdown_signal_handlers(previous_signal_handlers)
+        if pending_shadow_reset is not None:
+            normalized_wallet_mode = pending_shadow_reset.wallet_mode
+            previous_wallets = ""
+            wallets_updated = False
+            try:
+                normalized_wallet_mode, previous_wallets, wallets_updated = apply_wallet_mode_for_reset(
+                    pending_shadow_reset.wallet_mode
+                )
+                logging.shutdown()
+                reset_shadow_runtime()
+                exec_restarted_bot()
+            except Exception:
+                if wallets_updated:
+                    try:
+                        restore_watched_wallets(previous_wallets)
+                    except OSError:
+                        pass
+                raise
 
 
 if __name__ == "__main__":

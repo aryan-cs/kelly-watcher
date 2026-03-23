@@ -3,6 +3,7 @@ import {ApiError, apiBaseUrl, fetchApiJson} from './api.js'
 import {useRefreshToken} from './refresh.js'
 
 export interface BotState {
+  session_id?: string
   started_at?: number
   last_loop_started_at?: number
   last_activity_at?: number
@@ -36,6 +37,7 @@ interface BotStateResponse {
 let botStateCache: BotState = {api_base_url: apiBaseUrl, api_error: ''}
 let shadowRestartPending = false
 let shadowRestartRequestedAtMs = 0
+let shadowRestartPreviousSessionId: string | null = null
 let shadowRestartPreviousStartedAt: number | null = null
 const SHADOW_RESTART_PENDING_TIMEOUT_MS = 45000
 
@@ -53,19 +55,31 @@ function hasShadowRestartCompleted(nextState: BotState): boolean {
   if (!shadowRestartPending) {
     return true
   }
+  const nextSessionId = String(nextState.session_id || '').trim()
+  if (nextSessionId) {
+    if (shadowRestartPreviousSessionId == null || nextSessionId !== shadowRestartPreviousSessionId) {
+      shadowRestartPending = false
+      shadowRestartRequestedAtMs = 0
+      shadowRestartPreviousSessionId = null
+      shadowRestartPreviousStartedAt = null
+      return true
+    }
+  }
   const nextStartedAt = Number(nextState.started_at || 0)
   if (nextStartedAt <= 0) {
     return false
   }
-  if (shadowRestartPreviousStartedAt == null) {
+  if (shadowRestartPreviousSessionId == null && shadowRestartPreviousStartedAt == null) {
     shadowRestartPending = false
     shadowRestartRequestedAtMs = 0
+    shadowRestartPreviousSessionId = null
     shadowRestartPreviousStartedAt = null
     return true
   }
   if (nextStartedAt !== shadowRestartPreviousStartedAt) {
     shadowRestartPending = false
     shadowRestartRequestedAtMs = 0
+    shadowRestartPreviousSessionId = null
     shadowRestartPreviousStartedAt = null
     return true
   }
@@ -75,6 +89,7 @@ function hasShadowRestartCompleted(nextState: BotState): boolean {
 export function beginShadowRestartBotState(): void {
   shadowRestartPending = true
   shadowRestartRequestedAtMs = Date.now()
+  shadowRestartPreviousSessionId = String(botStateCache.session_id || '').trim() || null
   shadowRestartPreviousStartedAt = Number(botStateCache.started_at || 0) || null
   botStateCache = {
     ...botStateCache,

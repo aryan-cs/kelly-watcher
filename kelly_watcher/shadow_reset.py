@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import signal
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -23,28 +22,25 @@ from env_profile import (
     add_env_profile_flags,
     env_path_for_profile,
 )
-from runtime_paths import BACKGROUND_LOG_PATH, BOT_PID_FILE, BOT_STATE_FILE, DATA_DIR, EVENT_FILE, LOG_DIR, REPO_ROOT
+from runtime_paths import (
+    BACKGROUND_LOG_PATH,
+    BOT_PID_FILE,
+    BOT_STATE_FILE,
+    DATA_DIR,
+    EVENT_FILE,
+    IDENTITY_CACHE_PATH,
+    LOG_DIR,
+    MANUAL_RETRAIN_REQUEST_FILE,
+    MANUAL_TRADE_REQUEST_FILE,
+    MODEL_ARTIFACT_PATH,
+    REPO_ROOT,
+    TELEGRAM_STATE_FILE,
+)
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
 PID_FILE = BOT_PID_FILE
 BACKGROUND_LOG = BACKGROUND_LOG_PATH
-NON_DB_RESET_FILES = (
-    EVENT_FILE,
-    BOT_STATE_FILE,
-    PID_FILE,
-)
-SHADOW_RUNTIME_TABLES = (
-    "seen_trades",
-    "trade_log_manual_edits",
-    "position_manual_edits",
-    "belief_updates",
-    "positions",
-    "trade_log",
-    "perf_snapshots",
-    "wallet_cursors",
-    "wallet_watch_state",
-)
 RestartWalletMode = Literal["keep_active", "keep_all", "clear_all"]
 
 
@@ -323,69 +319,32 @@ def stop_existing_bot() -> None:
         )
 
 
-def _sqlite_file_is_usable(path: Path) -> bool:
-    if not path.exists():
-        return False
-    conn: sqlite3.Connection | None = None
-    try:
-        conn = sqlite3.connect(path)
-        row = conn.execute("PRAGMA integrity_check").fetchone()
-    except sqlite3.DatabaseError:
-        return False
-    finally:
-        if conn is not None:
-            conn.close()
-    return bool(row) and str(row[0]).strip().lower() == "ok"
-
-
 def _db_sidecar_paths() -> tuple[Path, ...]:
     base = str(db.DB_PATH)
     return (db.DB_PATH, Path(f"{base}-shm"), Path(f"{base}-wal"))
 
 
-def _restore_trading_db_from_backup() -> bool:
-    backup_path = db.DB_PATH.with_suffix(".db.bak")
-    if not _sqlite_file_is_usable(backup_path):
-        return False
-
-    archive_dir = DATA_DIR / "reset_backups"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-
-    for source in _db_sidecar_paths():
-        if not source.exists():
-            continue
-        archived = archive_dir / f"{source.name}.corrupt_{stamp}"
-        source.replace(archived)
-
-    shutil.copy2(backup_path, db.DB_PATH)
-    return True
-
-
-def _ensure_trading_db_ready() -> None:
-    try:
-        db.init_db()
-    except sqlite3.DatabaseError:
-        if not _restore_trading_db_from_backup():
-            raise
-        db.init_db()
-
-
-def _clear_shadow_runtime_db_state() -> None:
-    conn = db.get_conn()
-    try:
-        for table in SHADOW_RUNTIME_TABLES:
-            conn.execute(f"DELETE FROM {table}")
-        conn.commit()
-    finally:
-        conn.close()
+def _reset_file_paths() -> tuple[Path, ...]:
+    return (
+        *_db_sidecar_paths(),
+        EVENT_FILE,
+        BOT_STATE_FILE,
+        PID_FILE,
+        IDENTITY_CACHE_PATH,
+        MANUAL_RETRAIN_REQUEST_FILE,
+        MANUAL_TRADE_REQUEST_FILE,
+        TELEGRAM_STATE_FILE,
+        BACKGROUND_LOG,
+        MODEL_ARTIFACT_PATH,
+    )
 
 
 def _active_watched_wallets(watched_wallets: list[str]) -> list[str]:
     if not watched_wallets:
         return []
-    conn = db.get_conn()
+    conn: sqlite3.Connection | None = None
     try:
+        conn = db.get_conn()
         placeholders = ",".join("?" for _ in watched_wallets)
         rows = conn.execute(
             f"""
@@ -395,8 +354,11 @@ def _active_watched_wallets(watched_wallets: list[str]) -> list[str]:
             """,
             tuple(wallet.lower() for wallet in watched_wallets),
         ).fetchall()
+    except sqlite3.DatabaseError:
+        return watched_wallets
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     dropped_wallets = {
         str(row["wallet_address"] or "").strip().lower()
         for row in rows
@@ -406,18 +368,20 @@ def _active_watched_wallets(watched_wallets: list[str]) -> list[str]:
 
 
 def _wallet_mode_intro_lines(wallet_mode: RestartWalletMode) -> tuple[str, ...]:
+    reset_line = "Fresh reset: clearing SQLite state, training history, model artifacts, identity cache, events, and bot state."
     if wallet_mode == "keep_active":
         return (
-            "Preserving config/settings files, logs, model artifacts, identity cache, and training history.",
+            reset_line,
             "Reducing WATCHED_WALLETS to currently active wallets before restarting shadow mode.",
         )
     if wallet_mode == "clear_all":
         return (
-            "Preserving config/settings files, logs, model artifacts, identity cache, and training history.",
+            reset_line,
             "Clearing WATCHED_WALLETS before restarting shadow mode.",
         )
     return (
-        "Preserving config/settings files, logs, model artifacts, identity cache, training history, and WATCHED_WALLETS.",
+        reset_line,
+        "Preserving WATCHED_WALLETS.",
     )
 
 
@@ -432,13 +396,12 @@ def _wallet_mode_result_line(wallet_mode: RestartWalletMode) -> str:
 def reset_shadow_runtime() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _ensure_trading_db_ready()
-    _clear_shadow_runtime_db_state()
-    for path in NON_DB_RESET_FILES:
+    for path in _reset_file_paths():
         try:
             path.unlink()
         except FileNotFoundError:
             continue
+    db.init_db()
 
 
 def runtime_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -519,7 +482,6 @@ def run(
 
     try:
         stop_existing_bot()
-        _ensure_trading_db_ready()
         if normalized_wallet_mode == "keep_active":
             active_wallets = _active_watched_wallets(_parse_watched_wallets(previous_wallets))
             _write_env_value("WATCHED_WALLETS", _serialize_watched_wallets(active_wallets))

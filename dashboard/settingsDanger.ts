@@ -40,7 +40,7 @@ export const dangerActions: DangerActionDefinition[] = [
   {
     id: 'restart_shadow',
     label: 'Restart Shadow',
-    description: 'Clear shadow tracker state, event history, and runtime rows, then restart the bot from the configured shadow bankroll. Confirmation lets you keep active wallets, keep all wallets, or clear all wallets.',
+    description: 'Do a fresh shadow reset by wiping tracker history, training history, SQLite data, model artifacts, identity cache, events, and bot state before restart. Confirmation lets you keep active wallets, keep all wallets, or clear all wallets.',
     value: (envValues) => `${watchedWalletCount(envValues)} wlts`
   }
 ]

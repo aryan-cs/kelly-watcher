@@ -77,8 +77,6 @@ class ShadowResetTest(unittest.TestCase):
         ), patch.object(shadow_reset, "stop_existing_bot") as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
         ) as reset_runtime, patch.object(
-            shadow_reset, "_ensure_trading_db_ready"
-        ), patch.object(
             shadow_reset, "launch_background_bot", return_value=4321
         ), redirect_stdout(stdout):
             exit_code = shadow_reset.run(foreground=False, start_bot=True, wallet_mode="keep_all")
@@ -98,8 +96,6 @@ class ShadowResetTest(unittest.TestCase):
         ), patch.object(shadow_reset, "stop_existing_bot") as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
         ) as reset_runtime, patch.object(
-            shadow_reset, "_ensure_trading_db_ready"
-        ), patch.object(
             shadow_reset, "launch_background_bot"
         ) as launch_background_bot, redirect_stdout(stdout):
             exit_code = shadow_reset.run(foreground=False, start_bot=False, wallet_mode="keep_all")
@@ -118,8 +114,6 @@ class ShadowResetTest(unittest.TestCase):
         with patch.object(shadow_reset, "use_real_money", return_value=False), patch.object(
             shadow_reset, "shadow_bankroll_usd", return_value=3000.0
         ), patch.object(shadow_reset, "_read_env_value", return_value="0xactive,0xdropped"), patch.object(
-            shadow_reset, "_ensure_trading_db_ready"
-        ), patch.object(
             shadow_reset, "_active_watched_wallets", return_value=["0xactive"]
         ) as active_wallets, patch.object(
             shadow_reset, "_write_env_value"
@@ -174,24 +168,54 @@ class ShadowResetTest(unittest.TestCase):
 
         self.assertEqual(active_wallets, ["0xactive", "0xunknown"])
 
-    def test_reset_shadow_runtime_preserves_training_history(self) -> None:
+    def test_reset_shadow_runtime_clears_training_history_and_runtime_files(self) -> None:
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
             log_dir = Path(tmpdir) / "logs"
             data_dir.mkdir(parents=True, exist_ok=True)
             log_dir.mkdir(parents=True, exist_ok=True)
             db_path = data_dir / "trading.db"
+            db_wal_path = Path(f"{db_path}-wal")
+            db_shm_path = Path(f"{db_path}-shm")
             event_file = data_dir / "events.jsonl"
             bot_state_file = data_dir / "bot_state.json"
             pid_file = data_dir / "shadow_bot.pid"
+            identity_file = data_dir / "identity_cache.json"
+            manual_retrain_file = data_dir / "manual_retrain_request.json"
+            manual_trade_file = data_dir / "manual_trade_request.json"
+            telegram_state_file = data_dir / "telegram_state.json"
+            background_log = log_dir / "shadow_runtime.out"
+            model_artifact = Path(tmpdir) / "save" / "model.joblib"
+            model_artifact.parent.mkdir(parents=True, exist_ok=True)
             event_file.write_text("event\n", encoding="utf-8")
             bot_state_file.write_text("{}", encoding="utf-8")
             pid_file.write_text("123\n", encoding="utf-8")
+            identity_file.write_text("{}", encoding="utf-8")
+            manual_retrain_file.write_text("{}", encoding="utf-8")
+            manual_trade_file.write_text("{}", encoding="utf-8")
+            telegram_state_file.write_text("{}", encoding="utf-8")
+            background_log.write_text("runtime log\n", encoding="utf-8")
+            model_artifact.write_text("model\n", encoding="utf-8")
 
             with patch("db.DB_PATH", db_path), patch.object(shadow_reset, "DATA_DIR", data_dir), patch.object(
                 shadow_reset, "LOG_DIR", log_dir
             ), patch.object(
-                shadow_reset, "NON_DB_RESET_FILES", (event_file, bot_state_file, pid_file)
+                shadow_reset,
+                "_reset_file_paths",
+                return_value=(
+                    db_path,
+                    db_shm_path,
+                    db_wal_path,
+                    event_file,
+                    bot_state_file,
+                    pid_file,
+                    identity_file,
+                    manual_retrain_file,
+                    manual_trade_file,
+                    telegram_state_file,
+                    background_log,
+                    model_artifact,
+                ),
             ):
                 db.init_db()
                 conn = db.get_conn()
@@ -258,13 +282,19 @@ class ShadowResetTest(unittest.TestCase):
                 finally:
                     conn.close()
 
-        self.assertEqual(model_history_count, 1)
-        self.assertEqual(retrain_runs_count, 2)
+        self.assertEqual(model_history_count, 0)
+        self.assertEqual(retrain_runs_count, 0)
         self.assertEqual(trade_log_count, 0)
         self.assertEqual(perf_snapshot_count, 0)
         self.assertFalse(event_file.exists())
         self.assertFalse(bot_state_file.exists())
         self.assertFalse(pid_file.exists())
+        self.assertFalse(identity_file.exists())
+        self.assertFalse(manual_retrain_file.exists())
+        self.assertFalse(manual_trade_file.exists())
+        self.assertFalse(telegram_state_file.exists())
+        self.assertFalse(background_log.exists())
+        self.assertFalse(model_artifact.exists())
 
 
 if __name__ == "__main__":

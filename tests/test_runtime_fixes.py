@@ -14,6 +14,7 @@ import beliefs
 import config
 import dedup
 import db
+import dashboard_api
 import evaluator
 import httpx
 import identity_cache
@@ -227,6 +228,22 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertAlmostEqual(config.max_daily_loss_pct(), 0.12)
                 env_path.write_text("MAX_DAILY_LOSS_PCT=0.07\n", encoding="utf-8")
                 self.assertAlmostEqual(config.max_daily_loss_pct(), 0.07)
+
+    def test_dashboard_config_snapshot_includes_max_market_horizon_after_write(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_example_path = Path(tmpdir) / ".env.example"
+            env_path.write_text("MAX_MARKET_HORIZON=365d\n", encoding="utf-8")
+            env_example_path.write_text("", encoding="utf-8")
+
+            with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
+            ):
+                dashboard_api._write_env_value("MAX_MARKET_HORIZON", "7d")
+                snapshot = dashboard_api._config_snapshot()
+
+            self.assertEqual(snapshot["safe_values"]["MAX_MARKET_HORIZON"], "7d")
+            self.assertIn("MAX_MARKET_HORIZON=7d", env_path.read_text(encoding="utf-8"))
 
     def test_entry_pause_reason_refreshes_daily_loss_guard_from_config(self) -> None:
         now_ts = int(time.time())

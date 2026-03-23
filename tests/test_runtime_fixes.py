@@ -94,7 +94,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertEqual(
             message,
-            "shadow bought 12.5 YES shares @ 43.7 cents for a total of $5.46, 71.3% confident\n"
+            "shadow bought 12.5 YES shares @ 43.7 cents for a total of $5.46, 71.3% confident\n\n"
             "Will BTC finish March above $90k?: https://polymarket.com/event/btc-above-90k",
         )
 
@@ -110,7 +110,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertEqual(
             message,
-            "❌ live lost NO, lost $3.25\nWill Team A win?: https://polymarket.com/event/team-a-win",
+            "❌ live lost NO, lost $3.25\n\nWill Team A win?: https://polymarket.com/event/team-a-win",
         )
 
     def test_build_trade_resolution_alert_includes_tracked_trader(self) -> None:
@@ -127,7 +127,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertEqual(
             message,
-            "✅ shadow won YES, made $4.00 | tracking TraderOne (0x123456...345678)\n"
+            "✅ shadow won YES, made $4.00 | tracking TraderOne (0x123456...345678)\n\n"
             "Will BTC finish March above $90k?: https://polymarket.com/event/btc-above-90k",
         )
 

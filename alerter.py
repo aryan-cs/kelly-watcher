@@ -88,6 +88,21 @@ def build_market_line(question: str, market_url: str | None) -> str:
     return f"{label}: {url}" if url else label
 
 
+def build_message_with_market_block(
+    summary: str,
+    *,
+    question: str | None = None,
+    market_url: str | None = None,
+    detail: str | None = None,
+) -> str:
+    lines = [_one_line(summary)]
+    if question or market_url:
+        lines.extend(["", build_market_line(question or "Market", market_url)])
+    if detail:
+        lines.append(_one_line(detail))
+    return "\n".join(lines)
+
+
 def build_tracking_line(
     tracked_trader_name: str | None = None,
     tracked_trader_address: str | None = None,
@@ -134,14 +149,15 @@ def build_trade_entry_alert(
     share_noun = "share" if abs(float(shares) - 1.0) < 1e-9 else "shares"
     confidence_text = f", {_format_pct(confidence)} confident" if confidence is not None else ""
     position_text = f" {side_label}" if side_label else ""
-    return build_lines(
+    return build_message_with_market_block(
         append_tracking_detail(
             f"{_one_line(mode).lower()} bought {_format_shares(shares)}{position_text} {share_noun} "
             f"@ {_format_cents(price)} cents for a total of {_format_usd(total_usd)}{confidence_text}",
             tracked_trader_name,
             tracked_trader_address,
         ),
-        build_market_line(question, market_url),
+        question=question,
+        market_url=market_url,
     )
 
 
@@ -166,14 +182,15 @@ def build_trade_exit_alert(
         else ""
     )
     position_text = f" {side_label}" if side_label else ""
-    return build_lines(
+    return build_message_with_market_block(
         append_tracking_detail(
             f"{_one_line(mode).lower()} sold {_format_shares(shares)}{position_text} {share_noun} "
             f"@ {_format_cents(price)} cents for a total of {_format_usd(total_usd)}{pnl_text}",
             tracked_trader_name,
             tracked_trader_address,
         ),
-        build_market_line(question, market_url),
+        question=question,
+        market_url=market_url,
     )
 
 
@@ -196,9 +213,10 @@ def build_trade_resolution_alert(
         summary = f"✅ {_one_line(mode).lower()} won {side_label}, made {amount}"
     else:
         summary = f"❌ {_one_line(mode).lower()} lost {side_label}, lost {amount}"
-    return build_lines(
+    return build_message_with_market_block(
         append_tracking_detail(summary, tracked_trader_name, tracked_trader_address),
-        build_market_line(question, market_url),
+        question=question,
+        market_url=market_url,
     )
 
 
@@ -211,10 +229,11 @@ def build_market_error_alert(
     tracked_trader_name: str | None = None,
     tracked_trader_address: str | None = None,
 ) -> str:
-    return build_lines(
+    return build_message_with_market_block(
         append_tracking_detail(summary, tracked_trader_name, tracked_trader_address),
-        build_market_line(question or "Market", market_url) if question or market_url else None,
-        _one_line(detail) if detail else None,
+        question=question or "Market" if question or market_url else None,
+        market_url=market_url,
+        detail=detail,
     )
 
 

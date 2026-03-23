@@ -126,6 +126,11 @@ interface TopShadowRow {
   pnl: number | null
 }
 
+interface ShadowLeaderboards {
+  best: TopShadowRow[]
+  worst: TopShadowRow[]
+}
+
 interface WalletsLayout {
   usernameWidth: number
   addressWidth: number
@@ -443,6 +448,30 @@ function formatAge(days: number | null | undefined): string {
     return `${months}mo`
   }
   return `${Math.max(0, Math.round(days))}d`
+}
+
+function shadowWalletPnl(row: TopShadowRow): number {
+  const pnl = Number(row.pnl ?? 0)
+  return Number.isFinite(pnl) ? pnl : 0
+}
+
+function pickShadowLeaderboards(rows: TopShadowRow[], limit = 5): ShadowLeaderboards {
+  const sortedByBest = [...rows]
+    .filter((row) => shadowWalletPnl(row) >= 0)
+    .sort((left, right) => (
+      shadowWalletPnl(right) - shadowWalletPnl(left) ||
+      String(left.trader_address || '').localeCompare(String(right.trader_address || ''))
+    ))
+  const best = sortedByBest.slice(0, limit)
+  const bestWallets = new Set(best.map((row) => row.trader_address.trim().toLowerCase()))
+  const worst = [...rows]
+    .filter((row) => !bestWallets.has(row.trader_address.trim().toLowerCase()))
+    .sort((left, right) => (
+      shadowWalletPnl(left) - shadowWalletPnl(right) ||
+      String(left.trader_address || '').localeCompare(String(right.trader_address || ''))
+    ))
+    .slice(0, limit)
+  return {best, worst}
 }
 
 function clip(value: number, low = 0, high = 1): number {
@@ -872,12 +901,8 @@ export function Wallets({
     ? `showing ${droppedVisibleStart}-${droppedVisibleEnd} of ${droppedWallets.length}  selected ${clampedDroppedSelectedIndex + 1}/${droppedWallets.length}  auto-dropped until reactivated`
     : 'no dropped wallets'
 
-  const bestShadowWallets = useMemo(
-    () => [...shadowWalletRows].sort((left, right) => (right.pnl || 0) - (left.pnl || 0)).slice(0, 5),
-    [shadowWalletRows]
-  )
-  const worstShadowWallets = useMemo(
-    () => [...shadowWalletRows].sort((left, right) => (left.pnl || 0) - (right.pnl || 0)).slice(0, 5),
+  const {best: bestShadowWallets, worst: worstShadowWallets} = useMemo(
+    () => pickShadowLeaderboards(shadowWalletRows),
     [shadowWalletRows]
   )
   const bestWalletAddresses = useMemo(

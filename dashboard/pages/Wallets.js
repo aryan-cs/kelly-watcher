@@ -132,6 +132,24 @@ WHERE real_money=0
 GROUP BY trader_address
 HAVING SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) > 0
 `;
+function shadowWalletPnl(row) {
+    const pnl = Number(row.pnl ?? 0);
+    return Number.isFinite(pnl) ? pnl : 0;
+}
+function pickShadowLeaderboards(rows, limit = 5) {
+    const sortedByBest = [...rows]
+        .filter((row) => shadowWalletPnl(row) >= 0)
+        .sort((left, right) => shadowWalletPnl(right) - shadowWalletPnl(left) ||
+        String(left.trader_address || '').localeCompare(String(right.trader_address || '')));
+    const best = sortedByBest.slice(0, limit);
+    const bestWallets = new Set(best.map((row) => row.trader_address.trim().toLowerCase()));
+    const worst = [...rows]
+        .filter((row) => !bestWallets.has(row.trader_address.trim().toLowerCase()))
+        .sort((left, right) => shadowWalletPnl(left) - shadowWalletPnl(right) ||
+        String(left.trader_address || '').localeCompare(String(right.trader_address || '')))
+        .slice(0, limit);
+    return { best, worst };
+}
 function readWatchConfig(envValues) {
     const wallets = String(envValues.WATCHED_WALLETS || '')
         .split(',')
@@ -589,8 +607,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
     const droppedFooterText = droppedWallets.length
         ? `showing ${droppedVisibleStart}-${droppedVisibleEnd} of ${droppedWallets.length}  selected ${clampedDroppedSelectedIndex + 1}/${droppedWallets.length}  auto-dropped until reactivated`
         : 'no dropped wallets';
-    const bestShadowWallets = useMemo(() => [...shadowWalletRows].sort((left, right) => (right.pnl || 0) - (left.pnl || 0)).slice(0, 5), [shadowWalletRows]);
-    const worstShadowWallets = useMemo(() => [...shadowWalletRows].sort((left, right) => (left.pnl || 0) - (right.pnl || 0)).slice(0, 5), [shadowWalletRows]);
+    const { best: bestShadowWallets, worst: worstShadowWallets } = useMemo(() => pickShadowLeaderboards(shadowWalletRows), [shadowWalletRows]);
     const bestWalletAddresses = useMemo(() => bestShadowWallets.map((wallet) => wallet.trader_address.toLowerCase()), [bestShadowWallets]);
     const worstWalletAddresses = useMemo(() => worstShadowWallets.map((wallet) => wallet.trader_address.toLowerCase()), [worstShadowWallets]);
     const clampedBestSelectedIndex = bestWalletAddresses.length

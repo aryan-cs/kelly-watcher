@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-from dotenv import load_dotenv
-
 from config import private_key, wallet_address
-
-load_dotenv()
 USDC_DECIMALS = 1_000_000.0
 
 

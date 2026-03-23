@@ -961,7 +961,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--high-conviction-price", type=float, default=0.75)
     parser.add_argument("--min-conviction-buy-ratio", type=float, default=0.30)
     parser.add_argument("--min-avg-buy-size-usd", type=float, default=125.0)
-    parser.add_argument("--local-db", default="data/trading.db")
+    parser.add_argument("--local-db", default="save/data/trading.db")
     parser.add_argument("--min-local-resolved-copies", type=int, default=3)
     parser.add_argument("--min-local-copy-avg-return", type=float, default=0.00)
     parser.add_argument("--top", type=int, default=10)

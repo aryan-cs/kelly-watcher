@@ -3,10 +3,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import dotenv_values
 
-load_dotenv()
-ENV_PATH = Path(__file__).resolve().with_name(".env")
+from env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, init_env_profile
+from runtime_paths import MODEL_ARTIFACT_PATH, REPO_ROOT
+
+ENV_PROFILE = active_env_profile()
+ENV_PATH = env_path_for_profile(ENV_PROFILE)
+init_env_profile(override=False)
 MIN_POLL_INTERVAL_SECONDS = 2.0
 _DURATION_UNITS = {
     "s": 1.0,
@@ -19,6 +23,14 @@ _DURATION_UNITS = {
 
 class ConfigError(ValueError):
     pass
+
+
+def _source_env_path() -> Path:
+    if ENV_PATH.exists():
+        return ENV_PATH
+    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
+        return LEGACY_ENV_PATH
+    return ENV_PATH
 
 
 def _get(name: str, default: str = "") -> str:
@@ -76,11 +88,12 @@ def _get_bounded_int(
 
 
 def _get_env_file_value(name: str) -> str | None:
-    if not ENV_PATH.exists():
+    source_path = _source_env_path()
+    if not source_path.exists():
         return None
 
     try:
-        value = dotenv_values(ENV_PATH).get(name)
+        value = dotenv_values(source_path).get(name)
     except Exception:
         return None
 
@@ -359,7 +372,7 @@ def wallet_address() -> str:
 
 
 def model_path() -> str:
-    return _get("MODEL_PATH", "model.joblib")
+    return _get("MODEL_PATH", str(MODEL_ARTIFACT_PATH.relative_to(REPO_ROOT)))
 
 
 def shadow_bankroll_usd() -> float:

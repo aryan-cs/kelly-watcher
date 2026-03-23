@@ -17,19 +17,24 @@ from urllib.parse import parse_qs, urlparse
 
 from config import use_real_money
 from db import DB_PATH, get_conn
+from env_profile import LEGACY_ENV_PATH, active_env_flag, active_env_profile, env_path_for_profile
 from kelly_watcher.shadow_reset import runtime_env
+from runtime_paths import (
+    BOT_STATE_FILE,
+    DATA_DIR,
+    EVENT_FILE,
+    IDENTITY_CACHE_PATH,
+    MANUAL_RETRAIN_REQUEST_FILE,
+    MANUAL_TRADE_REQUEST_FILE,
+    REPO_ROOT,
+)
 
 logger = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parent
-DATA_DIR = REPO_ROOT / "data"
-EVENT_FILE = DATA_DIR / "events.jsonl"
-BOT_STATE_FILE = DATA_DIR / "bot_state.json"
-IDENTITY_FILE = DATA_DIR / "identity_cache.json"
-MANUAL_RETRAIN_REQUEST_FILE = DATA_DIR / "manual_retrain_request.json"
-MANUAL_TRADE_REQUEST_FILE = DATA_DIR / "manual_trade_request.json"
-ENV_PATH = REPO_ROOT / ".env"
+ENV_PROFILE = active_env_profile()
+ENV_PATH = env_path_for_profile(ENV_PROFILE)
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
+IDENTITY_FILE = IDENTITY_CACHE_PATH
 RESTART_SHADOW_SCRIPT = REPO_ROOT / "restart_shadow.py"
 
 SAFE_ENV_KEYS = {
@@ -97,7 +102,11 @@ def _api_token() -> str | None:
 
 
 def _source_env_path() -> Path:
-    return ENV_PATH if ENV_PATH.exists() else ENV_EXAMPLE_PATH
+    if ENV_PATH.exists():
+        return ENV_PATH
+    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
+        return LEGACY_ENV_PATH
+    return ENV_EXAMPLE_PATH
 
 
 def _read_env_items() -> list[tuple[str, str]]:
@@ -648,7 +657,7 @@ def _launch_shadow_restart(keep_wallets: bool) -> dict[str, Any]:
             "message": "Restart Shadow is blocked while live trading is enabled or the running bot is live.",
         }
 
-    command = [sys.executable, str(RESTART_SHADOW_SCRIPT)]
+    command = [sys.executable, str(RESTART_SHADOW_SCRIPT), active_env_flag()]
     if not keep_wallets:
         command.append("--clear-wallets")
 

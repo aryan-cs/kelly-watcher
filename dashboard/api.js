@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { envExamplePath, envPath } from './paths.js';
+import { envExamplePath, envReadPath } from './paths.js';
 export class ApiError extends Error {
     status;
     constructor(message, status = 500) {
@@ -9,7 +9,7 @@ export class ApiError extends Error {
     }
 }
 function sourceEnvPath() {
-    return fs.existsSync(envPath) ? envPath : envExamplePath;
+    return fs.existsSync(envReadPath) ? envReadPath : envExamplePath;
 }
 function stripMatchingQuotes(value) {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {

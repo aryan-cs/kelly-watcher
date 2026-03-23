@@ -22,6 +22,7 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Runtime artifacts and local data
+save/
 data/
 logs/
 *.log
@@ -41,6 +42,7 @@ dashboard/coverage/
 dashboard/.cache/
 dashboard/.eslintcache
 dashboard/*.tsbuildinfo
+/package-lock.json
 
 # Editor and OS noise
 .DS_Store

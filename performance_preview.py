@@ -11,10 +11,10 @@ from typing import Any
 
 from config import shadow_bankroll_usd
 from db import get_conn
+from runtime_paths import BOT_STATE_FILE
 from trade_contract import EXECUTED_ENTRY_SQL, OPEN_EXECUTED_ENTRY_SQL
 
 logger = logging.getLogger(__name__)
-BOT_STATE_FILE = Path("data/bot_state.json")
 _EDITABLE_STATUSES = frozenset({"open", "waiting", "win", "lose", "exit"})
 
 _SHADOW_OPEN_POSITIONS_SQL = f"""

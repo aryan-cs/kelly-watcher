@@ -12,14 +12,20 @@ from pathlib import Path
 
 from config import shadow_bankroll_usd, use_real_money
 from db import init_db
+from env_profile import (
+    ENV_EXAMPLE_PATH,
+    LEGACY_ENV_PATH,
+    active_env_flag,
+    active_env_profile,
+    add_env_profile_flags,
+    env_path_for_profile,
+)
+from runtime_paths import BACKGROUND_LOG_PATH, BOT_PID_FILE, DATA_DIR, LOG_DIR, REPO_ROOT
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = REPO_ROOT / "data"
-LOG_DIR = REPO_ROOT / "logs"
-ENV_PATH = REPO_ROOT / ".env"
-ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
-PID_FILE = DATA_DIR / "shadow_bot.pid"
-BACKGROUND_LOG = LOG_DIR / "shadow_runtime.out"
+ENV_PROFILE = active_env_profile()
+ENV_PATH = env_path_for_profile(ENV_PROFILE)
+PID_FILE = BOT_PID_FILE
+BACKGROUND_LOG = BACKGROUND_LOG_PATH
 RESET_FILES = (
     DATA_DIR / "trading.db",
     DATA_DIR / "trading.db-shm",
@@ -31,7 +37,11 @@ RESET_FILES = (
 
 
 def _source_env_path() -> Path:
-    return ENV_PATH if ENV_PATH.exists() else ENV_EXAMPLE_PATH
+    if ENV_PATH.exists():
+        return ENV_PATH
+    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
+        return LEGACY_ENV_PATH
+    return ENV_EXAMPLE_PATH
 
 
 def _read_env_value(key: str) -> str:
@@ -292,7 +302,7 @@ def runtime_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def _bot_command() -> list[str]:
-    return [sys.executable, str(REPO_ROOT / "main.py")]
+    return [sys.executable, str(REPO_ROOT / "main.py"), active_env_flag()]
 
 
 def launch_background_bot() -> int:
@@ -386,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Reset shadow trading runtime state and restart the bot."
     )
+    add_env_profile_flags(parser)
     start_mode = parser.add_mutually_exclusive_group()
     start_mode.add_argument(
         "--foreground",

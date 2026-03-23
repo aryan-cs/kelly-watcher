@@ -12,7 +12,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from dotenv import load_dotenv
 
 from alerter import (
     build_bullets,
@@ -80,29 +79,30 @@ from telegram_runtime import service_telegram_commands
 from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
 from tracker import PolymarketTracker, TradeEvent
 from trader_scorer import get_trader_features, refresh_trader_cache
+from runtime_paths import (
+    BOT_PID_FILE,
+    BOT_STATE_FILE,
+    DATA_DIR,
+    EVENT_FILE,
+    LOG_DIR,
+    MANUAL_RETRAIN_REQUEST_FILE,
+    MANUAL_TRADE_REQUEST_FILE,
+)
 from wallet_trust import apply_wallet_trust_sizing, get_wallet_trust_state
 from watchlist_manager import WatchlistManager
 
-load_dotenv()
-
-Path("logs").mkdir(exist_ok=True)
-Path("data").mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        RotatingFileHandler("logs/bot.log", maxBytes=10 * 1024 * 1024, backupCount=5),
+        RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10 * 1024 * 1024, backupCount=5),
         logging.StreamHandler(),
     ],
 )
 logger = logging.getLogger(__name__)
-
-EVENT_FILE = Path("data/events.jsonl")
-BOT_STATE_FILE = Path("data/bot_state.json")
-BOT_PID_FILE = Path("data/shadow_bot.pid")
-MANUAL_RETRAIN_REQUEST_FILE = Path("data/manual_retrain_request.json")
-MANUAL_TRADE_REQUEST_FILE = Path("data/manual_trade_request.json")
 _emit_count = 0
 _event_lock = threading.Lock()
 WATCHED_WALLETS = watched_wallets()

@@ -13,11 +13,9 @@ from alerter import send_telegram_message
 from config import telegram_bot_token, telegram_chat_id
 from performance_preview import render_tracker_preview_message
 from rank_copytrade_wallets import fetch_leaderboard
+from runtime_paths import BOT_STATE_FILE, MANUAL_RETRAIN_REQUEST_FILE, TELEGRAM_STATE_FILE
 
 logger = logging.getLogger(__name__)
-TELEGRAM_STATE_FILE = Path("data/telegram_state.json")
-BOT_STATE_FILE = Path("data/bot_state.json")
-MANUAL_RETRAIN_REQUEST_FILE = Path("data/manual_retrain_request.json")
 _COMMAND_POLL_INTERVAL_S = 2.0
 _LEADERBOARD_PERIODS = (
     ("DAY", "24h"),

@@ -205,5 +205,5 @@ export function Settings({ editor }) {
                             React.createElement(Text, { color: theme.white }, fit(usernames.get(wallet.toLowerCase()) || shortAddress(wallet), walletUsernameWidth)),
                             React.createElement(Text, null, " "),
                             React.createElement(Text, { color: theme.white }, fit(wallet, walletAddressWidth))))))) : (React.createElement(Text, { color: theme.dim }, "No watched wallets configured.")),
-                    hiddenWalletCount > 0 ? (React.createElement(Text, { color: theme.dim }, truncate(`... and ${hiddenWalletCount} more`, helperWidth))) : null))) : (React.createElement(Text, { color: theme.dim }, "No .env file found yet."))))));
+                    hiddenWalletCount > 0 ? (React.createElement(Text, { color: theme.dim }, truncate(`... and ${hiddenWalletCount} more`, helperWidth))) : null))) : (React.createElement(Text, { color: theme.dim }, "No active env file found yet."))))));
 }

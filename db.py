@@ -7,8 +7,9 @@ import sqlite3
 from pathlib import Path
 
 from market_urls import market_url_from_metadata
+from runtime_paths import TRADING_DB_PATH
 
-DB_PATH = Path("data/trading.db")
+DB_PATH = TRADING_DB_PATH
 REPAIR_BATCH_SIZE = 250
 logger = logging.getLogger(__name__)
 

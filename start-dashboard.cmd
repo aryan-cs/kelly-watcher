@@ -9,7 +9,7 @@ if not exist node_modules\ink\package.json (
   if errorlevel 1 goto :end
 )
 
-call npm start
+call npm start -- %*
 
 :end
 set "EXIT_CODE=%ERRORLEVEL%"

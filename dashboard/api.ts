@@ -1,5 +1,5 @@
 import fs from 'fs'
-import {envExamplePath, envPath} from './paths.js'
+import {envExamplePath, envReadPath} from './paths.js'
 
 export class ApiError extends Error {
   status: number
@@ -12,7 +12,7 @@ export class ApiError extends Error {
 }
 
 function sourceEnvPath(): string {
-  return fs.existsSync(envPath) ? envPath : envExamplePath
+  return fs.existsSync(envReadPath) ? envReadPath : envExamplePath
 }
 
 function stripMatchingQuotes(value: string): string {

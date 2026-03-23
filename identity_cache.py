@@ -10,8 +10,9 @@ from pathlib import Path
 import httpx
 
 logger = logging.getLogger(__name__)
+from runtime_paths import IDENTITY_CACHE_PATH
 
-CACHE_PATH = Path("data/identity_cache.json")
+CACHE_PATH = IDENTITY_CACHE_PATH
 CACHE_TTL_SECONDS = 6 * 60 * 60
 
 ADDRESS_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")

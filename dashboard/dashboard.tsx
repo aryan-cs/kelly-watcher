@@ -1050,7 +1050,7 @@ function App() {
         dangerConfirm: null,
         statusMessage: selectedField.liveApplies
           ? `${selectedField.label} saved. The bot will pick it up on the next poll loop.`
-          : `${selectedField.label} saved to .env. Restart the bot to apply it.`,
+          : `${selectedField.label} saved to the active env file. Restart the bot to apply it.`,
         statusTone: 'success'
       }))
     } catch (error) {

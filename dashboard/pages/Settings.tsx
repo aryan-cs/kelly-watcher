@@ -361,7 +361,7 @@ export function Settings({editor}: SettingsProps) {
               </InkBox>
             </>
           ) : (
-            <Text color={theme.dim}>No .env file found yet.</Text>
+            <Text color={theme.dim}>No active env file found yet.</Text>
           )}
         </Box>
       </InkBox>

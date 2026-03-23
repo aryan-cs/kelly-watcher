@@ -25,6 +25,10 @@ interface RetrainRunRow {
   sample_count: number
   brier_score: number | null
   log_loss: number | null
+  challenger_shared_log_loss: number | null
+  challenger_shared_brier_score: number | null
+  incumbent_log_loss: number | null
+  incumbent_brier_score: number | null
   status: string | null
   deployed: number
 }
@@ -246,12 +250,13 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {
         label: 'Trigger progress',
         text: 'Progress toward the next retrain trigger. With a deployed model this counts new eligible labels since that model went live; before the first model it falls back to total labeled samples versus the minimum sample gate.'
-      },
-      {label: 'Manual run', text: 'Press t while this panel is selected to queue an in-process retrain through the running bot.'},
-      {label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.'},
-      {label: 'Runs 7d / 30d', text: 'How many retrain attempts landed recently, including failures and skips.'}
-    ],
-    settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS', 'RETRAIN_MIN_SAMPLES']
+            },
+            {label: 'Manual run', text: 'Press t while this panel is selected to queue an in-process retrain through the running bot.'},
+            {label: 'Shared gate', text: 'Latest apples-to-apples challenger versus incumbent comparison on the same final holdout. This is the actual deployment guardrail.'},
+            {label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.'},
+            {label: 'Runs 7d / 30d', text: 'How many retrain attempts landed recently, including failures and skips.'}
+        ],
+        settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS', 'RETRAIN_MIN_SAMPLES']
   }
 ]
 
@@ -347,7 +352,17 @@ LIMIT 12
 `
 
 const RETRAIN_RUN_SQL = `
-SELECT finished_at, sample_count, brier_score, log_loss, status, deployed
+SELECT
+  finished_at,
+  sample_count,
+  brier_score,
+  log_loss,
+  challenger_shared_log_loss,
+  challenger_shared_brier_score,
+  incumbent_log_loss,
+  incumbent_brier_score,
+  status,
+  deployed
 FROM retrain_runs
 ORDER BY finished_at DESC, id DESC
 LIMIT 48
@@ -634,6 +649,45 @@ function retrainRunStateColor(status: string | null | undefined, deployed: numbe
   return theme.white
 }
 
+function hasSharedHoldoutComparison(row: RetrainRunRow | null | undefined): row is RetrainRunRow & {
+  challenger_shared_log_loss: number
+  challenger_shared_brier_score: number
+  incumbent_log_loss: number
+  incumbent_brier_score: number
+} {
+  return row?.challenger_shared_log_loss != null
+    && row?.challenger_shared_brier_score != null
+    && row?.incumbent_log_loss != null
+    && row?.incumbent_brier_score != null
+}
+
+function sharedHoldoutGateRead(row: RetrainRunRow | null | undefined): string {
+  if (!hasSharedHoldoutComparison(row)) return '-'
+  const outcomes = [
+    row.challenger_shared_log_loss < row.incumbent_log_loss
+      ? 'LL better'
+      : row.challenger_shared_log_loss > row.incumbent_log_loss
+        ? 'LL worse'
+        : 'LL tied',
+    row.challenger_shared_brier_score < row.incumbent_brier_score
+      ? 'Brier better'
+      : row.challenger_shared_brier_score > row.incumbent_brier_score
+        ? 'Brier worse'
+        : 'Brier tied'
+  ]
+  return outcomes.join(', ')
+}
+
+function sharedHoldoutGateReadColor(row: RetrainRunRow | null | undefined): string {
+  if (!hasSharedHoldoutComparison(row)) return theme.dim
+  const llDelta = row.challenger_shared_log_loss - row.incumbent_log_loss
+  const brierDelta = row.challenger_shared_brier_score - row.incumbent_brier_score
+  if (llDelta < 0 && brierDelta < 0) return theme.green
+  if (llDelta > 0 && brierDelta > 0) return theme.red
+  if (llDelta === 0 && brierDelta === 0) return theme.dim
+  return theme.yellow
+}
+
 function formatInterval(seconds: number | null | undefined): string {
   if (seconds == null || Number.isNaN(seconds) || seconds <= 0) return '-'
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`
@@ -768,6 +822,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const flow = flowRows[0]
   const trainingSummary = trainingSummaryRows[0]
   const trainingProgress = trainingProgressRows[0]
+  const latestSharedHoldoutRun = retrainRuns.find((row) => hasSharedHoldoutComparison(row))
   const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0]
   const configFieldByKey = useMemo(
     () => new Map(editableConfigFields.map((field) => [field.key, field])),
@@ -1468,6 +1523,25 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
               </React.Fragment>
             ))}
           </InkBox>
+          {latestSharedHoldoutRun ? (
+            <InkBox width="100%" marginTop={1} flexDirection="column">
+              <Text color={theme.accent} bold>Latest Shared Holdout Gate</Text>
+              <StatRow label="Run" value={formatShortDateTime(latestSharedHoldoutRun.finished_at)} />
+              <StatRow
+                label="Challenger"
+                value={`LL ${formatNumber(latestSharedHoldoutRun.challenger_shared_log_loss, 4)} | BR ${formatNumber(latestSharedHoldoutRun.challenger_shared_brier_score, 4)}`}
+              />
+              <StatRow
+                label="Incumbent"
+                value={`LL ${formatNumber(latestSharedHoldoutRun.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldoutRun.incumbent_brier_score, 4)}`}
+              />
+              <StatRow
+                label="Gate read"
+                value={sharedHoldoutGateRead(latestSharedHoldoutRun)}
+                color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
+              />
+            </InkBox>
+          ) : null}
           <InkBox width="100%" marginTop={1}>
             <Text color={theme.dim}>{fit('TIME', retrainWidths.timeWidth)}</Text>
             <Text> </Text>

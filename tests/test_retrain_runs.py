@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,7 +17,8 @@ class RetrainRunHistoryTest(unittest.TestCase):
             original_db_path = db.DB_PATH
             try:
                 db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
-                db.init_db()
+                with patch("db._repair_trade_log_market_urls", side_effect=sqlite3.DatabaseError("malformed")):
+                    db.init_db()
                 conn = db.get_conn()
                 conn.execute(
                     """
@@ -29,7 +31,8 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                db.init_db()
+                with patch("db._repair_trade_log_market_urls", side_effect=sqlite3.DatabaseError("malformed")):
+                    db.init_db()
 
                 conn = db.get_conn()
                 row = conn.execute(
@@ -106,6 +109,10 @@ class RetrainRunHistoryTest(unittest.TestCase):
                     "search_total_pnl": -1.25,
                     "val_selected_trades": 7,
                     "val_total_pnl": -2.0,
+                    "challenger_shared_log_loss": 0.501,
+                    "challenger_shared_brier_score": 0.177,
+                    "incumbent_log_loss": 0.509,
+                    "incumbent_brier_score": 0.175,
                 }
                 with patch("auto_retrain.load_training_data", return_value=[object()] * 12), patch(
                     "auto_retrain.min_samples_required", return_value=5
@@ -120,7 +127,9 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 row = conn.execute(
                     """
                     SELECT trigger, status, deployed, brier_score, log_loss, candidate_name, candidate_count,
-                           search_total_pnl, val_selected_trades, val_total_pnl
+                           search_total_pnl, val_selected_trades, val_total_pnl,
+                           challenger_shared_log_loss, challenger_shared_brier_score,
+                           incumbent_log_loss, incumbent_brier_score
                     FROM retrain_runs
                     ORDER BY id DESC
                     LIMIT 1
@@ -138,6 +147,70 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 self.assertAlmostEqual(float(row["search_total_pnl"]), -1.25, places=6)
                 self.assertEqual(int(row["val_selected_trades"]), 7)
                 self.assertAlmostEqual(float(row["val_total_pnl"]), -2.0, places=6)
+                self.assertAlmostEqual(float(row["challenger_shared_log_loss"]), 0.501, places=6)
+                self.assertAlmostEqual(float(row["challenger_shared_brier_score"]), 0.177, places=6)
+                self.assertAlmostEqual(float(row["incumbent_log_loss"]), 0.509, places=6)
+                self.assertAlmostEqual(float(row["incumbent_brier_score"]), 0.175, places=6)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_init_db_backfills_shared_holdout_metrics_from_existing_message(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO retrain_runs (
+                        started_at, finished_at, trigger, status, ok, deployed,
+                        sample_count, min_samples, brier_score, log_loss, message
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        1_700_000_100,
+                        1_700_000_120,
+                        "manual",
+                        "completed_not_deployed",
+                        0,
+                        0,
+                        3211,
+                        200,
+                        0.1799,
+                        0.5219,
+                        "\n".join(
+                            [
+                                "retrain rejected",
+                                "model failed deployment checks",
+                                "shared holdout ll/brier: 0.5219 / 0.1799",
+                                "incumbent ll/brier: 0.5233 / 0.1785",
+                            ]
+                        ),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                db.init_db()
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT challenger_shared_log_loss, challenger_shared_brier_score,
+                           incumbent_log_loss, incumbent_brier_score
+                    FROM retrain_runs
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+
+                self.assertAlmostEqual(float(row["challenger_shared_log_loss"]), 0.5219, places=6)
+                self.assertAlmostEqual(float(row["challenger_shared_brier_score"]), 0.1799, places=6)
+                self.assertAlmostEqual(float(row["incumbent_log_loss"]), 0.5233, places=6)
+                self.assertAlmostEqual(float(row["incumbent_brier_score"]), 0.1785, places=6)
             finally:
                 db.DB_PATH = original_db_path
 

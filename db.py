@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +13,11 @@ from runtime_paths import TRADING_DB_PATH
 DB_PATH = TRADING_DB_PATH
 REPAIR_BATCH_SIZE = 250
 logger = logging.getLogger(__name__)
+_SHARED_HOLDOUT_MESSAGE_RE = re.compile(
+    r"shared holdout ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+).*?"
+    r"incumbent ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _resolved_db_path_text(path: Path) -> str:
@@ -206,6 +212,64 @@ def _backfill_retrain_runs_from_model_history(conn: sqlite3.Connection) -> None:
         )
 
 
+def _parse_shared_holdout_metrics(message: str) -> tuple[float, float, float, float] | None:
+    match = _SHARED_HOLDOUT_MESSAGE_RE.search(message)
+    if not match:
+        return None
+    try:
+        challenger_ll, challenger_brier, incumbent_ll, incumbent_brier = match.groups()
+        return (
+            float(challenger_ll),
+            float(challenger_brier),
+            float(incumbent_ll),
+            float(incumbent_brier),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _backfill_retrain_run_shared_holdout_metrics(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, message
+        FROM retrain_runs
+        WHERE challenger_shared_log_loss IS NULL
+          AND challenger_shared_brier_score IS NULL
+          AND incumbent_log_loss IS NULL
+          AND incumbent_brier_score IS NULL
+          AND LOWER(COALESCE(message, '')) LIKE '%shared holdout ll/brier:%'
+          AND LOWER(COALESCE(message, '')) LIKE '%incumbent ll/brier:%'
+        """
+    ).fetchall()
+    updates: list[tuple[float, float, float, float, int]] = []
+    for row in rows:
+        parsed = _parse_shared_holdout_metrics(str(row["message"] or ""))
+        if parsed is None:
+            continue
+        challenger_ll, challenger_brier, incumbent_ll, incumbent_brier = parsed
+        updates.append(
+            (
+                challenger_ll,
+                challenger_brier,
+                incumbent_ll,
+                incumbent_brier,
+                int(row["id"]),
+            )
+        )
+    if updates:
+        conn.executemany(
+            """
+            UPDATE retrain_runs
+            SET challenger_shared_log_loss=?,
+                challenger_shared_brier_score=?,
+                incumbent_log_loss=?,
+                incumbent_brier_score=?
+            WHERE id=?
+            """,
+            updates,
+        )
+
+
 def init_db() -> None:
     conn = get_conn()
     conn.executescript(
@@ -368,6 +432,10 @@ def init_db() -> None:
             search_total_pnl      REAL,
             val_selected_trades   INTEGER,
             val_total_pnl         REAL,
+            challenger_shared_log_loss    REAL,
+            challenger_shared_brier_score REAL,
+            incumbent_log_loss            REAL,
+            incumbent_brier_score         REAL,
             message               TEXT NOT NULL DEFAULT ''
         );
 
@@ -581,58 +649,68 @@ def init_db() -> None:
             "search_total_pnl": "REAL",
             "val_selected_trades": "INTEGER",
             "val_total_pnl": "REAL",
+            "challenger_shared_log_loss": "REAL",
+            "challenger_shared_brier_score": "REAL",
+            "incumbent_log_loss": "REAL",
+            "incumbent_brier_score": "REAL",
             "message": "TEXT NOT NULL DEFAULT ''",
         },
     )
     _ensure_positions_schema(conn)
     _backfill_retrain_runs_from_model_history(conn)
+    _backfill_retrain_run_shared_holdout_metrics(conn)
+    conn.commit()
     if _startup_heavy_maintenance_enabled(DB_PATH):
-        _repair_trade_log_market_urls(conn)
-        conn.execute(
-            """
-            UPDATE positions
-            SET token_id = LOWER(token_id)
-            WHERE token_id IS NOT NULL
-              AND token_id != LOWER(token_id)
-            """
-        )
-        conn.execute(
-            """
-            UPDATE trade_log
-            SET token_id = LOWER(token_id)
-            WHERE token_id IS NOT NULL
-              AND token_id != LOWER(token_id)
-            """
-        )
-        conn.execute(
-            """
-            UPDATE trade_log
-            SET remaining_entry_shares = CASE
-                    WHEN exited_at IS NOT NULL THEN 0
-                    ELSE COALESCE(remaining_entry_shares, actual_entry_shares, source_shares, 0)
-                END,
-                remaining_entry_size_usd = CASE
-                    WHEN exited_at IS NOT NULL THEN 0
-                    ELSE COALESCE(remaining_entry_size_usd, actual_entry_size_usd, signal_size_usd, 0)
-                END,
-                remaining_source_shares = CASE
-                    WHEN exited_at IS NOT NULL THEN 0
-                    ELSE COALESCE(remaining_source_shares, source_shares, 0)
-                END,
-                realized_exit_shares = COALESCE(realized_exit_shares, 0),
-                realized_exit_size_usd = COALESCE(realized_exit_size_usd, 0),
-                realized_exit_pnl_usd = COALESCE(realized_exit_pnl_usd, 0),
-                partial_exit_count = COALESCE(partial_exit_count, 0)
-            WHERE skipped=0
-              AND COALESCE(source_action, 'buy')='buy'
-            """
-        )
+        try:
+            _repair_trade_log_market_urls(conn)
+            conn.execute(
+                """
+                UPDATE positions
+                SET token_id = LOWER(token_id)
+                WHERE token_id IS NOT NULL
+                  AND token_id != LOWER(token_id)
+                """
+            )
+            conn.execute(
+                """
+                UPDATE trade_log
+                SET token_id = LOWER(token_id)
+                WHERE token_id IS NOT NULL
+                  AND token_id != LOWER(token_id)
+                """
+            )
+            conn.execute(
+                """
+                UPDATE trade_log
+                SET remaining_entry_shares = CASE
+                        WHEN exited_at IS NOT NULL THEN 0
+                        ELSE COALESCE(remaining_entry_shares, actual_entry_shares, source_shares, 0)
+                    END,
+                    remaining_entry_size_usd = CASE
+                        WHEN exited_at IS NOT NULL THEN 0
+                        ELSE COALESCE(remaining_entry_size_usd, actual_entry_size_usd, signal_size_usd, 0)
+                    END,
+                    remaining_source_shares = CASE
+                        WHEN exited_at IS NOT NULL THEN 0
+                        ELSE COALESCE(remaining_source_shares, source_shares, 0)
+                    END,
+                    realized_exit_shares = COALESCE(realized_exit_shares, 0),
+                    realized_exit_size_usd = COALESCE(realized_exit_size_usd, 0),
+                    realized_exit_pnl_usd = COALESCE(realized_exit_pnl_usd, 0),
+                    partial_exit_count = COALESCE(partial_exit_count, 0)
+                WHERE skipped=0
+                  AND COALESCE(source_action, 'buy')='buy'
+                """
+            )
+            conn.commit()
+        except sqlite3.DatabaseError:
+            conn.rollback()
+            logger.exception("Heavy startup DB maintenance failed; keeping core schema changes")
     else:
         logger.info(
             "Skipping heavy startup DB maintenance for shared/network path: %s",
             DB_PATH,
         )
-    conn.commit()
     conn.close()
 
 

@@ -45,8 +45,10 @@ def _record_retrain_run(report: dict[str, object]) -> None:
             started_at, finished_at, trigger, status, ok, deployed,
             sample_count, min_samples, brier_score, log_loss,
             candidate_name, candidate_count, search_beats_baseline,
-            search_total_pnl, val_selected_trades, val_total_pnl, message
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            search_total_pnl, val_selected_trades, val_total_pnl,
+            challenger_shared_log_loss, challenger_shared_brier_score,
+            incumbent_log_loss, incumbent_brier_score, message
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             int(report.get("started_at") or 0),
@@ -69,6 +71,10 @@ def _record_retrain_run(report: dict[str, object]) -> None:
             _float_or_none(metrics_dict.get("search_total_pnl")),
             _int_or_none(metrics_dict.get("val_selected_trades")),
             _float_or_none(metrics_dict.get("val_total_pnl")),
+            _float_or_none(metrics_dict.get("challenger_shared_log_loss")),
+            _float_or_none(metrics_dict.get("challenger_shared_brier_score")),
+            _float_or_none(metrics_dict.get("incumbent_log_loss")),
+            _float_or_none(metrics_dict.get("incumbent_brier_score")),
             str(report.get("message") or ""),
         ),
     )

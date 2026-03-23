@@ -6,7 +6,6 @@ import os
 import re
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
 from collections import deque
@@ -18,12 +17,13 @@ from urllib.parse import parse_qs, urlparse
 from config import use_real_money
 from db import DB_PATH, get_conn
 from env_profile import LEGACY_ENV_PATH, active_env_flag, active_env_profile, env_path_for_profile
-from kelly_watcher.shadow_reset import runtime_env
+from kelly_watcher.shadow_reset import preferred_python_executable, runtime_env
 from runtime_paths import (
     BOT_STATE_FILE,
     DATA_DIR,
     EVENT_FILE,
     IDENTITY_CACHE_PATH,
+    LOG_DIR,
     MANUAL_RETRAIN_REQUEST_FILE,
     MANUAL_TRADE_REQUEST_FILE,
     REPO_ROOT,
@@ -36,6 +36,8 @@ ENV_PATH = env_path_for_profile(ENV_PROFILE)
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 IDENTITY_FILE = IDENTITY_CACHE_PATH
 RESTART_SHADOW_SCRIPT = REPO_ROOT / "restart_shadow.py"
+SHADOW_RESTART_LOG = LOG_DIR / "shadow_restart.out"
+SHADOW_RESTART_DELAY_SECONDS = 0.25
 
 SAFE_ENV_KEYS = {
     "WATCHED_WALLETS",
@@ -650,23 +652,23 @@ def _current_bot_mode() -> str:
     return str(_bot_state_snapshot().get("mode") or "").strip().lower()
 
 
-def _launch_shadow_restart(keep_wallets: bool) -> dict[str, Any]:
-    if _live_trading_enabled_in_config() or _current_bot_mode() == "live" or use_real_money():
-        return {
-            "ok": False,
-            "message": "Restart Shadow is blocked while live trading is enabled or the running bot is live.",
-        }
-
-    command = [sys.executable, str(RESTART_SHADOW_SCRIPT), active_env_flag()]
+def _shadow_restart_command(keep_wallets: bool) -> list[str]:
+    command = [preferred_python_executable(), str(RESTART_SHADOW_SCRIPT), active_env_flag()]
     if not keep_wallets:
         command.append("--clear-wallets")
+    return command
 
+
+def _spawn_shadow_restart_process(keep_wallets: bool) -> dict[str, Any]:
+    command = _shadow_restart_command(keep_wallets)
+    SHADOW_RESTART_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = SHADOW_RESTART_LOG.open("a", encoding="utf-8")
     popen_kwargs: dict[str, Any] = {
         "cwd": str(REPO_ROOT),
         "env": runtime_env(),
         "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
+        "stdout": log_handle,
+        "stderr": subprocess.STDOUT,
     }
     if os.name == "nt":
         creationflags = 0
@@ -678,14 +680,47 @@ def _launch_shadow_restart(keep_wallets: bool) -> dict[str, Any]:
         popen_kwargs["start_new_session"] = True
 
     try:
-        subprocess.Popen(command, **popen_kwargs)
+        process = subprocess.Popen(command, **popen_kwargs)
     except OSError as exc:
+        log_handle.close()
         return {"ok": False, "message": f"Shadow restart failed to launch: {exc}"}
+    finally:
+        log_handle.close()
+
+    logger.info(
+        "Launched shadow restart helper pid=%s command=%s log=%s",
+        getattr(process, "pid", "?"),
+        command,
+        SHADOW_RESTART_LOG,
+    )
+    return {"ok": True, "message": "Shadow restart helper launched."}
+
+
+def _launch_shadow_restart(keep_wallets: bool) -> dict[str, Any]:
+    if _live_trading_enabled_in_config() or _current_bot_mode() == "live" or use_real_money():
+        return {
+            "ok": False,
+            "message": "Restart Shadow is blocked while live trading is enabled or the running bot is live.",
+        }
+
+    def _deferred_launch() -> None:
+        if SHADOW_RESTART_DELAY_SECONDS > 0:
+            time.sleep(SHADOW_RESTART_DELAY_SECONDS)
+        result = _spawn_shadow_restart_process(keep_wallets)
+        if not result.get("ok"):
+            logger.error("Shadow restart helper launch failed: %s", result.get("message"))
+
+    threading.Thread(
+        target=_deferred_launch,
+        name="shadow-restart-launcher",
+        daemon=True,
+    ).start()
 
     return {
         "ok": True,
         "message": (
-            "Shadow restart requested. The API should come back after the bot resets and starts again."
+            "Shadow restart requested. The API should come back after the bot resets and starts again. "
+            f"Helper log: {SHADOW_RESTART_LOG.relative_to(REPO_ROOT)}"
         ),
     }
 

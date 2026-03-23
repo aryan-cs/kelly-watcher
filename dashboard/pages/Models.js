@@ -132,6 +132,7 @@ export const MODEL_PANEL_DEFS = [
                 text: 'Progress toward the next retrain trigger. With a deployed model this counts new eligible labels since that model went live; before the first model it falls back to total labeled samples versus the minimum sample gate.'
             },
             { label: 'Manual run', text: 'Press t while this panel is selected to queue an in-process retrain through the running bot.' },
+            { label: 'Shared gate', text: 'Latest apples-to-apples challenger versus incumbent comparison on the same final holdout. This is the actual deployment guardrail.' },
             { label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.' },
             { label: 'Runs 7d / 30d', text: 'How many retrain attempts landed recently, including failures and skips.' }
         ],
@@ -193,7 +194,17 @@ ORDER BY trained_at DESC
 LIMIT 12
 `;
 const RETRAIN_RUN_SQL = `
-SELECT finished_at, sample_count, brier_score, log_loss, status, deployed
+SELECT
+  finished_at,
+  sample_count,
+  brier_score,
+  log_loss,
+  challenger_shared_log_loss,
+  challenger_shared_brier_score,
+  incumbent_log_loss,
+  incumbent_brier_score,
+  status,
+  deployed
 FROM retrain_runs
 ORDER BY finished_at DESC, id DESC
 LIMIT 48
@@ -476,6 +487,42 @@ function retrainRunStateColor(status, deployed) {
         return theme.yellow;
     return theme.white;
 }
+function hasSharedHoldoutComparison(row) {
+    return row?.challenger_shared_log_loss != null
+        && row?.challenger_shared_brier_score != null
+        && row?.incumbent_log_loss != null
+        && row?.incumbent_brier_score != null;
+}
+function sharedHoldoutGateRead(row) {
+    if (!hasSharedHoldoutComparison(row))
+        return '-';
+    const outcomes = [
+        row.challenger_shared_log_loss < row.incumbent_log_loss
+            ? 'LL better'
+            : row.challenger_shared_log_loss > row.incumbent_log_loss
+                ? 'LL worse'
+                : 'LL tied',
+        row.challenger_shared_brier_score < row.incumbent_brier_score
+            ? 'Brier better'
+            : row.challenger_shared_brier_score > row.incumbent_brier_score
+                ? 'Brier worse'
+                : 'Brier tied'
+    ];
+    return outcomes.join(', ');
+}
+function sharedHoldoutGateReadColor(row) {
+    if (!hasSharedHoldoutComparison(row))
+        return theme.dim;
+    const llDelta = row.challenger_shared_log_loss - row.incumbent_log_loss;
+    const brierDelta = row.challenger_shared_brier_score - row.incumbent_brier_score;
+    if (llDelta < 0 && brierDelta < 0)
+        return theme.green;
+    if (llDelta > 0 && brierDelta > 0)
+        return theme.red;
+    if (llDelta === 0 && brierDelta === 0)
+        return theme.dim;
+    return theme.yellow;
+}
 function formatInterval(seconds) {
     if (seconds == null || Number.isNaN(seconds) || seconds <= 0)
         return '-';
@@ -600,6 +647,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const flow = flowRows[0];
     const trainingSummary = trainingSummaryRows[0];
     const trainingProgress = trainingProgressRows[0];
+    const latestSharedHoldoutRun = retrainRuns.find((row) => hasSharedHoldoutComparison(row));
     const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0];
     const configFieldByKey = useMemo(() => new Map(editableConfigFields.map((field) => [field.key, field])), []);
     const featureCount = useMemo(() => parseFeatureCount(latest?.feature_cols), [latest?.feature_cols]);
@@ -1042,6 +1090,12 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                 React.createElement(InkBox, { width: "100%" }, trainingCycleColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `training-cycle-column-${columnIndex}` },
                     React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, column.map((item) => (React.createElement(StatRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white })))),
                     columnIndex < trainingCycleColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
+                latestSharedHoldoutRun ? (React.createElement(InkBox, { width: "100%", marginTop: 1, flexDirection: "column" },
+                    React.createElement(Text, { color: theme.accent, bold: true }, "Latest Shared Holdout Gate"),
+                    React.createElement(StatRow, { label: "Run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at) }),
+                    React.createElement(StatRow, { label: "Challenger", value: `LL ${formatNumber(latestSharedHoldoutRun.challenger_shared_log_loss, 4)} | BR ${formatNumber(latestSharedHoldoutRun.challenger_shared_brier_score, 4)}` }),
+                    React.createElement(StatRow, { label: "Incumbent", value: `LL ${formatNumber(latestSharedHoldoutRun.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldoutRun.incumbent_brier_score, 4)}` }),
+                    React.createElement(StatRow, { label: "Gate read", value: sharedHoldoutGateRead(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun) }))) : null,
                 React.createElement(InkBox, { width: "100%", marginTop: 1 },
                     React.createElement(Text, { color: theme.dim }, fit('TIME', retrainWidths.timeWidth)),
                     React.createElement(Text, null, " "),

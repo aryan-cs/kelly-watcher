@@ -3,12 +3,28 @@ from __future__ import annotations
 import io
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from kelly_watcher import shadow_reset
 
 
 class ShadowResetTest(unittest.TestCase):
+    def test_preferred_python_executable_prefers_repo_venv(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            python_path = repo_root / ".venv" / "bin" / "python"
+            python_path.parent.mkdir(parents=True, exist_ok=True)
+            python_path.write_text("", encoding="utf-8")
+
+            with patch.object(shadow_reset, "REPO_ROOT", repo_root), patch.object(
+                shadow_reset.sys, "executable", "/usr/bin/python3"
+            ):
+                selected = shadow_reset.preferred_python_executable()
+
+        self.assertEqual(selected, str(python_path))
+
     def test_runtime_env_sets_cross_platform_temp_defaults(self) -> None:
         with patch("tempfile.gettempdir", return_value="/tmp/cross-platform"):
             env = shadow_reset.runtime_env({})
@@ -48,7 +64,7 @@ class ShadowResetTest(unittest.TestCase):
     def test_run_refuses_live_mode(self) -> None:
         stdout = io.StringIO()
         with patch.object(shadow_reset, "use_real_money", return_value=True), redirect_stdout(stdout):
-            exit_code = shadow_reset.run(foreground=False, start_bot=True)
+            exit_code = shadow_reset.run(foreground=False, start_bot=True, clear_wallets=False)
 
         self.assertEqual(exit_code, 1)
         self.assertIn("USE_REAL_MONEY=true", stdout.getvalue())
@@ -62,7 +78,7 @@ class ShadowResetTest(unittest.TestCase):
         ) as reset_runtime, patch.object(
             shadow_reset, "launch_background_bot", return_value=4321
         ), redirect_stdout(stdout):
-            exit_code = shadow_reset.run(foreground=False, start_bot=True)
+            exit_code = shadow_reset.run(foreground=False, start_bot=True, clear_wallets=False)
 
         self.assertEqual(exit_code, 0)
         stop_bot.assert_called_once_with()
@@ -81,7 +97,7 @@ class ShadowResetTest(unittest.TestCase):
         ) as reset_runtime, patch.object(
             shadow_reset, "launch_background_bot"
         ) as launch_background_bot, redirect_stdout(stdout):
-            exit_code = shadow_reset.run(foreground=False, start_bot=False)
+            exit_code = shadow_reset.run(foreground=False, start_bot=False, clear_wallets=False)
 
         self.assertEqual(exit_code, 0)
         stop_bot.assert_called_once_with()

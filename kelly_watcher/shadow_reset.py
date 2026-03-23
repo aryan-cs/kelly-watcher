@@ -301,8 +301,25 @@ def runtime_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def preferred_python_executable() -> str:
+    if os.name == "nt":
+        candidates = [
+            REPO_ROOT / ".venv" / "Scripts" / "python.exe",
+            REPO_ROOT / ".venv" / "Scripts" / "python",
+        ]
+    else:
+        candidates = [
+            REPO_ROOT / ".venv" / "bin" / "python",
+            REPO_ROOT / ".venv" / "bin" / "python3",
+        ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
 def _bot_command() -> list[str]:
-    return [sys.executable, str(REPO_ROOT / "main.py"), active_env_flag()]
+    return [preferred_python_executable(), str(REPO_ROOT / "main.py"), active_env_flag()]
 
 
 def launch_background_bot() -> int:

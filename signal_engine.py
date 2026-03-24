@@ -7,7 +7,7 @@ import numpy as np
 
 from adaptive_confidence import adaptive_min_confidence_for_signal
 from beliefs import adjust_heuristic_confidence
-from config import model_path
+from config import heuristic_min_entry_price, model_path
 from economic_model import apply_probability_calibrator, expected_return_to_confidence, inverse_return_target
 from features import FEATURE_COLS, build_feature_map
 from market_scorer import MarketFeatures, MarketScorer
@@ -136,7 +136,21 @@ class SignalEngine:
             trader_address=trader_address,
         )
         min_floor = adaptive_floor.floor
-        passed = adjusted >= min_floor
+        execution_price = (
+            market_features.execution_price
+            if 0.0 < market_features.execution_price < 1.0
+            else market_features.mid
+        )
+        min_entry_price = heuristic_min_entry_price()
+        passed_confidence = adjusted >= min_floor
+        passed_entry_price = execution_price >= min_entry_price
+        passed = passed_confidence and passed_entry_price
+        if not passed_entry_price:
+            reason = f"heuristic entry price {execution_price:.3f} < min {min_entry_price:.3f}"
+        elif not passed_confidence:
+            reason = f"heuristic conf {adjusted:.3f} < min {min_floor:.3f}"
+        else:
+            reason = "passed heuristic threshold"
 
         return {
             "confidence": adjusted,
@@ -145,9 +159,11 @@ class SignalEngine:
             "belief_blend": belief.blend,
             "belief_evidence": belief.evidence,
             "min_confidence": min_floor,
+            "entry_price": round(execution_price, 4),
+            "min_entry_price": round(min_entry_price, 4),
             "adaptive_floor": adaptive_floor.as_dict(),
             "passed": passed,
-            "reason": "passed heuristic threshold" if passed else f"heuristic conf {adjusted:.3f} < min {min_floor:.3f}",
+            "reason": reason,
             "veto": None,
             "mode": "heuristic",
             "trader": trader_result,

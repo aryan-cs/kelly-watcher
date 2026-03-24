@@ -5,6 +5,7 @@ export const maxMarketHorizonPresets = [
     '5m',
     '1h',
     '24h',
+    '3d',
     '7d',
     '30d',
     '180d',
@@ -28,8 +29,8 @@ export const editableConfigFields = [
         key: 'MAX_MARKET_HORIZON',
         label: 'Max Market Horizon',
         kind: 'duration',
-        description: 'Longest time to resolution the bot will allow. Edit this field to type a value or cycle 5m, 1h, 24h, 7d, 30d, 180d, 365d, or unlimited.',
-        defaultValue: '365d',
+        description: 'Longest time to resolution the bot will allow. Edit this field to type a value or cycle 5m, 1h, 24h, 3d, 7d, 30d, 180d, 365d, or unlimited.',
+        defaultValue: '3d',
         liveApplies: true,
         options: maxMarketHorizonPresets
     },
@@ -100,6 +101,14 @@ export const editableConfigFields = [
         liveApplies: false
     },
     {
+        key: 'HEURISTIC_MIN_ENTRY_PRICE',
+        label: 'Heuristic Min Entry Price',
+        kind: 'float',
+        description: 'Minimum entry price the heuristic path will buy. Set to 0 to disable. Applies live on the next loop.',
+        defaultValue: '0.50',
+        liveApplies: true
+    },
+    {
         key: 'MIN_BET_USD',
         label: 'Min Bet USD',
         kind: 'float',
@@ -112,7 +121,7 @@ export const editableConfigFields = [
         label: 'Max Bet Fraction',
         kind: 'float',
         description: 'Kelly sizing cap as a fraction of bankroll. Restart bot to apply.',
-        defaultValue: '0.05',
+        defaultValue: '0.04',
         liveApplies: false
     },
     {
@@ -120,7 +129,7 @@ export const editableConfigFields = [
         label: 'Open Exposure Cap',
         kind: 'float',
         description: 'Caps total deployed capital across all open positions as a percent of bankroll. Enter 0 to disable or any percent from 1 through 100. Applies live on the next loop.',
-        defaultValue: '60',
+        defaultValue: '25',
         liveApplies: true
     },
     {
@@ -352,6 +361,9 @@ export function validateEditableConfigValue(field, raw) {
     }
     if ((field.key === 'MIN_CONFIDENCE' || field.key === 'MAX_BET_FRACTION') && (numeric <= 0 || numeric > 1)) {
         return { ok: false, error: `${field.label} must be between 0 and 1.` };
+    }
+    if (field.key === 'HEURISTIC_MIN_ENTRY_PRICE' && (numeric < 0 || numeric >= 1)) {
+        return { ok: false, error: `${field.label} must be between 0 and 1. Use 0 to disable.` };
     }
     if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_WIN_RATE' && (numeric < 0 || numeric > 1)) {
         return { ok: false, error: `${field.label} must be between 0 and 1.` };

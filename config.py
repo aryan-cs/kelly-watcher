@@ -137,6 +137,15 @@ def min_bet_usd() -> float:
     return _get_float("MIN_BET_USD", "1.00")
 
 
+def heuristic_min_entry_price() -> float:
+    return _get_env_file_bounded_float(
+        "HEURISTIC_MIN_ENTRY_PRICE",
+        "0.50",
+        minimum=0.0,
+        maximum=0.99,
+    )
+
+
 def poll_interval() -> float:
     raw = _get_env_file_value("POLL_INTERVAL_SECONDS") or _get("POLL_INTERVAL_SECONDS", "45")
     try:

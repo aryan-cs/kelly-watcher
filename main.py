@@ -41,6 +41,7 @@ from config import (
     max_market_exposure_fraction,
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
+    heuristic_min_entry_price,
     min_execution_window_seconds,
     min_bet_usd,
     min_confidence,
@@ -123,6 +124,7 @@ _BANKROLL_RE = re.compile(r"available bankroll \$([0-9.]+) < min \$([0-9.]+)", r
 _SIZE_ZERO_RE = re.compile(r"size \$([0-9.]+) <= 0", re.IGNORECASE)
 _CONF_RE = re.compile(r"conf ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
 _SCORE_RE = re.compile(r"score ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
+_HEURISTIC_ENTRY_PRICE_RE = re.compile(r"heuristic entry price ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
 _INVALID_PRICE_RE = re.compile(r"invalid price ([0-9.]+)", re.IGNORECASE)
 _EXPIRES_RE = re.compile(r"expires in <([0-9]+)s", re.IGNORECASE)
 _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECASE)
@@ -543,6 +545,7 @@ def _humanize_reason(reason: str) -> str:
         (_SIZE_ZERO_RE, lambda m: f"calculated trade size was ${m.group(1)}, so no order was placed"),
         (_CONF_RE, lambda m: f"confidence was {_format_percent_text(m.group(1))}, below the {_format_percent_text(m.group(2))} minimum needed to place a trade"),
         (_SCORE_RE, lambda m: f"heuristic score was {_format_percent_text(m.group(1))}, below the {_format_percent_text(m.group(2))} minimum needed to place a trade"),
+        (_HEURISTIC_ENTRY_PRICE_RE, lambda m: f"entry price was {_format_percent_text(m.group(1))}, below the {_format_percent_text(m.group(2))} heuristic minimum"),
         (_INVALID_PRICE_RE, lambda m: f"trade was skipped because the market price looked invalid ({m.group(1)})"),
     ):
         match = pattern.fullmatch(text)
@@ -1769,6 +1772,10 @@ def _validate_startup() -> None:
     minimum_bet = _capture_config(min_bet_usd)
     if minimum_bet is not None and minimum_bet <= 0:
         errors.append(f"MIN_BET_USD must be positive, got {minimum_bet}")
+
+    min_entry_price = _capture_config(heuristic_min_entry_price)
+    if min_entry_price is not None and not (0.0 <= min_entry_price < 1.0):
+        errors.append(f"HEURISTIC_MIN_ENTRY_PRICE must be between 0 and 1, got {min_entry_price}")
 
     _capture_config(hot_wallet_count)
     _capture_config(warm_wallet_count)

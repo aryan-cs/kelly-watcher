@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -69,6 +70,41 @@ class ExpectedReturnModelTest(unittest.TestCase):
             self.assertAlmostEqual(result["raw_confidence"], round(expected_confidence, 4), places=4)
             self.assertAlmostEqual(result["expected_return"], 0.35, places=4)
             self.assertTrue(result["passed"])
+
+    def test_signal_engine_blocks_heuristic_entries_below_min_entry_price(self) -> None:
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "signal_engine.model_path",
+            return_value="/tmp/kelly-watcher-missing-model.joblib",
+        ):
+            engine = signal_engine.SignalEngine()
+
+        market_features = SimpleNamespace(execution_price=0.42, mid=0.42, days_to_res=0.5)
+        belief = SimpleNamespace(
+            adjusted_confidence=0.7,
+            prior_confidence=0.5,
+            blend=0.0,
+            evidence=0,
+        )
+        adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
+
+        with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
+            "signal_engine.adjust_heuristic_confidence",
+            return_value=belief,
+        ), patch(
+            "signal_engine.adaptive_min_confidence_for_signal",
+            return_value=adaptive_floor,
+        ), patch(
+            "signal_engine.heuristic_min_entry_price",
+            return_value=0.5,
+        ):
+            result = engine._evaluate_heuristic(
+                SimpleNamespace(),
+                market_features,
+                {"score": 0.7, "veto": None},
+            )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "heuristic entry price 0.420 < min 0.500")
 
 
 if __name__ == "__main__":

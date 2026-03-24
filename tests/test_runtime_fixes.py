@@ -262,6 +262,22 @@ class RuntimeFixesTest(unittest.TestCase):
             self.assertEqual(snapshot["safe_values"]["MAX_TOTAL_OPEN_EXPOSURE_FRACTION"], "0.42")
             self.assertIn("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.42", env_path.read_text(encoding="utf-8"))
 
+    def test_dashboard_config_snapshot_includes_heuristic_min_entry_price_after_write(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_example_path = Path(tmpdir) / ".env.example"
+            env_path.write_text("HEURISTIC_MIN_ENTRY_PRICE=0.35\n", encoding="utf-8")
+            env_example_path.write_text("", encoding="utf-8")
+
+            with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
+            ):
+                dashboard_api._write_env_value("HEURISTIC_MIN_ENTRY_PRICE", "0.50")
+                snapshot = dashboard_api._config_snapshot()
+
+            self.assertEqual(snapshot["safe_values"]["HEURISTIC_MIN_ENTRY_PRICE"], "0.50")
+            self.assertIn("HEURISTIC_MIN_ENTRY_PRICE=0.50", env_path.read_text(encoding="utf-8"))
+
     def test_dashboard_spawn_shadow_restart_process_writes_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"

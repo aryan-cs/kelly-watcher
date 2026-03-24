@@ -19,7 +19,9 @@ import {LiveFeed} from './pages/LiveFeed.js'
 import {Signals} from './pages/Signals.js'
 import {
   Performance,
+  pendingPerfExitKey,
   type PerfBox,
+  type PendingPerfExit,
   type PerfPositionActionField,
   type PerfPositionActionState,
   type PerfPositionEditField,
@@ -151,6 +153,7 @@ interface AppContentProps {
   perfDailyDetailScrollOffset: number
   perfPositionAction: PerfPositionActionState | null
   perfPositionEdit: PerfPositionEditState | null
+  pendingPerfExits: PendingPerfExit[]
   modelSelectionIndex: number
   modelDetailOpen: boolean
   modelSettingSelectionIndex: number
@@ -166,6 +169,7 @@ interface AppContentProps {
   onPerfDailyDetailScrollOffsetChange: (offset: number) => void
   onPerfSelectionMetaChange: (meta: PerformanceSelectionMeta) => void
   onPerfDetailHistoryMetaChange: (meta: PerformanceDetailHistoryMeta) => void
+  onPendingPerfExitSettlement: (keys: string[]) => void
   transientNotice: TransientNotice | null
 }
 
@@ -186,11 +190,13 @@ function renderPage(
   perfDailyDetailScrollOffset: number,
   perfPositionAction: PerfPositionActionState | null,
   perfPositionEdit: PerfPositionEditState | null,
+  pendingPerfExits: PendingPerfExit[],
   onPerfCurrentScrollOffsetChange: (offset: number) => void,
   onPerfPastScrollOffsetChange: (offset: number) => void,
   onPerfDailyDetailScrollOffsetChange: (offset: number) => void,
   onPerfSelectionMetaChange: (meta: PerformanceSelectionMeta) => void,
   onPerfDetailHistoryMetaChange: (meta: PerformanceDetailHistoryMeta) => void,
+  onPendingPerfExitSettlement: (keys: string[]) => void,
   modelSelectionIndex: number,
   modelDetailOpen: boolean,
   modelSettingSelectionIndex: number,
@@ -226,11 +232,13 @@ function renderPage(
           dailyDetailScrollOffset={perfDailyDetailScrollOffset}
           actionState={perfPositionAction}
           editState={perfPositionEdit}
+          pendingPerfExits={pendingPerfExits}
           onCurrentScrollOffsetChange={onPerfCurrentScrollOffsetChange}
           onPastScrollOffsetChange={onPerfPastScrollOffsetChange}
           onDailyDetailScrollOffsetChange={onPerfDailyDetailScrollOffsetChange}
           onSelectionMetaChange={onPerfSelectionMetaChange}
           onDetailHistoryMetaChange={onPerfDetailHistoryMetaChange}
+          onPendingPerfExitSettlement={onPendingPerfExitSettlement}
         />
       )
     case 4:
@@ -277,6 +285,7 @@ function AppContent({
   perfDailyDetailScrollOffset,
   perfPositionAction,
   perfPositionEdit,
+  pendingPerfExits,
   modelSelectionIndex,
   modelDetailOpen,
   modelSettingSelectionIndex,
@@ -292,6 +301,7 @@ function AppContent({
   onPerfDailyDetailScrollOffsetChange,
   onPerfSelectionMetaChange,
   onPerfDetailHistoryMetaChange,
+  onPendingPerfExitSettlement,
   transientNotice
 }: AppContentProps) {
   const terminal = useTerminalSize()
@@ -485,11 +495,13 @@ function AppContent({
           perfDailyDetailScrollOffset,
           perfPositionAction,
           perfPositionEdit,
+          pendingPerfExits,
           onPerfCurrentScrollOffsetChange,
           onPerfPastScrollOffsetChange,
           onPerfDailyDetailScrollOffsetChange,
           onPerfSelectionMetaChange,
           onPerfDetailHistoryMetaChange,
+          onPendingPerfExitSettlement,
           modelSelectionIndex,
           modelDetailOpen,
           modelSettingSelectionIndex,
@@ -548,6 +560,7 @@ function App() {
   })
   const [perfPositionAction, setPerfPositionAction] = useState<PerfPositionActionState | null>(null)
   const [perfPositionEdit, setPerfPositionEdit] = useState<PerfPositionEditState | null>(null)
+  const [pendingPerfExits, setPendingPerfExits] = useState<PendingPerfExit[]>([])
   const [modelSelectionIndex, setModelSelectionIndex] = useState(0)
   const [modelDetailOpen, setModelDetailOpen] = useState(false)
   const [modelSettingSelectionIndex, setModelSettingSelectionIndex] = useState(0)
@@ -599,6 +612,7 @@ function App() {
     setPerfDailyDetailOpen(false)
     setPerfPositionAction(null)
     setPerfPositionEdit(null)
+    setPendingPerfExits([])
     setPerfSelectionMeta({
       currentCount: 0,
       pastCount: 0,
@@ -777,6 +791,10 @@ function App() {
     if (!row || (perfSelectedBox !== 'current' && perfSelectedBox !== 'past' && rowOverride == null)) {
       return
     }
+    if (row.status === 'cashing_out') {
+      showTransientNotice('Cash-out is already pending for this position.', 'info')
+      return
+    }
 
     setPerfDetailHistoryMeta({timelineCount: 0})
     setPerfPositionAction(null)
@@ -870,6 +888,9 @@ function App() {
     if (!perfPositionAction) {
       return
     }
+    const requestedAction = perfPositionAction
+    const requestedExitKey =
+      requestedAction.action === 'cash_out' ? pendingPerfExitKey(requestedAction.row) : null
 
     const amountUsd = Number(perfPositionAction.draftAmountUsd)
     if (perfPositionAction.action === 'buy_more' && (!Number.isFinite(amountUsd) || amountUsd <= 0)) {
@@ -924,8 +945,34 @@ function App() {
       return
     }
 
+    if (requestedAction.action === 'cash_out' && requestedExitKey) {
+      setPendingPerfExits((current) => {
+        const nextEntry: PendingPerfExit = {
+          key: requestedExitKey,
+          row: requestedAction.row,
+          requestedAt: Date.now() / 1000
+        }
+        const filtered = current.filter((entry) => entry.key !== requestedExitKey)
+        return [...filtered, nextEntry]
+      })
+      setPerfActivePane('past')
+      setPerfSelectedBox('past')
+      setPerfCurrentScrollOffset(0)
+      setPerfPastScrollOffset(0)
+    }
     setPerfPositionAction(null)
+    clearEventStreamCache()
+    clearQueryCache()
+    setIsRefreshing(true)
+    setRefreshToken((current) => current + 1)
     showTransientNotice(result.message, 'success')
+  }
+
+  const handlePendingPerfExitSettlement = (keys: string[]) => {
+    if (!keys.length) {
+      return
+    }
+    setPendingPerfExits((current) => current.filter((entry) => !keys.includes(entry.key)))
   }
 
   const movePerfEditField = (direction: 'up' | 'down') => {
@@ -2285,6 +2332,7 @@ function App() {
           perfDailyDetailScrollOffset={perfDailyDetailScrollOffset}
           perfPositionAction={perfPositionAction}
           perfPositionEdit={perfPositionEdit}
+          pendingPerfExits={pendingPerfExits}
           modelSelectionIndex={modelSelectionIndex}
           modelDetailOpen={modelDetailOpen}
           modelSettingSelectionIndex={modelSettingSelectionIndex}
@@ -2300,6 +2348,7 @@ function App() {
           onPerfDailyDetailScrollOffsetChange={setPerfDailyDetailScrollOffset}
           onPerfSelectionMetaChange={setPerfSelectionMeta}
           onPerfDetailHistoryMetaChange={setPerfDetailHistoryMeta}
+          onPendingPerfExitSettlement={handlePendingPerfExitSettlement}
           transientNotice={transientNotice}
         />
       </ManualRefreshProvider>

@@ -54,7 +54,7 @@ export interface PositionRow {
   real_money: number
   question: string
   trader_address: string | null
-  status: 'open' | 'waiting' | 'win' | 'lose' | 'exit'
+  status: 'open' | 'waiting' | 'cashing_out' | 'win' | 'lose' | 'exit'
   outcome: number | null
   pnl_usd: number | null
 }
@@ -98,6 +98,12 @@ export interface PerformanceSelectionMeta {
 
 export interface PerformanceDetailHistoryMeta {
   timelineCount: number
+}
+
+export interface PendingPerfExit {
+  key: string
+  row: PositionRow
+  requestedAt: number
 }
 
 const EXECUTED_ENTRY_WHERE = `
@@ -511,11 +517,13 @@ interface PerformanceProps {
   dailyDetailScrollOffset: number
   actionState?: PerfPositionActionState | null
   editState?: PerfPositionEditState | null
+  pendingPerfExits?: PendingPerfExit[]
   onCurrentScrollOffsetChange?: (offset: number) => void
   onPastScrollOffsetChange?: (offset: number) => void
   onDailyDetailScrollOffsetChange?: (offset: number) => void
   onSelectionMetaChange?: (meta: PerformanceSelectionMeta) => void
   onDetailHistoryMetaChange?: (meta: PerformanceDetailHistoryMeta) => void
+  onPendingPerfExitSettlement?: (keys: string[]) => void
 }
 
 interface PriceHistoryPoint {
@@ -1798,12 +1806,18 @@ function positionEditKey(marketId: string, tokenId: string, side: string, realMo
   return `${realMoney}:${marketId}:${tokenId}:${side.trim().toLowerCase()}`
 }
 
+export function pendingPerfExitKey(
+  row: Pick<PositionRow, 'market_id' | 'token_id' | 'side' | 'real_money'>
+): string {
+  return `${Number(row.real_money || 0)}:${row.market_id}:${row.token_id}:${row.side.trim().toLowerCase()}`
+}
+
 function roundTo(value: number, decimals: number): number {
   return Number(value.toFixed(decimals))
 }
 
 function computePositionProfit(row: PositionRow): number | null {
-  if (row.status === 'open' || row.status === 'waiting') {
+  if (row.status === 'open' || row.status === 'waiting' || row.status === 'cashing_out') {
     return null
   }
   if (row.status === 'win') {
@@ -1979,11 +1993,13 @@ export function Performance({
   dailyDetailScrollOffset,
   actionState,
   editState,
+  pendingPerfExits = [],
   onCurrentScrollOffsetChange,
   onPastScrollOffsetChange,
   onDailyDetailScrollOffsetChange,
   onSelectionMetaChange,
-  onDetailHistoryMetaChange
+  onDetailHistoryMetaChange,
+  onPendingPerfExitSettlement
 }: PerformanceProps) {
   const terminal = useTerminalSize()
   const stacked = stackPanels(terminal.width)
@@ -2071,12 +2087,38 @@ export function Performance({
     () => [...effectiveOpenPositions, ...effectiveResolvedPositions],
     [effectiveOpenPositions, effectiveResolvedPositions]
   )
+  const pendingPerfExitLookup = useMemo(
+    () => new Map(pendingPerfExits.map((entry) => [entry.key, entry])),
+    [pendingPerfExits]
+  )
   const currentPositions = useMemo(
     () =>
       effectivePositions
-        .filter((row) => row.status === 'open')
+        .filter((row) => row.status === 'open' && !pendingPerfExitLookup.has(pendingPerfExitKey(row)))
         .sort((left, right) => right.entered_at - left.entered_at),
-    [effectivePositions]
+    [effectivePositions, pendingPerfExitLookup]
+  )
+  const optimisticPendingPositions = useMemo(
+    () =>
+      pendingPerfExits
+        .map(({key, requestedAt, row}) => {
+          const openRow = effectiveOpenPositions.find((candidate) => pendingPerfExitKey(candidate) === key)
+          const sourceRow = openRow ?? row
+          return {
+            ...sourceRow,
+            row_key: `pending-exit:${key}`,
+            status: 'cashing_out' as const,
+            resolution_ts: Math.max(sourceRow.resolution_ts || 0, requestedAt || sourceRow.entered_at || 0),
+            pnl_usd: null,
+            exit_size_usd: null
+          }
+        })
+        .sort(
+          (left, right) =>
+            Math.max(right.resolution_ts || 0, right.market_close_ts || 0, right.entered_at || 0) -
+            Math.max(left.resolution_ts || 0, left.market_close_ts || 0, left.entered_at || 0)
+        ),
+    [effectiveOpenPositions, pendingPerfExits]
   )
   const currentPositionsTotal = useMemo(
     () => currentPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0),
@@ -2085,14 +2127,14 @@ export function Performance({
   const livePositionProfitLookup = useLivePositionProfitLookup(currentPositions)
   const waitingPositions = useMemo(
     () =>
-      effectivePositions
-        .filter((row) => row.status === 'waiting')
+      [...effectivePositions, ...optimisticPendingPositions]
+        .filter((row) => row.status === 'waiting' || row.status === 'cashing_out')
         .sort(
           (a, b) =>
             Math.max(b.market_close_ts || 0, b.entered_at || 0) -
             Math.max(a.market_close_ts || 0, a.entered_at || 0)
         ),
-    [effectivePositions]
+    [effectivePositions, optimisticPendingPositions]
   )
   const waitingPositionsTotal = useMemo(
     () => waitingPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0),
@@ -2100,14 +2142,13 @@ export function Performance({
   )
   const pastPositions = useMemo(
     () =>
-      effectivePositions
-        .filter((row) => row.status !== 'open')
+      [...effectivePositions.filter((row) => row.status !== 'open'), ...optimisticPendingPositions]
         .sort(
         (a, b) =>
           Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
           Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)
       ),
-    [effectivePositions]
+    [effectivePositions, optimisticPendingPositions]
   )
   const resolvedPerformancePositions = useMemo(
     () =>
@@ -2155,6 +2196,32 @@ export function Performance({
       ),
     [currentHourBucketTs, pastPositions]
   )
+  useEffect(() => {
+    if (!pendingPerfExits.length || !onPendingPerfExitSettlement) {
+      return
+    }
+
+    const settledKeys = pendingPerfExits
+      .filter(({key, requestedAt}) => {
+        const resolvedMatch = effectiveResolvedPositions.some((row) => pendingPerfExitKey(row) === key)
+        if (resolvedMatch) {
+          return true
+        }
+        const openMatch = effectiveOpenPositions.some((row) => pendingPerfExitKey(row) === key)
+        return !openMatch && (nowTs - requestedAt) >= 45
+      })
+      .map((entry) => entry.key)
+
+    if (settledKeys.length > 0) {
+      onPendingPerfExitSettlement(settledKeys)
+    }
+  }, [
+    effectiveOpenPositions,
+    effectiveResolvedPositions,
+    nowTs,
+    onPendingPerfExitSettlement,
+    pendingPerfExits
+  ])
   const dailyPanelContentWidth = useMemo(
     () => getDailyPanelContentWidth(terminal.width, stacked),
     [stacked, terminal.width]
@@ -2595,13 +2662,13 @@ export function Performance({
             const username = row.trader_address ? usernames.get(row.trader_address.toLowerCase()) : undefined
             const userText = username || shortAddress(row.trader_address || '-')
             const displayIdText = formatDisplayId(displayId, positionsLayout.idWidth)
-            const actionText = row.status === 'exit' ? 'SELL' : 'BUY'
+            const actionText = row.status === 'exit' || row.status === 'cashing_out' ? 'SELL' : 'BUY'
             const actionColor = outcomeColor(actionText)
             const entryColor = row.entry_price > 0 ? probabilityColor(row.entry_price) : theme.dim
             const confidenceColor =
               row.confidence != null ? probabilityColor(row.confidence) : theme.dim
             const resolutionTs = row.resolution_ts || row.market_close_ts
-            const resolutionColor = row.status === 'waiting' ? theme.red : theme.dim
+            const resolutionColor = row.status === 'waiting' || row.status === 'cashing_out' ? theme.red : theme.dim
             const shares = row.shares
             const toWin =
               row.status === 'exit'
@@ -2614,7 +2681,9 @@ export function Performance({
             const profit = displayProfit(row)
             const cashOutNow = displayCashOutNow(row)
             const statusText =
-              row.status === 'win'
+              row.status === 'cashing_out'
+                ? 'cashing out'
+                : row.status === 'win'
                 ? 'win'
                 : row.status === 'lose'
                   ? 'lose'
@@ -2626,7 +2695,9 @@ export function Performance({
                         : 'exited'
                     : 'waiting'
             const statusColor =
-              row.status === 'win'
+              row.status === 'cashing_out'
+                ? theme.yellow
+                : row.status === 'win'
                 ? theme.green
                 : row.status === 'lose'
                   ? theme.red

@@ -8,7 +8,7 @@ import { dangerActions, restartShadowAccount, setLiveTradingEnabled } from './se
 import { theme } from './theme.js';
 import { LiveFeed } from './pages/LiveFeed.js';
 import { Signals } from './pages/Signals.js';
-import { Performance } from './pages/Performance.js';
+import { Performance, pendingPerfExitKey } from './pages/Performance.js';
 import { requestManualTrade } from './manualTradeControl.js';
 import { Wallets } from './pages/Wallets.js';
 import { Settings } from './pages/Settings.js';
@@ -81,14 +81,14 @@ function describeBackendStatus({ startedAt, lastPollAt, activityIsFresh, pollIsF
 function formatHeaderStatusTag(status) {
     return `[${status.trim().toUpperCase()}]`;
 }
-function renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsValues, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange) {
+function renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsValues, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange) {
     switch (page) {
         case 1:
             return React.createElement(LiveFeed, { scrollOffset: feedScrollOffset, onScrollOffsetChange: onFeedScrollOffsetChange });
         case 2:
             return (React.createElement(Signals, { scrollOffset: signalsScrollOffset, horizontalOffset: signalsHorizontalOffset, onScrollOffsetChange: onSignalsScrollOffsetChange, onHorizontalOffsetChange: onSignalsHorizontalOffsetChange }));
         case 3:
-            return (React.createElement(Performance, { currentScrollOffset: perfCurrentScrollOffset, pastScrollOffset: perfPastScrollOffset, activePane: perfActivePane, selectedBox: perfSelectedBox, dailyDetailOpen: perfDailyDetailOpen, dailyDetailScrollOffset: perfDailyDetailScrollOffset, actionState: perfPositionAction, editState: perfPositionEdit, onCurrentScrollOffsetChange: onPerfCurrentScrollOffsetChange, onPastScrollOffsetChange: onPerfPastScrollOffsetChange, onDailyDetailScrollOffsetChange: onPerfDailyDetailScrollOffsetChange, onSelectionMetaChange: onPerfSelectionMetaChange, onDetailHistoryMetaChange: onPerfDetailHistoryMetaChange }));
+            return (React.createElement(Performance, { currentScrollOffset: perfCurrentScrollOffset, pastScrollOffset: perfPastScrollOffset, activePane: perfActivePane, selectedBox: perfSelectedBox, dailyDetailOpen: perfDailyDetailOpen, dailyDetailScrollOffset: perfDailyDetailScrollOffset, actionState: perfPositionAction, editState: perfPositionEdit, pendingPerfExits: pendingPerfExits, onCurrentScrollOffsetChange: onPerfCurrentScrollOffsetChange, onPastScrollOffsetChange: onPerfPastScrollOffsetChange, onDailyDetailScrollOffsetChange: onPerfDailyDetailScrollOffsetChange, onSelectionMetaChange: onPerfSelectionMetaChange, onDetailHistoryMetaChange: onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement: onPendingPerfExitSettlement }));
         case 4:
             return (React.createElement(Models, { selectedPanelIndex: modelSelectionIndex, detailOpen: modelDetailOpen, selectedSettingIndex: modelSettingSelectionIndex, settingsValues: settingsValues }));
         case 5:
@@ -97,7 +97,7 @@ function renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetCh
             return React.createElement(Settings, { editor: settingsEditor });
     }
 }
-function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, transientNotice }) {
+function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, transientNotice }) {
     const terminal = useTerminalSize();
     const botState = useBotState();
     const mode = botState.mode === 'live' ? '[LIVE]' : '[SHADOW]';
@@ -258,7 +258,7 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
             React.createElement(Text, { color: backendDotColor, bold: true }, backendStatusTag),
             React.createElement(Text, { color: theme.dim }, " "),
             React.createElement(Text, { color: modeColor, bold: true }, mode)),
-        React.createElement(Box, { padding: 1, flexGrow: 1 }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
+        React.createElement(Box, { padding: 1, flexGrow: 1 }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
         React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1 }, footerCompact ? (React.createElement(React.Fragment, null,
             React.createElement(Text, { color: theme.dim }, footerControls),
             React.createElement(Spacer, null),
@@ -292,6 +292,7 @@ function App() {
     });
     const [perfPositionAction, setPerfPositionAction] = useState(null);
     const [perfPositionEdit, setPerfPositionEdit] = useState(null);
+    const [pendingPerfExits, setPendingPerfExits] = useState([]);
     const [modelSelectionIndex, setModelSelectionIndex] = useState(0);
     const [modelDetailOpen, setModelDetailOpen] = useState(false);
     const [modelSettingSelectionIndex, setModelSettingSelectionIndex] = useState(0);
@@ -342,6 +343,7 @@ function App() {
         setPerfDailyDetailOpen(false);
         setPerfPositionAction(null);
         setPerfPositionEdit(null);
+        setPendingPerfExits([]);
         setPerfSelectionMeta({
             currentCount: 0,
             pastCount: 0,
@@ -491,6 +493,10 @@ function App() {
         if (!row || (perfSelectedBox !== 'current' && perfSelectedBox !== 'past' && rowOverride == null)) {
             return;
         }
+        if (row.status === 'cashing_out') {
+            showTransientNotice('Cash-out is already pending for this position.', 'info');
+            return;
+        }
         setPerfDetailHistoryMeta({ timelineCount: 0 });
         setPerfPositionAction(null);
         setPerfPositionEdit({
@@ -574,6 +580,8 @@ function App() {
         if (!perfPositionAction) {
             return;
         }
+        const requestedAction = perfPositionAction;
+        const requestedExitKey = requestedAction.action === 'cash_out' ? pendingPerfExitKey(requestedAction.row) : null;
         const amountUsd = Number(perfPositionAction.draftAmountUsd);
         if (perfPositionAction.action === 'buy_more' && (!Number.isFinite(amountUsd) || amountUsd <= 0)) {
             setPerfPositionAction((current) => current
@@ -619,8 +627,33 @@ function App() {
                 : current);
             return;
         }
+        if (requestedAction.action === 'cash_out' && requestedExitKey) {
+            setPendingPerfExits((current) => {
+                const nextEntry = {
+                    key: requestedExitKey,
+                    row: requestedAction.row,
+                    requestedAt: Date.now() / 1000
+                };
+                const filtered = current.filter((entry) => entry.key !== requestedExitKey);
+                return [...filtered, nextEntry];
+            });
+            setPerfActivePane('past');
+            setPerfSelectedBox('past');
+            setPerfCurrentScrollOffset(0);
+            setPerfPastScrollOffset(0);
+        }
         setPerfPositionAction(null);
+        clearEventStreamCache();
+        clearQueryCache();
+        setIsRefreshing(true);
+        setRefreshToken((current) => current + 1);
         showTransientNotice(result.message, 'success');
+    };
+    const handlePendingPerfExitSettlement = (keys) => {
+        if (!keys.length) {
+            return;
+        }
+        setPendingPerfExits((current) => current.filter((entry) => !keys.includes(entry.key)));
     };
     const movePerfEditField = (direction) => {
         setPerfPositionEdit((current) => {
@@ -1780,7 +1813,7 @@ function App() {
     });
     return (React.createElement(TerminalSizeProvider, { backgroundColor: terminalBackgroundColor },
         React.createElement(ManualRefreshProvider, { refreshToken: refreshToken },
-            React.createElement(AppContent, { page: page, isRefreshing: isRefreshing, settingsEditor: settingsEditor, feedScrollOffset: feedScrollOffset, onFeedScrollOffsetChange: setFeedScrollOffset, signalsScrollOffset: signalsScrollOffset, onSignalsScrollOffsetChange: setSignalsScrollOffset, signalsHorizontalOffset: signalsHorizontalOffset, onSignalsHorizontalOffsetChange: setSignalsHorizontalOffset, perfCurrentScrollOffset: perfCurrentScrollOffset, perfPastScrollOffset: perfPastScrollOffset, perfActivePane: perfActivePane, perfSelectedBox: perfSelectedBox, perfDailyDetailOpen: perfDailyDetailOpen, perfDailyDetailScrollOffset: perfDailyDetailScrollOffset, perfPositionAction: perfPositionAction, perfPositionEdit: perfPositionEdit, modelSelectionIndex: modelSelectionIndex, modelDetailOpen: modelDetailOpen, modelSettingSelectionIndex: modelSettingSelectionIndex, walletPane: walletPane, walletBestSelectionIndex: walletBestSelectionIndex, walletWorstSelectionIndex: walletWorstSelectionIndex, walletTrackedSelectionIndex: walletTrackedSelectionIndex, walletDroppedSelectionIndex: walletDroppedSelectionIndex, walletDetailOpen: walletDetailOpen, onWalletMetaChange: setWalletMeta, onPerfCurrentScrollOffsetChange: setPerfCurrentScrollOffset, onPerfPastScrollOffsetChange: setPerfPastScrollOffset, onPerfDailyDetailScrollOffsetChange: setPerfDailyDetailScrollOffset, onPerfSelectionMetaChange: setPerfSelectionMeta, onPerfDetailHistoryMetaChange: setPerfDetailHistoryMeta, transientNotice: transientNotice }))));
+            React.createElement(AppContent, { page: page, isRefreshing: isRefreshing, settingsEditor: settingsEditor, feedScrollOffset: feedScrollOffset, onFeedScrollOffsetChange: setFeedScrollOffset, signalsScrollOffset: signalsScrollOffset, onSignalsScrollOffsetChange: setSignalsScrollOffset, signalsHorizontalOffset: signalsHorizontalOffset, onSignalsHorizontalOffsetChange: setSignalsHorizontalOffset, perfCurrentScrollOffset: perfCurrentScrollOffset, perfPastScrollOffset: perfPastScrollOffset, perfActivePane: perfActivePane, perfSelectedBox: perfSelectedBox, perfDailyDetailOpen: perfDailyDetailOpen, perfDailyDetailScrollOffset: perfDailyDetailScrollOffset, perfPositionAction: perfPositionAction, perfPositionEdit: perfPositionEdit, pendingPerfExits: pendingPerfExits, modelSelectionIndex: modelSelectionIndex, modelDetailOpen: modelDetailOpen, modelSettingSelectionIndex: modelSettingSelectionIndex, walletPane: walletPane, walletBestSelectionIndex: walletBestSelectionIndex, walletWorstSelectionIndex: walletWorstSelectionIndex, walletTrackedSelectionIndex: walletTrackedSelectionIndex, walletDroppedSelectionIndex: walletDroppedSelectionIndex, walletDetailOpen: walletDetailOpen, onWalletMetaChange: setWalletMeta, onPerfCurrentScrollOffsetChange: setPerfCurrentScrollOffset, onPerfPastScrollOffsetChange: setPerfPastScrollOffset, onPerfDailyDetailScrollOffsetChange: setPerfDailyDetailScrollOffset, onPerfSelectionMetaChange: setPerfSelectionMeta, onPerfDetailHistoryMetaChange: setPerfDetailHistoryMeta, onPendingPerfExitSettlement: handlePendingPerfExitSettlement, transientNotice: transientNotice }))));
 }
 function clearTerminal() {
     if (!process.stdout.isTTY) {

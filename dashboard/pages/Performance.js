@@ -1247,11 +1247,14 @@ function normalizeManualStatus(raw) {
 function positionEditKey(marketId, tokenId, side, realMoney) {
     return `${realMoney}:${marketId}:${tokenId}:${side.trim().toLowerCase()}`;
 }
+export function pendingPerfExitKey(row) {
+    return `${Number(row.real_money || 0)}:${row.market_id}:${row.token_id}:${row.side.trim().toLowerCase()}`;
+}
 function roundTo(value, decimals) {
     return Number(value.toFixed(decimals));
 }
 function computePositionProfit(row) {
-    if (row.status === 'open' || row.status === 'waiting') {
+    if (row.status === 'open' || row.status === 'waiting' || row.status === 'cashing_out') {
         return null;
     }
     if (row.status === 'win') {
@@ -1378,7 +1381,7 @@ function DailyPnlPreviewChart({ entries, width }) {
             React.createElement(Text, { color: theme.dim }, '─'.repeat(chartWidth))),
         Array.from({ length: levelCount }, (_, index) => renderRow(index + 1, true))));
 }
-export function Performance({ currentScrollOffset, pastScrollOffset, activePane, selectedBox, dailyDetailOpen, dailyDetailScrollOffset, actionState, editState, onCurrentScrollOffsetChange, onPastScrollOffsetChange, onDailyDetailScrollOffsetChange, onSelectionMetaChange, onDetailHistoryMetaChange }) {
+export function Performance({ currentScrollOffset, pastScrollOffset, activePane, selectedBox, dailyDetailOpen, dailyDetailScrollOffset, actionState, editState, pendingPerfExits = [], onCurrentScrollOffsetChange, onPastScrollOffsetChange, onDailyDetailScrollOffsetChange, onSelectionMetaChange, onDetailHistoryMetaChange, onPendingPerfExitSettlement }) {
     const terminal = useTerminalSize();
     const stacked = stackPanels(terminal.width);
     const shadowOpenPositions = useQuery(SHADOW_OPEN_POSITIONS_SQL);
@@ -1425,20 +1428,35 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const effectiveOpenPositions = useMemo(() => activeOpenPositions.map((row) => normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEditLookup)), [activeOpenPositions, nowTs, positionEditLookup, tradeLogEditLookup]);
     const effectiveResolvedPositions = useMemo(() => activeResolvedPositions.map((row) => normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEditLookup)), [activeResolvedPositions, nowTs, positionEditLookup, tradeLogEditLookup]);
     const effectivePositions = useMemo(() => [...effectiveOpenPositions, ...effectiveResolvedPositions], [effectiveOpenPositions, effectiveResolvedPositions]);
+    const pendingPerfExitLookup = useMemo(() => new Map(pendingPerfExits.map((entry) => [entry.key, entry])), [pendingPerfExits]);
     const currentPositions = useMemo(() => effectivePositions
-        .filter((row) => row.status === 'open')
-        .sort((left, right) => right.entered_at - left.entered_at), [effectivePositions]);
+        .filter((row) => row.status === 'open' && !pendingPerfExitLookup.has(pendingPerfExitKey(row)))
+        .sort((left, right) => right.entered_at - left.entered_at), [effectivePositions, pendingPerfExitLookup]);
+    const optimisticPendingPositions = useMemo(() => pendingPerfExits
+        .map(({ key, requestedAt, row }) => {
+        const openRow = effectiveOpenPositions.find((candidate) => pendingPerfExitKey(candidate) === key);
+        const sourceRow = openRow ?? row;
+        return {
+            ...sourceRow,
+            row_key: `pending-exit:${key}`,
+            status: 'cashing_out',
+            resolution_ts: Math.max(sourceRow.resolution_ts || 0, requestedAt || sourceRow.entered_at || 0),
+            pnl_usd: null,
+            exit_size_usd: null
+        };
+    })
+        .sort((left, right) => Math.max(right.resolution_ts || 0, right.market_close_ts || 0, right.entered_at || 0) -
+        Math.max(left.resolution_ts || 0, left.market_close_ts || 0, left.entered_at || 0)), [effectiveOpenPositions, pendingPerfExits]);
     const currentPositionsTotal = useMemo(() => currentPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0), [currentPositions]);
     const livePositionProfitLookup = useLivePositionProfitLookup(currentPositions);
-    const waitingPositions = useMemo(() => effectivePositions
-        .filter((row) => row.status === 'waiting')
+    const waitingPositions = useMemo(() => [...effectivePositions, ...optimisticPendingPositions]
+        .filter((row) => row.status === 'waiting' || row.status === 'cashing_out')
         .sort((a, b) => Math.max(b.market_close_ts || 0, b.entered_at || 0) -
-        Math.max(a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions]);
+        Math.max(a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions, optimisticPendingPositions]);
     const waitingPositionsTotal = useMemo(() => waitingPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0), [waitingPositions]);
-    const pastPositions = useMemo(() => effectivePositions
-        .filter((row) => row.status !== 'open')
+    const pastPositions = useMemo(() => [...effectivePositions.filter((row) => row.status !== 'open'), ...optimisticPendingPositions]
         .sort((a, b) => Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
-        Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions]);
+        Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions, optimisticPendingPositions]);
     const resolvedPerformancePositions = useMemo(() => effectivePositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), [effectivePositions]);
     const confidenceRows = useMemo(() => effectivePositions.filter((row) => row.confidence != null), [effectivePositions]);
     const activeSummary = useMemo(() => {
@@ -1466,6 +1484,24 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
         : 0, [dailyEntries.length, dailyPanelContentWidth]);
     const dailyPreviewEntries = useMemo(() => dailyEntries.slice(0, dailyPreviewCapacity).reverse(), [dailyEntries, dailyPreviewCapacity]);
+    useEffect(() => {
+        if (!pendingPerfExits.length || !onPendingPerfExitSettlement) {
+            return;
+        }
+        const settledKeys = pendingPerfExits
+            .filter(({ key, requestedAt }) => {
+            const resolvedMatch = effectiveResolvedPositions.some((row) => pendingPerfExitKey(row) === key);
+            if (resolvedMatch) {
+                return true;
+            }
+            const openMatch = effectiveOpenPositions.some((row) => pendingPerfExitKey(row) === key);
+            return !openMatch && (nowTs - requestedAt) >= 45;
+        })
+            .map((entry) => entry.key);
+        if (settledKeys.length > 0) {
+            onPendingPerfExitSettlement(settledKeys);
+        }
+    }, [effectiveOpenPositions, effectiveResolvedPositions, nowTs, onPendingPerfExitSettlement, pendingPerfExits]);
     const dailyValueWidth = useMemo(() => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10), [dailyEntries]);
     const paneMetrics = getPositionPaneMetrics(terminal.height, stacked);
     const currentMaxOffset = Math.max(currentPositions.length - 1, 0);
@@ -1789,12 +1825,12 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                 const username = row.trader_address ? usernames.get(row.trader_address.toLowerCase()) : undefined;
                 const userText = username || shortAddress(row.trader_address || '-');
                 const displayIdText = formatDisplayId(displayId, positionsLayout.idWidth);
-                const actionText = row.status === 'exit' ? 'SELL' : 'BUY';
+                const actionText = row.status === 'exit' || row.status === 'cashing_out' ? 'SELL' : 'BUY';
                 const actionColor = outcomeColor(actionText);
                 const entryColor = row.entry_price > 0 ? probabilityColor(row.entry_price) : theme.dim;
                 const confidenceColor = row.confidence != null ? probabilityColor(row.confidence) : theme.dim;
                 const resolutionTs = row.resolution_ts || row.market_close_ts;
-                const resolutionColor = row.status === 'waiting' ? theme.red : theme.dim;
+                const resolutionColor = row.status === 'waiting' || row.status === 'cashing_out' ? theme.red : theme.dim;
                 const shares = row.shares;
                 const toWin = row.status === 'exit'
                     ? row.exit_size_usd
@@ -1805,7 +1841,9 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                             : null;
                 const profit = displayProfit(row);
                 const cashOutNow = displayCashOutNow(row);
-                const statusText = row.status === 'win'
+                const statusText = row.status === 'cashing_out'
+                    ? 'cashing out'
+                    : row.status === 'win'
                     ? 'win'
                     : row.status === 'lose'
                         ? 'lose'
@@ -1816,7 +1854,9 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                                     ? 'exit down'
                                     : 'exited'
                             : 'waiting';
-                const statusColor = row.status === 'win'
+                const statusColor = row.status === 'cashing_out'
+                    ? theme.yellow
+                    : row.status === 'win'
                     ? theme.green
                     : row.status === 'lose'
                         ? theme.red

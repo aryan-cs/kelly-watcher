@@ -488,7 +488,9 @@ interface PositionsLayout {
   cashOutWidth: number
   confidenceWidth: number
   resolutionWidth: number
+  statusWidth: number
   ttrWidth: number
+  trailingReserveWidth: number
   ageWidth: number
   questionWidth: number
   showId: boolean
@@ -503,6 +505,7 @@ interface PositionRowBudget {
 interface RenderPositionsOptions {
   showStatus?: boolean
   showTtr?: boolean
+  showCashOut?: boolean
   profitScaleRows?: PositionRow[]
 }
 
@@ -586,7 +589,9 @@ function getPositionsLayout(width: number): PositionsLayout {
   const profitWidth = 8
   const cashOutWidth = 8
   const confidenceWidth = 6
-  const ttrWidth = 11
+  const statusWidth = 10
+  const ttrWidth = 9
+  const trailingReserveWidth = Math.max(statusWidth, ttrWidth)
   const ageWidth = 8
   const gaps = 12 + (showId ? 1 : 0) + (showUser ? 1 : 0)
   const fixedStatic =
@@ -601,7 +606,7 @@ function getPositionsLayout(width: number): PositionsLayout {
     profitWidth +
     cashOutWidth +
     confidenceWidth +
-    ttrWidth +
+    trailingReserveWidth +
     ageWidth
   const variableWidth = Math.max(24, width - fixedStatic - gaps)
   const questionMinWidth = 14
@@ -629,7 +634,9 @@ function getPositionsLayout(width: number): PositionsLayout {
     cashOutWidth,
     confidenceWidth,
     resolutionWidth,
+    statusWidth,
     ttrWidth,
+    trailingReserveWidth,
     ageWidth,
     questionWidth,
     showId,
@@ -2577,6 +2584,7 @@ export function Performance({
     {
       showStatus = false,
       showTtr = true,
+      showCashOut = true,
       profitScaleRows = rowsToRender,
       selectedRowKey
     }: RenderPositionsOptions & {selectedRowKey?: string} = {}
@@ -2593,10 +2601,12 @@ export function Performance({
       }
       return null
     }
-    const trailingWidth = positionsLayout.ttrWidth
-    const trailingDelta = trailingWidth - positionsLayout.ttrWidth
-    const questionWidth = Math.max(14, positionsLayout.questionWidth - trailingDelta)
-    const resolutionWidth = positionsLayout.resolutionWidth
+    const trailingWidth = showStatus ? positionsLayout.statusWidth : positionsLayout.ttrWidth
+    const freedWidth =
+      (positionsLayout.trailingReserveWidth - trailingWidth) +
+      (showCashOut ? 0 : positionsLayout.cashOutWidth + 1)
+    const questionWidth = positionsLayout.questionWidth
+    const resolutionWidth = positionsLayout.resolutionWidth + freedWidth
     const maxAbsProfit = profitScaleRows.reduce(
       (max, row) => Math.max(max, Math.abs(displayProfit(row) ?? 0)),
       0
@@ -2639,8 +2649,12 @@ export function Performance({
           <Text color={theme.dim}> </Text>
           <Text color={theme.dim}>{fitRight('PROFIT', positionsLayout.profitWidth)}</Text>
           <Text color={theme.dim}> </Text>
-          <Text color={theme.dim}>{fitRight('CASH NOW', positionsLayout.cashOutWidth)}</Text>
-          <Text color={theme.dim}> </Text>
+          {showCashOut ? (
+            <>
+              <Text color={theme.dim}>{fitRight('CASH NOW', positionsLayout.cashOutWidth)}</Text>
+              <Text color={theme.dim}> </Text>
+            </>
+          ) : null}
           <Text color={theme.dim}>{fitRight('CONF', positionsLayout.confidenceWidth)}</Text>
           <Text color={theme.dim}> </Text>
           <Text color={theme.dim}>{fitRight('RESOLUTION', resolutionWidth)}</Text>
@@ -2795,15 +2809,19 @@ export function Performance({
                   )}
                 </Text>
                 <Text backgroundColor={rowBackground}> </Text>
-                <Text color={cashOutColor} backgroundColor={rowBackground} bold={isSelected}>
-                  {fitRight(
-                    cashOutNow != null
-                      ? formatAdaptiveDollar(cashOutNow, positionsLayout.cashOutWidth)
-                      : '-',
-                    positionsLayout.cashOutWidth
-                  )}
-                </Text>
-                <Text backgroundColor={rowBackground}> </Text>
+                {showCashOut ? (
+                  <>
+                    <Text color={cashOutColor} backgroundColor={rowBackground} bold={isSelected}>
+                      {fitRight(
+                        cashOutNow != null
+                          ? formatAdaptiveDollar(cashOutNow, positionsLayout.cashOutWidth)
+                          : '-',
+                        positionsLayout.cashOutWidth
+                      )}
+                    </Text>
+                    <Text backgroundColor={rowBackground}> </Text>
+                  </>
+                ) : null}
                 <Text color={confidenceColor} backgroundColor={rowBackground} bold={isSelected}>
                   {fitRight(formatPct(row.confidence, 1), positionsLayout.confidenceWidth)}
                 </Text>
@@ -2888,6 +2906,7 @@ export function Performance({
               renderPositionsTable(visiblePastPositions, {
                 showStatus: true,
                 showTtr: false,
+                showCashOut: false,
                 profitScaleRows: pastPositions,
                 selectedRowKey: selectedPastRow?.row_key
               })

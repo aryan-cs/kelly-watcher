@@ -388,7 +388,9 @@ function getPositionsLayout(width) {
     const profitWidth = 8;
     const cashOutWidth = 8;
     const confidenceWidth = 6;
-    const ttrWidth = 11;
+    const statusWidth = 10;
+    const ttrWidth = 9;
+    const trailingReserveWidth = Math.max(statusWidth, ttrWidth);
     const ageWidth = 8;
     const gaps = 12 + (showId ? 1 : 0) + (showUser ? 1 : 0);
     const fixedStatic = idWidth +
@@ -402,7 +404,7 @@ function getPositionsLayout(width) {
         profitWidth +
         cashOutWidth +
         confidenceWidth +
-        ttrWidth +
+        trailingReserveWidth +
         ageWidth;
     const variableWidth = Math.max(24, width - fixedStatic - gaps);
     const questionMinWidth = 14;
@@ -426,7 +428,9 @@ function getPositionsLayout(width) {
         cashOutWidth,
         confidenceWidth,
         resolutionWidth,
+        statusWidth,
         ttrWidth,
+        trailingReserveWidth,
         ageWidth,
         questionWidth,
         showId,
@@ -1764,7 +1768,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         : editState?.selectedField === 'chart'
             ? 'Chart selected. Use left/right to scrub through time. Up/down moves to the edit fields.'
             : 'Up/down selects a field. Enter edits numbers. Left/right changes status. s saves. Esc cancels.';
-    const renderPositionsTable = (rowsToRender, { showStatus = false, showTtr = true, profitScaleRows = rowsToRender, selectedRowKey } = {}) => {
+    const renderPositionsTable = (rowsToRender, { showStatus = false, showTtr = true, showCashOut = true, profitScaleRows = rowsToRender, selectedRowKey } = {}) => {
         const displayProfit = (row) => {
             if (row.status === 'open' || row.status === 'waiting') {
                 return row.shares != null ? roundTo(Number(row.shares) - Number(row.size_usd || 0), 3) : null;
@@ -1777,10 +1781,11 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             }
             return null;
         };
-        const trailingWidth = positionsLayout.ttrWidth;
-        const trailingDelta = trailingWidth - positionsLayout.ttrWidth;
-        const questionWidth = Math.max(14, positionsLayout.questionWidth - trailingDelta);
-        const resolutionWidth = positionsLayout.resolutionWidth;
+        const trailingWidth = showStatus ? positionsLayout.statusWidth : positionsLayout.ttrWidth;
+        const freedWidth = (positionsLayout.trailingReserveWidth - trailingWidth) +
+            (showCashOut ? 0 : positionsLayout.cashOutWidth + 1);
+        const questionWidth = positionsLayout.questionWidth;
+        const resolutionWidth = positionsLayout.resolutionWidth + freedWidth;
         const maxAbsProfit = profitScaleRows.reduce((max, row) => Math.max(max, Math.abs(displayProfit(row) ?? 0)), 0);
         const maxAbsCashOut = profitScaleRows.reduce((max, row) => Math.max(max, Math.abs(displayCashOutNow(row) ?? 0)), 0);
         return (React.createElement(React.Fragment, null,
@@ -1809,8 +1814,9 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                 React.createElement(Text, { color: theme.dim }, " "),
                 React.createElement(Text, { color: theme.dim }, fitRight('PROFIT', positionsLayout.profitWidth)),
                 React.createElement(Text, { color: theme.dim }, " "),
-                React.createElement(Text, { color: theme.dim }, fitRight('CASH NOW', positionsLayout.cashOutWidth)),
-                React.createElement(Text, { color: theme.dim }, " "),
+                showCashOut ? (React.createElement(React.Fragment, null,
+                    React.createElement(Text, { color: theme.dim }, fitRight('CASH NOW', positionsLayout.cashOutWidth)),
+                    React.createElement(Text, { color: theme.dim }, " "))) : null,
                 React.createElement(Text, { color: theme.dim }, fitRight('CONF', positionsLayout.confidenceWidth)),
                 React.createElement(Text, { color: theme.dim }, " "),
                 React.createElement(Text, { color: theme.dim }, fitRight('RESOLUTION', resolutionWidth)),
@@ -1905,10 +1911,11 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                         ? formatAdaptiveDollar(profit, positionsLayout.profitWidth)
                         : '-', positionsLayout.profitWidth)),
                     React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                    React.createElement(Text, { color: cashOutColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(cashOutNow != null
-                        ? formatAdaptiveDollar(cashOutNow, positionsLayout.cashOutWidth)
-                        : '-', positionsLayout.cashOutWidth)),
-                    React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                    showCashOut ? (React.createElement(React.Fragment, null,
+                        React.createElement(Text, { color: cashOutColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(cashOutNow != null
+                            ? formatAdaptiveDollar(cashOutNow, positionsLayout.cashOutWidth)
+                            : '-', positionsLayout.cashOutWidth)),
+                        React.createElement(Text, { backgroundColor: rowBackground }, " "))) : null,
                     React.createElement(Text, { color: confidenceColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(formatPct(row.confidence, 1), positionsLayout.confidenceWidth)),
                     React.createElement(Text, { backgroundColor: rowBackground }, " "),
                     React.createElement(Text, { color: resolutionColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(formatShortDateTime(resolutionTs), resolutionWidth)),
@@ -1937,6 +1944,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                 React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: selectedBox === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, {
                     showStatus: true,
                     showTtr: false,
+                    showCashOut: false,
                     profitScaleRows: pastPositions,
                     selectedRowKey: selectedPastRow?.row_key
                 })) : (React.createElement(Text, { color: theme.dim }, "No past positions yet.")))))));

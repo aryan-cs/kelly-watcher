@@ -466,28 +466,31 @@ function getDailyQueueLayout(contentWidth, valueWidth) {
         valueWidth: resolvedValueWidth
     };
 }
-function parseHourlyBucket(bucket) {
-    const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):00$/.exec(String(bucket || '').trim());
+const PNL_BUCKET_MINUTES = 15;
+function parsePnlBucket(bucket) {
+    const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(String(bucket || '').trim());
     if (!match) {
         return null;
     }
-    const [, year, month, day, hour] = match;
-    return new Date(Number.parseInt(year, 10), Number.parseInt(month, 10) - 1, Number.parseInt(day, 10), Number.parseInt(hour, 10), 0, 0, 0);
+    const [, year, month, day, hour, minute] = match;
+    return new Date(Number.parseInt(year, 10), Number.parseInt(month, 10) - 1, Number.parseInt(day, 10), Number.parseInt(hour, 10), Number.parseInt(minute, 10), 0, 0);
 }
-function formatHourlyBucketKey(date) {
+function formatPnlBucketKey(date) {
     const year = String(date.getFullYear()).padStart(4, '0');
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     const hour = String(date.getHours()).padStart(2, '0');
-    return `${year}-${month}-${day} ${hour}:00`;
+    const minute = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hour}:${minute}`;
 }
-function floorToHour(date) {
+function floorToPnlBucket(date) {
     const bucketDate = new Date(date.getTime());
-    bucketDate.setMinutes(0, 0, 0);
+    const bucketMinute = Math.floor(bucketDate.getMinutes() / PNL_BUCKET_MINUTES) * PNL_BUCKET_MINUTES;
+    bucketDate.setMinutes(bucketMinute, 0, 0);
     return bucketDate;
 }
-function formatHourlyBucketLabel(bucket, compact = false) {
-    const bucketDate = parseHourlyBucket(bucket);
+function formatPnlBucketLabel(bucket, compact = false) {
+    const bucketDate = parsePnlBucket(bucket);
     if (!bucketDate) {
         const [datePart, timePart = ''] = String(bucket || '').split(' ');
         const shortDate = datePart.length >= 10 ? datePart.slice(5) : datePart;
@@ -502,9 +505,10 @@ function formatHourlyBucketLabel(bucket, compact = false) {
     }
     const shortDate = `${String(bucketDate.getMonth() + 1).padStart(2, '0')}-${String(bucketDate.getDate()).padStart(2, '0')}`;
     const hour24 = bucketDate.getHours();
+    const minute = String(bucketDate.getMinutes()).padStart(2, '0');
     const suffix = hour24 >= 12 ? 'PM' : 'AM';
     const hour12 = hour24 % 12 || 12;
-    const timeText = `${hour12}:00 ${suffix}`;
+    const timeText = `${hour12}:${minute} ${suffix}`;
     return compact ? timeText : `${shortDate} ${timeText}`;
 }
 function toneColor(tone) {
@@ -1306,7 +1310,7 @@ function normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEdit
         pnl_usd: computePositionProfit(normalizedRow)
     };
 }
-function groupDailyPnl(rows, nowTs) {
+function groupBucketedPnl(rows, nowTs) {
     const totals = new Map();
     rows.forEach((row) => {
         const pnl = row.pnl_usd;
@@ -1317,9 +1321,7 @@ function groupDailyPnl(rows, nowTs) {
         if (!ts) {
             return;
         }
-        const bucketDate = new Date(ts * 1000);
-        bucketDate.setMinutes(0, 0, 0);
-        const bucket = formatHourlyBucketKey(bucketDate);
+        const bucket = formatPnlBucketKey(floorToPnlBucket(new Date(ts * 1000)));
         totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3));
     });
     const parsedEntries = Array.from(totals.entries())
@@ -1327,7 +1329,7 @@ function groupDailyPnl(rows, nowTs) {
         day,
         pnl,
         label: formatDollar(pnl),
-        bucketDate: parseHourlyBucket(day)
+        bucketDate: parsePnlBucket(day)
     }))
         .filter((row) => row.bucketDate != null)
         .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime());
@@ -1336,18 +1338,18 @@ function groupDailyPnl(rows, nowTs) {
     }
     const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]));
     const newestResolved = new Date(parsedEntries[0].bucketDate.getTime());
-    const currentBucket = floorToHour(new Date(nowTs * 1000));
+    const currentBucket = floorToPnlBucket(new Date(nowTs * 1000));
     const newest = currentBucket.getTime() > newestResolved.getTime() ? currentBucket : newestResolved;
     const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime());
     const filledEntries = [];
     for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
-        const bucketKey = formatHourlyBucketKey(cursor);
+        const bucketKey = formatPnlBucketKey(cursor);
         const existing = entryByBucket.get(bucketKey);
         filledEntries.push(existing
             ? { day: existing.day, pnl: existing.pnl, label: existing.label }
             : { day: bucketKey, pnl: 0, label: formatDollar(0) });
         const nextCursor = new Date(cursor.getTime());
-        nextCursor.setHours(nextCursor.getHours() - 1);
+        nextCursor.setMinutes(nextCursor.getMinutes() - PNL_BUCKET_MINUTES);
         cursor = nextCursor;
     }
     return filledEntries;
@@ -1406,7 +1408,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const activeMode = botState.mode === 'live' ? 'live' : 'shadow';
     const activeRealMoney = activeMode === 'live' ? 1 : 0;
     const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker';
-    const currentHourBucketTs = Math.floor(nowTs / 3600) * 3600;
+    const currentPnlBucketTs = Math.floor(nowTs / (PNL_BUCKET_MINUTES * 60)) * (PNL_BUCKET_MINUTES * 60);
     const usernames = useMemo(() => {
         const lookup = new Map();
         for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -1482,7 +1484,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             avg_size: avgSize
         };
     }, [confidenceRows, effectivePositions, resolvedPerformancePositions]);
-    const dailyEntries = useMemo(() => groupDailyPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), currentHourBucketTs), [currentHourBucketTs, pastPositions]);
+    const dailyEntries = useMemo(() => groupBucketedPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), currentPnlBucketTs), [currentPnlBucketTs, pastPositions]);
     const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
     const dailyPreviewCapacity = useMemo(() => dailyEntries.length
         ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
@@ -1932,7 +1934,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                     React.createElement(InkBox, { width: 2 }),
                     React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, summaryRightStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color })))))),
             !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeTitle.toLowerCase()} trades yet.`)))),
+            React.createElement(Box, { title: `15-Min ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeTitle.toLowerCase()} trades yet.`)))),
         React.createElement(InkBox, { marginTop: 1, flexDirection: "column", height: paneMetrics.paneHeight * 2 + 1 },
             React.createElement(InkBox, { height: paneMetrics.paneHeight },
                 React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: selectedBox === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, {
@@ -2031,12 +2033,12 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         dailyDetailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: detailModalWidth },
                 React.createElement(InkBox, { width: "100%" },
-                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`),
+                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(`15-Min ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`),
                     React.createElement(Text, { backgroundColor: modalBackground }, " "),
                     React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, `${fitRight(detailRangeLabel, detailRangeLabel.length)} `)),
                 React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailModalWidth - 2)),
                 paddedDetailEntries.map((row, index) => (React.createElement(InkBox, { key: `detail-${row?.day || `empty-${index}`}`, width: "100%" },
-                    React.createElement(Text, { color: row ? theme.white : theme.dim, backgroundColor: modalBackground }, ` ${fitRight(row ? formatHourlyBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`),
+                    React.createElement(Text, { color: row ? theme.white : theme.dim, backgroundColor: modalBackground }, ` ${fitRight(row ? formatPnlBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`),
                     React.createElement(Text, { backgroundColor: modalBackground }, " "),
                     React.createElement(InkBox, { width: detailQueueLayout.barWidth },
                         React.createElement(BarSparkline, { value: row ? row.pnl / detailMaxAbsPnl : 0, width: detailQueueLayout.barWidth, positive: row ? row.pnl >= 0 : true, centered: true, axisChar: "\u2502" })),

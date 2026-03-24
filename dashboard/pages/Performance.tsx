@@ -575,6 +575,8 @@ interface ComputedSummary {
   avg_size: number | null
 }
 
+const PNL_BUCKET_MINUTES = 15
+
 function getPositionsLayout(width: number): PositionsLayout {
   const showId = width >= 132
   const showUser = width >= 110
@@ -681,40 +683,42 @@ function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQue
   }
 }
 
-function parseHourlyBucket(bucket: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):00$/.exec(String(bucket || '').trim())
+function parsePnlBucket(bucket: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(String(bucket || '').trim())
   if (!match) {
     return null
   }
 
-  const [, year, month, day, hour] = match
+  const [, year, month, day, hour, minute] = match
   return new Date(
     Number.parseInt(year, 10),
     Number.parseInt(month, 10) - 1,
     Number.parseInt(day, 10),
     Number.parseInt(hour, 10),
-    0,
+    Number.parseInt(minute, 10),
     0,
     0
   )
 }
 
-function formatHourlyBucketKey(date: Date): string {
+function formatPnlBucketKey(date: Date): string {
   const year = String(date.getFullYear()).padStart(4, '0')
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   const hour = String(date.getHours()).padStart(2, '0')
-  return `${year}-${month}-${day} ${hour}:00`
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}`
 }
 
-function floorToHour(date: Date): Date {
+function floorToPnlBucket(date: Date): Date {
   const bucketDate = new Date(date.getTime())
-  bucketDate.setMinutes(0, 0, 0)
+  const bucketMinute = Math.floor(bucketDate.getMinutes() / PNL_BUCKET_MINUTES) * PNL_BUCKET_MINUTES
+  bucketDate.setMinutes(bucketMinute, 0, 0)
   return bucketDate
 }
 
-function formatHourlyBucketLabel(bucket: string, compact = false): string {
-  const bucketDate = parseHourlyBucket(bucket)
+function formatPnlBucketLabel(bucket: string, compact = false): string {
+  const bucketDate = parsePnlBucket(bucket)
   if (!bucketDate) {
     const [datePart, timePart = ''] = String(bucket || '').split(' ')
     const shortDate = datePart.length >= 10 ? datePart.slice(5) : datePart
@@ -731,9 +735,10 @@ function formatHourlyBucketLabel(bucket: string, compact = false): string {
 
   const shortDate = `${String(bucketDate.getMonth() + 1).padStart(2, '0')}-${String(bucketDate.getDate()).padStart(2, '0')}`
   const hour24 = bucketDate.getHours()
+  const minute = String(bucketDate.getMinutes()).padStart(2, '0')
   const suffix = hour24 >= 12 ? 'PM' : 'AM'
   const hour12 = hour24 % 12 || 12
-  const timeText = `${hour12}:00 ${suffix}`
+  const timeText = `${hour12}:${minute} ${suffix}`
 
   return compact ? timeText : `${shortDate} ${timeText}`
 }
@@ -1884,7 +1889,7 @@ function normalizeEffectivePosition(
   }
 }
 
-function groupDailyPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
+function groupBucketedPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
   const totals = new Map<string, number>()
 
   rows.forEach((row) => {
@@ -1896,9 +1901,7 @@ function groupDailyPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
     if (!ts) {
       return
     }
-    const bucketDate = new Date(ts * 1000)
-    bucketDate.setMinutes(0, 0, 0)
-    const bucket = formatHourlyBucketKey(bucketDate)
+    const bucket = formatPnlBucketKey(floorToPnlBucket(new Date(ts * 1000)))
     totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3))
   })
 
@@ -1907,7 +1910,7 @@ function groupDailyPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
       day,
       pnl,
       label: formatDollar(pnl),
-      bucketDate: parseHourlyBucket(day)
+      bucketDate: parsePnlBucket(day)
     }))
     .filter((row): row is DailyPnlEntry & {bucketDate: Date} => row.bucketDate != null)
     .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime())
@@ -1918,14 +1921,14 @@ function groupDailyPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
 
   const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]))
   const newestResolved = new Date(parsedEntries[0].bucketDate.getTime())
-  const currentBucket = floorToHour(new Date(nowTs * 1000))
+  const currentBucket = floorToPnlBucket(new Date(nowTs * 1000))
   const newest =
     currentBucket.getTime() > newestResolved.getTime() ? currentBucket : newestResolved
   const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime())
   const filledEntries: DailyPnlEntry[] = []
 
   for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
-    const bucketKey = formatHourlyBucketKey(cursor)
+    const bucketKey = formatPnlBucketKey(cursor)
     const existing = entryByBucket.get(bucketKey)
     filledEntries.push(
       existing
@@ -1933,7 +1936,7 @@ function groupDailyPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
         : {day: bucketKey, pnl: 0, label: formatDollar(0)}
     )
     const nextCursor = new Date(cursor.getTime())
-    nextCursor.setHours(nextCursor.getHours() - 1)
+    nextCursor.setMinutes(nextCursor.getMinutes() - PNL_BUCKET_MINUTES)
     cursor = nextCursor
   }
 
@@ -2034,7 +2037,7 @@ export function Performance({
   const activeMode = botState.mode === 'live' ? 'live' : 'shadow'
   const activeRealMoney = activeMode === 'live' ? 1 : 0
   const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker'
-  const currentHourBucketTs = Math.floor(nowTs / 3600) * 3600
+  const currentPnlBucketTs = Math.floor(nowTs / (PNL_BUCKET_MINUTES * 60)) * (PNL_BUCKET_MINUTES * 60)
   const usernames = useMemo(() => {
     const lookup = new Map<string, string>()
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -2197,11 +2200,11 @@ export function Performance({
   )
   const dailyEntries = useMemo<DailyPnlEntry[]>(
     () =>
-      groupDailyPnl(
+      groupBucketedPnl(
         pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'),
-        currentHourBucketTs
+        currentPnlBucketTs
       ),
-    [currentHourBucketTs, pastPositions]
+    [currentPnlBucketTs, pastPositions]
   )
   useEffect(() => {
     if (!pendingPerfExits.length || !onPendingPerfExitSettlement) {
@@ -2867,7 +2870,7 @@ export function Performance({
           </InkBox>
         </Box>
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
-        <Box title={`Hourly ${activeTitle} P&L`} width={stacked ? '100%' : '50%'} accent={selectedBox === 'daily'}>
+        <Box title={`15-Min ${activeTitle} P&L`} width={stacked ? '100%' : '50%'} accent={selectedBox === 'daily'}>
           {dailyPreviewEntries.length ? (
             <DailyPnlPreviewChart entries={dailyPreviewEntries} width={dailyPanelContentWidth} />
           ) : (
@@ -3076,7 +3079,7 @@ export function Performance({
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={detailModalWidth}>
             <InkBox width="100%">
               <Text color={theme.accent} backgroundColor={modalBackground} bold>
-                {` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`}
+                {` ${fit(`15-Min ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`}
               </Text>
               <Text backgroundColor={modalBackground}> </Text>
               <Text color={theme.dim} backgroundColor={modalBackground}>
@@ -3087,7 +3090,7 @@ export function Performance({
             {paddedDetailEntries.map((row, index) => (
               <InkBox key={`detail-${row?.day || `empty-${index}`}`} width="100%">
                 <Text color={row ? theme.white : theme.dim} backgroundColor={modalBackground}>
-                  {` ${fitRight(row ? formatHourlyBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`}
+                  {` ${fitRight(row ? formatPnlBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`}
                 </Text>
                 <Text backgroundColor={modalBackground}> </Text>
                 <InkBox width={detailQueueLayout.barWidth}>

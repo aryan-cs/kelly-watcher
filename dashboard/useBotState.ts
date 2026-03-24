@@ -120,7 +120,7 @@ export function isShadowRestartPending(): boolean {
   return shadowRestartPending
 }
 
-export function useBotState(intervalMs = 2000): BotState {
+export function useBotState(intervalMs = 1000): BotState {
   const [state, setState] = useState<BotState>(() => ({...botStateCache}))
   const refreshToken = useRefreshToken()
 

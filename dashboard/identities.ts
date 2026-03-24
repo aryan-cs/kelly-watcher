@@ -52,7 +52,7 @@ export function readIdentityMap(): Map<string, string> {
   return new Map(identityCache)
 }
 
-export function useIdentityMap(intervalMs = 2000): Map<string, string> {
+export function useIdentityMap(intervalMs = 1000): Map<string, string> {
   const [lookup, setLookup] = useState<Map<string, string>>(() => readIdentityMap())
   const refreshToken = useRefreshToken()
 

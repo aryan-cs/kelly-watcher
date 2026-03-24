@@ -82,7 +82,7 @@ export function beginShadowRestartBotState() {
 export function isShadowRestartPending() {
     return shadowRestartPending;
 }
-export function useBotState(intervalMs = 2000) {
+export function useBotState(intervalMs = 1000) {
     const [state, setState] = useState(() => ({ ...botStateCache }));
     const refreshToken = useRefreshToken();
     useEffect(() => {

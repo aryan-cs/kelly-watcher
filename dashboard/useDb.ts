@@ -13,7 +13,7 @@ export function clearQueryCache(): void {
   queryCache.clear()
 }
 
-export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 2000): T[] {
+export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 1000): T[] {
   const paramsKey = JSON.stringify(params)
   const cacheKey = `${sql}\u0000${paramsKey}`
   const [rows, setRows] = useState<T[]>(() => (queryCache.get(cacheKey) as T[] | undefined) || [])

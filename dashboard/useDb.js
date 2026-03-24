@@ -6,7 +6,7 @@ const queryCache = new Map();
 export function clearQueryCache() {
     queryCache.clear();
 }
-export function useQuery(sql, params = [], intervalMs = 2000) {
+export function useQuery(sql, params = [], intervalMs = 1000) {
     const paramsKey = JSON.stringify(params);
     const cacheKey = `${sql}\u0000${paramsKey}`;
     const [rows, setRows] = useState(() => queryCache.get(cacheKey) || []);

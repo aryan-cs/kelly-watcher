@@ -39,7 +39,7 @@ function normalizeIdentityMap(payload) {
 export function readIdentityMap() {
     return new Map(identityCache);
 }
-export function useIdentityMap(intervalMs = 2000) {
+export function useIdentityMap(intervalMs = 1000) {
     const [lookup, setLookup] = useState(() => readIdentityMap());
     const refreshToken = useRefreshToken();
     useEffect(() => {

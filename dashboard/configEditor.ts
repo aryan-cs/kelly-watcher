@@ -37,7 +37,7 @@ export const editableConfigFields: EditableConfigField[] = [
     label: 'Poll Interval',
     kind: 'float',
     description: 'How many seconds between wallet polls. Applies live on the next loop.',
-    defaultValue: '45',
+    defaultValue: '1',
     liveApplies: true
   },
   {
@@ -311,7 +311,7 @@ export async function refreshDashboardConfig(): Promise<DashboardConfigData> {
   return updateDashboardConfigCache(payload)
 }
 
-export function useDashboardConfig(intervalMs = 2000): DashboardConfigData {
+export function useDashboardConfig(intervalMs = 1000): DashboardConfigData {
   const [config, setConfig] = useState<DashboardConfigData>(() => dashboardConfigCache)
   const refreshToken = useRefreshToken()
 

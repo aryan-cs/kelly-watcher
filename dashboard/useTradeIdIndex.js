@@ -13,7 +13,7 @@ function normalizeTradeId(value) {
     return tradeId || null;
 }
 export function useTradeIdIndex(eventsOverride) {
-    const tradeLogTradeIds = useQuery(TRADE_LOG_TRADE_IDS_SQL, [], 2000);
+    const tradeLogTradeIds = useQuery(TRADE_LOG_TRADE_IDS_SQL, [], 1000);
     const polledEvents = useEventStream(1000);
     const events = eventsOverride || polledEvents;
     return useMemo(() => {

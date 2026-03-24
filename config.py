@@ -11,7 +11,7 @@ from runtime_paths import MODEL_ARTIFACT_PATH, REPO_ROOT
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
 init_env_profile(override=False)
-MIN_POLL_INTERVAL_SECONDS = 2.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 _DURATION_UNITS = {
     "s": 1.0,
     "m": 60.0,

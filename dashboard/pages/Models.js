@@ -459,8 +459,16 @@ function retrainRunStateLabel(status, deployed) {
         return '-';
     if (normalized === 'completed_not_deployed')
         return 'no deploy';
+    if (normalized === 'skipped_not_enough_samples')
+        return 'skip samples';
+    if (normalized === 'skipped_insufficient_class_diversity')
+        return 'skip diversity';
+    if (normalized === 'skipped_insufficient_samples_for_holdout_search')
+        return 'skip holdout';
+    if (normalized === 'skipped_candidate_search_produced_no_valid_model')
+        return 'skip search';
     if (normalized.startsWith('skipped_'))
-        return 'skipped';
+        return 'skip';
     if (normalized === 'failed')
         return 'failed';
     if (normalized === 'already_running')

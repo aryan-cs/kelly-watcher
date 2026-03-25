@@ -695,10 +695,7 @@ def _fit_calibrated_model(
 
     y_train_target = train_df[LABEL_COL].astype(float).values
     y_cal_target = cal_df[LABEL_COL].astype(float).values
-    y_train_outcome = train_df[OUTCOME_COL].astype(int).values
     y_cal_outcome = cal_df[OUTCOME_COL].astype(int).values
-    if len(set(y_train_outcome)) < 2 or len(set(y_cal_outcome)) < 2:
-        return None
     if np.nanstd(y_train_target) <= 1e-9:
         return None
 
@@ -798,8 +795,6 @@ def _evaluate_prediction_report(
     baseline_rate: float,
 ) -> dict[str, Any] | None:
     y_eval = eval_df[OUTCOME_COL].astype(int).values
-    if len(set(y_eval)) < 2:
-        return None
 
     prices = eval_df["effective_price"].astype(float).values
     X_eval = eval_df[feature_cols].values
@@ -830,16 +825,13 @@ def _evaluate_window(
     eval_df,
     feature_cols: list[str],
 ) -> dict[str, Any] | None:
-    y_train = train_df[OUTCOME_COL].astype(int).values
-    if len(set(y_train)) < 2:
-        return None
     return _evaluate_prediction_report(
         model=base_model,
         prediction_mode="expected_return",
         probability_calibrator=probability_calibrator,
         eval_df=eval_df,
         feature_cols=feature_cols,
-        baseline_rate=float(y_train.mean()),
+        baseline_rate=float(train_df[OUTCOME_COL].astype(int).mean()),
     )
 
 
@@ -893,9 +885,9 @@ def _score_predictions(*, preds, outcomes, prices, baseline_rate: float) -> dict
     baseline_pred = np.full(len(outcomes), baseline_rate, dtype=float)
     baseline_pred = apply_probability_calibrator(None, baseline_pred)
     preds = apply_probability_calibrator(None, preds)
-    baseline_ll = log_loss(outcomes, baseline_pred)
+    baseline_ll = log_loss(outcomes, baseline_pred, labels=[0, 1])
     baseline_brier = brier_score_loss(outcomes, baseline_pred)
-    ll = log_loss(outcomes, preds)
+    ll = log_loss(outcomes, preds, labels=[0, 1])
     brier = brier_score_loss(outcomes, preds)
     strategy = _select_decision_policy(preds=preds, prices=prices, outcomes=outcomes)
     return {

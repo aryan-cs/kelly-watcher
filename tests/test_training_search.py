@@ -152,6 +152,62 @@ class TrainingSearchTest(unittest.TestCase):
         self.assertIs(calibrator, calibrator_obj)
         self.assertEqual(method, "sigmoid")
 
+    def test_score_predictions_handles_single_class_eval_windows(self) -> None:
+        outcomes = np.array([1, 1, 1, 1, 1], dtype=int)
+        preds = np.array([0.72, 0.75, 0.78, 0.81, 0.76], dtype=float)
+        prices = np.array([0.55, 0.56, 0.57, 0.58, 0.59], dtype=float)
+
+        report = train._score_predictions(
+            preds=preds,
+            outcomes=outcomes,
+            prices=prices,
+            baseline_rate=1.0,
+        )
+
+        self.assertEqual(report["n_eval"], 5)
+        self.assertIn("log_loss", report)
+        self.assertIn("brier_score", report)
+
+    def test_fit_calibrated_model_falls_back_to_identity_when_calibration_window_is_single_class(self) -> None:
+        class StubRegressor:
+            def fit(self, X, y, sample_weight=None):
+                return self
+
+            def predict(self, X):
+                return np.full(len(X), transform_return_target(0.15), dtype=float)
+
+        train_df = pd.DataFrame(
+            {
+                "f_price": np.array([0.42, 0.47, 0.53, 0.58], dtype=float),
+                train.LABEL_COL: np.array([transform_return_target(0.10), transform_return_target(0.12), transform_return_target(0.08), transform_return_target(0.09)], dtype=float),
+                train.OUTCOME_COL: np.array([1, 1, 1, 1], dtype=int),
+                train.SAMPLE_WEIGHT_COL: np.ones(4, dtype=float),
+                "effective_price": np.array([0.42, 0.47, 0.53, 0.58], dtype=float),
+            }
+        )
+        cal_df = pd.DataFrame(
+            {
+                "f_price": np.array([0.44, 0.49, 0.51], dtype=float),
+                train.LABEL_COL: np.array([transform_return_target(0.11), transform_return_target(0.10), transform_return_target(0.12)], dtype=float),
+                train.OUTCOME_COL: np.array([1, 1, 1], dtype=int),
+                train.SAMPLE_WEIGHT_COL: np.ones(3, dtype=float),
+                "effective_price": np.array([0.44, 0.49, 0.51], dtype=float),
+            }
+        )
+
+        with unittest.mock.patch("train._build_regressor", return_value=(StubRegressor(), "hist_gradient_boosting")):
+            fit_result = train._fit_calibrated_model(
+                spec={"backend": "hist_gradient_boosting", "params": {}, "calibration_mode": "auto"},
+                train_df=train_df,
+                cal_df=cal_df,
+                feature_cols=["f_price"],
+            )
+
+        self.assertIsNotNone(fit_result)
+        assert fit_result is not None
+        self.assertEqual(fit_result["calibration_method"], "identity")
+        self.assertIsNone(fit_result["probability_calibrator"])
+
     def test_compare_against_incumbent_passes_when_no_model_is_live(self) -> None:
         final_train_df, holdout_df = self._comparison_frames()
 

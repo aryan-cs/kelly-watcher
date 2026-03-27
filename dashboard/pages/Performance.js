@@ -466,7 +466,7 @@ function getDailyQueueLayout(contentWidth, valueWidth) {
         valueWidth: resolvedValueWidth
     };
 }
-const PNL_BUCKET_MINUTES = 15;
+const PNL_BUCKET_MINUTES = 60;
 function parsePnlBucket(bucket) {
     const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(String(bucket || '').trim());
     if (!match) {
@@ -1934,7 +1934,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                     React.createElement(InkBox, { width: 2 }),
                     React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, summaryRightStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color })))))),
             !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(Box, { title: `15-Min ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeTitle.toLowerCase()} trades yet.`)))),
+            React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeTitle.toLowerCase()} trades yet.`)))),
         React.createElement(InkBox, { marginTop: 1, flexDirection: "column", height: paneMetrics.paneHeight * 2 + 1 },
             React.createElement(InkBox, { height: paneMetrics.paneHeight },
                 React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: selectedBox === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, {
@@ -2033,15 +2033,18 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         dailyDetailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: detailModalWidth },
                 React.createElement(InkBox, { width: "100%" },
-                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(`15-Min ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`),
+                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`),
                     React.createElement(Text, { backgroundColor: modalBackground }, " "),
                     React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, `${fitRight(detailRangeLabel, detailRangeLabel.length)} `)),
                 React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailModalWidth - 2)),
-                paddedDetailEntries.map((row, index) => (React.createElement(InkBox, { key: `detail-${row?.day || `empty-${index}`}`, width: "100%" },
-                    React.createElement(Text, { color: row ? theme.white : theme.dim, backgroundColor: modalBackground }, ` ${fitRight(row ? formatPnlBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`),
-                    React.createElement(Text, { backgroundColor: modalBackground }, " "),
-                    React.createElement(InkBox, { width: detailQueueLayout.barWidth },
-                        React.createElement(BarSparkline, { value: row ? row.pnl / detailMaxAbsPnl : 0, width: detailQueueLayout.barWidth, positive: row ? row.pnl >= 0 : true, centered: true, axisChar: "\u2502" })),
-                    React.createElement(Text, { backgroundColor: modalBackground }, " "),
-                    React.createElement(Text, { color: row ? (row.pnl >= 0 ? theme.green : theme.red) : theme.dim, backgroundColor: modalBackground }, `${fitRight(row?.label || '', detailQueueLayout.valueWidth)} `))))))) : null));
+                paddedDetailEntries.map((row, index) => {
+                    const detailPnlColor = row ? centeredGradientColor(row.pnl, 100) : theme.dim;
+                    return (React.createElement(InkBox, { key: `detail-${row?.day || `empty-${index}`}`, width: "100%" },
+                        React.createElement(Text, { color: row ? theme.white : theme.dim, backgroundColor: modalBackground }, ` ${fitRight(row ? formatPnlBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`),
+                        React.createElement(Text, { backgroundColor: modalBackground }, " "),
+                        React.createElement(InkBox, { width: detailQueueLayout.barWidth },
+                            React.createElement(BarSparkline, { value: row ? row.pnl / detailMaxAbsPnl : 0, width: detailQueueLayout.barWidth, positive: row ? row.pnl >= 0 : true, color: row ? detailPnlColor : undefined, centered: true, axisChar: "\u2502" })),
+                        React.createElement(Text, { backgroundColor: modalBackground }, " "),
+                        React.createElement(Text, { color: detailPnlColor, backgroundColor: modalBackground }, `${fitRight(row?.label || '', detailQueueLayout.valueWidth)} `)));
+                })))) : null));
 }

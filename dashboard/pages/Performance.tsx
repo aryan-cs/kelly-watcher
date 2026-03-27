@@ -575,7 +575,7 @@ interface ComputedSummary {
   avg_size: number | null
 }
 
-const PNL_BUCKET_MINUTES = 15
+const PNL_BUCKET_MINUTES = 60
 
 function getPositionsLayout(width: number): PositionsLayout {
   const showId = width >= 132
@@ -2870,7 +2870,7 @@ export function Performance({
           </InkBox>
         </Box>
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
-        <Box title={`15-Min ${activeTitle} P&L`} width={stacked ? '100%' : '50%'} accent={selectedBox === 'daily'}>
+        <Box title={`Hourly ${activeTitle} P&L`} width={stacked ? '100%' : '50%'} accent={selectedBox === 'daily'}>
           {dailyPreviewEntries.length ? (
             <DailyPnlPreviewChart entries={dailyPreviewEntries} width={dailyPanelContentWidth} />
           ) : (
@@ -3079,7 +3079,7 @@ export function Performance({
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={detailModalWidth}>
             <InkBox width="100%">
               <Text color={theme.accent} backgroundColor={modalBackground} bold>
-                {` ${fit(`15-Min ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`}
+                {` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`}
               </Text>
               <Text backgroundColor={modalBackground}> </Text>
               <Text color={theme.dim} backgroundColor={modalBackground}>
@@ -3087,8 +3087,11 @@ export function Performance({
               </Text>
             </InkBox>
             <Text backgroundColor={modalBackground}>{' '.repeat(detailModalWidth - 2)}</Text>
-            {paddedDetailEntries.map((row, index) => (
-              <InkBox key={`detail-${row?.day || `empty-${index}`}`} width="100%">
+            {paddedDetailEntries.map((row, index) => {
+              const detailPnlColor = row ? centeredGradientColor(row.pnl, 100) : theme.dim
+
+              return (
+                <InkBox key={`detail-${row?.day || `empty-${index}`}`} width="100%">
                 <Text color={row ? theme.white : theme.dim} backgroundColor={modalBackground}>
                   {` ${fitRight(row ? formatPnlBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`}
                 </Text>
@@ -3098,19 +3101,21 @@ export function Performance({
                     value={row ? row.pnl / detailMaxAbsPnl : 0}
                     width={detailQueueLayout.barWidth}
                     positive={row ? row.pnl >= 0 : true}
+                    color={row ? detailPnlColor : undefined}
                     centered
                     axisChar="│"
                   />
                 </InkBox>
                 <Text backgroundColor={modalBackground}> </Text>
                 <Text
-                  color={row ? (row.pnl >= 0 ? theme.green : theme.red) : theme.dim}
+                  color={detailPnlColor}
                   backgroundColor={modalBackground}
                 >
                   {`${fitRight(row?.label || '', detailQueueLayout.valueWidth)} `}
                 </Text>
-              </InkBox>
-            ))}
+                </InkBox>
+              )
+            })}
           </InkBox>
         </ModalOverlay>
       ) : null}

@@ -9,6 +9,7 @@ interface Props {
   positive?: boolean
   centered?: boolean
   axisChar?: string
+  color?: string
 }
 
 export function BarSparkline({
@@ -17,10 +18,11 @@ export function BarSparkline({
   label,
   positive,
   centered = false,
-  axisChar = '|'
+  axisChar = '|',
+  color
 }: Props) {
   const magnitude = Math.max(0, Math.min(1, Math.abs(value)))
-  const color = (positive ?? value >= 0) ? theme.green : theme.red
+  const fillColor = color || ((positive ?? value >= 0) ? theme.green : theme.red)
 
   if (centered) {
     const halfWidth = Math.max(1, Math.floor((width - 1) / 2))
@@ -38,13 +40,13 @@ export function BarSparkline({
           <>
             <Text>{leftBlank}</Text>
             <Text color={theme.dim}>{axisChar}</Text>
-            <Text backgroundColor={color}>{filledBar}</Text>
+            <Text backgroundColor={fillColor}>{filledBar}</Text>
             <Text>{rightEmpty}</Text>
           </>
         ) : (
           <>
             <Text>{leftEmpty}</Text>
-            <Text backgroundColor={color}>{filledBar}</Text>
+            <Text backgroundColor={fillColor}>{filledBar}</Text>
             <Text color={theme.dim}>{axisChar}</Text>
             <Text>{rightBlank}</Text>
           </>
@@ -60,7 +62,7 @@ export function BarSparkline({
 
   return (
     <Text>
-      <Text color={color}>{bar}</Text>
+      <Text color={fillColor}>{bar}</Text>
       {label ? <Text color={theme.dim}>  {label}</Text> : null}
     </Text>
   )

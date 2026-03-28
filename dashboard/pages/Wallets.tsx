@@ -455,22 +455,19 @@ function shadowWalletPnl(row: TopShadowRow): number {
   return Number.isFinite(pnl) ? pnl : 0
 }
 
-function pickShadowLeaderboards(rows: TopShadowRow[], limit = 5): ShadowLeaderboards {
-  const sortedByBest = [...rows]
+function pickShadowLeaderboards(rows: TopShadowRow[]): ShadowLeaderboards {
+  const best = [...rows]
     .filter((row) => shadowWalletPnl(row) >= 0)
     .sort((left, right) => (
       shadowWalletPnl(right) - shadowWalletPnl(left) ||
       String(left.trader_address || '').localeCompare(String(right.trader_address || ''))
     ))
-  const best = sortedByBest.slice(0, limit)
-  const bestWallets = new Set(best.map((row) => row.trader_address.trim().toLowerCase()))
   const worst = [...rows]
-    .filter((row) => !bestWallets.has(row.trader_address.trim().toLowerCase()))
+    .filter((row) => shadowWalletPnl(row) <= 0)
     .sort((left, right) => (
       shadowWalletPnl(left) - shadowWalletPnl(right) ||
       String(left.trader_address || '').localeCompare(String(right.trader_address || ''))
     ))
-    .slice(0, limit)
   return {best, worst}
 }
 
@@ -959,12 +956,16 @@ export function Wallets({
   const shadowPanelsWide = terminal.wide
   const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 1) / 2)) : tableWidth
   const shadowPanelContentWidth = Math.max(24, shadowPanelWidth - 4)
+  const shadowRankWidth = Math.max(
+    1,
+    Math.min(4, Math.max(String(Math.max(bestShadowWallets.length, worstShadowWallets.length, 1)).length, 1))
+  )
   const shadowCopyWrWidth = 10
   const shadowSkipWidth = 6
   const shadowCopyPnlWidth = 10
   const shadowNameWidth = Math.max(
-    10,
-    shadowPanelContentWidth - shadowCopyWrWidth - shadowSkipWidth - shadowCopyPnlWidth - 3
+    8,
+    shadowPanelContentWidth - shadowRankWidth - shadowCopyWrWidth - shadowSkipWidth - shadowCopyPnlWidth - 4
   )
   const maxAbsShadowPnl = useMemo(
     () => shadowWalletRows.reduce((max, wallet) => Math.max(max, Math.abs(wallet.pnl || 0)), 0),
@@ -1247,9 +1248,18 @@ export function Wallets({
   )
 
   const renderShadowWalletBox = (title: string, pane: 'best' | 'worst', shadowWallets: TopShadowRow[]) => {
-    const paddedRows = Array.from({length: shadowLeaderboardRows}, (_, index) => shadowWallets[index] ?? null)
     const activeShadowAddress = pane === 'best' ? selectedBestWalletAddress : selectedWorstWalletAddress
+    const activeShadowIndex = pane === 'best' ? clampedBestSelectedIndex : clampedWorstSelectedIndex
     const boxIsSelected = activePane === pane
+    const shadowWindowStart =
+      shadowWallets.length > shadowLeaderboardRows
+        ? Math.min(
+            Math.max(activeShadowIndex - Math.floor(shadowLeaderboardRows / 2), 0),
+            Math.max(0, shadowWallets.length - shadowLeaderboardRows)
+          )
+        : 0
+    const visibleShadowWallets = shadowWallets.slice(shadowWindowStart, shadowWindowStart + shadowLeaderboardRows)
+    const paddedRows = Array.from({length: shadowLeaderboardRows}, (_, index) => visibleShadowWallets[index] ?? null)
 
     return (
       <InkBox
@@ -1259,6 +1269,8 @@ export function Wallets({
       >
         <Box title={title} width="100%" height={shadowPanelHeight} accent={boxIsSelected}>
           <InkBox width="100%">
+            <Text color={theme.dim}>{fitRight('#', shadowRankWidth)}</Text>
+            <Text color={theme.dim}> </Text>
             <Text color={theme.dim}>{fit('WALLET', shadowNameWidth)}</Text>
             <Text color={theme.dim}> </Text>
             <Text color={theme.dim}>{fitRight('COPY WR%', shadowCopyWrWidth)}</Text>
@@ -1273,6 +1285,8 @@ export function Wallets({
                 if (!wallet) {
                   return (
                     <InkBox key={`${title}-empty-${index}`} width="100%">
+                      <Text color={theme.dim}>{fitRight('', shadowRankWidth)}</Text>
+                      <Text> </Text>
                       <Text color={theme.dim}>{fit('', shadowNameWidth)}</Text>
                       <Text> </Text>
                       <Text color={theme.dim}>{fitRight('', shadowCopyWrWidth)}</Text>
@@ -1298,6 +1312,7 @@ export function Wallets({
                   wallet.pnl == null
                     ? theme.dim
                     : centeredGradientColor(wallet.pnl, maxAbsShadowPnl)
+                const rank = shadowWindowStart + index + 1
 
                 return (
                   <InkBox key={`${title}-${wallet.trader_address}`} width="100%">
@@ -1312,6 +1327,14 @@ export function Wallets({
 
                       return (
                         <>
+                          <Text
+                            color={isSelected ? theme.accent : theme.dim}
+                            backgroundColor={rowBackground}
+                            bold={isSelected}
+                          >
+                            {fitRight(String(rank), shadowRankWidth)}
+                          </Text>
+                          <Text backgroundColor={rowBackground}> </Text>
                           <Text
                             color={
                               isSelected

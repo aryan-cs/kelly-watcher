@@ -644,6 +644,21 @@ function retrainRunStateLabel(status: string | null | undefined, deployed: numbe
   return normalized.replace(/_/g, ' ')
 }
 
+function retrainRunStateCompactLabel(status: string | null | undefined, deployed: number | null | undefined): string {
+  if (deployed) return 'deploy'
+  const normalized = (status || '').trim().toLowerCase()
+  if (!normalized) return '-'
+  if (normalized === 'completed_not_deployed') return 'no dep'
+  if (normalized === 'skipped_not_enough_samples') return 'skip smp'
+  if (normalized === 'skipped_insufficient_class_diversity') return 'skip div'
+  if (normalized === 'skipped_insufficient_samples_for_holdout_search') return 'skip hld'
+  if (normalized === 'skipped_candidate_search_produced_no_valid_model') return 'skip src'
+  if (normalized.startsWith('skipped_')) return 'skip'
+  if (normalized === 'failed') return 'failed'
+  if (normalized === 'already_running') return 'busy'
+  return normalized.replace(/_/g, ' ')
+}
+
 function retrainRunStateColor(status: string | null | undefined, deployed: number | null | undefined): string {
   if (deployed) return theme.green
   const normalized = (status || '').trim().toLowerCase()
@@ -816,6 +831,64 @@ function splitIntoColumns<T>(items: T[], columnCount: number): T[][] {
     columns.push(items.slice(index, index + perColumn))
   }
   return columns
+}
+
+interface DenseModelsRowProps {
+  label: string
+  value: string
+  width: number
+  color?: string
+}
+
+function denseModelsLabelWidth(width: number): number {
+  const safeWidth = Math.max(18, width)
+  return Math.max(8, Math.min(16, Math.floor(safeWidth * 0.42)))
+}
+
+function DenseModelsRow({label, value, width, color = theme.white}: DenseModelsRowProps) {
+  const safeWidth = Math.max(18, width)
+  const labelWidth = denseModelsLabelWidth(safeWidth)
+  const valueWidth = Math.max(6, safeWidth - labelWidth - 1)
+
+  return (
+    <InkBox width={safeWidth}>
+      <Text color={theme.dim}>{fit(label, labelWidth)}</Text>
+      <Text> </Text>
+      <Text color={color}>{fitRight(value, valueWidth)}</Text>
+    </InkBox>
+  )
+}
+
+function ModelsSectionTitle({
+  title,
+  width,
+  selected,
+  backgroundColor
+}: {
+  title: string
+  width: number
+  selected: boolean
+  backgroundColor?: string
+}) {
+  const prefix = selected ? '> ' : '  '
+
+  return (
+    <Text
+      color={selected ? theme.accent : theme.white}
+      backgroundColor={selected ? backgroundColor : undefined}
+      bold
+    >
+      {fit(`${prefix}${title}`, Math.max(1, width))}
+    </Text>
+  )
+}
+
+function ModelsSubsectionTitle({title, width, color = theme.accent}: {title: string; width: number; color?: string}) {
+  return (
+    <Text color={color} bold>
+      {fit(title, Math.max(1, width))}
+    </Text>
+  )
 }
 
 export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues}: ModelsProps) {
@@ -1312,296 +1385,276 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => splitIntoColumns(scoringMixStats, 2),
     [scoringMixStats]
   )
-  const topRowBoxWidth: string | number = stacked ? '100%' : '50%'
-  const confusionMatrixBox = (
-    <Box width={confusionBoxWidth} accent={clampedSelectedPanelIndex === 2}>
-      <InkBox width="100%" flexDirection="column">
-        <InkBox>
-          <ConfusionMatrixCell
-            label={confusionCells[0].label}
-            value={confusionCells[0].value}
-            width={confusionCellWidth}
-            kind={confusionCells[0].kind}
-            scale={confusionScale}
-          />
-          <InkBox width={1} />
-          <ConfusionMatrixCell
-            label={confusionCells[1].label}
-            value={confusionCells[1].value}
-            width={confusionCellWidth}
-            kind={confusionCells[1].kind}
-            scale={confusionScale}
-          />
-        </InkBox>
-        <InkBox height={1} />
-        <InkBox>
-          <ConfusionMatrixCell
-            label={confusionCells[2].label}
-            value={confusionCells[2].value}
-            width={confusionCellWidth}
-            kind={confusionCells[2].kind}
-            scale={confusionScale}
-          />
-          <InkBox width={1} />
-          <ConfusionMatrixCell
-            label={confusionCells[3].label}
-            value={confusionCells[3].value}
-            width={confusionCellWidth}
-            kind={confusionCells[3].kind}
-            scale={confusionScale}
-          />
-        </InkBox>
-      </InkBox>
-    </Box>
+  const modelsColumnGap = terminal.compact ? 1 : 2
+  const modelsContentWidth = Math.max(54, terminal.width - 8)
+  const baseModelsColumnWidth = Math.max(18, Math.floor((modelsContentWidth - modelsColumnGap * 2) / 3))
+  const modelsColumnWidths: [number, number, number] = [
+    baseModelsColumnWidth,
+    baseModelsColumnWidth,
+    Math.max(18, modelsContentWidth - baseModelsColumnWidth * 2 - modelsColumnGap * 2)
+  ]
+  const predictionQualityStats = useMemo<CompactStatItem[]>(
+    () => [
+      {
+        label: 'Active path',
+        value: latest?.deployed ? 'XGBoost' : 'Heuristic',
+        color: latest?.deployed ? theme.green : theme.yellow
+      },
+      {label: 'Trained', value: latest ? formatShortDateTime(latest.trained_at) : '-'},
+      {label: 'Model age', value: latest ? secondsAgo(latest.trained_at) : '-'},
+      {label: 'Samples', value: formatCount(latest?.n_samples)},
+      {label: 'Features', value: featureCount != null ? formatCount(featureCount) : '-'},
+      {
+        label: 'Brier score',
+        value: formatNumber(latest?.brier_score, 4),
+        color: lowerIsBetterColor(latest?.brier_score, 0.18, 0.25)
+      },
+      {
+        label: 'Log loss',
+        value: formatNumber(latest?.log_loss, 4),
+        color: lowerIsBetterColor(latest?.log_loss, 0.55, 0.69)
+      }
+    ],
+    [featureCount, latest]
+  )
+  const confusionStats = useMemo<CompactStatItem[]>(
+    () => [
+      {label: 'TP', value: formatCount(confusion?.true_positive), color: theme.green},
+      {label: 'FP', value: formatCount(confusion?.false_positive), color: theme.red},
+      {label: 'TN', value: formatCount(confusion?.true_negative), color: theme.green},
+      {label: 'FN', value: formatCount(confusion?.false_negative), color: theme.red}
+    ],
+    [confusion]
+  )
+  const recentRetrainRuns = useMemo(
+    () => retrainRuns.slice(0, historyLimit),
+    [historyLimit, retrainRuns]
+  )
+  const howItWorksScoreRows = useMemo(
+    () => scoringMixStats.slice(0, 4),
+    [scoringMixStats]
+  )
+  const howItWorksHistoryRows = useMemo(
+    () => scoringMixStats.slice(4),
+    [scoringMixStats]
   )
 
   const renderPageBody = () => (
-    <>
-      <InkBox flexDirection={stacked ? 'column' : 'row'}>
-        <Box title="Prediction Quality" width={topRowBoxWidth} accent={clampedSelectedPanelIndex === 0}>
-          <StatRow
-            label="Active path"
-            value={latest?.deployed ? 'XGBoost' : 'Heuristic'}
-            color={latest?.deployed ? theme.green : theme.yellow}
+    <InkBox width="100%">
+      <InkBox width={modelsColumnWidths[0]} flexDirection="column">
+        <ModelsSectionTitle
+          title="Prediction Quality"
+          width={modelsColumnWidths[0]}
+          selected={clampedSelectedPanelIndex === 0}
+          backgroundColor={selectedRowBackground}
+        />
+        {predictionQualityStats.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[0]}
           />
-          <StatRow label="Trained" value={latest ? formatShortDateTime(latest.trained_at) : '-'} />
-          <StatRow label="Model age" value={latest ? secondsAgo(latest.trained_at) : '-'} />
-          <StatRow label="Samples" value={formatCount(latest?.n_samples)} />
-          <StatRow label="Features" value={featureCount != null ? formatCount(featureCount) : '-'} />
-          <StatRow
-            label="Brier score"
-            value={formatNumber(latest?.brier_score, 4)}
-            color={lowerIsBetterColor(latest?.brier_score, 0.18, 0.25)}
-          />
-          <StatRow
-            label="Log loss"
-            value={formatNumber(latest?.log_loss, 4)}
-            color={lowerIsBetterColor(latest?.log_loss, 0.55, 0.69)}
-          />
-        </Box>
+        ))}
 
-        {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
+        <InkBox height={1} />
 
-        <Box title="Tracker Health" width={topRowBoxWidth} accent={clampedSelectedPanelIndex === 1}>
-          <InkBox width="100%">
-            {trackerHealthColumns.map((column, columnIndex) => (
-              <React.Fragment key={`tracker-health-column-${columnIndex}`}>
-                <InkBox flexDirection="column" flexGrow={1}>
-                  {column.map((item) => (
-                    <StatRow
-                      key={item.label}
-                      label={item.label}
-                      value={item.value}
-                      color={item.color ?? theme.white}
-                    />
-                  ))}
-                </InkBox>
-                {columnIndex < trackerHealthColumns.length - 1 ? <InkBox width={2} /> : null}
-              </React.Fragment>
-            ))}
-          </InkBox>
-        </Box>
+        <ModelsSectionTitle
+          title="Tracker Health"
+          width={modelsColumnWidths[0]}
+          selected={clampedSelectedPanelIndex === 1}
+          backgroundColor={selectedRowBackground}
+        />
+        {trackerHealthStats.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[0]}
+          />
+        ))}
       </InkBox>
 
-      <InkBox
-        marginTop={1}
-        flexDirection={secondaryThreeAcross ? 'row' : 'column'}
-        width="100%"
-      >
-        {secondaryThreeAcross ? confusionMatrixBox : <InkBox width="100%" justifyContent="center">{confusionMatrixBox}</InkBox>}
+      <InkBox width={modelsColumnGap} />
 
-        {secondaryThreeAcross ? <InkBox width={secondaryRowGap} /> : <InkBox height={1} />}
+      <InkBox width={modelsColumnWidths[1]} flexDirection="column">
+        <ModelsSectionTitle
+          title="Confusion Matrix"
+          width={modelsColumnWidths[1]}
+          selected={clampedSelectedPanelIndex === 2}
+          backgroundColor={selectedRowBackground}
+        />
+        {confusionStats.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[1]}
+          />
+        ))}
 
-        <InkBox width={secondaryThreeAcross ? 0 : '100%'} flexGrow={1}>
-          <Box
-            title="Confidence + Modes"
-            width="100%"
-            accent={clampedSelectedPanelIndex === 3}
-          >
-            <InkBox width="100%" flexDirection={combinedPanelsWide ? 'row' : 'column'}>
-              <InkBox
-                flexDirection="column"
-                width={combinedPanelsWide ? confidenceSectionContentWidth : '100%'}
-                flexGrow={combinedPanelsWide ? 1 : 0}
-              >
-              <Text color={theme.accent} bold>Calibration Read</Text>
-              <InkBox width="100%">
-                {confidenceCheckColumns.map((column, columnIndex) => (
-                  <React.Fragment key={`confidence-column-${columnIndex}`}>
-                    <InkBox flexDirection="column" flexGrow={1}>
-                      {column.map((item) => (
-                        <StatRow
-                          key={item.label}
-                          label={item.label}
-                          value={item.value}
-                          color={item.color ?? theme.white}
-                        />
-                      ))}
-                    </InkBox>
-                    {columnIndex < confidenceCheckColumns.length - 1 ? <InkBox width={2} /> : null}
-                  </React.Fragment>
-                ))}
-              </InkBox>
-              </InkBox>
+        <InkBox height={1} />
 
-              {combinedPanelsWide ? <InkBox width={combinedSectionGap} /> : <InkBox height={1} />}
+        <ModelsSectionTitle
+          title="Confidence + Modes"
+          width={modelsColumnWidths[1]}
+          selected={clampedSelectedPanelIndex === 3}
+          backgroundColor={selectedRowBackground}
+        />
+        <ModelsSubsectionTitle title="Calibration Read" width={modelsColumnWidths[1]} />
+        {confidenceCheckStats.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[1]}
+          />
+        ))}
 
-              <InkBox
-                flexDirection="column"
-                width={combinedPanelsWide ? signalModesSectionContentWidth : '100%'}
-                flexGrow={combinedPanelsWide ? 1 : 0}
-              >
-              <Text color={theme.accent} bold>Decision Paths</Text>
-              <StatRow
-                label="Active scorer"
-                value={activeScorerLabel}
-                color={latest?.deployed ? theme.green : theme.yellow}
+        <InkBox height={1} />
+
+        <ModelsSubsectionTitle title="Decision Paths" width={modelsColumnWidths[1]} />
+        <DenseModelsRow
+          label="Active scorer"
+          value={activeScorerLabel}
+          color={latest?.deployed ? theme.green : theme.yellow}
+          width={modelsColumnWidths[1]}
+        />
+        <DenseModelsRow
+          label="Primary path"
+          value={primaryMode ? modeLabel(primaryMode) : '-'}
+          color={primaryMode ? theme.accent : theme.dim}
+          width={modelsColumnWidths[1]}
+        />
+        {signalModeCards.length ? (
+          signalModeCards.map((card, index) => (
+            <React.Fragment key={card.title}>
+              <InkBox height={index === 0 ? 0 : 1} />
+              <ModelsSubsectionTitle
+                title={card.title}
+                width={modelsColumnWidths[1]}
+                color={card.titleColor ?? theme.white}
               />
-              <StatRow
-                label="Primary path"
-                value={primaryMode ? modeLabel(primaryMode) : '-'}
-                color={primaryMode ? theme.accent : theme.dim}
-              />
-              {signalModeCards.length ? (
-                <InkBox width="100%">
-                  {signalModeCardColumns.map((column, columnIndex) => (
-                    <React.Fragment key={`signal-mode-column-${columnIndex}`}>
-                      <InkBox flexDirection="column" flexGrow={1}>
-                        {column.map((card, rowIndex) => {
-                          return (
-                            <InkBox key={card.title} flexDirection="column">
-                              <Text color={card.titleColor ?? theme.white} bold>{card.title}</Text>
-                              {card.rows.map((item) => (
-                                <StatRow
-                                  key={`${card.title}-${item.label}`}
-                                  label={item.label}
-                                  value={item.value}
-                                  color={item.color ?? theme.white}
-                                />
-                              ))}
-                              {rowIndex < column.length - 1 ? <InkBox height={1} /> : null}
-                            </InkBox>
-                          )
-                        })}
-                      </InkBox>
-                      {columnIndex < signalModeCardColumns.length - 1 ? <InkBox width={2} /> : null}
-                    </React.Fragment>
-                  ))}
-                </InkBox>
-              ) : (
-                <Text color={theme.dim}>No tracker signals yet.</Text>
-              )}
-            </InkBox>
-            </InkBox>
-          </Box>
-        </InkBox>
-      </InkBox>
-
-      <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'}>
-        <Box title="How It Works" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 4}>
-          <InkBox width="100%">
-            <InkBox flexDirection="column" flexGrow={1}>
-              <Text color={theme.accent} bold>Score Build</Text>
-              {scoringMixColumns[0]?.map((item) => (
-                <StatRow
-                  key={item.label}
+              {card.rows.map((item) => (
+                <DenseModelsRow
+                  key={`${card.title}-${item.label}`}
                   label={item.label}
                   value={item.value}
                   color={item.color ?? theme.white}
+                  width={modelsColumnWidths[1]}
                 />
               ))}
-            </InkBox>
-            <InkBox width={2} />
-            <InkBox flexDirection="column" flexGrow={1}>
-              <Text color={theme.accent} bold>History Nudge</Text>
-              {scoringMixColumns[1]?.map((item) => (
-                <StatRow
-                  key={item.label}
-                  label={item.label}
-                  value={item.value}
-                  color={item.color ?? theme.white}
-                />
-              ))}
-            </InkBox>
-          </InkBox>
-        </Box>
-
-        {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
-
-        <Box title="Training Cycle" width={stacked ? '100%' : '50%'} accent={clampedSelectedPanelIndex === 5}>
-          <InkBox width="100%">
-            {trainingCycleColumns.map((column, columnIndex) => (
-              <React.Fragment key={`training-cycle-column-${columnIndex}`}>
-                <InkBox flexDirection="column" flexGrow={1}>
-                  {column.map((item) => (
-                    <StatRow
-                      key={item.label}
-                      label={item.label}
-                      value={item.value}
-                      color={item.color ?? theme.white}
-                    />
-                  ))}
-                </InkBox>
-                {columnIndex < trainingCycleColumns.length - 1 ? <InkBox width={2} /> : null}
-              </React.Fragment>
-            ))}
-          </InkBox>
-          {latestSharedHoldoutRun && latestSharedHoldout ? (
-            <InkBox width="100%" marginTop={1} flexDirection="column">
-              <Text color={theme.accent} bold>Latest Shared Holdout Gate</Text>
-              <StatRow label="Run" value={formatShortDateTime(latestSharedHoldoutRun.finished_at)} />
-              <StatRow
-                label="Challenger"
-                value={`LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}`}
-              />
-              <StatRow
-                label="Incumbent"
-                value={`LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`}
-              />
-              <StatRow
-                label="Gate read"
-                value={sharedHoldoutGateRead(latestSharedHoldoutRun)}
-                color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
-              />
-            </InkBox>
-          ) : null}
-          <InkBox width="100%" marginTop={1}>
-            <Text color={theme.dim}>{fit('TIME', retrainWidths.timeWidth)}</Text>
-            <Text> </Text>
-            <Text color={theme.dim}>{fitRight('SAMPLES', retrainWidths.sampleWidth)}</Text>
-            <Text> </Text>
-            <Text color={theme.dim}>{fitRight('BRIER', retrainWidths.brierWidth)}</Text>
-            <Text> </Text>
-            <Text color={theme.dim}>{fitRight('LL', retrainWidths.lossWidth)}</Text>
-            <Text> </Text>
-            <Text color={theme.dim}>{fitRight('STATE', retrainWidths.stateWidth)}</Text>
-          </InkBox>
-          {retrainRuns.length ? (
-            retrainRuns.slice(0, historyLimit).map((row, index) => (
-              <InkBox key={`${row.finished_at}-${row.status || 'run'}-${index}`} width="100%">
-                <Text color={theme.white}>{fit(formatShortDateTime(row.finished_at), retrainWidths.timeWidth)}</Text>
-                <Text> </Text>
-                <Text color={theme.white}>{fitRight(formatCount(row.sample_count), retrainWidths.sampleWidth)}</Text>
-                <Text> </Text>
-                <Text color={row.brier_score == null ? theme.dim : lowerIsBetterColor(row.brier_score, 0.18, 0.25)}>
-                  {fitRight(formatNumber(row.brier_score, 4), retrainWidths.brierWidth)}
-                </Text>
-                <Text> </Text>
-                <Text color={row.log_loss == null ? theme.dim : lowerIsBetterColor(row.log_loss, 0.55, 0.69)}>
-                  {fitRight(formatNumber(row.log_loss, 4), retrainWidths.lossWidth)}
-                </Text>
-                <Text> </Text>
-                <Text color={retrainRunStateColor(row.status, row.deployed)}>
-                  {fitRight(retrainRunStateLabel(row.status, row.deployed), retrainWidths.stateWidth)}
-                </Text>
-              </InkBox>
-            ))
-          ) : (
-            <Text color={theme.dim}>No retrain attempts logged yet.</Text>
-          )}
-        </Box>
+            </React.Fragment>
+          ))
+        ) : (
+          <Text color={theme.dim}>{fit('No tracker signals yet.', modelsColumnWidths[1])}</Text>
+        )}
       </InkBox>
-    </>
+
+      <InkBox width={modelsColumnGap} />
+
+      <InkBox width={modelsColumnWidths[2]} flexDirection="column">
+        <ModelsSectionTitle
+          title="How It Works"
+          width={modelsColumnWidths[2]}
+          selected={clampedSelectedPanelIndex === 4}
+          backgroundColor={selectedRowBackground}
+        />
+        <ModelsSubsectionTitle title="Score Build" width={modelsColumnWidths[2]} />
+        {howItWorksScoreRows.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[2]}
+          />
+        ))}
+        <InkBox height={1} />
+        <ModelsSubsectionTitle title="History Nudge" width={modelsColumnWidths[2]} />
+        {howItWorksHistoryRows.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[2]}
+          />
+        ))}
+
+        <InkBox height={1} />
+
+        <ModelsSectionTitle
+          title="Training Cycle"
+          width={modelsColumnWidths[2]}
+          selected={clampedSelectedPanelIndex === 5}
+          backgroundColor={selectedRowBackground}
+        />
+        {trainingCycleStats.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[2]}
+          />
+        ))}
+
+        {latestSharedHoldoutRun && latestSharedHoldout ? (
+          <>
+            <InkBox height={1} />
+            <ModelsSubsectionTitle title="Latest Shared Holdout Gate" width={modelsColumnWidths[2]} />
+            <DenseModelsRow
+              label="Run"
+              value={formatShortDateTime(latestSharedHoldoutRun.finished_at)}
+              width={modelsColumnWidths[2]}
+            />
+            <DenseModelsRow
+              label="Challenger"
+              value={`LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}`}
+              width={modelsColumnWidths[2]}
+            />
+            <DenseModelsRow
+              label="Incumbent"
+              value={`LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`}
+              width={modelsColumnWidths[2]}
+            />
+            <DenseModelsRow
+              label="Gate read"
+              value={sharedHoldoutGateRead(latestSharedHoldoutRun)}
+              color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
+              width={modelsColumnWidths[2]}
+            />
+          </>
+        ) : null}
+
+        <InkBox height={1} />
+        <ModelsSubsectionTitle title="Recent Runs" width={modelsColumnWidths[2]} />
+        <DenseModelsRow
+          label="Time"
+          value="S|BR|LL|State"
+          color={theme.dim}
+          width={modelsColumnWidths[2]}
+        />
+        {recentRetrainRuns.length ? (
+          recentRetrainRuns.map((row, index) => (
+            <DenseModelsRow
+              key={`${row.finished_at}-${row.status || 'run'}-${index}`}
+              label={formatShortDateTime(row.finished_at)}
+              value={`${formatCount(row.sample_count)}|${formatNumber(row.brier_score, 3)}|${formatNumber(row.log_loss, 3)}|${retrainRunStateCompactLabel(row.status, row.deployed)}`}
+              color={retrainRunStateColor(row.status, row.deployed)}
+              width={modelsColumnWidths[2]}
+            />
+          ))
+        ) : (
+          <Text color={theme.dim}>{fit('No retrain attempts logged yet.', modelsColumnWidths[2])}</Text>
+        )}
+      </InkBox>
+    </InkBox>
   )
 
   return (

@@ -475,6 +475,30 @@ function retrainRunStateLabel(status, deployed) {
         return 'busy';
     return normalized.replace(/_/g, ' ');
 }
+function retrainRunStateCompactLabel(status, deployed) {
+    if (deployed)
+        return 'deploy';
+    const normalized = (status || '').trim().toLowerCase();
+    if (!normalized)
+        return '-';
+    if (normalized === 'completed_not_deployed')
+        return 'no dep';
+    if (normalized === 'skipped_not_enough_samples')
+        return 'skip smp';
+    if (normalized === 'skipped_insufficient_class_diversity')
+        return 'skip div';
+    if (normalized === 'skipped_insufficient_samples_for_holdout_search')
+        return 'skip hld';
+    if (normalized === 'skipped_candidate_search_produced_no_valid_model')
+        return 'skip src';
+    if (normalized.startsWith('skipped_'))
+        return 'skip';
+    if (normalized === 'failed')
+        return 'failed';
+    if (normalized === 'already_running')
+        return 'busy';
+    return normalized.replace(/_/g, ' ');
+}
 function retrainRunStateColor(status, deployed) {
     if (deployed)
         return theme.green;
@@ -647,6 +671,26 @@ function splitIntoColumns(items, columnCount) {
         columns.push(items.slice(index, index + perColumn));
     }
     return columns;
+}
+function denseModelsLabelWidth(width) {
+    const safeWidth = Math.max(18, width);
+    return Math.max(8, Math.min(16, Math.floor(safeWidth * 0.42)));
+}
+function DenseModelsRow({ label, value, width, color = theme.white }) {
+    const safeWidth = Math.max(18, width);
+    const labelWidth = denseModelsLabelWidth(safeWidth);
+    const valueWidth = Math.max(6, safeWidth - labelWidth - 1);
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: theme.dim }, fit(label, labelWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: color }, fitRight(value, valueWidth))));
+}
+function ModelsSectionTitle({ title, width, selected, backgroundColor }) {
+    const prefix = selected ? '> ' : '  ';
+    return (React.createElement(Text, { color: selected ? theme.accent : theme.white, backgroundColor: selected ? backgroundColor : undefined, bold: true }, fit(`${prefix}${title}`, Math.max(1, width))));
+}
+function ModelsSubsectionTitle({ title, width, color = theme.accent }) {
+    return (React.createElement(Text, { color: color, bold: true }, fit(title, Math.max(1, width))));
 }
 export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues }) {
     const terminal = useTerminalSize();
@@ -1051,98 +1095,89 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         priorPull
     ]);
     const scoringMixColumns = useMemo(() => splitIntoColumns(scoringMixStats, 2), [scoringMixStats]);
-    const topRowBoxWidth = stacked ? '100%' : '50%';
-    const confusionMatrixBox = (React.createElement(Box, { width: confusionBoxWidth, accent: clampedSelectedPanelIndex === 2 },
-        React.createElement(InkBox, { width: "100%", flexDirection: "column" },
-            React.createElement(InkBox, null,
-                React.createElement(ConfusionMatrixCell, { label: confusionCells[0].label, value: confusionCells[0].value, width: confusionCellWidth, kind: confusionCells[0].kind, scale: confusionScale }),
-                React.createElement(InkBox, { width: 1 }),
-                React.createElement(ConfusionMatrixCell, { label: confusionCells[1].label, value: confusionCells[1].value, width: confusionCellWidth, kind: confusionCells[1].kind, scale: confusionScale })),
+    const modelsColumnGap = terminal.compact ? 1 : 2;
+    const modelsContentWidth = Math.max(54, terminal.width - 8);
+    const baseModelsColumnWidth = Math.max(18, Math.floor((modelsContentWidth - modelsColumnGap * 2) / 3));
+    const modelsColumnWidths = [
+        baseModelsColumnWidth,
+        baseModelsColumnWidth,
+        Math.max(18, modelsContentWidth - baseModelsColumnWidth * 2 - modelsColumnGap * 2)
+    ];
+    const predictionQualityStats = useMemo(() => [
+        {
+            label: 'Active path',
+            value: latest?.deployed ? 'XGBoost' : 'Heuristic',
+            color: latest?.deployed ? theme.green : theme.yellow
+        },
+        { label: 'Trained', value: latest ? formatShortDateTime(latest.trained_at) : '-' },
+        { label: 'Model age', value: latest ? secondsAgo(latest.trained_at) : '-' },
+        { label: 'Samples', value: formatCount(latest?.n_samples) },
+        { label: 'Features', value: featureCount != null ? formatCount(featureCount) : '-' },
+        {
+            label: 'Brier score',
+            value: formatNumber(latest?.brier_score, 4),
+            color: lowerIsBetterColor(latest?.brier_score, 0.18, 0.25)
+        },
+        {
+            label: 'Log loss',
+            value: formatNumber(latest?.log_loss, 4),
+            color: lowerIsBetterColor(latest?.log_loss, 0.55, 0.69)
+        }
+    ], [featureCount, latest]);
+    const confusionStats = useMemo(() => [
+        { label: 'TP', value: formatCount(confusion?.true_positive), color: theme.green },
+        { label: 'FP', value: formatCount(confusion?.false_positive), color: theme.red },
+        { label: 'TN', value: formatCount(confusion?.true_negative), color: theme.green },
+        { label: 'FN', value: formatCount(confusion?.false_negative), color: theme.red }
+    ], [confusion]);
+    const recentRetrainRuns = useMemo(() => retrainRuns.slice(0, historyLimit), [historyLimit, retrainRuns]);
+    const howItWorksScoreRows = useMemo(() => scoringMixStats.slice(0, 4), [scoringMixStats]);
+    const howItWorksHistoryRows = useMemo(() => scoringMixStats.slice(4), [scoringMixStats]);
+    const renderPageBody = () => (React.createElement(InkBox, { width: "100%" },
+        React.createElement(InkBox, { width: modelsColumnWidths[0], flexDirection: "column" },
+            React.createElement(ModelsSectionTitle, { title: "Prediction Quality", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 0, backgroundColor: selectedRowBackground }),
+            predictionQualityStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0] }))),
             React.createElement(InkBox, { height: 1 }),
-            React.createElement(InkBox, null,
-                React.createElement(ConfusionMatrixCell, { label: confusionCells[2].label, value: confusionCells[2].value, width: confusionCellWidth, kind: confusionCells[2].kind, scale: confusionScale }),
-                React.createElement(InkBox, { width: 1 }),
-                React.createElement(ConfusionMatrixCell, { label: confusionCells[3].label, value: confusionCells[3].value, width: confusionCellWidth, kind: confusionCells[3].kind, scale: confusionScale })))));
-    const renderPageBody = () => (React.createElement(React.Fragment, null,
-        React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
-            React.createElement(Box, { title: "Prediction Quality", width: topRowBoxWidth, accent: clampedSelectedPanelIndex === 0 },
-                React.createElement(StatRow, { label: "Active path", value: latest?.deployed ? 'XGBoost' : 'Heuristic', color: latest?.deployed ? theme.green : theme.yellow }),
-                React.createElement(StatRow, { label: "Trained", value: latest ? formatShortDateTime(latest.trained_at) : '-' }),
-                React.createElement(StatRow, { label: "Model age", value: latest ? secondsAgo(latest.trained_at) : '-' }),
-                React.createElement(StatRow, { label: "Samples", value: formatCount(latest?.n_samples) }),
-                React.createElement(StatRow, { label: "Features", value: featureCount != null ? formatCount(featureCount) : '-' }),
-                React.createElement(StatRow, { label: "Brier score", value: formatNumber(latest?.brier_score, 4), color: lowerIsBetterColor(latest?.brier_score, 0.18, 0.25) }),
-                React.createElement(StatRow, { label: "Log loss", value: formatNumber(latest?.log_loss, 4), color: lowerIsBetterColor(latest?.log_loss, 0.55, 0.69) })),
-            !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(Box, { title: "Tracker Health", width: topRowBoxWidth, accent: clampedSelectedPanelIndex === 1 },
-                React.createElement(InkBox, { width: "100%" }, trackerHealthColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `tracker-health-column-${columnIndex}` },
-                    React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, column.map((item) => (React.createElement(StatRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white })))),
-                    columnIndex < trackerHealthColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))))),
-        React.createElement(InkBox, { marginTop: 1, flexDirection: secondaryThreeAcross ? 'row' : 'column', width: "100%" },
-            secondaryThreeAcross ? confusionMatrixBox : React.createElement(InkBox, { width: "100%", justifyContent: "center" }, confusionMatrixBox),
-            secondaryThreeAcross ? React.createElement(InkBox, { width: secondaryRowGap }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(InkBox, { width: secondaryThreeAcross ? 0 : '100%', flexGrow: 1 },
-                React.createElement(Box, { title: "Confidence + Modes", width: "100%", accent: clampedSelectedPanelIndex === 3 },
-                    React.createElement(InkBox, { width: "100%", flexDirection: combinedPanelsWide ? 'row' : 'column' },
-                        React.createElement(InkBox, { flexDirection: "column", width: combinedPanelsWide ? confidenceSectionContentWidth : '100%', flexGrow: combinedPanelsWide ? 1 : 0 },
-                            React.createElement(Text, { color: theme.accent, bold: true }, "Calibration Read"),
-                            React.createElement(InkBox, { width: "100%" }, confidenceCheckColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `confidence-column-${columnIndex}` },
-                                React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, column.map((item) => (React.createElement(StatRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white })))),
-                                columnIndex < confidenceCheckColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null))))),
-                        combinedPanelsWide ? React.createElement(InkBox, { width: combinedSectionGap }) : React.createElement(InkBox, { height: 1 }),
-                        React.createElement(InkBox, { flexDirection: "column", width: combinedPanelsWide ? signalModesSectionContentWidth : '100%', flexGrow: combinedPanelsWide ? 1 : 0 },
-                            React.createElement(Text, { color: theme.accent, bold: true }, "Decision Paths"),
-                            React.createElement(StatRow, { label: "Active scorer", value: activeScorerLabel, color: latest?.deployed ? theme.green : theme.yellow }),
-                            React.createElement(StatRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim }),
-                            signalModeCards.length ? (React.createElement(InkBox, { width: "100%" }, signalModeCardColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `signal-mode-column-${columnIndex}` },
-                                React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, column.map((card, rowIndex) => {
-                                    return (React.createElement(InkBox, { key: card.title, flexDirection: "column" },
-                                        React.createElement(Text, { color: card.titleColor ?? theme.white, bold: true }, card.title),
-                                        card.rows.map((item) => (React.createElement(StatRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white }))),
-                                        rowIndex < column.length - 1 ? React.createElement(InkBox, { height: 1 }) : null));
-                                })),
-                                columnIndex < signalModeCardColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null))))) : (React.createElement(Text, { color: theme.dim }, "No tracker signals yet."))))))),
-        React.createElement(InkBox, { marginTop: 1, flexDirection: stacked ? 'column' : 'row' },
-            React.createElement(Box, { title: "How It Works", width: stacked ? '100%' : '50%', accent: clampedSelectedPanelIndex === 4 },
-                React.createElement(InkBox, { width: "100%" },
-                    React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 },
-                        React.createElement(Text, { color: theme.accent, bold: true }, "Score Build"),
-                        scoringMixColumns[0]?.map((item) => (React.createElement(StatRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white })))),
-                    React.createElement(InkBox, { width: 2 }),
-                    React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 },
-                        React.createElement(Text, { color: theme.accent, bold: true }, "History Nudge"),
-                        scoringMixColumns[1]?.map((item) => (React.createElement(StatRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white })))))),
-            !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(Box, { title: "Training Cycle", width: stacked ? '100%' : '50%', accent: clampedSelectedPanelIndex === 5 },
-                React.createElement(InkBox, { width: "100%" }, trainingCycleColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `training-cycle-column-${columnIndex}` },
-                    React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, column.map((item) => (React.createElement(StatRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white })))),
-                    columnIndex < trainingCycleColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
-                latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(InkBox, { width: "100%", marginTop: 1, flexDirection: "column" },
-                    React.createElement(Text, { color: theme.accent, bold: true }, "Latest Shared Holdout Gate"),
-                    React.createElement(StatRow, { label: "Run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at) }),
-                    React.createElement(StatRow, { label: "Challenger", value: `LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}` }),
-                    React.createElement(StatRow, { label: "Incumbent", value: `LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}` }),
-                    React.createElement(StatRow, { label: "Gate read", value: sharedHoldoutGateRead(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun) }))) : null,
-                React.createElement(InkBox, { width: "100%", marginTop: 1 },
-                    React.createElement(Text, { color: theme.dim }, fit('TIME', retrainWidths.timeWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: theme.dim }, fitRight('SAMPLES', retrainWidths.sampleWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: theme.dim }, fitRight('BRIER', retrainWidths.brierWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: theme.dim }, fitRight('LL', retrainWidths.lossWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: theme.dim }, fitRight('STATE', retrainWidths.stateWidth))),
-                retrainRuns.length ? (retrainRuns.slice(0, historyLimit).map((row, index) => (React.createElement(InkBox, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, width: "100%" },
-                    React.createElement(Text, { color: theme.white }, fit(formatShortDateTime(row.finished_at), retrainWidths.timeWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: theme.white }, fitRight(formatCount(row.sample_count), retrainWidths.sampleWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: row.brier_score == null ? theme.dim : lowerIsBetterColor(row.brier_score, 0.18, 0.25) }, fitRight(formatNumber(row.brier_score, 4), retrainWidths.brierWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: row.log_loss == null ? theme.dim : lowerIsBetterColor(row.log_loss, 0.55, 0.69) }, fitRight(formatNumber(row.log_loss, 4), retrainWidths.lossWidth)),
-                    React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: retrainRunStateColor(row.status, row.deployed) }, fitRight(retrainRunStateLabel(row.status, row.deployed), retrainWidths.stateWidth)))))) : (React.createElement(Text, { color: theme.dim }, "No retrain attempts logged yet."))))));
+            React.createElement(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
+            trackerHealthStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0] })))),
+        React.createElement(InkBox, { width: modelsColumnGap }),
+        React.createElement(InkBox, { width: modelsColumnWidths[1], flexDirection: "column" },
+            React.createElement(ModelsSectionTitle, { title: "Confusion Matrix", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
+            confusionStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1] }))),
+            React.createElement(InkBox, { height: 1 }),
+            React.createElement(ModelsSectionTitle, { title: "Confidence + Modes", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
+            React.createElement(ModelsSubsectionTitle, { title: "Calibration Read", width: modelsColumnWidths[1] }),
+            confidenceCheckStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1] }))),
+            React.createElement(InkBox, { height: 1 }),
+            React.createElement(ModelsSubsectionTitle, { title: "Decision Paths", width: modelsColumnWidths[1] }),
+            React.createElement(DenseModelsRow, { label: "Active scorer", value: activeScorerLabel, color: latest?.deployed ? theme.green : theme.yellow, width: modelsColumnWidths[1] }),
+            React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[1] }),
+            signalModeCards.length ? (signalModeCards.map((card, index) => (React.createElement(React.Fragment, { key: card.title },
+                React.createElement(InkBox, { height: index === 0 ? 0 : 1 }),
+                React.createElement(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[1], color: card.titleColor ?? theme.white }),
+                card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1] }))))))) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1])))),
+        React.createElement(InkBox, { width: modelsColumnGap }),
+        React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
+            React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
+            React.createElement(ModelsSubsectionTitle, { title: "Score Build", width: modelsColumnWidths[2] }),
+            howItWorksScoreRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2] }))),
+            React.createElement(InkBox, { height: 1 }),
+            React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[2] }),
+            howItWorksHistoryRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2] }))),
+            React.createElement(InkBox, { height: 1 }),
+            React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),
+            trainingCycleStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2] }))),
+            latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(React.Fragment, null,
+                React.createElement(InkBox, { height: 1 }),
+                React.createElement(ModelsSubsectionTitle, { title: "Latest Shared Holdout Gate", width: modelsColumnWidths[2] }),
+                React.createElement(DenseModelsRow, { label: "Run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at), width: modelsColumnWidths[2] }),
+                React.createElement(DenseModelsRow, { label: "Challenger", value: `LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}`, width: modelsColumnWidths[2] }),
+                React.createElement(DenseModelsRow, { label: "Incumbent", value: `LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`, width: modelsColumnWidths[2] }),
+                React.createElement(DenseModelsRow, { label: "Gate read", value: sharedHoldoutGateRead(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun), width: modelsColumnWidths[2] }))) : null,
+            React.createElement(InkBox, { height: 1 }),
+            React.createElement(ModelsSubsectionTitle, { title: "Recent Runs", width: modelsColumnWidths[2] }),
+            React.createElement(DenseModelsRow, { label: "Time", value: "S|BR|LL|State", color: theme.dim, width: modelsColumnWidths[2] }),
+            recentRetrainRuns.length ? (recentRetrainRuns.map((row, index) => (React.createElement(DenseModelsRow, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, label: formatShortDateTime(row.finished_at), value: `${formatCount(row.sample_count)}|${formatNumber(row.brier_score, 3)}|${formatNumber(row.log_loss, 3)}|${retrainRunStateCompactLabel(row.status, row.deployed)}`, color: retrainRunStateColor(row.status, row.deployed), width: modelsColumnWidths[2] })))) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[2]))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         renderPageBody(),
         detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },

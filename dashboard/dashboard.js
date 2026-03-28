@@ -415,7 +415,7 @@ function App() {
     const moveModelSelection = (direction) => {
         const panelCount = MODEL_PANEL_DEFS.length;
         const width = process.stdout.columns || 120;
-        const columns = stackPanels(width) ? 1 : 2;
+        const columns = stackPanels(width) ? 1 : 3;
         setModelSelectionIndex((current) => {
             if (panelCount <= 1) {
                 return 0;
@@ -427,19 +427,46 @@ function App() {
                 return (current + 1) % panelCount;
             }
             const rowCount = Math.ceil(panelCount / columns);
-            const row = Math.floor(current / columns);
-            const column = current % columns;
-            if (direction === 'left') {
-                const target = row * columns + ((column - 1 + columns) % columns);
-                return target >= panelCount ? current : target;
+            const grid = Array.from({ length: rowCount }, () => Array(columns).fill(-1));
+            let nextIndex = 0;
+            for (let column = 0; column < columns; column += 1) {
+                for (let row = 0; row < rowCount; row += 1) {
+                    if (nextIndex < panelCount) {
+                        grid[row][column] = nextIndex;
+                        nextIndex += 1;
+                    }
+                }
             }
-            if (direction === 'right') {
-                const target = row * columns + ((column + 1) % columns);
-                return target >= panelCount ? current : target;
+            let row = 0;
+            let column = 0;
+            for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+                const columnIndex = grid[rowIndex].indexOf(current);
+                if (columnIndex >= 0) {
+                    row = rowIndex;
+                    column = columnIndex;
+                    break;
+                }
             }
-            const nextRow = direction === 'up' ? (row - 1 + rowCount) % rowCount : (row + 1) % rowCount;
-            const target = nextRow * columns + column;
-            return target >= panelCount ? panelCount - 1 : target;
+            if (direction === 'left' || direction === 'right') {
+                const delta = direction === 'left' ? -1 : 1;
+                for (let step = 1; step <= columns; step += 1) {
+                    const candidateColumn = (column + delta * step + columns) % columns;
+                    const candidate = grid[row][candidateColumn];
+                    if (candidate >= 0) {
+                        return candidate;
+                    }
+                }
+                return current;
+            }
+            const delta = direction === 'up' ? -1 : 1;
+            for (let step = 1; step <= rowCount; step += 1) {
+                const candidateRow = (row + delta * step + rowCount) % rowCount;
+                const candidate = grid[candidateRow][column];
+                if (candidate >= 0) {
+                    return candidate;
+                }
+            }
+            return current;
         });
         setModelSettingSelectionIndex(0);
     };

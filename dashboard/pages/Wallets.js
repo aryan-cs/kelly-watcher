@@ -136,18 +136,15 @@ function shadowWalletPnl(row) {
     const pnl = Number(row.pnl ?? 0);
     return Number.isFinite(pnl) ? pnl : 0;
 }
-function pickShadowLeaderboards(rows, limit = 5) {
-    const sortedByBest = [...rows]
+function pickShadowLeaderboards(rows) {
+    const best = [...rows]
         .filter((row) => shadowWalletPnl(row) >= 0)
         .sort((left, right) => shadowWalletPnl(right) - shadowWalletPnl(left) ||
         String(left.trader_address || '').localeCompare(String(right.trader_address || '')));
-    const best = sortedByBest.slice(0, limit);
-    const bestWallets = new Set(best.map((row) => row.trader_address.trim().toLowerCase()));
     const worst = [...rows]
-        .filter((row) => !bestWallets.has(row.trader_address.trim().toLowerCase()))
+        .filter((row) => shadowWalletPnl(row) <= 0)
         .sort((left, right) => shadowWalletPnl(left) - shadowWalletPnl(right) ||
-        String(left.trader_address || '').localeCompare(String(right.trader_address || '')))
-        .slice(0, limit);
+        String(left.trader_address || '').localeCompare(String(right.trader_address || '')));
     return { best, worst };
 }
 function readWatchConfig(envValues) {
@@ -650,10 +647,11 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
     const shadowPanelsWide = terminal.wide;
     const shadowPanelWidth = shadowPanelsWide ? Math.max(44, Math.floor((tableWidth - 1) / 2)) : tableWidth;
     const shadowPanelContentWidth = Math.max(24, shadowPanelWidth - 4);
+    const shadowRankWidth = Math.max(1, Math.min(4, Math.max(String(Math.max(bestShadowWallets.length, worstShadowWallets.length, 1)).length, 1)));
     const shadowCopyWrWidth = 10;
     const shadowSkipWidth = 6;
     const shadowCopyPnlWidth = 10;
-    const shadowNameWidth = Math.max(10, shadowPanelContentWidth - shadowCopyWrWidth - shadowSkipWidth - shadowCopyPnlWidth - 3);
+    const shadowNameWidth = Math.max(8, shadowPanelContentWidth - shadowRankWidth - shadowCopyWrWidth - shadowSkipWidth - shadowCopyPnlWidth - 4);
     const maxAbsShadowPnl = useMemo(() => shadowWalletRows.reduce((max, wallet) => Math.max(max, Math.abs(wallet.pnl || 0)), 0), [shadowWalletRows]);
     const maxAbsLocalPnl = useMemo(() => wallets.reduce((max, wallet) => Math.max(max, Math.abs(wallet.local_pnl || 0)), 0), [wallets]);
     const maxAbsRealizedPnl = useMemo(() => wallets.reduce((max, wallet) => Math.max(max, Math.abs(wallet.realized_pnl_usd || 0)), 0), [wallets]);
@@ -886,12 +884,19 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
     }), [detailColumns, detailColumnWidth, detailLabelWidth, detailValueWidth]);
     const detailLineCount = useMemo(() => detailColumnLines.reduce((max, column) => Math.max(max, column.length), 0), [detailColumnLines]);
     const renderShadowWalletBox = (title, pane, shadowWallets) => {
-        const paddedRows = Array.from({ length: shadowLeaderboardRows }, (_, index) => shadowWallets[index] ?? null);
         const activeShadowAddress = pane === 'best' ? selectedBestWalletAddress : selectedWorstWalletAddress;
+        const activeShadowIndex = pane === 'best' ? clampedBestSelectedIndex : clampedWorstSelectedIndex;
         const boxIsSelected = activePane === pane;
+        const shadowWindowStart = shadowWallets.length > shadowLeaderboardRows
+            ? Math.min(Math.max(activeShadowIndex - Math.floor(shadowLeaderboardRows / 2), 0), Math.max(0, shadowWallets.length - shadowLeaderboardRows))
+            : 0;
+        const visibleShadowWallets = shadowWallets.slice(shadowWindowStart, shadowWindowStart + shadowLeaderboardRows);
+        const paddedRows = Array.from({ length: shadowLeaderboardRows }, (_, index) => visibleShadowWallets[index] ?? null);
         return (React.createElement(InkBox, { width: shadowPanelsWide ? undefined : '100%', flexGrow: shadowPanelsWide ? 1 : 0, flexBasis: shadowPanelsWide ? 0 : undefined },
             React.createElement(Box, { title: title, width: "100%", height: shadowPanelHeight, accent: boxIsSelected },
                 React.createElement(InkBox, { width: "100%" },
+                    React.createElement(Text, { color: theme.dim }, fitRight('#', shadowRankWidth)),
+                    React.createElement(Text, { color: theme.dim }, " "),
                     React.createElement(Text, { color: theme.dim }, fit('WALLET', shadowNameWidth)),
                     React.createElement(Text, { color: theme.dim }, " "),
                     React.createElement(Text, { color: theme.dim }, fitRight('COPY WR%', shadowCopyWrWidth)),
@@ -902,6 +907,8 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                 React.createElement(InkBox, { flexDirection: "column" }, shadowWallets.length ? (paddedRows.map((wallet, index) => {
                     if (!wallet) {
                         return (React.createElement(InkBox, { key: `${title}-empty-${index}`, width: "100%" },
+                            React.createElement(Text, { color: theme.dim }, fitRight('', shadowRankWidth)),
+                            React.createElement(Text, null, " "),
                             React.createElement(Text, { color: theme.dim }, fit('', shadowNameWidth)),
                             React.createElement(Text, null, " "),
                             React.createElement(Text, { color: theme.dim }, fitRight('', shadowCopyWrWidth)),
@@ -921,12 +928,15 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                     const pnlColor = wallet.pnl == null
                         ? theme.dim
                         : centeredGradientColor(wallet.pnl, maxAbsShadowPnl);
+                    const rank = shadowWindowStart + index + 1;
                     return (React.createElement(InkBox, { key: `${title}-${wallet.trader_address}`, width: "100%" }, (() => {
                         const isSelected = boxIsSelected && wallet.trader_address.toLowerCase() === activeShadowAddress;
                         const rowBackground = isSelected ? selectedRowBackground : undefined;
                         const displayLabel = `${isSelected ? '> ' : '  '}${label}`;
                         const linkedLabel = terminalHyperlink(fit(displayLabel, shadowNameWidth), username ? walletProfileUrl({ trader_address: wallet.trader_address, username }) : null);
                         return (React.createElement(React.Fragment, null,
+                            React.createElement(Text, { color: isSelected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(String(rank), shadowRankWidth)),
+                            React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: isSelected
                                     ? theme.accent
                                     : isDroppedWallet

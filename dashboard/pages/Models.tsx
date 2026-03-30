@@ -7,7 +7,7 @@ import {editableConfigFields, formatEditableConfigValue, type EditableConfigValu
 import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil} from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
-import {centeredGradientColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
+import {centeredGradientColor, negativeHeatColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
 import {useBotState} from '../useBotState.js'
 import {useQuery} from '../useDb.js'
 
@@ -244,6 +244,12 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
         ],
         settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS', 'RETRAIN_MIN_SAMPLES']
   }
+]
+
+export const MODEL_PANEL_COLUMN_LAYOUT: number[][] = [
+  [0, 1],
+  [2],
+  [3, 4]
 ]
 
 interface ModelsProps {
@@ -690,6 +696,10 @@ function sharedHoldoutGateRead(row: RetrainRunRow | null | undefined): string {
   return outcomes.join(', ')
 }
 
+function sharedHoldoutGateReadCompact(row: RetrainRunRow | null | undefined): string {
+  return sharedHoldoutGateRead(row).replace(', ', ' / ')
+}
+
 function sharedHoldoutGateReadColor(row: RetrainRunRow | null | undefined): string {
   const comparison = sharedHoldoutComparison(row)
   if (!comparison) return theme.dim
@@ -796,6 +806,13 @@ function modeLabel(mode: string): string {
   return mode || 'Unknown'
 }
 
+function trainingCycleDisplayLabel(label: string): string {
+  if (label === 'Next scheduled') return 'Next run'
+  if (label === 'Scheduled in') return 'Starts in'
+  if (label === 'Trigger progress') return 'Progress'
+  return label
+}
+
 function splitIntoColumns<T>(items: T[], columnCount: number): T[][] {
   if (columnCount <= 1 || items.length <= 1) {
     return [items]
@@ -816,6 +833,9 @@ interface DenseModelsRowProps {
   color?: string
   selected?: boolean
   backgroundColor?: string
+  labelWidth?: number
+  minValueWidth?: number
+  valueAlign?: 'left' | 'right'
 }
 
 function denseModelsLabelWidth(width: number): number {
@@ -829,21 +849,30 @@ function DenseModelsRow({
   width,
   color = theme.white,
   selected = false,
-  backgroundColor
+  backgroundColor,
+  labelWidth,
+  minValueWidth = 6,
+  valueAlign = 'right'
 }: DenseModelsRowProps) {
   const safeWidth = Math.max(18, width)
-  const labelWidth = denseModelsLabelWidth(safeWidth)
-  const valueWidth = Math.max(6, safeWidth - labelWidth - 1)
+  const boundedLabelWidth = Math.max(
+    6,
+    Math.min(
+      Math.max(6, safeWidth - Math.max(6, minValueWidth) - 1),
+      labelWidth ?? denseModelsLabelWidth(safeWidth)
+    )
+  )
+  const valueWidth = Math.max(Math.max(6, minValueWidth), safeWidth - boundedLabelWidth - 1)
   const rowBackground = selected ? backgroundColor : undefined
 
   return (
     <InkBox width={safeWidth}>
       <Text color={selected ? theme.accent : theme.dim} backgroundColor={rowBackground} bold={selected}>
-        {fit(label, labelWidth)}
+        {fit(label, boundedLabelWidth)}
       </Text>
       <Text backgroundColor={rowBackground}> </Text>
       <Text color={color} backgroundColor={rowBackground} bold={selected}>
-        {fitRight(value, valueWidth)}
+        {valueAlign === 'left' ? fit(value, valueWidth) : fitRight(value, valueWidth)}
       </Text>
     </InkBox>
   )
@@ -873,10 +902,10 @@ function InlineStatsRow({
 }
 
 function recentRunsColumnWidths(width: number) {
-  const safeWidth = Math.max(36, width)
+  const safeWidth = Math.max(38, width)
   const logLossWidth = 8
   const brierWidth = 7
-  const resultWidth = 10
+  const resultWidth = 8
   const timestampWidth = Math.max(8, safeWidth - logLossWidth - brierWidth - resultWidth - 3)
   return {safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth}
 }
@@ -931,6 +960,54 @@ function RecentRunsDataRow({
   )
 }
 
+function sharedHoldoutColumnWidths(width: number) {
+  const safeWidth = Math.max(34, width)
+  const challengerWidth = 7
+  const incumbentWidth = 7
+  const metricWidth = Math.max(8, safeWidth - challengerWidth - incumbentWidth - 2)
+  return {safeWidth, metricWidth, challengerWidth, incumbentWidth}
+}
+
+function SharedHoldoutHeaderRow({width}: {width: number}) {
+  const {safeWidth, metricWidth, challengerWidth, incumbentWidth} = sharedHoldoutColumnWidths(width)
+  return (
+    <InkBox width={safeWidth}>
+      <Text color={theme.accent} bold>{fit('Metric', metricWidth)}</Text>
+      <Text> </Text>
+      <Text color={theme.accent} bold>{fitRight('Chal.', challengerWidth)}</Text>
+      <Text> </Text>
+      <Text color={theme.accent} bold>{fitRight('Inc.', incumbentWidth)}</Text>
+    </InkBox>
+  )
+}
+
+function SharedHoldoutMetricRow({
+  width,
+  label,
+  challenger,
+  challengerColor,
+  incumbent,
+  incumbentColor
+}: {
+  width: number
+  label: string
+  challenger: string
+  challengerColor: string
+  incumbent: string
+  incumbentColor: string
+}) {
+  const {safeWidth, metricWidth, challengerWidth, incumbentWidth} = sharedHoldoutColumnWidths(width)
+  return (
+    <InkBox width={safeWidth}>
+      <Text color={theme.dim}>{fit(label, metricWidth)}</Text>
+      <Text> </Text>
+      <Text color={challengerColor}>{fitRight(challenger, challengerWidth)}</Text>
+      <Text> </Text>
+      <Text color={incumbentColor}>{fitRight(incumbent, incumbentWidth)}</Text>
+    </InkBox>
+  )
+}
+
 function ModelsSectionTitle({
   title,
   width,
@@ -962,6 +1039,10 @@ function ModelsSubsectionTitle({title, width, color = theme.accent}: {title: str
       {fit(title.trimStart(), safeWidth)}
     </Text>
   )
+}
+
+function ModelsSpacer() {
+  return <Text> </Text>
 }
 
 export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues}: ModelsProps) {
@@ -1238,6 +1319,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => splitIntoColumns(trainingCycleStats, 2),
     [trainingCycleStats]
   )
+  const trainingCycleDisplayStats = useMemo<CompactStatItem[]>(
+    () =>
+      trainingCycleStats.map((item) => ({
+        ...item,
+        label: trainingCycleDisplayLabel(item.label)
+      })),
+    [trainingCycleStats]
+  )
   const confusionCells = useMemo(
     () => [
       {label: 'TP', value: Math.max(0, Number(confusion?.true_positive || 0)), kind: 'good' as const},
@@ -1462,11 +1551,13 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   )
   const modelsColumnGap = terminal.compact ? 1 : 2
   const modelsContentWidth = Math.max(54, terminal.width - 8)
-  const baseModelsColumnWidth = Math.max(18, Math.floor((modelsContentWidth - modelsColumnGap * 2) / 3))
+  const modelsUsableWidth = Math.max(18, modelsContentWidth - modelsColumnGap * 2)
+  const leftModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.28))
+  const middleModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.30))
   const modelsColumnWidths: [number, number, number] = [
-    baseModelsColumnWidth,
-    baseModelsColumnWidth,
-    Math.max(18, modelsContentWidth - baseModelsColumnWidth * 2 - modelsColumnGap * 2)
+    leftModelsColumnWidth,
+    middleModelsColumnWidth,
+    Math.max(18, modelsUsableWidth - leftModelsColumnWidth - middleModelsColumnWidth)
   ]
   const predictionQualityStats = useMemo<CompactStatItem[]>(
     () => [
@@ -1495,12 +1586,24 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const confusionSummaryItems = useMemo(
     () =>
       [
-        {text: `${formatCount(confusion?.true_positive)} TP`, color: theme.green},
-        {text: `${formatCount(confusion?.false_positive)} FP`, color: theme.red},
-        {text: `${formatCount(confusion?.true_negative)} TN`, color: theme.green},
-        {text: `${formatCount(confusion?.false_negative)} FN`, color: theme.red}
+        {
+          text: `${formatCount(confusion?.true_positive)} TP`,
+          color: confusionHeatColor(Math.max(0, Number(confusion?.true_positive || 0)), confusionScale, 'good')
+        },
+        {
+          text: `${formatCount(confusion?.false_positive)} FP`,
+          color: confusionHeatColor(Math.max(0, Number(confusion?.false_positive || 0)), confusionScale, 'bad')
+        },
+        {
+          text: `${formatCount(confusion?.true_negative)} TN`,
+          color: confusionHeatColor(Math.max(0, Number(confusion?.true_negative || 0)), confusionScale, 'good')
+        },
+        {
+          text: `${formatCount(confusion?.false_negative)} FN`,
+          color: confusionHeatColor(Math.max(0, Number(confusion?.false_negative || 0)), confusionScale, 'bad')
+        }
       ],
-    [confusion]
+    [confusion, confusionScale]
   )
   const recentRetrainRuns = useMemo(
     () => retrainRuns.slice(0, historyLimit),
@@ -1531,9 +1634,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={item.value}
             color={item.color ?? theme.white}
             width={modelsColumnWidths[0]}
+            labelWidth={14}
           />
         ))}
-        <Text> </Text>
+        <ModelsSpacer />
         <ModelsSectionTitle
           title="Tracker Health"
           width={modelsColumnWidths[0]}
@@ -1547,6 +1651,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={item.value}
             color={item.color ?? theme.white}
             width={modelsColumnWidths[0]}
+            labelWidth={14}
           />
         ))}
       </InkBox>
@@ -1561,7 +1666,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           backgroundColor={selectedRowBackground}
         />
         <InlineStatsRow width={modelsColumnWidths[1]} items={confusionSummaryItems} />
-        <Text> </Text>
+        <ModelsSpacer />
         <ModelsSubsectionTitle title="Calibration" width={modelsColumnWidths[1]} />
         {confidenceCheckStats.map((item) => (
           <DenseModelsRow
@@ -1570,26 +1675,29 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={item.value}
             color={item.color ?? theme.white}
             width={modelsColumnWidths[1]}
+            labelWidth={12}
           />
         ))}
-        <Text> </Text>
+        <ModelsSpacer />
         <ModelsSubsectionTitle title="Decision Paths" width={modelsColumnWidths[1]} />
         <DenseModelsRow
           label="Active scorer"
           value={activeScorerLabel}
           color={latest?.deployed ? theme.green : theme.yellow}
           width={modelsColumnWidths[1]}
+          labelWidth={12}
         />
         <DenseModelsRow
           label="Primary path"
           value={primaryMode ? modeLabel(primaryMode) : '-'}
           color={primaryMode ? theme.accent : theme.dim}
           width={modelsColumnWidths[1]}
+          labelWidth={12}
         />
         {signalModeCards.length ? (
           signalModeCards.map((card, index) => (
             <React.Fragment key={card.title}>
-              <Text> </Text>
+              <ModelsSpacer />
               <ModelsSubsectionTitle
                 title={card.title}
                 width={modelsColumnWidths[1]}
@@ -1602,6 +1710,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                   value={item.value}
                   color={item.color ?? theme.white}
                   width={modelsColumnWidths[1]}
+                  labelWidth={12}
                 />
               ))}
             </React.Fragment>
@@ -1620,7 +1729,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           selected={clampedSelectedPanelIndex === 3}
           backgroundColor={selectedRowBackground}
         />
-        <Text> </Text>
+        <ModelsSpacer />
         <ModelsSubsectionTitle title="Score Build" width={modelsColumnWidths[2]} />
         {howItWorksScoreRows.map((item) => (
           <DenseModelsRow
@@ -1629,9 +1738,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={item.value}
             color={item.color ?? theme.white}
             width={modelsColumnWidths[2]}
+            labelWidth={13}
           />
         ))}
-        <Text> </Text>
+        <ModelsSpacer />
         <ModelsSubsectionTitle title="History Nudge" width={modelsColumnWidths[2]} />
         {howItWorksHistoryRows.map((item) => (
           <DenseModelsRow
@@ -1640,16 +1750,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={item.value}
             color={item.color ?? theme.white}
             width={modelsColumnWidths[2]}
+            labelWidth={13}
           />
         ))}
-        <Text> </Text>
+        <ModelsSpacer />
         <ModelsSectionTitle
           title="Training Cycle"
           width={modelsColumnWidths[2]}
           selected={clampedSelectedPanelIndex === 4}
           backgroundColor={selectedRowBackground}
         />
-        {trainingCycleStats.map((item) => (
+        {trainingCycleDisplayStats.map((item) => (
           <DenseModelsRow
             key={item.label}
             label={item.label}
@@ -1658,37 +1769,51 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             selected={clampedSelectedPanelIndex === 4 && item.label === 'Manual run'}
             backgroundColor={selectedRowBackground}
             width={modelsColumnWidths[2]}
+            labelWidth={11}
+            minValueWidth={16}
           />
         ))}
 
         {latestSharedHoldoutRun && latestSharedHoldout ? (
           <>
-            <Text> </Text>
+            <ModelsSpacer />
             <ModelsSubsectionTitle title="Latest Shared Holdout Gate" width={modelsColumnWidths[2]} />
             <DenseModelsRow
               label="Run"
               value={formatShortDateTime(latestSharedHoldoutRun.finished_at)}
               width={modelsColumnWidths[2]}
+              labelWidth={11}
+              minValueWidth={16}
             />
-            <DenseModelsRow
-              label="Challenger"
-              value={`LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}`}
+            <SharedHoldoutHeaderRow width={modelsColumnWidths[2]} />
+            <SharedHoldoutMetricRow
+              label="Log loss"
+              challenger={formatNumber(latestSharedHoldout.challenger_log_loss, 4)}
+              challengerColor={lowerIsBetterColor(latestSharedHoldout.challenger_log_loss, 0.55, 0.69)}
+              incumbent={formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}
+              incumbentColor={lowerIsBetterColor(latestSharedHoldout.incumbent_log_loss, 0.55, 0.69)}
               width={modelsColumnWidths[2]}
             />
-            <DenseModelsRow
-              label="Incumbent"
-              value={`LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`}
+            <SharedHoldoutMetricRow
+              label="Brier"
+              challenger={formatNumber(latestSharedHoldout.challenger_brier_score, 4)}
+              challengerColor={lowerIsBetterColor(latestSharedHoldout.challenger_brier_score, 0.18, 0.25)}
+              incumbent={formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}
+              incumbentColor={lowerIsBetterColor(latestSharedHoldout.incumbent_brier_score, 0.18, 0.25)}
               width={modelsColumnWidths[2]}
             />
             <DenseModelsRow
               label="Gate read"
-              value={sharedHoldoutGateRead(latestSharedHoldoutRun)}
+              value={sharedHoldoutGateReadCompact(latestSharedHoldoutRun)}
               color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
               width={modelsColumnWidths[2]}
+              labelWidth={11}
+              minValueWidth={16}
+              valueAlign="left"
             />
           </>
         ) : null}
-        <Text> </Text>
+        <ModelsSpacer />
         <RecentRunsHeaderRow width={modelsColumnWidths[2]} />
         {recentRetrainRuns.length ? (
           recentRetrainRuns.map((row, index) => (

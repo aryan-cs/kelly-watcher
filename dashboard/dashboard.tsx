@@ -10,7 +10,7 @@ import {
   validateEditableConfigValue,
   writeEditableConfigValue
 } from './configEditor.js'
-import {MODEL_PANEL_DEFS, Models} from './pages/Models.js'
+import {MODEL_PANEL_COLUMN_LAYOUT, MODEL_PANEL_DEFS, Models} from './pages/Models.js'
 import {requestManualRetrain} from './retrainControl.js'
 import {stackPanels} from './responsive.js'
 import {dangerActions, restartShadowAccount, setLiveTradingEnabled, type RestartShadowWalletMode} from './settingsDanger.js'
@@ -709,18 +709,13 @@ function App() {
         return (current + 1) % panelCount
       }
 
-      const rowCount = Math.ceil(panelCount / columns)
-      const grid = Array.from({length: rowCount}, () => Array<number>(columns).fill(-1))
-      let nextIndex = 0
-
-      for (let column = 0; column < columns; column += 1) {
-        for (let row = 0; row < rowCount; row += 1) {
-          if (nextIndex < panelCount) {
-            grid[row][column] = nextIndex
-            nextIndex += 1
-          }
-        }
-      }
+      const layoutColumns = MODEL_PANEL_COLUMN_LAYOUT.map((column) =>
+        column.filter((index) => index >= 0 && index < panelCount)
+      )
+      const rowCount = Math.max(1, ...layoutColumns.map((column) => column.length))
+      const grid = Array.from({length: rowCount}, (_, row) =>
+        Array.from({length: columns}, (_, column) => layoutColumns[column]?.[row] ?? -1)
+      )
 
       let row = 0
       let column = 0

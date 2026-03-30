@@ -7,7 +7,7 @@ import { editableConfigFields, formatEditableConfigValue } from '../configEditor
 import { fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil } from '../format.js';
 import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
-import { centeredGradientColor, probabilityColor, selectionBackgroundColor, theme } from '../theme.js';
+import { centeredGradientColor, negativeHeatColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme } from '../theme.js';
 import { useBotState } from '../useBotState.js';
 import { useQuery } from '../useDb.js';
 function isDefined(value) {
@@ -121,6 +121,11 @@ export const MODEL_PANEL_DEFS = [
         ],
         settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS', 'RETRAIN_MIN_SAMPLES']
     }
+];
+export const MODEL_PANEL_COLUMN_LAYOUT = [
+    [0, 1],
+    [2],
+    [3, 4]
 ];
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
@@ -528,6 +533,9 @@ function sharedHoldoutGateRead(row) {
     ];
     return outcomes.join(', ');
 }
+function sharedHoldoutGateReadCompact(row) {
+    return sharedHoldoutGateRead(row).replace(', ', ' / ');
+}
 function sharedHoldoutGateReadColor(row) {
     const comparison = sharedHoldoutComparison(row);
     if (!comparison)
@@ -630,6 +638,15 @@ function modeLabel(mode) {
         return 'Live';
     return mode || 'Unknown';
 }
+function trainingCycleDisplayLabel(label) {
+    if (label === 'Next scheduled')
+        return 'Next run';
+    if (label === 'Scheduled in')
+        return 'Starts in';
+    if (label === 'Trigger progress')
+        return 'Progress';
+    return label;
+}
 function splitIntoColumns(items, columnCount) {
     if (columnCount <= 1 || items.length <= 1) {
         return [items];
@@ -645,15 +662,15 @@ function denseModelsLabelWidth(width) {
     const safeWidth = Math.max(18, width);
     return Math.max(8, Math.min(16, Math.floor(safeWidth * 0.42)));
 }
-function DenseModelsRow({ label, value, width, color = theme.white, selected = false, backgroundColor }) {
+function DenseModelsRow({ label, value, width, color = theme.white, selected = false, backgroundColor, labelWidth, minValueWidth = 6, valueAlign = 'right' }) {
     const safeWidth = Math.max(18, width);
-    const labelWidth = denseModelsLabelWidth(safeWidth);
-    const valueWidth = Math.max(6, safeWidth - labelWidth - 1);
+    const boundedLabelWidth = Math.max(6, Math.min(Math.max(6, safeWidth - Math.max(6, minValueWidth) - 1), labelWidth ?? denseModelsLabelWidth(safeWidth)));
+    const valueWidth = Math.max(Math.max(6, minValueWidth), safeWidth - boundedLabelWidth - 1);
     const rowBackground = selected ? backgroundColor : undefined;
     return (React.createElement(InkBox, { width: safeWidth },
-        React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, fit(label, labelWidth)),
+        React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, fit(label, boundedLabelWidth)),
         React.createElement(Text, { backgroundColor: rowBackground }, " "),
-        React.createElement(Text, { color: color, backgroundColor: rowBackground, bold: selected }, fitRight(value, valueWidth))));
+        React.createElement(Text, { color: color, backgroundColor: rowBackground, bold: selected }, valueAlign === 'left' ? fit(value, valueWidth) : fitRight(value, valueWidth))));
 }
 function InlineStatsRow({ width, items, separator = ' / ' }) {
     const safeWidth = Math.max(1, width);
@@ -663,10 +680,10 @@ function InlineStatsRow({ width, items, separator = ' / ' }) {
             React.createElement(Text, { color: item.color }, item.text))))));
 }
 function recentRunsColumnWidths(width) {
-    const safeWidth = Math.max(36, width);
+    const safeWidth = Math.max(38, width);
     const logLossWidth = 8;
     const brierWidth = 7;
-    const resultWidth = 10;
+    const resultWidth = 8;
     const timestampWidth = Math.max(8, safeWidth - logLossWidth - brierWidth - resultWidth - 3);
     return { safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth };
 }
@@ -692,6 +709,31 @@ function RecentRunsDataRow({ width, timestamp, timestampColor, logLoss, logLossC
         React.createElement(Text, null, " "),
         React.createElement(Text, { color: resultColor }, fitRight(result, resultWidth))));
 }
+function sharedHoldoutColumnWidths(width) {
+    const safeWidth = Math.max(34, width);
+    const challengerWidth = 7;
+    const incumbentWidth = 7;
+    const metricWidth = Math.max(8, safeWidth - challengerWidth - incumbentWidth - 2);
+    return { safeWidth, metricWidth, challengerWidth, incumbentWidth };
+}
+function SharedHoldoutHeaderRow({ width }) {
+    const { safeWidth, metricWidth, challengerWidth, incumbentWidth } = sharedHoldoutColumnWidths(width);
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Metric', metricWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Chal.', challengerWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Inc.', incumbentWidth))));
+}
+function SharedHoldoutMetricRow({ width, label, challenger, challengerColor, incumbent, incumbentColor }) {
+    const { safeWidth, metricWidth, challengerWidth, incumbentWidth } = sharedHoldoutColumnWidths(width);
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: theme.dim }, fit(label, metricWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: challengerColor }, fitRight(challenger, challengerWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: incumbentColor }, fitRight(incumbent, incumbentWidth))));
+}
 function ModelsSectionTitle({ title, width, selected, backgroundColor }) {
     const prefix = selected ? '> ' : '  ';
     return (React.createElement(Text, { color: selected ? theme.accent : theme.white, backgroundColor: selected ? backgroundColor : undefined, bold: true }, fit(`${prefix}${title}`, Math.max(1, width))));
@@ -699,6 +741,9 @@ function ModelsSectionTitle({ title, width, selected, backgroundColor }) {
 function ModelsSubsectionTitle({ title, width, color = theme.accent }) {
     const safeWidth = Math.max(1, width);
     return (React.createElement(Text, { color: color, bold: true }, fit(title.trimStart(), safeWidth)));
+}
+function ModelsSpacer() {
+    return React.createElement(Text, null, " ");
 }
 export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues }) {
     const terminal = useTerminalSize();
@@ -937,6 +982,10 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         trainingSummary?.total_runs
     ]);
     const trainingCycleColumns = useMemo(() => splitIntoColumns(trainingCycleStats, 2), [trainingCycleStats]);
+    const trainingCycleDisplayStats = useMemo(() => trainingCycleStats.map((item) => ({
+        ...item,
+        label: trainingCycleDisplayLabel(item.label)
+    })), [trainingCycleStats]);
     const confusionCells = useMemo(() => [
         { label: 'TP', value: Math.max(0, Number(confusion?.true_positive || 0)), kind: 'good' },
         { label: 'FP', value: Math.max(0, Number(confusion?.false_positive || 0)), kind: 'bad' },
@@ -1107,11 +1156,13 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const scoringMixColumns = useMemo(() => splitIntoColumns(scoringMixStats, 2), [scoringMixStats]);
     const modelsColumnGap = terminal.compact ? 1 : 2;
     const modelsContentWidth = Math.max(54, terminal.width - 8);
-    const baseModelsColumnWidth = Math.max(18, Math.floor((modelsContentWidth - modelsColumnGap * 2) / 3));
+    const modelsUsableWidth = Math.max(18, modelsContentWidth - modelsColumnGap * 2);
+    const leftModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.28));
+    const middleModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.30));
     const modelsColumnWidths = [
-        baseModelsColumnWidth,
-        baseModelsColumnWidth,
-        Math.max(18, modelsContentWidth - baseModelsColumnWidth * 2 - modelsColumnGap * 2)
+        leftModelsColumnWidth,
+        middleModelsColumnWidth,
+        Math.max(18, modelsUsableWidth - leftModelsColumnWidth - middleModelsColumnWidth)
     ];
     const predictionQualityStats = useMemo(() => [
         {
@@ -1135,56 +1186,69 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         }
     ], [featureCount, latest]);
     const confusionSummaryItems = useMemo(() => [
-        { text: `${formatCount(confusion?.true_positive)} TP`, color: theme.green },
-        { text: `${formatCount(confusion?.false_positive)} FP`, color: theme.red },
-        { text: `${formatCount(confusion?.true_negative)} TN`, color: theme.green },
-        { text: `${formatCount(confusion?.false_negative)} FN`, color: theme.red }
-    ], [confusion]);
+        {
+            text: `${formatCount(confusion?.true_positive)} TP`,
+            color: confusionHeatColor(Math.max(0, Number(confusion?.true_positive || 0)), confusionScale, 'good')
+        },
+        {
+            text: `${formatCount(confusion?.false_positive)} FP`,
+            color: confusionHeatColor(Math.max(0, Number(confusion?.false_positive || 0)), confusionScale, 'bad')
+        },
+        {
+            text: `${formatCount(confusion?.true_negative)} TN`,
+            color: confusionHeatColor(Math.max(0, Number(confusion?.true_negative || 0)), confusionScale, 'good')
+        },
+        {
+            text: `${formatCount(confusion?.false_negative)} FN`,
+            color: confusionHeatColor(Math.max(0, Number(confusion?.false_negative || 0)), confusionScale, 'bad')
+        }
+    ], [confusion, confusionScale]);
     const recentRetrainRuns = useMemo(() => retrainRuns.slice(0, historyLimit), [historyLimit, retrainRuns]);
     const howItWorksScoreRows = useMemo(() => scoringMixStats.slice(0, 4), [scoringMixStats]);
     const howItWorksHistoryRows = useMemo(() => scoringMixStats.slice(4), [scoringMixStats]);
     const renderPageBody = () => (React.createElement(InkBox, { width: "100%" },
         React.createElement(InkBox, { width: modelsColumnWidths[0], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "Prediction Quality", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 0, backgroundColor: selectedRowBackground }),
-            predictionQualityStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0] }))),
-            React.createElement(Text, null, " "),
+            predictionQualityStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 }))),
+            React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
-            trackerHealthStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0] })))),
+            trackerHealthStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 })))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[1], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "Confidence + Modes", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
             React.createElement(InlineStatsRow, { width: modelsColumnWidths[1], items: confusionSummaryItems }),
-            React.createElement(Text, null, " "),
+            React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "Calibration", width: modelsColumnWidths[1] }),
-            confidenceCheckStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1] }))),
-            React.createElement(Text, null, " "),
+            confidenceCheckStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))),
+            React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "Decision Paths", width: modelsColumnWidths[1] }),
-            React.createElement(DenseModelsRow, { label: "Active scorer", value: activeScorerLabel, color: latest?.deployed ? theme.green : theme.yellow, width: modelsColumnWidths[1] }),
-            React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[1] }),
+            React.createElement(DenseModelsRow, { label: "Active scorer", value: activeScorerLabel, color: latest?.deployed ? theme.green : theme.yellow, width: modelsColumnWidths[1], labelWidth: 12 }),
+            React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[1], labelWidth: 12 }),
             signalModeCards.length ? (signalModeCards.map((card, index) => (React.createElement(React.Fragment, { key: card.title },
-                React.createElement(Text, null, " "),
+                React.createElement(ModelsSpacer, null),
                 React.createElement(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[1], color: card.titleColor ?? theme.white }),
-                card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1] }))))))) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1])))),
+                card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))))))) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1])))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
-            React.createElement(Text, null, " "),
+            React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "Score Build", width: modelsColumnWidths[2] }),
-            howItWorksScoreRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2] }))),
-            React.createElement(Text, null, " "),
+            howItWorksScoreRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 13 }))),
+            React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[2] }),
-            howItWorksHistoryRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2] }))),
-            React.createElement(Text, null, " "),
+            howItWorksHistoryRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 13 }))),
+            React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
-            trainingCycleStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 4 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: modelsColumnWidths[2] }))),
+            trainingCycleDisplayStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 4 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }))),
             latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(React.Fragment, null,
-                React.createElement(Text, null, " "),
+                React.createElement(ModelsSpacer, null),
                 React.createElement(ModelsSubsectionTitle, { title: "Latest Shared Holdout Gate", width: modelsColumnWidths[2] }),
-                React.createElement(DenseModelsRow, { label: "Run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at), width: modelsColumnWidths[2] }),
-                React.createElement(DenseModelsRow, { label: "Challenger", value: `LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}`, width: modelsColumnWidths[2] }),
-                React.createElement(DenseModelsRow, { label: "Incumbent", value: `LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`, width: modelsColumnWidths[2] }),
-                React.createElement(DenseModelsRow, { label: "Gate read", value: sharedHoldoutGateRead(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun), width: modelsColumnWidths[2] }))) : null,
-            React.createElement(Text, null, " "),
+                React.createElement(DenseModelsRow, { label: "Run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at), width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }),
+                React.createElement(SharedHoldoutHeaderRow, { width: modelsColumnWidths[2] }),
+                React.createElement(SharedHoldoutMetricRow, { label: "Log loss", challenger: formatNumber(latestSharedHoldout.challenger_log_loss, 4), challengerColor: lowerIsBetterColor(latestSharedHoldout.challenger_log_loss, 0.55, 0.69), incumbent: formatNumber(latestSharedHoldout.incumbent_log_loss, 4), incumbentColor: lowerIsBetterColor(latestSharedHoldout.incumbent_log_loss, 0.55, 0.69), width: modelsColumnWidths[2] }),
+                React.createElement(SharedHoldoutMetricRow, { label: "Brier", challenger: formatNumber(latestSharedHoldout.challenger_brier_score, 4), challengerColor: lowerIsBetterColor(latestSharedHoldout.challenger_brier_score, 0.18, 0.25), incumbent: formatNumber(latestSharedHoldout.incumbent_brier_score, 4), incumbentColor: lowerIsBetterColor(latestSharedHoldout.incumbent_brier_score, 0.18, 0.25), width: modelsColumnWidths[2] }),
+                React.createElement(DenseModelsRow, { label: "Gate read", value: sharedHoldoutGateReadCompact(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun), width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16, valueAlign: "left" }))) : null,
+            React.createElement(ModelsSpacer, null),
             React.createElement(RecentRunsHeaderRow, { width: modelsColumnWidths[2] }),
             recentRetrainRuns.length ? (recentRetrainRuns.map((row, index) => (React.createElement(RecentRunsDataRow, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, width: modelsColumnWidths[2], timestamp: formatShortDateTime(row.finished_at), timestampColor: theme.dim, logLoss: formatNumber(row.log_loss, 3), logLossColor: lowerIsBetterColor(row.log_loss, 0.55, 0.69), brier: formatNumber(row.brier_score, 3), brierColor: lowerIsBetterColor(row.brier_score, 0.18, 0.25), result: retrainRunStateCompactLabel(row.status, row.deployed), resultColor: retrainRunStateColor(row.status, row.deployed) })))) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[2]))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },

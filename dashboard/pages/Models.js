@@ -7,7 +7,7 @@ import { editableConfigFields, formatEditableConfigValue } from '../configEditor
 import { fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil } from '../format.js';
 import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
-import { negativeHeatColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme } from '../theme.js';
+import { centeredGradientColor, probabilityColor, selectionBackgroundColor, theme } from '../theme.js';
 import { useBotState } from '../useBotState.js';
 import { useQuery } from '../useDb.js';
 function isDefined(value) {
@@ -52,24 +52,6 @@ export const MODEL_PANEL_DEFS = [
         settingKeys: ['MIN_CONFIDENCE', 'MAX_BET_FRACTION', 'SHADOW_BANKROLL_USD']
     },
     {
-        id: 'confusion_matrix',
-        title: 'Confusion Matrix',
-        summary: [
-            'This box is the outcome split behind the confidence gate.',
-            'It shows where accepted bets were right or wrong, and where low-confidence skips helped or hurt.'
-        ],
-        rows: [
-            { label: 'TP', text: 'Accepted bets that settled profitable.' },
-            { label: 'FP', text: 'Accepted bets that settled unprofitable.' },
-            { label: 'TN', text: 'Low-confidence skips that would have lost anyway.' },
-            { label: 'FN', text: 'Low-confidence skips that would have won if taken.' },
-            { label: 'Top row', text: 'Accepted bets. Left is good, right is bad.' },
-            { label: 'Bottom row', text: 'Skipped bets. Left is good, right is bad.' },
-            { label: 'Color scale', text: 'Bigger counts get stronger green or red heat.' }
-        ],
-        settingKeys: ['MIN_CONFIDENCE']
-    },
-    {
         id: 'confidence_modes',
         title: 'Confidence + Modes',
         summary: [
@@ -77,6 +59,7 @@ export const MODEL_PANEL_DEFS = [
             'The left side reads model bias. The right side shows which scorer is active, primary, or idle.'
         ],
         rows: [
+            { label: 'TP / FP / TN / FN', text: 'Outcome split behind the confidence gate: accepted wins, accepted losses, helpful skips, and missed winners.' },
             { label: 'Resolved', text: 'Accepted tracker bets that already settled and can be graded.' },
             { label: 'Predicted / Actual', text: 'Average model confidence versus the realized win rate on those graded bets.' },
             { label: 'Read / Bias', text: 'Plain-English bias read plus the point gap between prediction and reality.' },
@@ -384,43 +367,29 @@ function parseFeatureCount(raw) {
 function lowerIsBetterColor(value, good, okay) {
     if (value == null || Number.isNaN(value))
         return theme.dim;
-    if (value <= good)
-        return theme.green;
-    if (value <= okay)
-        return theme.yellow;
-    return theme.red;
+    const worst = okay + (okay - good);
+    const normalized = Math.max(0, Math.min(1, (worst - value) / Math.max(0.0001, worst - good)));
+    return probabilityColor(normalized);
 }
 function sharpeColor(value) {
     if (value == null || Number.isNaN(value))
         return theme.dim;
-    if (value >= 1)
-        return theme.green;
-    if (value >= 0)
-        return theme.yellow;
-    return theme.red;
+    return centeredGradientColor(value, 1);
 }
 function signedMetricColor(value) {
     if (value == null || Number.isNaN(value))
         return theme.dim;
-    if (value > 0)
-        return theme.green;
-    if (value < 0)
-        return theme.red;
-    return theme.white;
+    return centeredGradientColor(value, 0.2);
 }
 function biasColor(value) {
     if (value == null || Number.isNaN(value))
         return theme.dim;
-    if (Math.abs(value) <= 0.03)
-        return theme.yellow;
-    return value > 0 ? theme.red : theme.blue;
+    return centeredGradientColor(-value, 0.08);
 }
 function dollarColor(value) {
     if (value == null || Number.isNaN(value))
         return theme.dim;
-    if (value < 0)
-        return theme.red;
-    return positiveDollarColor(value);
+    return centeredGradientColor(value, 250);
 }
 function bucketLabel(bucket) {
     const lower = bucket * 10;
@@ -676,21 +645,60 @@ function denseModelsLabelWidth(width) {
     const safeWidth = Math.max(18, width);
     return Math.max(8, Math.min(16, Math.floor(safeWidth * 0.42)));
 }
-function DenseModelsRow({ label, value, width, color = theme.white }) {
+function DenseModelsRow({ label, value, width, color = theme.white, selected = false, backgroundColor }) {
     const safeWidth = Math.max(18, width);
     const labelWidth = denseModelsLabelWidth(safeWidth);
     const valueWidth = Math.max(6, safeWidth - labelWidth - 1);
+    const rowBackground = selected ? backgroundColor : undefined;
     return (React.createElement(InkBox, { width: safeWidth },
-        React.createElement(Text, { color: theme.dim }, fit(label, labelWidth)),
+        React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, fit(label, labelWidth)),
+        React.createElement(Text, { backgroundColor: rowBackground }, " "),
+        React.createElement(Text, { color: color, backgroundColor: rowBackground, bold: selected }, fitRight(value, valueWidth))));
+}
+function InlineStatsRow({ width, items, separator = ' / ' }) {
+    const safeWidth = Math.max(1, width);
+    return (React.createElement(InkBox, { width: safeWidth },
+        items.map((item, index) => (React.createElement(React.Fragment, { key: `${item.text}-${index}` },
+            index > 0 ? React.createElement(Text, { color: theme.dim }, separator) : null,
+            React.createElement(Text, { color: item.color }, item.text))))));
+}
+function recentRunsColumnWidths(width) {
+    const safeWidth = Math.max(36, width);
+    const logLossWidth = 8;
+    const brierWidth = 7;
+    const resultWidth = 10;
+    const timestampWidth = Math.max(8, safeWidth - logLossWidth - brierWidth - resultWidth - 3);
+    return { safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth };
+}
+function RecentRunsHeaderRow({ width }) {
+    const { safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth } = recentRunsColumnWidths(width);
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Timestamp', timestampWidth)),
         React.createElement(Text, null, " "),
-        React.createElement(Text, { color: color }, fitRight(value, valueWidth))));
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Log Loss', logLossWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Brier', brierWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Result', resultWidth))));
+}
+function RecentRunsDataRow({ width, timestamp, timestampColor, logLoss, logLossColor, brier, brierColor, result, resultColor }) {
+    const { safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth } = recentRunsColumnWidths(width);
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: timestampColor }, fit(timestamp, timestampWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: logLossColor }, fitRight(logLoss, logLossWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: brierColor }, fitRight(brier, brierWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: resultColor }, fitRight(result, resultWidth))));
 }
 function ModelsSectionTitle({ title, width, selected, backgroundColor }) {
     const prefix = selected ? '> ' : '  ';
     return (React.createElement(Text, { color: selected ? theme.accent : theme.white, backgroundColor: selected ? backgroundColor : undefined, bold: true }, fit(`${prefix}${title}`, Math.max(1, width))));
 }
 function ModelsSubsectionTitle({ title, width, color = theme.accent }) {
-    return (React.createElement(Text, { color: color, bold: true }, fit(title, Math.max(1, width))));
+    const safeWidth = Math.max(1, width);
+    return (React.createElement(Text, { color: color, bold: true }, fit(title.trimStart(), safeWidth)));
 }
 export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues }) {
     const terminal = useTerminalSize();
@@ -998,7 +1006,9 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         const currentBest = signalModes.find((candidate) => candidate.mode === best);
         return (currentBest?.taken || 0) >= row.taken ? best : row.mode;
     }, null), [signalModes]);
-    const signalModeCards = useMemo(() => signalModes.map((row) => {
+    const signalModeCards = useMemo(() => signalModes
+        .filter((row) => row.mode.trim().toLowerCase() !== 'veto')
+        .map((row) => {
         const modeWinRate = ratio(row.wins, row.resolved);
         const modeUseRate = ratio(row.taken, row.signals);
         return {
@@ -1124,11 +1134,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             color: lowerIsBetterColor(latest?.log_loss, 0.55, 0.69)
         }
     ], [featureCount, latest]);
-    const confusionStats = useMemo(() => [
-        { label: 'TP', value: formatCount(confusion?.true_positive), color: theme.green },
-        { label: 'FP', value: formatCount(confusion?.false_positive), color: theme.red },
-        { label: 'TN', value: formatCount(confusion?.true_negative), color: theme.green },
-        { label: 'FN', value: formatCount(confusion?.false_negative), color: theme.red }
+    const confusionSummaryItems = useMemo(() => [
+        { text: `${formatCount(confusion?.true_positive)} TP`, color: theme.green },
+        { text: `${formatCount(confusion?.false_positive)} FP`, color: theme.red },
+        { text: `${formatCount(confusion?.true_negative)} TN`, color: theme.green },
+        { text: `${formatCount(confusion?.false_negative)} FN`, color: theme.red }
     ], [confusion]);
     const recentRetrainRuns = useMemo(() => retrainRuns.slice(0, historyLimit), [historyLimit, retrainRuns]);
     const howItWorksScoreRows = useMemo(() => scoringMixStats.slice(0, 4), [scoringMixStats]);
@@ -1137,47 +1147,46 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         React.createElement(InkBox, { width: modelsColumnWidths[0], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "Prediction Quality", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 0, backgroundColor: selectedRowBackground }),
             predictionQualityStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0] }))),
-            React.createElement(InkBox, { height: 1 }),
+            React.createElement(Text, null, " "),
             React.createElement(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
             trackerHealthStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0] })))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[1], flexDirection: "column" },
-            React.createElement(ModelsSectionTitle, { title: "Confusion Matrix", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
-            confusionStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1] }))),
-            React.createElement(InkBox, { height: 1 }),
-            React.createElement(ModelsSectionTitle, { title: "Confidence + Modes", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
-            React.createElement(ModelsSubsectionTitle, { title: "Calibration Read", width: modelsColumnWidths[1] }),
+            React.createElement(ModelsSectionTitle, { title: "Confidence + Modes", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
+            React.createElement(InlineStatsRow, { width: modelsColumnWidths[1], items: confusionSummaryItems }),
+            React.createElement(Text, null, " "),
+            React.createElement(ModelsSubsectionTitle, { title: "Calibration", width: modelsColumnWidths[1] }),
             confidenceCheckStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1] }))),
-            React.createElement(InkBox, { height: 1 }),
+            React.createElement(Text, null, " "),
             React.createElement(ModelsSubsectionTitle, { title: "Decision Paths", width: modelsColumnWidths[1] }),
             React.createElement(DenseModelsRow, { label: "Active scorer", value: activeScorerLabel, color: latest?.deployed ? theme.green : theme.yellow, width: modelsColumnWidths[1] }),
             React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[1] }),
             signalModeCards.length ? (signalModeCards.map((card, index) => (React.createElement(React.Fragment, { key: card.title },
-                React.createElement(InkBox, { height: index === 0 ? 0 : 1 }),
+                React.createElement(Text, null, " "),
                 React.createElement(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[1], color: card.titleColor ?? theme.white }),
                 card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1] }))))))) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1])))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
-            React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
+            React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
+            React.createElement(Text, null, " "),
             React.createElement(ModelsSubsectionTitle, { title: "Score Build", width: modelsColumnWidths[2] }),
             howItWorksScoreRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2] }))),
-            React.createElement(InkBox, { height: 1 }),
+            React.createElement(Text, null, " "),
             React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[2] }),
             howItWorksHistoryRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2] }))),
-            React.createElement(InkBox, { height: 1 }),
-            React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),
-            trainingCycleStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2] }))),
+            React.createElement(Text, null, " "),
+            React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
+            trainingCycleStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 4 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: modelsColumnWidths[2] }))),
             latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(React.Fragment, null,
-                React.createElement(InkBox, { height: 1 }),
+                React.createElement(Text, null, " "),
                 React.createElement(ModelsSubsectionTitle, { title: "Latest Shared Holdout Gate", width: modelsColumnWidths[2] }),
                 React.createElement(DenseModelsRow, { label: "Run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at), width: modelsColumnWidths[2] }),
                 React.createElement(DenseModelsRow, { label: "Challenger", value: `LL ${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.challenger_brier_score, 4)}`, width: modelsColumnWidths[2] }),
                 React.createElement(DenseModelsRow, { label: "Incumbent", value: `LL ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)} | BR ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`, width: modelsColumnWidths[2] }),
                 React.createElement(DenseModelsRow, { label: "Gate read", value: sharedHoldoutGateRead(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun), width: modelsColumnWidths[2] }))) : null,
-            React.createElement(InkBox, { height: 1 }),
-            React.createElement(ModelsSubsectionTitle, { title: "Recent Runs", width: modelsColumnWidths[2] }),
-            React.createElement(DenseModelsRow, { label: "Time", value: "S|BR|LL|State", color: theme.dim, width: modelsColumnWidths[2] }),
-            recentRetrainRuns.length ? (recentRetrainRuns.map((row, index) => (React.createElement(DenseModelsRow, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, label: formatShortDateTime(row.finished_at), value: `${formatCount(row.sample_count)}|${formatNumber(row.brier_score, 3)}|${formatNumber(row.log_loss, 3)}|${retrainRunStateCompactLabel(row.status, row.deployed)}`, color: retrainRunStateColor(row.status, row.deployed), width: modelsColumnWidths[2] })))) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[2]))))));
+            React.createElement(Text, null, " "),
+            React.createElement(RecentRunsHeaderRow, { width: modelsColumnWidths[2] }),
+            recentRetrainRuns.length ? (recentRetrainRuns.map((row, index) => (React.createElement(RecentRunsDataRow, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, width: modelsColumnWidths[2], timestamp: formatShortDateTime(row.finished_at), timestampColor: theme.dim, logLoss: formatNumber(row.log_loss, 3), logLossColor: lowerIsBetterColor(row.log_loss, 0.55, 0.69), brier: formatNumber(row.brier_score, 3), brierColor: lowerIsBetterColor(row.brier_score, 0.18, 0.25), result: retrainRunStateCompactLabel(row.status, row.deployed), resultColor: retrainRunStateColor(row.status, row.deployed) })))) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[2]))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         renderPageBody(),
         detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },

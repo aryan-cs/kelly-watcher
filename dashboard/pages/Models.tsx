@@ -7,7 +7,7 @@ import {editableConfigFields, formatEditableConfigValue, type EditableConfigValu
 import {fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil} from '../format.js'
 import {stackPanels} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
-import {negativeHeatColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
+import {centeredGradientColor, probabilityColor, selectionBackgroundColor, theme} from '../theme.js'
 import {useBotState} from '../useBotState.js'
 import {useQuery} from '../useDb.js'
 
@@ -115,7 +115,6 @@ interface TrainingProgressRow {
 export type ModelPanelId =
   | 'prediction_quality'
   | 'tracker_health'
-  | 'confusion_matrix'
   | 'confidence_modes'
   | 'how_it_works'
   | 'training_cycle'
@@ -176,24 +175,6 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     settingKeys: ['MIN_CONFIDENCE', 'MAX_BET_FRACTION', 'SHADOW_BANKROLL_USD']
   },
   {
-    id: 'confusion_matrix',
-    title: 'Confusion Matrix',
-    summary: [
-      'This box is the outcome split behind the confidence gate.',
-      'It shows where accepted bets were right or wrong, and where low-confidence skips helped or hurt.'
-    ],
-    rows: [
-      {label: 'TP', text: 'Accepted bets that settled profitable.'},
-      {label: 'FP', text: 'Accepted bets that settled unprofitable.'},
-      {label: 'TN', text: 'Low-confidence skips that would have lost anyway.'},
-      {label: 'FN', text: 'Low-confidence skips that would have won if taken.'},
-      {label: 'Top row', text: 'Accepted bets. Left is good, right is bad.'},
-      {label: 'Bottom row', text: 'Skipped bets. Left is good, right is bad.'},
-      {label: 'Color scale', text: 'Bigger counts get stronger green or red heat.'}
-    ],
-    settingKeys: ['MIN_CONFIDENCE']
-  },
-  {
     id: 'confidence_modes',
     title: 'Confidence + Modes',
     summary: [
@@ -201,6 +182,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       'The left side reads model bias. The right side shows which scorer is active, primary, or idle.'
     ],
     rows: [
+      {label: 'TP / FP / TN / FN', text: 'Outcome split behind the confidence gate: accepted wins, accepted losses, helpful skips, and missed winners.'},
       {label: 'Resolved', text: 'Accepted tracker bets that already settled and can be graded.'},
       {label: 'Predicted / Actual', text: 'Average model confidence versus the realized win rate on those graded bets.'},
       {label: 'Read / Bias', text: 'Plain-English bias read plus the point gap between prediction and reality.'},
@@ -568,35 +550,29 @@ function parseFeatureCount(raw: string | null | undefined): number | null {
 
 function lowerIsBetterColor(value: number | null | undefined, good: number, okay: number): string {
   if (value == null || Number.isNaN(value)) return theme.dim
-  if (value <= good) return theme.green
-  if (value <= okay) return theme.yellow
-  return theme.red
+  const worst = okay + (okay - good)
+  const normalized = Math.max(0, Math.min(1, (worst - value) / Math.max(0.0001, worst - good)))
+  return probabilityColor(normalized)
 }
 
 function sharpeColor(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return theme.dim
-  if (value >= 1) return theme.green
-  if (value >= 0) return theme.yellow
-  return theme.red
+  return centeredGradientColor(value, 1)
 }
 
 function signedMetricColor(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return theme.dim
-  if (value > 0) return theme.green
-  if (value < 0) return theme.red
-  return theme.white
+  return centeredGradientColor(value, 0.2)
 }
 
 function biasColor(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return theme.dim
-  if (Math.abs(value) <= 0.03) return theme.yellow
-  return value > 0 ? theme.red : theme.blue
+  return centeredGradientColor(-value, 0.08)
 }
 
 function dollarColor(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return theme.dim
-  if (value < 0) return theme.red
-  return positiveDollarColor(value)
+  return centeredGradientColor(value, 250)
 }
 
 function bucketLabel(bucket: number): string {
@@ -838,6 +814,8 @@ interface DenseModelsRowProps {
   value: string
   width: number
   color?: string
+  selected?: boolean
+  backgroundColor?: string
 }
 
 function denseModelsLabelWidth(width: number): number {
@@ -845,16 +823,110 @@ function denseModelsLabelWidth(width: number): number {
   return Math.max(8, Math.min(16, Math.floor(safeWidth * 0.42)))
 }
 
-function DenseModelsRow({label, value, width, color = theme.white}: DenseModelsRowProps) {
+function DenseModelsRow({
+  label,
+  value,
+  width,
+  color = theme.white,
+  selected = false,
+  backgroundColor
+}: DenseModelsRowProps) {
   const safeWidth = Math.max(18, width)
   const labelWidth = denseModelsLabelWidth(safeWidth)
   const valueWidth = Math.max(6, safeWidth - labelWidth - 1)
+  const rowBackground = selected ? backgroundColor : undefined
 
   return (
     <InkBox width={safeWidth}>
-      <Text color={theme.dim}>{fit(label, labelWidth)}</Text>
+      <Text color={selected ? theme.accent : theme.dim} backgroundColor={rowBackground} bold={selected}>
+        {fit(label, labelWidth)}
+      </Text>
+      <Text backgroundColor={rowBackground}> </Text>
+      <Text color={color} backgroundColor={rowBackground} bold={selected}>
+        {fitRight(value, valueWidth)}
+      </Text>
+    </InkBox>
+  )
+}
+
+function InlineStatsRow({
+  width,
+  items,
+  separator = ' / '
+}: {
+  width: number
+  items: {text: string; color: string}[]
+  separator?: string
+}) {
+  const safeWidth = Math.max(1, width)
+
+  return (
+    <InkBox width={safeWidth}>
+      {items.map((item, index) => (
+        <React.Fragment key={`${item.text}-${index}`}>
+          {index > 0 ? <Text color={theme.dim}>{separator}</Text> : null}
+          <Text color={item.color}>{item.text}</Text>
+        </React.Fragment>
+      ))}
+    </InkBox>
+  )
+}
+
+function recentRunsColumnWidths(width: number) {
+  const safeWidth = Math.max(36, width)
+  const logLossWidth = 8
+  const brierWidth = 7
+  const resultWidth = 10
+  const timestampWidth = Math.max(8, safeWidth - logLossWidth - brierWidth - resultWidth - 3)
+  return {safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth}
+}
+
+function RecentRunsHeaderRow({width}: {width: number}) {
+  const {safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth} = recentRunsColumnWidths(width)
+  return (
+    <InkBox width={safeWidth}>
+      <Text color={theme.accent} bold>{fit('Timestamp', timestampWidth)}</Text>
       <Text> </Text>
-      <Text color={color}>{fitRight(value, valueWidth)}</Text>
+      <Text color={theme.accent} bold>{fitRight('Log Loss', logLossWidth)}</Text>
+      <Text> </Text>
+      <Text color={theme.accent} bold>{fitRight('Brier', brierWidth)}</Text>
+      <Text> </Text>
+      <Text color={theme.accent} bold>{fitRight('Result', resultWidth)}</Text>
+    </InkBox>
+  )
+}
+
+function RecentRunsDataRow({
+  width,
+  timestamp,
+  timestampColor,
+  logLoss,
+  logLossColor,
+  brier,
+  brierColor,
+  result,
+  resultColor
+}: {
+  width: number
+  timestamp: string
+  timestampColor: string
+  logLoss: string
+  logLossColor: string
+  brier: string
+  brierColor: string
+  result: string
+  resultColor: string
+}) {
+  const {safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth} = recentRunsColumnWidths(width)
+  return (
+    <InkBox width={safeWidth}>
+      <Text color={timestampColor}>{fit(timestamp, timestampWidth)}</Text>
+      <Text> </Text>
+      <Text color={logLossColor}>{fitRight(logLoss, logLossWidth)}</Text>
+      <Text> </Text>
+      <Text color={brierColor}>{fitRight(brier, brierWidth)}</Text>
+      <Text> </Text>
+      <Text color={resultColor}>{fitRight(result, resultWidth)}</Text>
     </InkBox>
   )
 }
@@ -884,9 +956,10 @@ function ModelsSectionTitle({
 }
 
 function ModelsSubsectionTitle({title, width, color = theme.accent}: {title: string; width: number; color?: string}) {
+  const safeWidth = Math.max(1, width)
   return (
     <Text color={color} bold>
-      {fit(title, Math.max(1, width))}
+      {fit(title.trimStart(), safeWidth)}
     </Text>
   )
 }
@@ -1262,7 +1335,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   )
   const signalModeCards = useMemo<ModePreviewCard[]>(
     () =>
-      signalModes.map((row) => {
+      signalModes
+        .filter((row) => row.mode.trim().toLowerCase() !== 'veto')
+        .map((row) => {
         const modeWinRate = ratio(row.wins, row.resolved)
         const modeUseRate = ratio(row.taken, row.signals)
         return {
@@ -1296,7 +1371,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             }
           ]
         }
-      }),
+        }),
     [activeScorerLabel, primaryMode, signalModes]
   )
   const signalModeCardColumns = useMemo(
@@ -1417,13 +1492,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     ],
     [featureCount, latest]
   )
-  const confusionStats = useMemo<CompactStatItem[]>(
-    () => [
-      {label: 'TP', value: formatCount(confusion?.true_positive), color: theme.green},
-      {label: 'FP', value: formatCount(confusion?.false_positive), color: theme.red},
-      {label: 'TN', value: formatCount(confusion?.true_negative), color: theme.green},
-      {label: 'FN', value: formatCount(confusion?.false_negative), color: theme.red}
-    ],
+  const confusionSummaryItems = useMemo(
+    () =>
+      [
+        {text: `${formatCount(confusion?.true_positive)} TP`, color: theme.green},
+        {text: `${formatCount(confusion?.false_positive)} FP`, color: theme.red},
+        {text: `${formatCount(confusion?.true_negative)} TN`, color: theme.green},
+        {text: `${formatCount(confusion?.false_negative)} FN`, color: theme.red}
+      ],
     [confusion]
   )
   const recentRetrainRuns = useMemo(
@@ -1457,9 +1533,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             width={modelsColumnWidths[0]}
           />
         ))}
-
-        <InkBox height={1} />
-
+        <Text> </Text>
         <ModelsSectionTitle
           title="Tracker Health"
           width={modelsColumnWidths[0]}
@@ -1481,30 +1555,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
       <InkBox width={modelsColumnWidths[1]} flexDirection="column">
         <ModelsSectionTitle
-          title="Confusion Matrix"
+          title="Confidence + Modes"
           width={modelsColumnWidths[1]}
           selected={clampedSelectedPanelIndex === 2}
           backgroundColor={selectedRowBackground}
         />
-        {confusionStats.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
-            width={modelsColumnWidths[1]}
-          />
-        ))}
-
-        <InkBox height={1} />
-
-        <ModelsSectionTitle
-          title="Confidence + Modes"
-          width={modelsColumnWidths[1]}
-          selected={clampedSelectedPanelIndex === 3}
-          backgroundColor={selectedRowBackground}
-        />
-        <ModelsSubsectionTitle title="Calibration Read" width={modelsColumnWidths[1]} />
+        <InlineStatsRow width={modelsColumnWidths[1]} items={confusionSummaryItems} />
+        <Text> </Text>
+        <ModelsSubsectionTitle title="Calibration" width={modelsColumnWidths[1]} />
         {confidenceCheckStats.map((item) => (
           <DenseModelsRow
             key={item.label}
@@ -1514,9 +1572,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             width={modelsColumnWidths[1]}
           />
         ))}
-
-        <InkBox height={1} />
-
+        <Text> </Text>
         <ModelsSubsectionTitle title="Decision Paths" width={modelsColumnWidths[1]} />
         <DenseModelsRow
           label="Active scorer"
@@ -1533,7 +1589,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         {signalModeCards.length ? (
           signalModeCards.map((card, index) => (
             <React.Fragment key={card.title}>
-              <InkBox height={index === 0 ? 0 : 1} />
+              <Text> </Text>
               <ModelsSubsectionTitle
                 title={card.title}
                 width={modelsColumnWidths[1]}
@@ -1561,9 +1617,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSectionTitle
           title="How It Works"
           width={modelsColumnWidths[2]}
-          selected={clampedSelectedPanelIndex === 4}
+          selected={clampedSelectedPanelIndex === 3}
           backgroundColor={selectedRowBackground}
         />
+        <Text> </Text>
         <ModelsSubsectionTitle title="Score Build" width={modelsColumnWidths[2]} />
         {howItWorksScoreRows.map((item) => (
           <DenseModelsRow
@@ -1574,7 +1631,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             width={modelsColumnWidths[2]}
           />
         ))}
-        <InkBox height={1} />
+        <Text> </Text>
         <ModelsSubsectionTitle title="History Nudge" width={modelsColumnWidths[2]} />
         {howItWorksHistoryRows.map((item) => (
           <DenseModelsRow
@@ -1585,13 +1642,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             width={modelsColumnWidths[2]}
           />
         ))}
-
-        <InkBox height={1} />
-
+        <Text> </Text>
         <ModelsSectionTitle
           title="Training Cycle"
           width={modelsColumnWidths[2]}
-          selected={clampedSelectedPanelIndex === 5}
+          selected={clampedSelectedPanelIndex === 4}
           backgroundColor={selectedRowBackground}
         />
         {trainingCycleStats.map((item) => (
@@ -1600,13 +1655,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             label={item.label}
             value={item.value}
             color={item.color ?? theme.white}
+            selected={clampedSelectedPanelIndex === 4 && item.label === 'Manual run'}
+            backgroundColor={selectedRowBackground}
             width={modelsColumnWidths[2]}
           />
         ))}
 
         {latestSharedHoldoutRun && latestSharedHoldout ? (
           <>
-            <InkBox height={1} />
+            <Text> </Text>
             <ModelsSubsectionTitle title="Latest Shared Holdout Gate" width={modelsColumnWidths[2]} />
             <DenseModelsRow
               label="Run"
@@ -1631,23 +1688,21 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             />
           </>
         ) : null}
-
-        <InkBox height={1} />
-        <ModelsSubsectionTitle title="Recent Runs" width={modelsColumnWidths[2]} />
-        <DenseModelsRow
-          label="Time"
-          value="S|BR|LL|State"
-          color={theme.dim}
-          width={modelsColumnWidths[2]}
-        />
+        <Text> </Text>
+        <RecentRunsHeaderRow width={modelsColumnWidths[2]} />
         {recentRetrainRuns.length ? (
           recentRetrainRuns.map((row, index) => (
-            <DenseModelsRow
+            <RecentRunsDataRow
               key={`${row.finished_at}-${row.status || 'run'}-${index}`}
-              label={formatShortDateTime(row.finished_at)}
-              value={`${formatCount(row.sample_count)}|${formatNumber(row.brier_score, 3)}|${formatNumber(row.log_loss, 3)}|${retrainRunStateCompactLabel(row.status, row.deployed)}`}
-              color={retrainRunStateColor(row.status, row.deployed)}
               width={modelsColumnWidths[2]}
+              timestamp={formatShortDateTime(row.finished_at)}
+              timestampColor={theme.dim}
+              logLoss={formatNumber(row.log_loss, 3)}
+              logLossColor={lowerIsBetterColor(row.log_loss, 0.55, 0.69)}
+              brier={formatNumber(row.brier_score, 3)}
+              brierColor={lowerIsBetterColor(row.brier_score, 0.18, 0.25)}
+              result={retrainRunStateCompactLabel(row.status, row.deployed)}
+              resultColor={retrainRunStateColor(row.status, row.deployed)}
             />
           ))
         ) : (

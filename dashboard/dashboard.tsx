@@ -419,12 +419,8 @@ function AppContent({
       : page === 4
         ? modelDetailOpen
           ? terminal.compact
-            ? selectedModelPanel.id === 'training_cycle'
-              ? '↑↓ settings  enter edit  t retrain  esc close  r refresh  q exit'
-              : '↑↓ settings  enter edit  esc close  r refresh  q exit'
-            : selectedModelPanel.id === 'training_cycle'
-              ? '↑/↓: settings  enter: edit in config  t: retrain now  esc: close  r: refresh  q: exit'
-              : '↑/↓: settings  enter: edit in config  esc: close  r: refresh  q: exit'
+            ? '↑↓ settings  enter edit  esc close  r refresh  q exit'
+            : '↑/↓: settings  enter: edit in config  esc: close  r: refresh  q: exit'
           : terminal.compact
             ? selectedModelPanel.id === 'training_cycle'
               ? '↑↓/←→ select  enter help  t retrain  r refresh  q exit'
@@ -1722,7 +1718,7 @@ function App() {
     }
 
     if (page === 4) {
-      if (normalized === 't' && selectedModelPanel.id === 'training_cycle') {
+      if (!modelDetailOpen && normalized === 't' && selectedModelPanel.id === 'training_cycle') {
         void (async () => {
           try {
             const result = await requestManualRetrain()

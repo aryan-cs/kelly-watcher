@@ -1460,9 +1460,18 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         .sort((a, b) => Math.max(b.market_close_ts || 0, b.entered_at || 0) -
         Math.max(a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions, optimisticPendingPositions]);
     const waitingPositionsTotal = useMemo(() => waitingPositions.reduce((sum, row) => sum + (row.size_usd || 0), 0), [waitingPositions]);
-    const pastPositions = useMemo(() => [...effectivePositions.filter((row) => row.status !== 'open'), ...optimisticPendingPositions]
-        .sort((a, b) => Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
-        Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)), [effectivePositions, optimisticPendingPositions]);
+    const pastPositions = useMemo(() => {
+        const rows = [...effectivePositions.filter((row) => row.status !== 'open'), ...optimisticPendingPositions];
+        const pendingRows = rows
+            .filter((row) => row.status === 'waiting' || row.status === 'cashing_out')
+            .sort((a, b) => Math.max(b.market_close_ts || 0, b.entered_at || 0) -
+            Math.max(a.market_close_ts || 0, a.entered_at || 0));
+        const resolvedRows = rows
+            .filter((row) => row.status !== 'waiting' && row.status !== 'cashing_out')
+            .sort((a, b) => Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
+            Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0));
+        return [...pendingRows, ...resolvedRows];
+    }, [effectivePositions, optimisticPendingPositions]);
     const resolvedPerformancePositions = useMemo(() => effectivePositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), [effectivePositions]);
     const confidenceRows = useMemo(() => effectivePositions.filter((row) => row.confidence != null), [effectivePositions]);
     const activeSummary = useMemo(() => {

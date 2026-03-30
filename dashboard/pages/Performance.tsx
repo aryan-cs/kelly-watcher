@@ -2151,13 +2151,24 @@ export function Performance({
     [waitingPositions]
   )
   const pastPositions = useMemo(
-    () =>
-      [...effectivePositions.filter((row) => row.status !== 'open'), ...optimisticPendingPositions]
+    () => {
+      const rows = [...effectivePositions.filter((row) => row.status !== 'open'), ...optimisticPendingPositions]
+      const pendingRows = rows
+        .filter((row) => row.status === 'waiting' || row.status === 'cashing_out')
         .sort(
-        (a, b) =>
-          Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
-          Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)
-      ),
+          (a, b) =>
+            Math.max(b.market_close_ts || 0, b.entered_at || 0) -
+            Math.max(a.market_close_ts || 0, a.entered_at || 0)
+        )
+      const resolvedRows = rows
+        .filter((row) => row.status !== 'waiting' && row.status !== 'cashing_out')
+        .sort(
+          (a, b) =>
+            Math.max(b.resolution_ts || 0, b.market_close_ts || 0, b.entered_at || 0) -
+            Math.max(a.resolution_ts || 0, a.market_close_ts || 0, a.entered_at || 0)
+        )
+      return [...pendingRows, ...resolvedRows]
+    },
     [effectivePositions, optimisticPendingPositions]
   )
   const resolvedPerformancePositions = useMemo(

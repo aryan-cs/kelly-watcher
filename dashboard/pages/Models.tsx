@@ -1019,7 +1019,7 @@ function ModelsSectionTitle({
   selected: boolean
   backgroundColor?: string
 }) {
-  const prefix = selected ? '> ' : '  '
+  const prefix = selected ? '> ' : ''
 
   return (
     <Text
@@ -1729,8 +1729,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           selected={clampedSelectedPanelIndex === 3}
           backgroundColor={selectedRowBackground}
         />
-        <ModelsSpacer />
-        <ModelsSubsectionTitle title="Score Build" width={modelsColumnWidths[2]} />
         {howItWorksScoreRows.map((item) => (
           <DenseModelsRow
             key={item.label}

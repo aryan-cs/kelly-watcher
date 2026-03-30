@@ -735,7 +735,7 @@ function SharedHoldoutMetricRow({ width, label, challenger, challengerColor, inc
         React.createElement(Text, { color: incumbentColor }, fitRight(incumbent, incumbentWidth))));
 }
 function ModelsSectionTitle({ title, width, selected, backgroundColor }) {
-    const prefix = selected ? '> ' : '  ';
+    const prefix = selected ? '> ' : '';
     return (React.createElement(Text, { color: selected ? theme.accent : theme.white, backgroundColor: selected ? backgroundColor : undefined, bold: true }, fit(`${prefix}${title}`, Math.max(1, width))));
 }
 function ModelsSubsectionTitle({ title, width, color = theme.accent }) {
@@ -1231,8 +1231,6 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
-            React.createElement(ModelsSpacer, null),
-            React.createElement(ModelsSubsectionTitle, { title: "Score Build", width: modelsColumnWidths[2] }),
             howItWorksScoreRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 13 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[2] }),

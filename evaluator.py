@@ -100,6 +100,7 @@ def resolve_shadow_trades(
     trade_id: str | None = None,
     market_id: str | None = None,
     question_contains: str | None = None,
+    forced_outcome: str | None = None,
 ) -> list[dict]:
     conn = get_conn()
     where_clauses = [
@@ -138,6 +139,9 @@ def resolve_shadow_trades(
     resolved_rows: list[dict] = []
     market_cache: dict[str, dict | None] = {}
     sports_page_cache: dict[str, dict[str, Any] | None] = {}
+    normalized_forced_outcome = str(forced_outcome or "").strip()
+    if normalized_forced_outcome and not (trade_id or market_id or question_contains):
+        raise ValueError("forced_outcome requires trade_id, market_id, or question_contains")
     with httpx.Client(timeout=10.0) as client:
         for row in unresolved:
             try:
@@ -145,23 +149,31 @@ def resolve_shadow_trades(
                 result: str | None = None
                 resolution_payload: dict[str, Any] | None = None
 
-                sports_snapshot = _fetch_sports_page_snapshot(client, row, sports_page_cache)
-                if sports_snapshot is not None:
-                    result = _resolve_from_sports_page(row, sports_snapshot)
-                    if result is not None:
-                        resolution_payload = _sports_resolution_payload(row, sports_snapshot)
+                if normalized_forced_outcome:
+                    result = normalized_forced_outcome
+                    resolution_payload = {
+                        "source": "manual_override",
+                        "closed": True,
+                        "forcedOutcome": normalized_forced_outcome,
+                    }
+                else:
+                    sports_snapshot = _fetch_sports_page_snapshot(client, row, sports_page_cache)
+                    if sports_snapshot is not None:
+                        result = _resolve_from_sports_page(row, sports_snapshot)
+                        if result is not None:
+                            resolution_payload = _sports_resolution_payload(row, sports_snapshot)
 
-                if result is None:
-                    market = _fetch_market(client, str(row["market_id"]), market_cache)
-                    if market and _market_is_closed(market):
-                        result = _winning_outcome(market)
-                        if result is None:
-                            logger.info(
-                                "Closed market %s is missing an explicit winner after sports-page fallback",
-                                str(row["market_id"])[:12],
-                            )
-                        else:
-                            resolution_payload = market
+                    if result is None:
+                        market = _fetch_market(client, str(row["market_id"]), market_cache)
+                        if market and _market_is_closed(market):
+                            result = _winning_outcome(market)
+                            if result is None:
+                                logger.info(
+                                    "Closed market %s is missing an explicit winner after sports-page fallback",
+                                    str(row["market_id"])[:12],
+                                )
+                            else:
+                                resolution_payload = market
 
                 if result is None:
                     continue
@@ -292,6 +304,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--question-contains",
         help="Resolve unresolved trades whose question contains this text (case-insensitive)",
+    )
+    parser.add_argument(
+        "--force-outcome",
+        help="Manually force the resolved outcome label for the selected unresolved trade(s)",
     )
     return parser
 
@@ -1149,5 +1165,6 @@ if __name__ == "__main__":
         trade_id=args.trade_id,
         market_id=args.market_id,
         question_contains=args.question_contains,
+        forced_outcome=args.force_outcome,
     )
     print(json.dumps(rows, indent=2, default=str))

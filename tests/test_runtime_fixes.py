@@ -1116,6 +1116,75 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_resolve_shadow_trades_can_force_manual_outcome_for_targeted_match(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, market_url, trader_address, side, token_id,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-valorant-force",
+                        "market-valorant-force",
+                        "Valorant: University War GC vs Olimpo Gold (BO3) - VCT Game Changers Latin America South Group Stage",
+                        "https://polymarket.com/event/val-uw-og2-2026-03-17",
+                        "0xabc",
+                        "olimpo gold",
+                        "token-valorant-force",
+                        "buy",
+                        0.43,
+                        10.0,
+                        0.68,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("evaluator.sync_belief_priors", return_value=0), patch(
+                    "evaluator.time.time", return_value=1_700_000_456
+                ):
+                    resolved = evaluator.resolve_shadow_trades(
+                        question_contains="University War GC vs Olimpo Gold",
+                        forced_outcome="olimpo gold",
+                    )
+
+                self.assertEqual(len(resolved), 1)
+                self.assertEqual(resolved[0]["trade_id"], "trade-valorant-force")
+                self.assertTrue(resolved[0]["won"])
+                self.assertEqual(resolved[0]["market_resolved_outcome"], "olimpo gold")
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, resolved_at, resolution_json
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-valorant-force",),
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(int(row["outcome"]), 1)
+                self.assertEqual(row["market_resolved_outcome"], "olimpo gold")
+                self.assertEqual(int(row["resolved_at"]), 1_700_000_456)
+                resolution_json = json.loads(row["resolution_json"])
+                self.assertEqual(resolution_json["source"], "manual_override")
+                self.assertEqual(resolution_json["forcedOutcome"], "olimpo gold")
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_cleanup_premature_resolutions_reopens_bad_rows_and_rebuilds_beliefs(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

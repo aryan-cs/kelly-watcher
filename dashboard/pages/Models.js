@@ -674,17 +674,35 @@ function DenseModelsRow({ label, value, width, color = theme.white, selected = f
 }
 function InlineStatsRow({ width, items, separator = ' / ' }) {
     const safeWidth = Math.max(1, width);
-    return (React.createElement(InkBox, { width: safeWidth },
-        items.map((item, index) => (React.createElement(React.Fragment, { key: `${item.text}-${index}` },
-            index > 0 ? React.createElement(Text, { color: theme.dim }, separator) : null,
-            React.createElement(Text, { color: item.color }, item.text))))));
+    const lines = [];
+    let currentLine = [];
+    let currentWidth = 0;
+    items.forEach((item, index) => {
+        const separatorWidth = index > 0 && currentLine.length > 0 ? separator.length : 0;
+        const itemWidth = item.text.length;
+        if (currentLine.length > 0 && currentWidth + separatorWidth + itemWidth > safeWidth) {
+            lines.push(currentLine);
+            currentLine = [];
+            currentWidth = 0;
+        }
+        if (currentLine.length > 0) {
+            currentLine.push({ text: separator, color: theme.dim });
+            currentWidth += separator.length;
+        }
+        currentLine.push({ text: fit(item.text, safeWidth), color: item.color });
+        currentWidth += Math.min(itemWidth, safeWidth);
+    });
+    if (currentLine.length > 0) {
+        lines.push(currentLine);
+    }
+    return (React.createElement(InkBox, { width: safeWidth, flexDirection: "column" }, lines.map((line, lineIndex) => (React.createElement(InkBox, { key: `inline-stats-${lineIndex}`, width: safeWidth }, line.map((segment, segmentIndex) => (React.createElement(Text, { key: `${lineIndex}-${segmentIndex}`, color: segment.color }, segment.text))))))));
 }
 function recentRunsColumnWidths(width) {
-    const safeWidth = Math.max(38, width);
-    const logLossWidth = 8;
-    const brierWidth = 7;
-    const resultWidth = 8;
-    const timestampWidth = Math.max(8, safeWidth - logLossWidth - brierWidth - resultWidth - 3);
+    const safeWidth = Math.max(24, width);
+    const resultWidth = safeWidth >= 34 ? 8 : 6;
+    const logLossWidth = safeWidth >= 34 ? 8 : 7;
+    const brierWidth = safeWidth >= 32 ? 7 : 6;
+    const timestampWidth = Math.max(5, safeWidth - logLossWidth - brierWidth - resultWidth - 3);
     return { safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth };
 }
 function RecentRunsHeaderRow({ width }) {
@@ -710,10 +728,10 @@ function RecentRunsDataRow({ width, timestamp, timestampColor, logLoss, logLossC
         React.createElement(Text, { color: resultColor }, fitRight(result, resultWidth))));
 }
 function sharedHoldoutColumnWidths(width) {
-    const safeWidth = Math.max(34, width);
-    const challengerWidth = 7;
-    const incumbentWidth = 7;
-    const metricWidth = Math.max(8, safeWidth - challengerWidth - incumbentWidth - 2);
+    const safeWidth = Math.max(24, width);
+    const challengerWidth = safeWidth >= 32 ? 7 : 6;
+    const incumbentWidth = safeWidth >= 32 ? 7 : 6;
+    const metricWidth = Math.max(6, safeWidth - challengerWidth - incumbentWidth - 2);
     return { safeWidth, metricWidth, challengerWidth, incumbentWidth };
 }
 function SharedHoldoutHeaderRow({ width }) {
@@ -1155,10 +1173,10 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     ]);
     const scoringMixColumns = useMemo(() => splitIntoColumns(scoringMixStats, 2), [scoringMixStats]);
     const modelsColumnGap = terminal.compact ? 1 : 2;
-    const modelsContentWidth = Math.max(54, terminal.width - 8);
+    const modelsContentWidth = Math.max(50, terminal.width - 10);
     const modelsUsableWidth = Math.max(18, modelsContentWidth - modelsColumnGap * 2);
-    const leftModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.28));
-    const middleModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.30));
+    const leftModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.26));
+    const middleModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.27));
     const modelsColumnWidths = [
         leftModelsColumnWidth,
         middleModelsColumnWidth,

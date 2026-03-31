@@ -888,25 +888,51 @@ function InlineStatsRow({
   separator?: string
 }) {
   const safeWidth = Math.max(1, width)
+  const lines: Array<Array<{text: string; color: string}>> = []
+  let currentLine: Array<{text: string; color: string}> = []
+  let currentWidth = 0
+
+  items.forEach((item, index) => {
+    const separatorWidth = index > 0 && currentLine.length > 0 ? separator.length : 0
+    const itemWidth = item.text.length
+    if (currentLine.length > 0 && currentWidth + separatorWidth + itemWidth > safeWidth) {
+      lines.push(currentLine)
+      currentLine = []
+      currentWidth = 0
+    }
+    if (currentLine.length > 0) {
+      currentLine.push({text: separator, color: theme.dim})
+      currentWidth += separator.length
+    }
+    currentLine.push({text: fit(item.text, safeWidth), color: item.color})
+    currentWidth += Math.min(itemWidth, safeWidth)
+  })
+
+  if (currentLine.length > 0) {
+    lines.push(currentLine)
+  }
 
   return (
-    <InkBox width={safeWidth}>
-      {items.map((item, index) => (
-        <React.Fragment key={`${item.text}-${index}`}>
-          {index > 0 ? <Text color={theme.dim}>{separator}</Text> : null}
-          <Text color={item.color}>{item.text}</Text>
-        </React.Fragment>
+    <InkBox width={safeWidth} flexDirection="column">
+      {lines.map((line, lineIndex) => (
+        <InkBox key={`inline-stats-${lineIndex}`} width={safeWidth}>
+          {line.map((segment, segmentIndex) => (
+            <Text key={`${lineIndex}-${segmentIndex}`} color={segment.color}>
+              {segment.text}
+            </Text>
+          ))}
+        </InkBox>
       ))}
     </InkBox>
   )
 }
 
 function recentRunsColumnWidths(width: number) {
-  const safeWidth = Math.max(38, width)
-  const logLossWidth = 8
-  const brierWidth = 7
-  const resultWidth = 8
-  const timestampWidth = Math.max(8, safeWidth - logLossWidth - brierWidth - resultWidth - 3)
+  const safeWidth = Math.max(24, width)
+  const resultWidth = safeWidth >= 34 ? 8 : 6
+  const logLossWidth = safeWidth >= 34 ? 8 : 7
+  const brierWidth = safeWidth >= 32 ? 7 : 6
+  const timestampWidth = Math.max(5, safeWidth - logLossWidth - brierWidth - resultWidth - 3)
   return {safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth}
 }
 
@@ -961,10 +987,10 @@ function RecentRunsDataRow({
 }
 
 function sharedHoldoutColumnWidths(width: number) {
-  const safeWidth = Math.max(34, width)
-  const challengerWidth = 7
-  const incumbentWidth = 7
-  const metricWidth = Math.max(8, safeWidth - challengerWidth - incumbentWidth - 2)
+  const safeWidth = Math.max(24, width)
+  const challengerWidth = safeWidth >= 32 ? 7 : 6
+  const incumbentWidth = safeWidth >= 32 ? 7 : 6
+  const metricWidth = Math.max(6, safeWidth - challengerWidth - incumbentWidth - 2)
   return {safeWidth, metricWidth, challengerWidth, incumbentWidth}
 }
 
@@ -1550,10 +1576,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [scoringMixStats]
   )
   const modelsColumnGap = terminal.compact ? 1 : 2
-  const modelsContentWidth = Math.max(54, terminal.width - 8)
+  const modelsContentWidth = Math.max(50, terminal.width - 10)
   const modelsUsableWidth = Math.max(18, modelsContentWidth - modelsColumnGap * 2)
-  const leftModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.28))
-  const middleModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.30))
+  const leftModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.26))
+  const middleModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.27))
   const modelsColumnWidths: [number, number, number] = [
     leftModelsColumnWidth,
     middleModelsColumnWidth,

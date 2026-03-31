@@ -987,6 +987,135 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_sports_route_candidates_support_valorant_slugs(self) -> None:
+        routes = evaluator._sports_route_candidates("val-uwgc-og-2026-03-25", None)
+        self.assertIn("valorant", routes)
+        self.assertIn("esports", routes)
+        self.assertEqual(routes[0], "valorant")
+
+    def test_resolve_shadow_trades_can_target_one_valorant_match_by_question(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, market_url, trader_address, side, token_id,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-valorant-target",
+                        "market-valorant-target",
+                        "Valorant: University War GC vs Olimpo Gold (BO3) - VCT Game Changers Latin America South Group Stage",
+                        "https://polymarket.com/event/val-uwgc-og-2026-03-25",
+                        "0xabc",
+                        "olimpo gold",
+                        "token-valorant-target",
+                        "buy",
+                        0.43,
+                        10.0,
+                        0.68,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, market_url, trader_address, side, token_id,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-valorant-other",
+                        "market-valorant-other",
+                        "Valorant: Evil Geniuses Academy vs Azure Dragon Gaming (BO3)",
+                        "https://polymarket.com/event/val-ega-adg-2026-03-24",
+                        "0xdef",
+                        "evil geniuses academy",
+                        "token-valorant-other",
+                        "buy",
+                        0.51,
+                        10.0,
+                        0.61,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_001,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                sports_snapshot = {
+                    "ended": True,
+                    "canonicalUrl": "https://polymarket.com/sports/valorant/val-uwgc-og-2026-03-25",
+                    "event": {
+                        "slug": "val-uwgc-og-2026-03-25",
+                        "finishedTimestamp": "2026-03-25T03:00:00Z",
+                        "markets": [
+                            {
+                                "conditionId": "market-valorant-target",
+                                "question": "University War GC vs Olimpo Gold",
+                                "sportsMarketType": "moneyline",
+                                "outcomes": ["University War GC", "Olimpo Gold"],
+                                "teams": [
+                                    {"name": "University War GC", "score": 0},
+                                    {"name": "Olimpo Gold", "score": 2},
+                                ],
+                            }
+                        ],
+                    },
+                }
+                with patch("evaluator._fetch_market", return_value=None), patch(
+                    "evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot
+                ), patch("evaluator.sync_belief_priors", return_value=0), patch(
+                    "evaluator.time.time", return_value=1_700_000_123
+                ):
+                    resolved = evaluator.resolve_shadow_trades(
+                        question_contains="University War GC vs Olimpo Gold"
+                    )
+
+                self.assertEqual(len(resolved), 1)
+                self.assertEqual(resolved[0]["trade_id"], "trade-valorant-target")
+                self.assertEqual(resolved[0]["market_resolved_outcome"], "olimpo gold")
+
+                conn = db.get_conn()
+                target_row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, resolved_at
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-valorant-target",),
+                ).fetchone()
+                other_row = conn.execute(
+                    """
+                    SELECT outcome, market_resolved_outcome, resolved_at
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-valorant-other",),
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(int(target_row["outcome"]), 1)
+                self.assertEqual(target_row["market_resolved_outcome"], "olimpo gold")
+                self.assertEqual(int(target_row["resolved_at"]), 1_700_000_123)
+                self.assertIsNone(other_row["outcome"])
+                self.assertIsNone(other_row["market_resolved_outcome"])
+                self.assertIsNone(other_row["resolved_at"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_cleanup_premature_resolutions_reopens_bad_rows_and_rebuilds_beliefs(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

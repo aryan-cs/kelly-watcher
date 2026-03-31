@@ -5,6 +5,7 @@ import logging
 import re
 import shutil
 import time
+import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,9 @@ _SPORTS_ROUTE_ALIASES = {
     "uel": ("uel",),
     "ucl": ("ucl",),
     "ufc": ("ufc",),
+    "val": ("valorant", "esports"),
+    "valorant": ("valorant", "esports"),
+    "vct": ("valorant", "esports"),
     "wnba": ("wnba",),
     "wta": ("tennis", "wta"),
 }
@@ -91,10 +95,29 @@ AND (
 """
 
 
-def resolve_shadow_trades() -> list[dict]:
+def resolve_shadow_trades(
+    *,
+    trade_id: str | None = None,
+    market_id: str | None = None,
+    question_contains: str | None = None,
+) -> list[dict]:
     conn = get_conn()
+    where_clauses = [
+        "outcome IS NULL",
+        "COALESCE(source_action, 'buy')='buy'",
+    ]
+    params: list[Any] = []
+    if trade_id:
+        where_clauses.append("trade_id=?")
+        params.append(str(trade_id).strip())
+    if market_id:
+        where_clauses.append("market_id=?")
+        params.append(str(market_id).strip())
+    if question_contains:
+        where_clauses.append("LOWER(question) LIKE ?")
+        params.append(f"%{str(question_contains).strip().lower()}%")
     unresolved = conn.execute(
-        """
+        f"""
         SELECT id, trade_id, market_id, question, market_url, market_metadata_json,
                trader_address, trader_name,
                token_id, side, price_at_signal, signal_size_usd,
@@ -103,9 +126,9 @@ def resolve_shadow_trades() -> list[dict]:
                shadow_pnl_usd, actual_pnl_usd,
                real_money, skipped, source_action, exited_at, source_shares
         FROM trade_log
-        WHERE outcome IS NULL
-          AND COALESCE(source_action, 'buy')='buy'
-        """
+        WHERE {" AND ".join(where_clauses)}
+        """,
+        params,
     ).fetchall()
     conn.close()
 
@@ -260,6 +283,17 @@ def resolve_shadow_trades() -> list[dict]:
         logger.info("Resolved %s trades", len(resolved_rows))
     sync_belief_priors()
     return resolved_rows
+
+
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Resolve unresolved shadow trades")
+    parser.add_argument("--trade-id", help="Resolve a specific unresolved trade by trade_id")
+    parser.add_argument("--market-id", help="Resolve unresolved trades for one market_id")
+    parser.add_argument(
+        "--question-contains",
+        help="Resolve unresolved trades whose question contains this text (case-insensitive)",
+    )
+    return parser
 
 
 def _fetch_sports_page_snapshot(
@@ -1107,3 +1141,13 @@ def _rebuild_shadow_positions(conn) -> None:
                 0,
             ),
         )
+
+
+if __name__ == "__main__":
+    args = _build_cli_parser().parse_args()
+    rows = resolve_shadow_trades(
+        trade_id=args.trade_id,
+        market_id=args.market_id,
+        question_contains=args.question_contains,
+    )
+    print(json.dumps(rows, indent=2, default=str))

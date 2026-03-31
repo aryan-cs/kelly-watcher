@@ -116,8 +116,7 @@ export const MODEL_PANEL_DEFS = [
             },
             { label: 'Manual run', text: 'Press t while this panel is selected to queue an in-process retrain through the running bot.' },
             { label: 'Shared gate', text: 'Latest apples-to-apples challenger versus incumbent comparison on the same final holdout. This is the actual deployment guardrail.' },
-            { label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.' },
-            { label: 'Runs 7d / 30d', text: 'How many retrain attempts landed recently, including failures and skips.' }
+            { label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.' }
         ],
         settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS', 'RETRAIN_MIN_SAMPLES']
     }
@@ -980,9 +979,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         manualRunItem,
         { label: 'Total runs', value: formatCount(trainingSummary?.total_runs) },
         { label: 'Last gap', value: formatInterval(lastRetrainGap) },
-        { label: 'Avg gap', value: formatInterval(averageRetrainGap) },
-        { label: 'Runs 7d', value: formatCount(trainingSummary?.runs_7d) },
-        { label: 'Runs 30d', value: formatCount(trainingSummary?.runs_30d) }
+        { label: 'Avg gap', value: formatInterval(averageRetrainGap) }
     ], [
         averageRetrainGap,
         baseCadenceValue,
@@ -995,8 +992,6 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         triggerProgressCurrent,
         triggerProgressTarget,
         triggerProgressValue,
-        trainingSummary?.runs_7d,
-        trainingSummary?.runs_30d,
         trainingSummary?.total_runs
     ]);
     const trainingCycleColumns = useMemo(() => splitIntoColumns(trainingCycleStats, 2), [trainingCycleStats]);

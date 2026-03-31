@@ -1766,6 +1766,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           />
         ))}
         <ModelsSpacer />
+        <ModelsSpacer />
         <ModelsSubsectionTitle title="History Nudge" width={modelsColumnWidths[2]} />
         {howItWorksHistoryRows.map((item) => (
           <DenseModelsRow

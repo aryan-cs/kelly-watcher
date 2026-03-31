@@ -1251,6 +1251,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
             howItWorksScoreRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 13 }))),
             React.createElement(ModelsSpacer, null),
+            React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[2] }),
             howItWorksHistoryRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 13 }))),
             React.createElement(ModelsSpacer, null),

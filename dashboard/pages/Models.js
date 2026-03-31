@@ -663,7 +663,9 @@ function denseModelsLabelWidth(width) {
 }
 function DenseModelsRow({ label, value, width, color = theme.white, selected = false, backgroundColor, labelWidth, minValueWidth = 6, valueAlign = 'right' }) {
     const safeWidth = Math.max(18, width);
-    const boundedLabelWidth = Math.max(6, Math.min(Math.max(6, safeWidth - Math.max(6, minValueWidth) - 1), labelWidth ?? denseModelsLabelWidth(safeWidth)));
+    const maxLabelWidth = Math.max(6, safeWidth - Math.max(6, minValueWidth) - 1);
+    const preferredLabelWidth = Math.max(labelWidth ?? denseModelsLabelWidth(safeWidth), Math.min(label.length, maxLabelWidth));
+    const boundedLabelWidth = Math.max(6, Math.min(maxLabelWidth, preferredLabelWidth));
     const valueWidth = Math.max(Math.max(6, minValueWidth), safeWidth - boundedLabelWidth - 1);
     const rowBackground = selected ? backgroundColor : undefined;
     return (React.createElement(InkBox, { width: safeWidth },

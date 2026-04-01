@@ -238,8 +238,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
         text: 'Progress toward the next retrain trigger. With a deployed model this counts new eligible labels since that model went live; before the first model it falls back to total labeled samples versus the minimum sample gate.'
             },
             {label: 'Manual run', text: 'Press t while this panel is selected to queue an in-process retrain through the running bot.'},
-            {label: 'Shared gate', text: 'Latest apples-to-apples challenger versus incumbent comparison on the same final holdout. This is the actual deployment guardrail.'},
-            {label: 'Last / Avg gap', text: 'Observed time between recent retrain attempts.'}
+            {label: 'Shared gate', text: 'Latest apples-to-apples challenger versus incumbent comparison on the same final holdout. This is the actual deployment guardrail.'}
         ],
         settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS', 'RETRAIN_MIN_SAMPLES']
   }
@@ -879,55 +878,6 @@ function DenseModelsRow({
   )
 }
 
-function InlineStatsRow({
-  width,
-  items,
-  separator = ' / '
-}: {
-  width: number
-  items: {text: string; color: string}[]
-  separator?: string
-}) {
-  const safeWidth = Math.max(1, width)
-  const lines: Array<Array<{text: string; color: string}>> = []
-  let currentLine: Array<{text: string; color: string}> = []
-  let currentWidth = 0
-
-  items.forEach((item, index) => {
-    const separatorWidth = index > 0 && currentLine.length > 0 ? separator.length : 0
-    const itemWidth = item.text.length
-    if (currentLine.length > 0 && currentWidth + separatorWidth + itemWidth > safeWidth) {
-      lines.push(currentLine)
-      currentLine = []
-      currentWidth = 0
-    }
-    if (currentLine.length > 0) {
-      currentLine.push({text: separator, color: theme.dim})
-      currentWidth += separator.length
-    }
-    currentLine.push({text: fit(item.text, safeWidth), color: item.color})
-    currentWidth += Math.min(itemWidth, safeWidth)
-  })
-
-  if (currentLine.length > 0) {
-    lines.push(currentLine)
-  }
-
-  return (
-    <InkBox width={safeWidth} flexDirection="column">
-      {lines.map((line, lineIndex) => (
-        <InkBox key={`inline-stats-${lineIndex}`} width={safeWidth}>
-          {line.map((segment, segmentIndex) => (
-            <Text key={`${lineIndex}-${segmentIndex}`} color={segment.color}>
-              {segment.text}
-            </Text>
-          ))}
-        </InkBox>
-      ))}
-    </InkBox>
-  )
-}
-
 function recentRunsColumnWidths(width: number) {
   const safeWidth = Math.max(24, width)
   const resultWidth = safeWidth >= 34 ? 8 : 6
@@ -983,54 +933,6 @@ function RecentRunsDataRow({
       <Text color={brierColor}>{fitRight(brier, brierWidth)}</Text>
       <Text> </Text>
       <Text color={resultColor}>{fitRight(result, resultWidth)}</Text>
-    </InkBox>
-  )
-}
-
-function sharedHoldoutColumnWidths(width: number) {
-  const safeWidth = Math.max(24, width)
-  const challengerWidth = safeWidth >= 32 ? 7 : 6
-  const incumbentWidth = safeWidth >= 32 ? 7 : 6
-  const metricWidth = Math.max(6, safeWidth - challengerWidth - incumbentWidth - 2)
-  return {safeWidth, metricWidth, challengerWidth, incumbentWidth}
-}
-
-function SharedHoldoutHeaderRow({width}: {width: number}) {
-  const {safeWidth, metricWidth, challengerWidth, incumbentWidth} = sharedHoldoutColumnWidths(width)
-  return (
-    <InkBox width={safeWidth}>
-      <Text color={theme.accent} bold>{fit('Metric', metricWidth)}</Text>
-      <Text> </Text>
-      <Text color={theme.accent} bold>{fitRight('Chal.', challengerWidth)}</Text>
-      <Text> </Text>
-      <Text color={theme.accent} bold>{fitRight('Inc.', incumbentWidth)}</Text>
-    </InkBox>
-  )
-}
-
-function SharedHoldoutMetricRow({
-  width,
-  label,
-  challenger,
-  challengerColor,
-  incumbent,
-  incumbentColor
-}: {
-  width: number
-  label: string
-  challenger: string
-  challengerColor: string
-  incumbent: string
-  incumbentColor: string
-}) {
-  const {safeWidth, metricWidth, challengerWidth, incumbentWidth} = sharedHoldoutColumnWidths(width)
-  return (
-    <InkBox width={safeWidth}>
-      <Text color={theme.dim}>{fit(label, metricWidth)}</Text>
-      <Text> </Text>
-      <Text color={challengerColor}>{fitRight(challenger, challengerWidth)}</Text>
-      <Text> </Text>
-      <Text color={incumbentColor}>{fitRight(incumbent, incumbentWidth)}</Text>
     </InkBox>
   )
 }
@@ -1120,11 +1022,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         .filter((gap): gap is number => gap != null && gap > 0),
     [retrainRuns]
   )
-  const lastRetrainGap = retrainGaps[0] ?? null
-  const averageRetrainGap =
-    retrainGaps.length > 0
-      ? retrainGaps.reduce((sum, gap) => sum + gap, 0) / retrainGaps.length
-      : null
   const calibrationLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 5
   const historyLimit = terminal.compact ? 4 : terminal.height < 42 ? 5 : terminal.height < 50 ? 7 : 10
   const twoColumnPanelContentWidth = stacked
@@ -1319,16 +1216,12 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         color: progressStatColor(triggerProgressCurrent, triggerProgressTarget)
       },
       manualRunItem,
-      {label: 'Total runs', value: formatCount(trainingSummary?.total_runs)},
-      {label: 'Last gap', value: formatInterval(lastRetrainGap)},
-      {label: 'Avg gap', value: formatInterval(averageRetrainGap)}
+      {label: 'Total runs', value: formatCount(trainingSummary?.total_runs)}
     ],
     [
-      averageRetrainGap,
       baseCadenceValue,
       earlyCheckValue,
       earlyTriggerValue,
-      lastRetrainGap,
       manualRunItem,
       nextScheduledRetrainTs,
       retrainHourValue,
@@ -1606,28 +1499,6 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     ],
     [featureCount, latest]
   )
-  const confusionSummaryItems = useMemo(
-    () =>
-      [
-        {
-          text: `${formatCount(confusion?.true_positive)} TP`,
-          color: confusionHeatColor(Math.max(0, Number(confusion?.true_positive || 0)), confusionScale, 'good')
-        },
-        {
-          text: `${formatCount(confusion?.false_positive)} FP`,
-          color: confusionHeatColor(Math.max(0, Number(confusion?.false_positive || 0)), confusionScale, 'bad')
-        },
-        {
-          text: `${formatCount(confusion?.true_negative)} TN`,
-          color: confusionHeatColor(Math.max(0, Number(confusion?.true_negative || 0)), confusionScale, 'good')
-        },
-        {
-          text: `${formatCount(confusion?.false_negative)} FN`,
-          color: confusionHeatColor(Math.max(0, Number(confusion?.false_negative || 0)), confusionScale, 'bad')
-        }
-      ],
-    [confusion, confusionScale]
-  )
   const recentRetrainRuns = useMemo(
     () => retrainRuns.slice(0, historyLimit),
     [historyLimit, retrainRuns]
@@ -1688,7 +1559,16 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           selected={clampedSelectedPanelIndex === 2}
           backgroundColor={selectedRowBackground}
         />
-        <InlineStatsRow width={modelsColumnWidths[1]} items={confusionSummaryItems} />
+        {confusionCells.map((cell) => (
+          <DenseModelsRow
+            key={cell.label}
+            label={cell.label}
+            value={formatCount(cell.value)}
+            color={confusionHeatColor(cell.value, confusionScale, cell.kind)}
+            width={modelsColumnWidths[1]}
+            labelWidth={12}
+          />
+        ))}
         <ModelsSpacer />
         <ModelsSubsectionTitle title="Calibration" width={modelsColumnWidths[1]} />
         {confidenceCheckStats.map((item) => (
@@ -1759,7 +1639,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={item.value}
             color={item.color ?? theme.white}
             width={modelsColumnWidths[2]}
-            labelWidth={13}
+            labelWidth={14}
           />
         ))}
         <ModelsSpacer />
@@ -1772,7 +1652,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             value={item.value}
             color={item.color ?? theme.white}
             width={modelsColumnWidths[2]}
-            labelWidth={13}
+            labelWidth={14}
           />
         ))}
         <ModelsSpacer />
@@ -1798,40 +1678,36 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
         {latestSharedHoldoutRun && latestSharedHoldout ? (
           <>
-            <ModelsSpacer />
-            <ModelsSubsectionTitle title="Latest Shared Holdout Gate" width={modelsColumnWidths[2]} />
             <DenseModelsRow
-              label="Run"
-              value={formatShortDateTime(latestSharedHoldoutRun.finished_at)}
-              width={modelsColumnWidths[2]}
-              labelWidth={11}
-              minValueWidth={16}
-            />
-            <SharedHoldoutHeaderRow width={modelsColumnWidths[2]} />
-            <SharedHoldoutMetricRow
-              label="Log loss"
-              challenger={formatNumber(latestSharedHoldout.challenger_log_loss, 4)}
-              challengerColor={lowerIsBetterColor(latestSharedHoldout.challenger_log_loss, 0.55, 0.69)}
-              incumbent={formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}
-              incumbentColor={lowerIsBetterColor(latestSharedHoldout.incumbent_log_loss, 0.55, 0.69)}
-              width={modelsColumnWidths[2]}
-            />
-            <SharedHoldoutMetricRow
-              label="Brier"
-              challenger={formatNumber(latestSharedHoldout.challenger_brier_score, 4)}
-              challengerColor={lowerIsBetterColor(latestSharedHoldout.challenger_brier_score, 0.18, 0.25)}
-              incumbent={formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}
-              incumbentColor={lowerIsBetterColor(latestSharedHoldout.incumbent_brier_score, 0.18, 0.25)}
-              width={modelsColumnWidths[2]}
-            />
-            <DenseModelsRow
-              label="Gate read"
+              label="Holdout gate"
               value={sharedHoldoutGateReadCompact(latestSharedHoldoutRun)}
               color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
               width={modelsColumnWidths[2]}
               labelWidth={11}
               minValueWidth={16}
-              valueAlign="left"
+            />
+            <DenseModelsRow
+              label="Gate run"
+              value={formatShortDateTime(latestSharedHoldoutRun.finished_at)}
+              width={modelsColumnWidths[2]}
+              labelWidth={11}
+              minValueWidth={16}
+            />
+            <DenseModelsRow
+              label="LL c / i"
+              value={`${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} / ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}`}
+              color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
+              width={modelsColumnWidths[2]}
+              labelWidth={11}
+              minValueWidth={16}
+            />
+            <DenseModelsRow
+              label="Brier c / i"
+              value={`${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`}
+              color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
+              width={modelsColumnWidths[2]}
+              labelWidth={11}
+              minValueWidth={16}
             />
           </>
         ) : null}

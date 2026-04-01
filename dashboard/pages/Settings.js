@@ -38,6 +38,88 @@ function dangerToneColor(tone) {
         return theme.green;
     return theme.dim;
 }
+function formatSettingsDateTime(timestamp) {
+    if (!timestamp)
+        return '-';
+    return new Date(timestamp * 1000).toLocaleString([], {
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit'
+    });
+}
+function formatSettingsTime(timestamp) {
+    if (!timestamp)
+        return '-';
+    return new Date(timestamp * 1000).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+}
+const CONFIG_BLURBS = {
+    POLL_INTERVAL_SECONDS: 'Sets seconds between wallet polling cycles.',
+    MAX_MARKET_HORIZON: 'Limits how far out copied markets may resolve.',
+    WALLET_INACTIVITY_LIMIT: 'Drops wallets after too much source inactivity.',
+    WALLET_SLOW_DROP_MAX_TRACKING_AGE: 'Drops slow wallets after this tracking age.',
+    WALLET_PERFORMANCE_DROP_MIN_TRADES: 'Requires this many trades before performance-based drops.',
+    WALLET_PERFORMANCE_DROP_MAX_WIN_RATE: 'Drops wallets below this profile win rate.',
+    WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN: 'Drops wallets below this average profile return.',
+    WALLET_QUALITY_SIZE_MIN_MULTIPLIER: 'Sets the minimum size multiplier for weaker wallets.',
+    WALLET_QUALITY_SIZE_MAX_MULTIPLIER: 'Sets the maximum size multiplier for stronger wallets.',
+    MIN_CONFIDENCE: 'Requires this minimum confidence before taking trades.',
+    HEURISTIC_MIN_ENTRY_PRICE: 'Sets the heuristic entry price floor.',
+    HEURISTIC_MAX_ENTRY_PRICE: 'Sets the heuristic entry price ceiling.',
+    MODEL_EDGE_MID_CONFIDENCE: 'Mid-confidence trades start using a looser edge gate.',
+    MODEL_EDGE_HIGH_CONFIDENCE: 'High-confidence trades use the loosest edge gate.',
+    MODEL_EDGE_MID_THRESHOLD: 'Sets required edge for mid-confidence model trades.',
+    MODEL_EDGE_HIGH_THRESHOLD: 'Sets required edge for high-confidence model trades.',
+    MIN_BET_USD: 'Sets the smallest order size allowed.',
+    MAX_BET_FRACTION: 'Caps each bet as bankroll fraction.',
+    MAX_TOTAL_OPEN_EXPOSURE_FRACTION: 'Caps total bankroll deployed across open positions.',
+    EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION: 'Raises exposure cap for trusted wallets only.',
+    DUPLICATE_SIDE_OVERRIDE_MIN_SKIPS: 'Needs this many skips before duplicate adds.',
+    DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN: 'Needs this return before duplicate adds qualify.',
+    EXPOSURE_OVERRIDE_MIN_SKIPS: 'Needs this many skips before trusted exposure applies.',
+    EXPOSURE_OVERRIDE_MIN_AVG_RETURN: 'Needs this return before trusted exposure applies.',
+    SHADOW_BANKROLL_USD: 'Sets the paper bankroll for tracker mode.',
+    MAX_DAILY_LOSS_PCT: 'Stops new entries after this daily drawdown.',
+    RETRAIN_BASE_CADENCE: 'Sets how often scheduled retraining runs.',
+    RETRAIN_HOUR_LOCAL: 'Sets the local hour for scheduled retraining.',
+    RETRAIN_EARLY_CHECK_INTERVAL: 'Checks for early retraining on this interval.',
+    RETRAIN_MIN_NEW_LABELS: 'Needs this many new labels for early retraining.',
+    RETRAIN_MIN_SAMPLES: 'Needs this many samples before retraining starts.'
+};
+const DANGER_ACTION_BLURBS = {
+    live_trading: 'Toggles real-money mode in config.',
+    restart_shadow: 'Resets shadow state, history, and models.'
+};
+const DANGER_OPTION_BLURBS = {
+    confirm_disable: 'Turns live trading off in config.',
+    confirm_enable: 'Turns live trading on in config.',
+    keep_active: 'Resets shadow data and keeps active wallets.',
+    keep_all: 'Resets shadow data and keeps all wallets.',
+    clear_all: 'Resets shadow data and clears watched wallets.',
+    cancel: 'Leaves everything unchanged.'
+};
+function SettingsSummaryBox({ title, width, items, columnCount }) {
+    const columns = splitIntoColumns(items, columnCount);
+    const contentWidth = typeof width === 'number' ? Math.max(24, width - 4) : 32;
+    const columnWidth = columnCount <= 1
+        ? contentWidth
+        : Math.max(16, Math.floor((contentWidth - (columnCount - 1) * 2) / columnCount));
+    const valueWidth = Math.max(8, Math.min(16, Math.floor(columnWidth * 0.38)));
+    const labelWidth = Math.max(8, columnWidth - valueWidth - 1);
+    return (React.createElement(Box, { title: title, width: width },
+        React.createElement(InkBox, { width: "100%", marginTop: 1, flexDirection: "column" },
+            React.createElement(InkBox, { width: "100%" }, columns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `${title}-column-${columnIndex}` },
+                React.createElement(InkBox, { flexDirection: "column", width: columnWidth }, column.map((item) => (React.createElement(InkBox, { key: `${title}-${item.label}`, width: columnWidth },
+                    React.createElement(Text, { color: theme.dim }, fit(item.label, labelWidth)),
+                    React.createElement(Text, null, " "),
+                    React.createElement(Text, { color: item.color ?? theme.white }, fitRight(item.value, valueWidth)))))),
+                columnIndex < columns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
+            React.createElement(Text, null, " "))));
+}
 export function Settings({ editor }) {
     const terminal = useTerminalSize();
     const stacked = stackPanels(terminal.width);
@@ -79,29 +161,15 @@ export function Settings({ editor }) {
     const helperWidth = Math.max(24, configContentWidth);
     const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);
     const statusColor = dangerToneColor(editor.statusTone);
-    const configDefaultStatusMessage = editor.isEditing
-        ? 'Type a value. Up/down cycles preset fields. Enter saves. Esc cancels.'
-        : 'Use left/right to switch boxes. Use up/down to move. Enter edits config.';
-    const dangerDefaultStatusMessage = editor.dangerConfirm
-        ? 'Use up/down to choose an action. Enter confirms. Esc cancels.'
-        : 'Use left/right to switch boxes. Use up/down to choose an action. Enter opens it.';
-    const configDescription = selectedField ? `${selectedField.key} - ${selectedField.description}` : '';
-    const configStatusMessage = editor.focusArea === 'config' || editor.isEditing
-        ? (editor.statusMessage || '').trim() || configDefaultStatusMessage
-        : configDefaultStatusMessage;
-    const configDescriptionLines = wrapText(configDescription, helperWidth);
-    const configStatusLines = wrapText(configStatusMessage, helperWidth);
+    const configHelperLine = CONFIG_BLURBS[selectedField?.key || ''] || '';
     const dangerHeaderText = editor.dangerConfirm
         ? editor.dangerConfirm.title
         : selectedDangerAction?.label || 'Danger Zone';
-    const dangerDescription = editor.dangerConfirm
-        ? editor.dangerConfirm.message
-        : selectedDangerAction?.description || '';
-    const dangerStatusMessage = editor.focusArea === 'danger' || editor.dangerConfirm
-        ? (editor.statusMessage || '').trim() || dangerDefaultStatusMessage
-        : dangerDefaultStatusMessage;
-    const dangerDescriptionLines = wrapText(dangerDescription, dangerContentWidth);
-    const dangerStatusLines = wrapText(dangerStatusMessage, dangerContentWidth);
+    const selectedDangerOption = editor.dangerConfirm?.options[editor.dangerConfirm.selectedIndex];
+    const dangerBlurb = DANGER_OPTION_BLURBS[selectedDangerOption?.id || '']
+        || DANGER_ACTION_BLURBS[editor.dangerConfirm?.actionId || selectedDangerAction?.id || '']
+        || '';
+    const dangerHelperLines = wrapText(dangerBlurb, dangerContentWidth);
     const usernames = useMemo(() => {
         const lookup = new Map(identityMap);
         for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -120,19 +188,28 @@ export function Settings({ editor }) {
     const walletAddressWidth = Math.max(18, Math.min(42, Math.floor(walletTableWidth * 0.62)));
     const walletUsernameWidth = Math.max(8, walletTableWidth - walletIndexWidth - walletAddressWidth - 2);
     const liveTradingEnabled = isLiveTradingEnabled(envData.rawValues);
+    const topRowGap = stacked ? 0 : 1;
+    const topRowWidth = Math.max(24, terminal.width - 4);
+    const topBoxWidth = stacked ? '100%' : Math.max(28, Math.floor((topRowWidth - topRowGap) / 2));
+    const topBoxContentWidth = typeof topBoxWidth === 'number' ? Math.max(24, topBoxWidth - 4) : 24;
+    const topBoxColumnCount = 1;
+    const botStateStats = [
+        { label: 'Mode', value: (state.mode || 'unknown').toUpperCase(), color: state.mode === 'live' ? theme.green : theme.dim },
+        { label: 'Wallets watched', value: String(state.n_wallets || 0) },
+        { label: 'Poll interval', value: state.poll_interval ? `${state.poll_interval}s` : '-' },
+        { label: 'Bankroll', value: state.bankroll_usd != null ? `$${formatNumber(state.bankroll_usd)}` : '-' }
+    ];
+    const databaseStats = [
+        { label: 'trade_log rows', value: String(counts[0]?.n || 0) },
+        { label: 'Started at', value: formatSettingsDateTime(state.started_at) },
+        { label: 'Last poll', value: formatSettingsTime(state.last_poll_at) },
+        { label: 'Poll duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-' }
+    ];
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
-            React.createElement(Box, { title: "Bot State", width: stacked ? '100%' : '50%' },
-                React.createElement(StatRow, { label: "Mode", value: (state.mode || 'unknown').toUpperCase(), color: state.mode === 'live' ? theme.green : theme.dim }),
-                React.createElement(StatRow, { label: "Wallets watched", value: String(state.n_wallets || 0) }),
-                React.createElement(StatRow, { label: "Poll interval", value: state.poll_interval ? `${state.poll_interval}s` : '-' }),
-                React.createElement(StatRow, { label: "Bankroll", value: state.bankroll_usd != null ? `$${formatNumber(state.bankroll_usd)}` : '-' })),
-            !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(Box, { title: "Database", width: stacked ? '100%' : '50%' },
-                React.createElement(StatRow, { label: "trade_log rows", value: String(counts[0]?.n || 0) }),
-                React.createElement(StatRow, { label: "Started at", value: state.started_at ? new Date(state.started_at * 1000).toLocaleString() : '-' }),
-                React.createElement(StatRow, { label: "Last poll", value: state.last_poll_at ? new Date(state.last_poll_at * 1000).toLocaleTimeString() : '-' }),
-                React.createElement(StatRow, { label: "Poll duration", value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-' }))),
+            React.createElement(SettingsSummaryBox, { title: "Bot State", width: topBoxWidth, items: botStateStats, columnCount: topBoxColumnCount }),
+            !stacked ? React.createElement(InkBox, { width: topRowGap }) : React.createElement(InkBox, { height: 1 }),
+            React.createElement(SettingsSummaryBox, { title: "Database", width: topBoxWidth, items: databaseStats, columnCount: topBoxColumnCount })),
         React.createElement(InkBox, { marginTop: 1, flexDirection: stacked ? 'column' : 'row', width: "100%" },
             React.createElement(Box, { title: "Editable Config", width: stacked ? '100%' : configBoxWidth, accent: true },
                 React.createElement(InkBox, { width: "100%" }, configColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `config-column-${columnIndex}` },
@@ -156,16 +233,14 @@ export function Settings({ editor }) {
                             React.createElement(Text, { color: valueColor, backgroundColor: rowBackground, bold: selected }, fitRight(truncate(shownValue, configValueWidth), configValueWidth))));
                     })),
                     columnIndex < configColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    configDescriptionLines.map((line, index) => (React.createElement(Text, { key: `config-desc-${index}`, color: theme.dim }, line))),
-                    configStatusLines.map((line, index) => (React.createElement(Text, { key: `config-status-${index}`, color: statusColor }, line))))),
+                React.createElement(InkBox, { flexDirection: "column", marginTop: 1, marginBottom: 1 },
+                    React.createElement(Text, { color: statusColor }, configHelperLine))),
             !stacked ? React.createElement(InkBox, { width: middleRowGap }) : React.createElement(InkBox, { height: 1 }),
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.red, flexDirection: "column", width: stacked ? '100%' : undefined, flexGrow: stacked ? 0 : 1, flexShrink: 1, paddingX: 1 },
                 React.createElement(InkBox, null,
                     React.createElement(Text, { color: theme.red, bold: true }, "Danger Zone")),
                 editor.dangerConfirm ? (React.createElement(React.Fragment, null,
                     React.createElement(Text, { color: theme.yellow, bold: true }, truncate(dangerHeaderText, dangerContentWidth)),
-                    dangerDescriptionLines.map((line, index) => (React.createElement(Text, { key: `danger-desc-${index}`, color: theme.dim }, line))),
                     React.createElement(InkBox, { flexDirection: "column", marginTop: 1 }, editor.dangerConfirm.options.map((option, index) => {
                         const selected = index === editor.dangerConfirm?.selectedIndex;
                         const rowBackground = selected ? selectedRowBackground : undefined;
@@ -185,8 +260,7 @@ export function Settings({ editor }) {
                         React.createElement(Text, { color: valueColor, backgroundColor: rowBackground, bold: selected }, fitRight(truncate(value, dangerValueWidth), dangerValueWidth))));
                 }))),
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    editor.dangerConfirm ? null : dangerDescriptionLines.map((line, index) => (React.createElement(Text, { key: `danger-help-${index}`, color: theme.dim }, line))),
-                    dangerStatusLines.map((line, index) => (React.createElement(Text, { key: `danger-status-${index}`, color: statusColor }, line)))))),
+                    dangerHelperLines.map((line, index) => (React.createElement(Text, { key: `danger-status-${index}`, color: statusColor }, line)))))),
         React.createElement(InkBox, { marginTop: 1 },
             React.createElement(Box, { title: "Environment" }, envRows.length || envData.watchedWallets.length ? (React.createElement(React.Fragment, null,
                 envRows.map((row) => (React.createElement(StatRow, { key: row.key, label: row.key, value: row.value }))),

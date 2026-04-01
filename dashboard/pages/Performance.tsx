@@ -1946,7 +1946,7 @@ function groupBucketedPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
   const levelCount = 4
   const gapWidth = 0
-  const columnWidth = 2
+  const columnWidth = 1
   const chartWidth = Math.max(1, width)
   const leftPaddingWidth = Math.max(0, chartWidth - (entries.length * columnWidth))
   const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)))

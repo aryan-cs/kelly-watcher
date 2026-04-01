@@ -45,11 +45,41 @@ def active_env_profile(
     return profile_from_argv(argv) or DEFAULT_ENV_PROFILE
 
 
+def save_dir_for_repo(repo_root: Path = REPO_ROOT) -> Path:
+    return repo_root / "save"
+
+
 def env_path_for_profile(profile: str, repo_root: Path = REPO_ROOT) -> Path:
     normalized = _normalize_profile(profile)
     if not normalized:
         raise ValueError(f"Unsupported env profile: {profile!r}")
+    return save_dir_for_repo(repo_root) / f".env.{normalized}"
+
+
+def repo_env_path_for_profile(profile: str, repo_root: Path = REPO_ROOT) -> Path:
+    normalized = _normalize_profile(profile)
+    if not normalized:
+        raise ValueError(f"Unsupported env profile: {profile!r}")
     return repo_root / f".env.{normalized}"
+
+
+def ensure_persistent_env_path(
+    profile: str,
+    repo_root: Path = REPO_ROOT,
+) -> Path:
+    preferred = env_path_for_profile(profile, repo_root)
+    if preferred.exists():
+        return preferred
+
+    repo_env = repo_env_path_for_profile(profile, repo_root)
+    legacy = repo_root / LEGACY_ENV_PATH.name
+    source = repo_env if repo_env.exists() else legacy if profile == "dev" and legacy.exists() else None
+    if source is None:
+        return preferred
+
+    preferred.parent.mkdir(parents=True, exist_ok=True)
+    preferred.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return preferred
 
 
 def active_env_path(
@@ -59,9 +89,12 @@ def active_env_path(
 ) -> Path:
     profile = active_env_profile(argv, environ)
     preferred = env_path_for_profile(profile, repo_root)
+    repo_env = repo_env_path_for_profile(profile, repo_root)
     legacy = repo_root / LEGACY_ENV_PATH.name
     if preferred.exists():
         return preferred
+    if repo_env.exists():
+        return repo_env
     if profile == "dev" and legacy.exists():
         return legacy
     return preferred
@@ -81,6 +114,7 @@ def init_env_profile(
     override: bool = False,
 ) -> tuple[str, Path]:
     profile = active_env_profile(argv, environ)
+    ensure_persistent_env_path(profile)
     path = active_env_path(argv, environ)
     os.environ[ENV_PROFILE_ENV_VAR] = profile
     if path.exists():

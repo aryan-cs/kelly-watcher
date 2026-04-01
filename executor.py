@@ -34,6 +34,7 @@ from trade_contract import (
     remaining_entry_size_expr,
     remaining_source_shares_expr,
 )
+from wallet_trust import total_open_exposure_cap_fraction_for_wallet
 
 logger = logging.getLogger(__name__)
 DATA_API = "https://data-api.polymarket.com"
@@ -767,6 +768,7 @@ class PolymarketExecutor:
         *,
         proposed_size_usd: float,
         account_equity: float,
+        trader_address: str = "",
     ) -> TotalExposureDecision:
         if proposed_size_usd <= 0:
             return TotalExposureDecision(allowed_size_usd=0.0, clipped=False)
@@ -778,7 +780,11 @@ class PolymarketExecutor:
             )
 
         total_open, _, _ = self._open_risk_snapshot(real_money=use_real_money())
-        total_cap = account_equity * max_total_open_exposure_fraction()
+        effective_cap_fraction = total_open_exposure_cap_fraction_for_wallet(
+            trader_address,
+            max_total_open_exposure_fraction(),
+        )
+        total_cap = account_equity * effective_cap_fraction
         total_after = total_open + proposed_size_usd
         if total_after <= total_cap + 1e-9:
             return TotalExposureDecision(
@@ -794,7 +800,7 @@ class PolymarketExecutor:
                 clipped=False,
                 block_reason=(
                     f"total open exposure would be ${total_after:.2f} on ${account_equity:.2f} equity, "
-                    f"above the {max_total_open_exposure_fraction() * 100:.1f}% cap"
+                    f"above the {effective_cap_fraction * 100:.1f}% cap"
                 ),
             )
 

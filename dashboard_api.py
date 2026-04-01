@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from config import use_real_money
 from db import DB_PATH, get_conn
-from env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile
+from env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, repo_env_path_for_profile
 from runtime_paths import (
     BOT_STATE_FILE,
     DATA_DIR,
@@ -50,9 +50,19 @@ SAFE_ENV_KEYS = {
     "WALLET_QUALITY_SIZE_MAX_MULTIPLIER",
     "MIN_CONFIDENCE",
     "HEURISTIC_MIN_ENTRY_PRICE",
+    "HEURISTIC_MAX_ENTRY_PRICE",
+    "MODEL_EDGE_MID_CONFIDENCE",
+    "MODEL_EDGE_HIGH_CONFIDENCE",
+    "MODEL_EDGE_MID_THRESHOLD",
+    "MODEL_EDGE_HIGH_THRESHOLD",
     "MIN_BET_USD",
     "MAX_BET_FRACTION",
     "MAX_TOTAL_OPEN_EXPOSURE_FRACTION",
+    "EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION",
+    "DUPLICATE_SIDE_OVERRIDE_MIN_SKIPS",
+    "DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN",
+    "EXPOSURE_OVERRIDE_MIN_SKIPS",
+    "EXPOSURE_OVERRIDE_MIN_AVG_RETURN",
     "SHADOW_BANKROLL_USD",
     "MAX_DAILY_LOSS_PCT",
     "RETRAIN_BASE_CADENCE",
@@ -104,6 +114,12 @@ def _api_token() -> str | None:
 def _source_env_path() -> Path:
     if ENV_PATH.exists():
         return ENV_PATH
+    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if ENV_PATH != expected_env_path:
+        return ENV_PATH
+    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if repo_env_path.exists():
+        return repo_env_path
     if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
         return LEGACY_ENV_PATH
     return ENV_EXAMPLE_PATH
@@ -180,6 +196,7 @@ def _write_env_value(key: str, value: str) -> None:
                 updated.append("")
             updated.append(f"{key}={value}")
 
+        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
         ENV_PATH.write_text("\n".join(updated) + "\n", encoding="utf-8")
 
 

@@ -7,7 +7,15 @@ import numpy as np
 
 from adaptive_confidence import adaptive_min_confidence_for_signal
 from beliefs import adjust_heuristic_confidence
-from config import heuristic_min_entry_price, model_path
+from config import (
+    heuristic_max_entry_price,
+    heuristic_min_entry_price,
+    model_edge_high_confidence,
+    model_edge_high_threshold,
+    model_edge_mid_confidence,
+    model_edge_mid_threshold,
+    model_path,
+)
 from economic_model import apply_probability_calibrator, expected_return_to_confidence, inverse_return_target
 from features import FEATURE_COLS, build_feature_map
 from market_scorer import MarketFeatures, MarketScorer
@@ -142,11 +150,15 @@ class SignalEngine:
             else market_features.mid
         )
         min_entry_price = heuristic_min_entry_price()
+        max_entry_price = heuristic_max_entry_price()
         passed_confidence = adjusted >= min_floor
-        passed_entry_price = execution_price >= min_entry_price
+        passed_entry_price = execution_price >= min_entry_price and execution_price < max_entry_price
         passed = passed_confidence and passed_entry_price
         if not passed_entry_price:
-            reason = f"heuristic entry price {execution_price:.3f} < min {min_entry_price:.3f}"
+            reason = (
+                f"heuristic entry price {execution_price:.3f} outside band "
+                f"{min_entry_price:.3f}-{max_entry_price:.3f}"
+            )
         elif not passed_confidence:
             reason = f"heuristic conf {adjusted:.3f} < min {min_floor:.3f}"
         else:
@@ -161,6 +173,7 @@ class SignalEngine:
             "min_confidence": min_floor,
             "entry_price": round(execution_price, 4),
             "min_entry_price": round(min_entry_price, 4),
+            "max_entry_price": round(max_entry_price, 4),
             "adaptive_floor": adaptive_floor.as_dict(),
             "passed": passed,
             "reason": reason,
@@ -206,7 +219,12 @@ class SignalEngine:
             base_confidence = None
             confidence = float(self._xgb.predict_proba(ordered)[0, 1])
         edge = confidence - execution_price
-        edge_threshold = float(self._xgb_policy.get("edge_threshold", 0.0))
+        base_edge_threshold = float(self._xgb_policy.get("edge_threshold", 0.0))
+        edge_threshold = base_edge_threshold
+        if confidence >= model_edge_high_confidence():
+            edge_threshold = model_edge_high_threshold()
+        elif confidence >= model_edge_mid_confidence():
+            edge_threshold = model_edge_mid_threshold()
         passed = edge >= edge_threshold
         reason = (
             "passed model edge threshold"
@@ -219,6 +237,7 @@ class SignalEngine:
             "expected_return": round(expected_return, 4) if expected_return is not None else None,
             "edge": round(edge, 4),
             "edge_threshold": round(edge_threshold, 4),
+            "base_edge_threshold": round(base_edge_threshold, 4),
             "passed": passed,
             "reason": reason,
             "veto": None,

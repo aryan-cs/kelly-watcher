@@ -102,11 +102,51 @@ export const editableConfigFields = [
     },
     {
         key: 'HEURISTIC_MIN_ENTRY_PRICE',
-        label: 'Heuristic Min Entry Price',
+        label: 'Heuristic Entry Min',
         kind: 'float',
-        description: 'Minimum entry price the heuristic path will buy. Set to 0 to disable. Applies live on the next loop.',
+        description: 'Lower bound of the heuristic entry-price band. The heuristic path only buys when the entry price lands within the configured band. Applies live on the next loop.',
+        defaultValue: '0.45',
+        liveApplies: true
+    },
+    {
+        key: 'HEURISTIC_MAX_ENTRY_PRICE',
+        label: 'Heuristic Entry Max',
+        kind: 'float',
+        description: 'Upper bound of the heuristic entry-price band. Prices at or above this level are rejected on the heuristic path. Applies live on the next loop.',
         defaultValue: '0.50',
         liveApplies: true
+    },
+    {
+        key: 'MODEL_EDGE_MID_CONFIDENCE',
+        label: 'Edge Mid Conf',
+        kind: 'float',
+        description: 'Confidence level where the model edge threshold relaxes from the model default to the mid-confidence override. Restart bot to apply.',
+        defaultValue: '0.55',
+        liveApplies: false
+    },
+    {
+        key: 'MODEL_EDGE_HIGH_CONFIDENCE',
+        label: 'Edge High Conf',
+        kind: 'float',
+        description: 'Confidence level where the model edge threshold relaxes to the high-confidence override. Restart bot to apply.',
+        defaultValue: '0.65',
+        liveApplies: false
+    },
+    {
+        key: 'MODEL_EDGE_MID_THRESHOLD',
+        label: 'Edge Mid Threshold',
+        kind: 'float',
+        description: 'Required model edge once confidence reaches the mid-confidence cutoff. Restart bot to apply.',
+        defaultValue: '0.0125',
+        liveApplies: false
+    },
+    {
+        key: 'MODEL_EDGE_HIGH_THRESHOLD',
+        label: 'Edge High Threshold',
+        kind: 'float',
+        description: 'Required model edge once confidence reaches the high-confidence cutoff. Restart bot to apply.',
+        defaultValue: '0.0',
+        liveApplies: false
     },
     {
         key: 'MIN_BET_USD',
@@ -130,6 +170,46 @@ export const editableConfigFields = [
         kind: 'float',
         description: 'Caps total deployed capital across all open positions as a percent of bankroll. Enter 0 to disable or any percent from 1 through 100. Applies live on the next loop.',
         defaultValue: '25',
+        liveApplies: true
+    },
+    {
+        key: 'EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION',
+        label: 'Trusted Exposure Cap',
+        kind: 'float',
+        description: 'Higher total-open-exposure cap used only for wallets that qualify for the exposure override. Enter 0 to disable or any percent from 1 through 100. Applies live on the next loop.',
+        defaultValue: '30',
+        liveApplies: true
+    },
+    {
+        key: 'DUPLICATE_SIDE_OVERRIDE_MIN_SKIPS',
+        label: 'Dup Override Min Skips',
+        kind: 'int',
+        description: 'Minimum historical duplicate-side skips required before a wallet can qualify for duplicate-position adds. Applies live on the next loop.',
+        defaultValue: '20',
+        liveApplies: true
+    },
+    {
+        key: 'DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN',
+        label: 'Dup Override Min Return',
+        kind: 'float',
+        description: 'Minimum average counterfactual return required for duplicate-side override qualification. Applies live on the next loop.',
+        defaultValue: '0.05',
+        liveApplies: true
+    },
+    {
+        key: 'EXPOSURE_OVERRIDE_MIN_SKIPS',
+        label: 'Exp Override Min Skips',
+        kind: 'int',
+        description: 'Minimum historical exposure-cap skips required before a wallet can qualify for the higher trusted exposure cap. Applies live on the next loop.',
+        defaultValue: '20',
+        liveApplies: true
+    },
+    {
+        key: 'EXPOSURE_OVERRIDE_MIN_AVG_RETURN',
+        label: 'Exp Override Min Return',
+        kind: 'float',
+        description: 'Minimum average counterfactual return required for trusted exposure-cap qualification. Applies live on the next loop.',
+        defaultValue: '0.03',
         liveApplies: true
     },
     {
@@ -192,7 +272,11 @@ export const editableConfigFields = [
     }
 ];
 const durationPattern = /^(\d+(\.\d+)?)([smhdw])$/i;
-const percentEditableFieldKeys = new Set(['MAX_DAILY_LOSS_PCT', 'MAX_TOTAL_OPEN_EXPOSURE_FRACTION']);
+const percentEditableFieldKeys = new Set([
+    'MAX_DAILY_LOSS_PCT',
+    'MAX_TOTAL_OPEN_EXPOSURE_FRACTION',
+    'EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION'
+]);
 let dashboardConfigCache = {
     safeValues: {},
     watchedWallets: [],
@@ -359,11 +443,17 @@ export function validateEditableConfigValue(field, raw) {
     if (field.key === 'POLL_INTERVAL_SECONDS' && numeric < 0.05) {
         return { ok: false, error: 'Poll interval must be at least 0.05 seconds.' };
     }
-    if ((field.key === 'MIN_CONFIDENCE' || field.key === 'MAX_BET_FRACTION') && (numeric <= 0 || numeric > 1)) {
+    if (((field.key === 'MIN_CONFIDENCE' ||
+        field.key === 'MAX_BET_FRACTION' ||
+        field.key === 'MODEL_EDGE_MID_CONFIDENCE' ||
+        field.key === 'MODEL_EDGE_HIGH_CONFIDENCE' ||
+        field.key === 'MODEL_EDGE_MID_THRESHOLD' ||
+        field.key === 'MODEL_EDGE_HIGH_THRESHOLD')) && (numeric < 0 || numeric > 1)) {
         return { ok: false, error: `${field.label} must be between 0 and 1.` };
     }
-    if (field.key === 'HEURISTIC_MIN_ENTRY_PRICE' && (numeric < 0 || numeric >= 1)) {
-        return { ok: false, error: `${field.label} must be between 0 and 1. Use 0 to disable.` };
+    if ((field.key === 'HEURISTIC_MIN_ENTRY_PRICE' && (numeric < 0 || numeric >= 1)) ||
+        (field.key === 'HEURISTIC_MAX_ENTRY_PRICE' && (numeric <= 0 || numeric > 1))) {
+        return { ok: false, error: `${field.label} must be between 0 and 1.` };
     }
     if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_WIN_RATE' && (numeric < 0 || numeric > 1)) {
         return { ok: false, error: `${field.label} must be between 0 and 1.` };
@@ -374,8 +464,17 @@ export function validateEditableConfigValue(field, raw) {
     if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN' && (numeric < -1 || numeric > 1)) {
         return { ok: false, error: `${field.label} must be between -1 and 1.` };
     }
-    if (field.key === 'MAX_DAILY_LOSS_PCT' && (numeric < 0 || numeric > 100)) {
+    if ((field.key === 'DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN' || field.key === 'EXPOSURE_OVERRIDE_MIN_AVG_RETURN') &&
+        (numeric < -1 || numeric > 1)) {
+        return { ok: false, error: `${field.label} must be between -1 and 1.` };
+    }
+    if ((field.key === 'MAX_DAILY_LOSS_PCT' ||
+        field.key === 'MAX_TOTAL_OPEN_EXPOSURE_FRACTION' ||
+        field.key === 'EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION') && (numeric < 0 || numeric > 100)) {
         return { ok: false, error: `${field.label} must be between 0 and 100.` };
+    }
+    if ((field.key === 'DUPLICATE_SIDE_OVERRIDE_MIN_SKIPS' || field.key === 'EXPOSURE_OVERRIDE_MIN_SKIPS') && numeric < 0) {
+        return { ok: false, error: `${field.label} must be 0 or greater.` };
     }
     if ((field.key === 'MIN_BET_USD' || field.key === 'SHADOW_BANKROLL_USD') && numeric <= 0) {
         return { ok: false, error: `${field.label} must be greater than 0.` };

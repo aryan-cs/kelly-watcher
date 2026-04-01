@@ -199,13 +199,21 @@ class DedupeCache:
         with self._lock:
             self.open_positions = new_open_positions
 
-    def gate(self, trade_id: str, market_id: str, side: str, token_id: str = "") -> tuple[bool, str]:
+    def gate(
+        self,
+        trade_id: str,
+        market_id: str,
+        side: str,
+        token_id: str = "",
+        *,
+        allow_existing_position: bool = False,
+    ) -> tuple[bool, str]:
         with self._lock:
             if trade_id in self.seen_ids:
                 return False, "duplicate trade_id"
             if self._has_pending(market_id, token_id, side):
                 return False, "order in-flight"
-            if self._has_position(market_id, token_id, side):
+            if not allow_existing_position and self._has_position(market_id, token_id, side):
                 return False, "position already open"
             return True, "ok"
 

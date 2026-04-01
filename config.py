@@ -5,7 +5,13 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, init_env_profile
+from env_profile import (
+    LEGACY_ENV_PATH,
+    active_env_profile,
+    env_path_for_profile,
+    init_env_profile,
+    repo_env_path_for_profile,
+)
 from runtime_paths import MODEL_ARTIFACT_PATH, REPO_ROOT
 
 ENV_PROFILE = active_env_profile()
@@ -28,6 +34,12 @@ class ConfigError(ValueError):
 def _source_env_path() -> Path:
     if ENV_PATH.exists():
         return ENV_PATH
+    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if ENV_PATH != expected_env_path:
+        return ENV_PATH
+    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if repo_env_path.exists():
+        return repo_env_path
     if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
         return LEGACY_ENV_PATH
     return ENV_PATH
@@ -140,9 +152,54 @@ def min_bet_usd() -> float:
 def heuristic_min_entry_price() -> float:
     return _get_env_file_bounded_float(
         "HEURISTIC_MIN_ENTRY_PRICE",
-        "0.50",
+        "0.45",
         minimum=0.0,
         maximum=0.99,
+    )
+
+
+def heuristic_max_entry_price() -> float:
+    return _get_env_file_bounded_float(
+        "HEURISTIC_MAX_ENTRY_PRICE",
+        "0.50",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+def model_edge_mid_confidence() -> float:
+    return _get_env_file_bounded_float(
+        "MODEL_EDGE_MID_CONFIDENCE",
+        "0.55",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+def model_edge_high_confidence() -> float:
+    return _get_env_file_bounded_float(
+        "MODEL_EDGE_HIGH_CONFIDENCE",
+        "0.65",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+def model_edge_mid_threshold() -> float:
+    return _get_env_file_bounded_float(
+        "MODEL_EDGE_MID_THRESHOLD",
+        "0.0125",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+def model_edge_high_threshold() -> float:
+    return _get_env_file_bounded_float(
+        "MODEL_EDGE_HIGH_THRESHOLD",
+        "0.0",
+        minimum=0.0,
+        maximum=1.0,
     )
 
 
@@ -398,6 +455,26 @@ def max_daily_loss_pct() -> float:
 
 def max_total_open_exposure_fraction() -> float:
     return _get_bounded_float("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.60", minimum=0.0, maximum=1.0)
+
+
+def exposure_override_total_cap_fraction() -> float:
+    return _get_bounded_float("EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION", "0.30", minimum=0.0, maximum=1.0)
+
+
+def duplicate_side_override_min_skips() -> int:
+    return _get_bounded_int("DUPLICATE_SIDE_OVERRIDE_MIN_SKIPS", "20", minimum=0)
+
+
+def duplicate_side_override_min_avg_return() -> float:
+    return _get_bounded_float("DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN", "0.05", minimum=-1.0, maximum=1.0)
+
+
+def exposure_override_min_skips() -> int:
+    return _get_bounded_int("EXPOSURE_OVERRIDE_MIN_SKIPS", "20", minimum=0)
+
+
+def exposure_override_min_avg_return() -> float:
+    return _get_bounded_float("EXPOSURE_OVERRIDE_MIN_AVG_RETURN", "0.03", minimum=-1.0, maximum=1.0)
 
 
 def max_market_exposure_fraction() -> float:

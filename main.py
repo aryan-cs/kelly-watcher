@@ -27,13 +27,23 @@ from auto_retrain import retrain_cycle_report, should_retrain_early
 from beliefs import sync_belief_priors
 from config import (
     ConfigError,
+    duplicate_side_override_min_avg_return,
+    duplicate_side_override_min_skips,
+    exposure_override_min_avg_return,
+    exposure_override_min_skips,
+    exposure_override_total_cap_fraction,
     discovery_poll_interval_multiplier,
+    heuristic_max_entry_price,
     hot_wallet_count,
     live_min_shadow_resolved,
     live_require_shadow_history,
     max_bet_fraction,
     max_daily_loss_pct,
     max_feed_staleness_seconds,
+    model_edge_high_confidence,
+    model_edge_high_threshold,
+    model_edge_mid_confidence,
+    model_edge_mid_threshold,
     max_live_drawdown_pct,
     max_live_health_failures,
     max_market_horizon_seconds,
@@ -99,7 +109,11 @@ from runtime_paths import (
     MANUAL_TRADE_REQUEST_FILE,
     SHADOW_RESET_REQUEST_FILE,
 )
-from wallet_trust import apply_wallet_trust_sizing, get_wallet_trust_state
+from wallet_trust import (
+    allow_duplicate_side_override,
+    apply_wallet_trust_sizing,
+    get_wallet_trust_state,
+)
 from watchlist_manager import WatchlistManager
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -560,10 +574,12 @@ def _apply_total_exposure_cap_to_size(
     *,
     requested_size_usd: float,
     account_equity: float,
+    trader_address: str = "",
 ) -> tuple[float, str | None, str | None]:
     decision = executor.total_open_exposure_decision(
         proposed_size_usd=requested_size_usd,
         account_equity=account_equity,
+        trader_address=trader_address,
     )
     if decision.block_reason:
         return 0.0, decision.block_reason, None
@@ -591,12 +607,14 @@ def _apply_total_exposure_cap_to_sizing(
     *,
     bankroll: float,
     account_equity: float,
+    trader_address: str = "",
 ) -> tuple[dict, str | None]:
     requested_size_usd = float(sizing.get("dollar_size") or 0.0)
     allowed_size_usd, block_reason, clip_note = _apply_total_exposure_cap_to_size(
         executor,
         requested_size_usd=requested_size_usd,
         account_equity=account_equity,
+        trader_address=trader_address,
     )
     if block_reason:
         blocked = dict(sizing)
@@ -946,6 +964,7 @@ def _process_manual_trade_request(
             executor,
             requested_size_usd=amount_usd,
             account_equity=account_equity,
+            trader_address=trader_address,
         )
         if clip_note:
             logger.info("Manual buy %s: %s", manual_trade_id, clip_note)
@@ -1471,7 +1490,13 @@ def process_event(
         _reject_event(event, signal["confidence"], 0.0, reason)
         return 0.0
 
-    ok, gate_reason = dedup.gate(event.trade_id, event.market_id, event.side, event.token_id)
+    ok, gate_reason = dedup.gate(
+        event.trade_id,
+        event.market_id,
+        event.side,
+        event.token_id,
+        allow_existing_position=allow_duplicate_side_override(event.trader_address),
+    )
     preview_sizing = size_signal(
         signal["confidence"],
         rough_fill.avg_price if rough_fill.avg_price > 0 else event.price,
@@ -1540,6 +1565,7 @@ def process_event(
         sizing,
         bankroll=bankroll,
         account_equity=account_equity,
+        trader_address=event.trader_address,
     )
     if clip_note:
         logger.info("Trade %s: %s", event.trade_id, clip_note)
@@ -1572,6 +1598,7 @@ def process_event(
             next_sizing,
             bankroll=bankroll,
             account_equity=account_equity,
+            trader_address=event.trader_address,
         )
         if clip_note:
             logger.info("Trade %s: %s", event.trade_id, clip_note)
@@ -1776,6 +1803,24 @@ def _validate_startup() -> None:
     min_entry_price = _capture_config(heuristic_min_entry_price)
     if min_entry_price is not None and not (0.0 <= min_entry_price < 1.0):
         errors.append(f"HEURISTIC_MIN_ENTRY_PRICE must be between 0 and 1, got {min_entry_price}")
+    max_entry_price = _capture_config(heuristic_max_entry_price)
+    if max_entry_price is not None and not (0.0 < max_entry_price <= 1.0):
+        errors.append(f"HEURISTIC_MAX_ENTRY_PRICE must be between 0 and 1, got {max_entry_price}")
+    if (
+        min_entry_price is not None
+        and max_entry_price is not None
+        and min_entry_price >= max_entry_price
+    ):
+        errors.append("HEURISTIC_MIN_ENTRY_PRICE must be smaller than HEURISTIC_MAX_ENTRY_PRICE")
+    mid_edge_confidence = _capture_config(model_edge_mid_confidence)
+    high_edge_confidence = _capture_config(model_edge_high_confidence)
+    mid_edge_threshold = _capture_config(model_edge_mid_threshold)
+    high_edge_threshold = _capture_config(model_edge_high_threshold)
+    duplicate_override_min_skips = _capture_config(duplicate_side_override_min_skips)
+    duplicate_override_min_avg_return_value = _capture_config(duplicate_side_override_min_avg_return)
+    exposure_override_min_skips_value = _capture_config(exposure_override_min_skips)
+    exposure_override_min_avg_return_value = _capture_config(exposure_override_min_avg_return)
+    exposure_override_cap_fraction = _capture_config(exposure_override_total_cap_fraction)
 
     _capture_config(hot_wallet_count)
     _capture_config(warm_wallet_count)
@@ -1797,6 +1842,7 @@ def _validate_startup() -> None:
     min_window_seconds = _capture_config(min_execution_window_seconds)
     max_horizon_seconds = _capture_config(max_market_horizon_seconds)
     _capture_config(max_source_trade_age_seconds)
+    total_open_exposure_limit = _capture_config(max_total_open_exposure_fraction)
     _capture_config(retrain_min_samples)
 
     if (
@@ -1824,6 +1870,18 @@ def _validate_startup() -> None:
             "WALLET_QUALITY_SIZE_MIN_MULTIPLIER must be <= WALLET_QUALITY_SIZE_MAX_MULTIPLIER"
         )
     if (
+        mid_edge_confidence is not None
+        and high_edge_confidence is not None
+        and mid_edge_confidence > high_edge_confidence
+    ):
+        errors.append("MODEL_EDGE_MID_CONFIDENCE must be <= MODEL_EDGE_HIGH_CONFIDENCE")
+    if (
+        mid_edge_threshold is not None
+        and high_edge_threshold is not None
+        and mid_edge_threshold < high_edge_threshold
+    ):
+        errors.append("MODEL_EDGE_MID_THRESHOLD must be >= MODEL_EDGE_HIGH_THRESHOLD")
+    if (
         min_window_seconds is not None
         and max_horizon_seconds is not None
         and max_horizon_seconds != float("inf")
@@ -1837,6 +1895,40 @@ def _validate_startup() -> None:
     ):
         errors.append(
             "WALLET_DISCOVERY_MIN_RESOLVED_BUYS must be <= WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS"
+        )
+    if exposure_override_cap_fraction is not None and not (0.0 <= exposure_override_cap_fraction <= 1.0):
+        errors.append(
+            "EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION must be between 0 and 1, "
+            f"got {exposure_override_cap_fraction}"
+        )
+    if (
+        exposure_override_cap_fraction is not None
+        and total_open_exposure_limit is not None
+        and total_open_exposure_limit > exposure_override_cap_fraction + 1e-9
+    ):
+        warnings.append(
+            "EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION is below MAX_TOTAL_OPEN_EXPOSURE_FRACTION, "
+            "so wallet-specific exposure overrides will have no effect"
+        )
+    if duplicate_override_min_skips is not None and duplicate_override_min_skips < 0:
+        errors.append("DUPLICATE_SIDE_OVERRIDE_MIN_SKIPS must be >= 0")
+    if exposure_override_min_skips_value is not None and exposure_override_min_skips_value < 0:
+        errors.append("EXPOSURE_OVERRIDE_MIN_SKIPS must be >= 0")
+    if (
+        duplicate_override_min_avg_return_value is not None
+        and not (-1.0 <= duplicate_override_min_avg_return_value <= 1.0)
+    ):
+        errors.append(
+            "DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN must be between -1 and 1, "
+            f"got {duplicate_override_min_avg_return_value}"
+        )
+    if (
+        exposure_override_min_avg_return_value is not None
+        and not (-1.0 <= exposure_override_min_avg_return_value <= 1.0)
+    ):
+        errors.append(
+            "EXPOSURE_OVERRIDE_MIN_AVG_RETURN must be between -1 and 1, "
+            f"got {exposure_override_min_avg_return_value}"
         )
 
     if use_real_money():

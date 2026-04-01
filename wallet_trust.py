@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from config import (
+    duplicate_side_override_min_avg_return,
+    duplicate_side_override_min_skips,
+    exposure_override_min_avg_return,
+    exposure_override_min_skips,
+    exposure_override_total_cap_fraction,
     min_bet_usd,
     wallet_cold_start_min_observed_buys,
     wallet_discovery_min_observed_buys,
@@ -15,6 +21,9 @@ from config import (
 )
 from db import get_conn
 from trade_contract import OBSERVED_BUY_SQL, RESOLVED_EXECUTED_ENTRY_SQL, RESOLVED_OBSERVED_BUY_SQL, resolved_pnl_expr
+
+OVERRIDE_CACHE_TTL_SECONDS = 60.0
+_override_cache: tuple[float, dict[str, "WalletSkipOverrideStats"]] | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +95,14 @@ class WalletTrustState:
             "min_resolved_observed_buy_count": self.min_resolved_observed_buy_count,
             "min_resolved_copied_buy_count": self.min_resolved_copied_buy_count,
         }
+
+
+@dataclass(frozen=True)
+class WalletSkipOverrideStats:
+    duplicate_skip_count: int = 0
+    duplicate_avg_return: float | None = None
+    exposure_skip_count: int = 0
+    exposure_avg_return: float | None = None
 
 
 def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
@@ -188,6 +205,93 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
         min_resolved_observed_buy_count=discovery_min_resolved,
         min_resolved_copied_buy_count=trusted_min_resolved_copied,
     )
+
+
+def reset_wallet_skip_override_cache() -> None:
+    global _override_cache
+    _override_cache = None
+
+
+def allow_duplicate_side_override(wallet_address: str) -> bool:
+    wallet_key = str(wallet_address or "").strip().lower()
+    if not wallet_key:
+        return False
+    stats = _load_wallet_skip_override_stats().get(wallet_key, WalletSkipOverrideStats())
+    avg_return = float(stats.duplicate_avg_return or 0.0)
+    return (
+        stats.duplicate_skip_count >= duplicate_side_override_min_skips()
+        and avg_return >= duplicate_side_override_min_avg_return()
+    )
+
+
+def total_open_exposure_cap_fraction_for_wallet(wallet_address: str, base_fraction: float) -> float:
+    wallet_key = str(wallet_address or "").strip().lower()
+    if not wallet_key:
+        return base_fraction
+    stats = _load_wallet_skip_override_stats().get(wallet_key, WalletSkipOverrideStats())
+    avg_return = float(stats.exposure_avg_return or 0.0)
+    if (
+        stats.exposure_skip_count >= exposure_override_min_skips()
+        and avg_return >= exposure_override_min_avg_return()
+    ):
+        return max(base_fraction, exposure_override_total_cap_fraction())
+    return base_fraction
+
+
+def _load_wallet_skip_override_stats() -> dict[str, WalletSkipOverrideStats]:
+    global _override_cache
+    now = time.time()
+    if _override_cache and (now - _override_cache[0]) < OVERRIDE_CACHE_TTL_SECONDS:
+        return _override_cache[1]
+
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT trader_address, skip_reason, counterfactual_return
+            FROM trade_log
+            WHERE skipped=1
+              AND COALESCE(source_action, 'buy')='buy'
+              AND counterfactual_return IS NOT NULL
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    aggregates: dict[str, dict[str, list[float]]] = {}
+    for row in rows:
+        wallet_key = str(row["trader_address"] or "").strip().lower()
+        if not wallet_key:
+            continue
+        reason = str(row["skip_reason"] or "").strip().lower()
+        ret = float(row["counterfactual_return"] or 0.0)
+        bucket = None
+        if reason.startswith("we already had this side of the market open"):
+            bucket = "duplicate"
+        elif reason.startswith("total open exposure would be"):
+            bucket = "exposure"
+        if bucket is None:
+            continue
+        wallet_stats = aggregates.setdefault(wallet_key, {"duplicate": [], "exposure": []})
+        wallet_stats[bucket].append(ret)
+
+    snapshot: dict[str, WalletSkipOverrideStats] = {}
+    for wallet_key, wallet_stats in aggregates.items():
+        duplicate_returns = wallet_stats["duplicate"]
+        exposure_returns = wallet_stats["exposure"]
+        snapshot[wallet_key] = WalletSkipOverrideStats(
+            duplicate_skip_count=len(duplicate_returns),
+            duplicate_avg_return=(
+                sum(duplicate_returns) / len(duplicate_returns) if duplicate_returns else None
+            ),
+            exposure_skip_count=len(exposure_returns),
+            exposure_avg_return=(
+                sum(exposure_returns) / len(exposure_returns) if exposure_returns else None
+            ),
+        )
+
+    _override_cache = (now, snapshot)
+    return snapshot
 
 
 def wallet_quality_multiplier(quality_score: float | None) -> float:

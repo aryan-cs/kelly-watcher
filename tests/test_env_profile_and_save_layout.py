@@ -9,6 +9,14 @@ import runtime_paths
 
 
 class EnvProfileTests(unittest.TestCase):
+    def test_env_path_for_profile_points_into_save_folder(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            self.assertEqual(
+                env_profile.env_path_for_profile("prod", repo_root=repo_root),
+                repo_root / "save" / ".env.prod",
+            )
+
     def test_no_flag_defaults_to_dev_even_if_env_requests_prod(self) -> None:
         self.assertEqual(
             env_profile.active_env_profile(argv=[], environ={env_profile.ENV_PROFILE_ENV_VAR: "prod"}),
@@ -40,6 +48,31 @@ class EnvProfileTests(unittest.TestCase):
                 env_profile.active_env_path(argv=["--dev"], environ={}, repo_root=repo_root),
                 legacy_env,
             )
+
+    def test_save_folder_env_takes_precedence_over_repo_env(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            save_env = repo_root / "save" / ".env.dev"
+            repo_env = repo_root / ".env.dev"
+            save_env.parent.mkdir(parents=True, exist_ok=True)
+            save_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
+            repo_env.write_text("USE_REAL_MONEY=true\n", encoding="utf-8")
+
+            self.assertEqual(
+                env_profile.active_env_path(argv=["--dev"], environ={}, repo_root=repo_root),
+                save_env,
+            )
+
+    def test_ensure_persistent_env_path_copies_repo_env_into_save_folder(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            repo_env = repo_root / ".env.dev"
+            repo_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
+
+            save_env = env_profile.ensure_persistent_env_path("dev", repo_root=repo_root)
+
+            self.assertEqual(save_env, repo_root / "save" / ".env.dev")
+            self.assertEqual(save_env.read_text(encoding="utf-8"), "USE_REAL_MONEY=false\n")
 
 
 class RuntimeSaveLayoutTests(unittest.TestCase):

@@ -7,7 +7,14 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import db
-from wallet_trust import WalletTrustState, apply_wallet_trust_sizing, get_wallet_trust_state
+from wallet_trust import (
+    WalletTrustState,
+    allow_duplicate_side_override,
+    apply_wallet_trust_sizing,
+    get_wallet_trust_state,
+    reset_wallet_skip_override_cache,
+    total_open_exposure_cap_fraction_for_wallet,
+)
 
 
 def _insert_trade(
@@ -52,7 +59,46 @@ def _insert_trade(
     )
 
 
+def _insert_counterfactual_skip(
+    conn,
+    *,
+    trade_id: str,
+    trader_address: str,
+    skip_reason: str,
+    counterfactual_return: float,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO trade_log (
+            trade_id, market_id, question, trader_address, side, source_action,
+            price_at_signal, signal_size_usd, confidence, kelly_fraction,
+            real_money, skipped, skip_reason, placed_at, counterfactual_return
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            trade_id,
+            f"market-{trade_id}",
+            "Question",
+            trader_address,
+            "yes",
+            "buy",
+            0.50,
+            10.0,
+            0.70,
+            0.10,
+            0,
+            1,
+            skip_reason,
+            1_700_000_000,
+            counterfactual_return,
+        ),
+    )
+
+
 class WalletTrustTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        reset_wallet_skip_override_cache()
+
     def test_wallet_stays_in_cold_start_until_it_has_minimum_observed_buys(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -342,6 +388,95 @@ class WalletTrustTest(unittest.TestCase):
         self.assertAlmostEqual(adjusted["wallet_trust_effective_multiplier"], 1.1, places=6)
         self.assertAlmostEqual(adjusted["kelly_f"], 0.11, places=6)
         self.assertIn("size scaled to 110%", adjusted["wallet_trust_note"])
+
+    def test_duplicate_side_override_qualifies_wallets_with_strong_counterfactual_history(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                for idx in range(20):
+                    _insert_counterfactual_skip(
+                        conn,
+                        trade_id=f"dup-good-{idx}",
+                        trader_address="0xgood",
+                        skip_reason="we already had this side of the market open, so the trade was skipped",
+                        counterfactual_return=0.10,
+                    )
+                for idx in range(20):
+                    _insert_counterfactual_skip(
+                        conn,
+                        trade_id=f"dup-bad-{idx}",
+                        trader_address="0xbad",
+                        skip_reason="we already had this side of the market open, so the trade was skipped",
+                        counterfactual_return=-0.02,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "DUPLICATE_SIDE_OVERRIDE_MIN_SKIPS": "20",
+                        "DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN": "0.05",
+                    },
+                    clear=False,
+                ):
+                    reset_wallet_skip_override_cache()
+                    self.assertTrue(allow_duplicate_side_override("0xgood"))
+                    self.assertFalse(allow_duplicate_side_override("0xbad"))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_total_open_exposure_override_returns_higher_cap_for_qualified_wallets(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                for idx in range(20):
+                    _insert_counterfactual_skip(
+                        conn,
+                        trade_id=f"exp-good-{idx}",
+                        trader_address="0xgood",
+                        skip_reason="total open exposure would be $280.00 on $1000.00 equity, above the 25.0% cap",
+                        counterfactual_return=0.08,
+                    )
+                for idx in range(20):
+                    _insert_counterfactual_skip(
+                        conn,
+                        trade_id=f"exp-bad-{idx}",
+                        trader_address="0xbad",
+                        skip_reason="total open exposure would be $280.00 on $1000.00 equity, above the 25.0% cap",
+                        counterfactual_return=-0.01,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "EXPOSURE_OVERRIDE_MIN_SKIPS": "20",
+                        "EXPOSURE_OVERRIDE_MIN_AVG_RETURN": "0.03",
+                        "EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION": "0.30",
+                    },
+                    clear=False,
+                ):
+                    reset_wallet_skip_override_cache()
+                    self.assertAlmostEqual(
+                        total_open_exposure_cap_fraction_for_wallet("0xgood", 0.25),
+                        0.30,
+                        places=6,
+                    )
+                    self.assertAlmostEqual(
+                        total_open_exposure_cap_fraction_for_wallet("0xbad", 0.25),
+                        0.25,
+                        places=6,
+                    )
+            finally:
+                db.DB_PATH = original_db_path
 
 
 if __name__ == "__main__":

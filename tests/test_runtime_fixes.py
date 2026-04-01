@@ -232,12 +232,16 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_dashboard_config_snapshot_includes_max_market_horizon_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            env_path = Path(tmpdir) / ".env"
+            env_path = Path(tmpdir) / "save" / ".env.dev"
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            repo_env_path = Path(tmpdir) / ".env.dev"
             env_example_path = Path(tmpdir) / ".env.example"
-            env_path.write_text("MAX_MARKET_HORIZON=365d\n", encoding="utf-8")
+            repo_env_path.write_text("MAX_MARKET_HORIZON=365d\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
 
             with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                dashboard_api, "REPO_ROOT", Path(tmpdir)
+            ), patch.object(
                 dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
             ):
                 dashboard_api._write_env_value("MAX_MARKET_HORIZON", "7d")
@@ -248,12 +252,16 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_dashboard_config_snapshot_includes_open_exposure_cap_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            env_path = Path(tmpdir) / ".env"
+            env_path = Path(tmpdir) / "save" / ".env.dev"
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            repo_env_path = Path(tmpdir) / ".env.dev"
             env_example_path = Path(tmpdir) / ".env.example"
-            env_path.write_text("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.60\n", encoding="utf-8")
+            repo_env_path.write_text("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.60\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
 
             with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                dashboard_api, "REPO_ROOT", Path(tmpdir)
+            ), patch.object(
                 dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
             ):
                 dashboard_api._write_env_value("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.42")
@@ -264,12 +272,16 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_dashboard_config_snapshot_includes_heuristic_min_entry_price_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            env_path = Path(tmpdir) / ".env"
+            env_path = Path(tmpdir) / "save" / ".env.dev"
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            repo_env_path = Path(tmpdir) / ".env.dev"
             env_example_path = Path(tmpdir) / ".env.example"
-            env_path.write_text("HEURISTIC_MIN_ENTRY_PRICE=0.35\n", encoding="utf-8")
+            repo_env_path.write_text("HEURISTIC_MIN_ENTRY_PRICE=0.35\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
 
             with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                dashboard_api, "REPO_ROOT", Path(tmpdir)
+            ), patch.object(
                 dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
             ):
                 dashboard_api._write_env_value("HEURISTIC_MIN_ENTRY_PRICE", "0.50")

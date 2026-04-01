@@ -22,6 +22,7 @@ from env_profile import (
     active_env_profile,
     add_env_profile_flags,
     env_path_for_profile,
+    repo_env_path_for_profile,
 )
 from runtime_paths import (
     BACKGROUND_LOG_PATH,
@@ -42,6 +43,12 @@ RestartWalletMode = Literal["keep_active", "keep_all", "clear_all"]
 def _source_env_path() -> Path:
     if ENV_PATH.exists():
         return ENV_PATH
+    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if ENV_PATH != expected_env_path:
+        return ENV_PATH
+    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if repo_env_path.exists():
+        return repo_env_path
     if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
         return LEGACY_ENV_PATH
     return ENV_EXAMPLE_PATH
@@ -85,6 +92,7 @@ def _write_env_value(key: str, value: str) -> None:
             updated.append("")
         updated.append(f"{key}={value}")
 
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     ENV_PATH.write_text("\n".join(updated) + "\n", encoding="utf-8")
 
 

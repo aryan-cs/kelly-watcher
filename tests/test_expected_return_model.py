@@ -70,6 +70,43 @@ class ExpectedReturnModelTest(unittest.TestCase):
             self.assertAlmostEqual(result["raw_confidence"], round(expected_confidence, 4), places=4)
             self.assertAlmostEqual(result["expected_return"], 0.35, places=4)
             self.assertTrue(result["passed"])
+            self.assertAlmostEqual(result["edge_threshold"], 0.01, places=4)
+
+    def test_signal_engine_relaxes_edge_threshold_for_high_confidence_predictions(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.35)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.02},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            market_features = SimpleNamespace(execution_price=0.4, mid=0.4)
+            with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch.object(
+                engine.market_scorer,
+                "score",
+                return_value={"score": 0.7, "veto": None},
+            ), patch(
+                "signal_engine.build_feature_map",
+                return_value={column: 0.5 for column in FEATURE_COLS[:3]},
+            ), patch(
+                "signal_engine.expected_return_to_confidence",
+                return_value=0.8,
+            ):
+                result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
+
+            self.assertAlmostEqual(result["base_edge_threshold"], 0.02, places=6)
+            self.assertAlmostEqual(result["edge_threshold"], 0.0, places=6)
+            self.assertTrue(result["passed"])
 
     def test_signal_engine_blocks_heuristic_entries_below_min_entry_price(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
@@ -95,6 +132,9 @@ class ExpectedReturnModelTest(unittest.TestCase):
             return_value=adaptive_floor,
         ), patch(
             "signal_engine.heuristic_min_entry_price",
+            return_value=0.45,
+        ), patch(
+            "signal_engine.heuristic_max_entry_price",
             return_value=0.5,
         ):
             result = engine._evaluate_heuristic(
@@ -104,7 +144,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             )
 
         self.assertFalse(result["passed"])
-        self.assertEqual(result["reason"], "heuristic entry price 0.420 < min 0.500")
+        self.assertEqual(result["reason"], "heuristic entry price 0.420 outside band 0.450-0.500")
 
 
 if __name__ == "__main__":

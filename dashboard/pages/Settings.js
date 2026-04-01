@@ -45,7 +45,8 @@ function formatSettingsDateTime(timestamp) {
         month: 'numeric',
         day: 'numeric',
         hour: 'numeric',
-        minute: '2-digit'
+        minute: '2-digit',
+        hour12: true
     });
 }
 function formatSettingsTime(timestamp) {
@@ -104,16 +105,17 @@ const DANGER_OPTION_BLURBS = {
 };
 function SettingsSummaryBox({ title, width, items, columnCount }) {
     const columns = splitIntoColumns(items, columnCount);
-    const contentWidth = typeof width === 'number' ? Math.max(24, width - 4) : 32;
+    const contentWidth = typeof width === 'number' ? Math.max(24, width - 5) : 31;
     const columnWidth = columnCount <= 1
         ? contentWidth
         : Math.max(16, Math.floor((contentWidth - (columnCount - 1) * 2) / columnCount));
-    const valueWidth = Math.max(8, Math.min(16, Math.floor(columnWidth * 0.38)));
-    const labelWidth = Math.max(8, columnWidth - valueWidth - 1);
+    const rowWidth = Math.max(1, columnWidth - 1);
+    const valueWidth = Math.max(8, Math.min(14, Math.floor(rowWidth * 0.52)));
+    const labelWidth = Math.max(8, rowWidth - valueWidth - 1);
     return (React.createElement(Box, { title: title, width: width },
         React.createElement(InkBox, { width: "100%", marginTop: 1, flexDirection: "column" },
             React.createElement(InkBox, { width: "100%" }, columns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `${title}-column-${columnIndex}` },
-                React.createElement(InkBox, { flexDirection: "column", width: columnWidth }, column.map((item) => (React.createElement(InkBox, { key: `${title}-${item.label}`, width: columnWidth },
+                React.createElement(InkBox, { flexDirection: "column", width: columnWidth }, column.map((item) => (React.createElement(InkBox, { key: `${title}-${item.label}`, width: rowWidth },
                     React.createElement(Text, { color: theme.dim }, fit(item.label, labelWidth)),
                     React.createElement(Text, null, " "),
                     React.createElement(Text, { color: item.color ?? theme.white }, fitRight(item.value, valueWidth)))))),
@@ -162,6 +164,7 @@ export function Settings({ editor }) {
     const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);
     const statusColor = dangerToneColor(editor.statusTone);
     const configHelperLine = CONFIG_BLURBS[selectedField?.key || ''] || '';
+    const configHelperLines = wrapText(configHelperLine, helperWidth);
     const dangerHeaderText = editor.dangerConfirm
         ? editor.dangerConfirm.title
         : selectedDangerAction?.label || 'Danger Zone';
@@ -192,18 +195,18 @@ export function Settings({ editor }) {
     const topRowWidth = Math.max(24, terminal.width - 4);
     const topBoxWidth = stacked ? '100%' : Math.max(28, Math.floor((topRowWidth - topRowGap) / 2));
     const topBoxContentWidth = typeof topBoxWidth === 'number' ? Math.max(24, topBoxWidth - 4) : 24;
-    const topBoxColumnCount = 1;
+    const topBoxColumnCount = topBoxContentWidth >= 34 ? 2 : 1;
     const botStateStats = [
         { label: 'Mode', value: (state.mode || 'unknown').toUpperCase(), color: state.mode === 'live' ? theme.green : theme.dim },
-        { label: 'Wallets watched', value: String(state.n_wallets || 0) },
-        { label: 'Poll interval', value: state.poll_interval ? `${state.poll_interval}s` : '-' },
+        { label: 'Wallets', value: String(state.n_wallets || 0) },
+        { label: 'Poll int', value: state.poll_interval ? `${state.poll_interval}s` : '-' },
         { label: 'Bankroll', value: state.bankroll_usd != null ? `$${formatNumber(state.bankroll_usd)}` : '-' }
     ];
     const databaseStats = [
-        { label: 'trade_log rows', value: String(counts[0]?.n || 0) },
-        { label: 'Started at', value: formatSettingsDateTime(state.started_at) },
+        { label: 'Rows', value: String(counts[0]?.n || 0) },
+        { label: 'Started', value: formatSettingsDateTime(state.started_at) },
         { label: 'Last poll', value: formatSettingsTime(state.last_poll_at) },
-        { label: 'Poll duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-' }
+        { label: 'Duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-' }
     ];
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
@@ -233,8 +236,9 @@ export function Settings({ editor }) {
                             React.createElement(Text, { color: valueColor, backgroundColor: rowBackground, bold: selected }, fitRight(truncate(shownValue, configValueWidth), configValueWidth))));
                     })),
                     columnIndex < configColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1, marginBottom: 1 },
-                    React.createElement(Text, { color: statusColor }, configHelperLine))),
+                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
+                    React.createElement(Text, null, " "),
+                    configHelperLines.map((line, index) => (React.createElement(Text, { key: `config-status-${index}`, color: statusColor }, line))))),
             !stacked ? React.createElement(InkBox, { width: middleRowGap }) : React.createElement(InkBox, { height: 1 }),
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.red, flexDirection: "column", width: stacked ? '100%' : undefined, flexGrow: stacked ? 0 : 1, flexShrink: 1, paddingX: 1 },
                 React.createElement(InkBox, null,

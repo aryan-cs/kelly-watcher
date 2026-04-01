@@ -1413,7 +1413,7 @@ export function Wallets({
               <Text color={theme.dim}>{fitRight('LAST TRADE', layout.lastSeenWidth)}</Text>
             </InkBox>
 
-            <InkBox flexDirection="column" width="100%" flexGrow={1} justifyContent="flex-start">
+            <InkBox flexDirection="column" width="100%" height={trackedVisibleRows} flexShrink={0} justifyContent="flex-start">
               {visibleTrackedWallets.length ? (
                 visibleTrackedWallets.map((wallet) => {
                   const isSelected = wallet.trader_address === selectedTrackedWalletAddress
@@ -1503,7 +1503,9 @@ export function Wallets({
                 <Text color={theme.dim}>No watched wallets configured yet.</Text>
               )}
             </InkBox>
-            <Text color={theme.dim}>{trackedFooterText}</Text>
+            <InkBox width="100%" height={1} flexShrink={0}>
+              <Text color={theme.dim}>{trackedFooterText}</Text>
+            </InkBox>
           </Box>
         </InkBox>
 
@@ -1523,7 +1525,7 @@ export function Wallets({
               <Text color={theme.dim}>{fitRight('DROPPED', droppedLayout.droppedWidth)}</Text>
             </InkBox>
 
-            <InkBox flexDirection="column" width="100%" flexGrow={1} justifyContent="flex-start">
+            <InkBox flexDirection="column" width="100%" height={droppedVisibleRows} flexShrink={0} justifyContent="flex-start">
               {visibleDroppedWallets.length ? (
                 visibleDroppedWallets.map((wallet) => {
                   const isSelected = wallet.trader_address === selectedDroppedWalletAddress
@@ -1561,7 +1563,9 @@ export function Wallets({
                 <Text color={theme.dim}>No dropped wallets.</Text>
               )}
             </InkBox>
-            <Text color={theme.dim}>{droppedFooterText}</Text>
+            <InkBox width="100%" height={1} flexShrink={0}>
+              <Text color={theme.dim}>{droppedFooterText}</Text>
+            </InkBox>
           </Box>
         </InkBox>
       </InkBox>

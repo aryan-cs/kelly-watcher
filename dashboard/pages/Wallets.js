@@ -984,7 +984,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                         React.createElement(Text, { color: theme.dim }, fitRight('COPY P&L', layout.copyPnlWidth)),
                         React.createElement(Text, { color: theme.dim }, " "),
                         React.createElement(Text, { color: theme.dim }, fitRight('LAST TRADE', layout.lastSeenWidth))),
-                    React.createElement(InkBox, { flexDirection: "column", width: "100%", flexGrow: 1, justifyContent: "flex-start" }, visibleTrackedWallets.length ? (visibleTrackedWallets.map((wallet) => {
+                    React.createElement(InkBox, { flexDirection: "column", width: "100%", height: trackedVisibleRows, flexShrink: 0, justifyContent: "flex-start" }, visibleTrackedWallets.length ? (visibleTrackedWallets.map((wallet) => {
                         const isSelected = wallet.trader_address === selectedTrackedWalletAddress;
                         const usernameLabel = wallet.username || '-';
                         const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`;
@@ -1032,7 +1032,8 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth))));
                     })) : (React.createElement(Text, { color: theme.dim }, "No watched wallets configured yet."))),
-                    React.createElement(Text, { color: theme.dim }, trackedFooterText))),
+                    React.createElement(InkBox, { width: "100%", height: 1, flexShrink: 0 },
+                        React.createElement(Text, { color: theme.dim }, trackedFooterText)))),
             React.createElement(InkBox, { height: 1 }),
             React.createElement(InkBox, { flexGrow: 1 },
                 React.createElement(Box, { title: `Dropped Wallet Profiles: ${droppedWallets.length}`, height: "100%", accent: activePane === 'dropped' },
@@ -1046,7 +1047,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                         React.createElement(Text, { color: theme.dim }, fitRight('LAST TRADE', droppedLayout.lastSeenWidth)),
                         React.createElement(Text, { color: theme.dim }, " "),
                         React.createElement(Text, { color: theme.dim }, fitRight('DROPPED', droppedLayout.droppedWidth))),
-                    React.createElement(InkBox, { flexDirection: "column", width: "100%", flexGrow: 1, justifyContent: "flex-start" }, visibleDroppedWallets.length ? (visibleDroppedWallets.map((wallet) => {
+                    React.createElement(InkBox, { flexDirection: "column", width: "100%", height: droppedVisibleRows, flexShrink: 0, justifyContent: "flex-start" }, visibleDroppedWallets.length ? (visibleDroppedWallets.map((wallet) => {
                         const isSelected = wallet.trader_address === selectedDroppedWalletAddress;
                         const usernameLabel = wallet.username || '-';
                         const displayUsername = `${isSelected ? '> ' : '  '}${usernameLabel}`;
@@ -1065,7 +1066,8 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: isSelected ? theme.accent : theme.red, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth))));
                     })) : (React.createElement(Text, { color: theme.dim }, "No dropped wallets."))),
-                    React.createElement(Text, { color: theme.dim }, droppedFooterText))))));
+                    React.createElement(InkBox, { width: "100%", height: 1, flexShrink: 0 },
+                        React.createElement(Text, { color: theme.dim }, droppedFooterText)))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%", height: "100%" },
         renderPageBody(),
         detailOpen && selectedWallet ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },

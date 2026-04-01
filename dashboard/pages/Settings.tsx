@@ -90,7 +90,8 @@ function formatSettingsDateTime(timestamp: number | null | undefined): string {
     month: 'numeric',
     day: 'numeric',
     hour: 'numeric',
-    minute: '2-digit'
+    minute: '2-digit',
+    hour12: true
   })
 }
 
@@ -163,12 +164,13 @@ function SettingsSummaryBox({
   columnCount: number
 }) {
   const columns = splitIntoColumns(items, columnCount)
-  const contentWidth = typeof width === 'number' ? Math.max(24, width - 4) : 32
+  const contentWidth = typeof width === 'number' ? Math.max(24, width - 5) : 31
   const columnWidth = columnCount <= 1
     ? contentWidth
     : Math.max(16, Math.floor((contentWidth - (columnCount - 1) * 2) / columnCount))
-  const valueWidth = Math.max(8, Math.min(16, Math.floor(columnWidth * 0.38)))
-  const labelWidth = Math.max(8, columnWidth - valueWidth - 1)
+  const rowWidth = Math.max(1, columnWidth - 1)
+  const valueWidth = Math.max(8, Math.min(14, Math.floor(rowWidth * 0.52)))
+  const labelWidth = Math.max(8, rowWidth - valueWidth - 1)
 
   return (
     <Box title={title} width={width}>
@@ -178,7 +180,7 @@ function SettingsSummaryBox({
             <React.Fragment key={`${title}-column-${columnIndex}`}>
               <InkBox flexDirection="column" width={columnWidth}>
                 {column.map((item) => (
-                  <InkBox key={`${title}-${item.label}`} width={columnWidth}>
+                  <InkBox key={`${title}-${item.label}`} width={rowWidth}>
                     <Text color={theme.dim}>{fit(item.label, labelWidth)}</Text>
                     <Text> </Text>
                     <Text color={item.color ?? theme.white}>{fitRight(item.value, valueWidth)}</Text>
@@ -240,6 +242,7 @@ export function Settings({editor}: SettingsProps) {
   const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
   const statusColor = dangerToneColor(editor.statusTone)
   const configHelperLine = CONFIG_BLURBS[selectedField?.key || ''] || ''
+  const configHelperLines = wrapText(configHelperLine, helperWidth)
   const dangerHeaderText = editor.dangerConfirm
     ? editor.dangerConfirm.title
     : selectedDangerAction?.label || 'Danger Zone'
@@ -271,18 +274,18 @@ export function Settings({editor}: SettingsProps) {
   const topRowWidth = Math.max(24, terminal.width - 4)
   const topBoxWidth = stacked ? '100%' : Math.max(28, Math.floor((topRowWidth - topRowGap) / 2))
   const topBoxContentWidth = typeof topBoxWidth === 'number' ? Math.max(24, topBoxWidth - 4) : 24
-  const topBoxColumnCount = 1
+  const topBoxColumnCount = topBoxContentWidth >= 34 ? 2 : 1
   const botStateStats: SummaryStat[] = [
     {label: 'Mode', value: (state.mode || 'unknown').toUpperCase(), color: state.mode === 'live' ? theme.green : theme.dim},
-    {label: 'Wallets watched', value: String(state.n_wallets || 0)},
-    {label: 'Poll interval', value: state.poll_interval ? `${state.poll_interval}s` : '-'},
+    {label: 'Wallets', value: String(state.n_wallets || 0)},
+    {label: 'Poll int', value: state.poll_interval ? `${state.poll_interval}s` : '-'},
     {label: 'Bankroll', value: state.bankroll_usd != null ? `$${formatNumber(state.bankroll_usd)}` : '-'}
   ]
   const databaseStats: SummaryStat[] = [
-    {label: 'trade_log rows', value: String(counts[0]?.n || 0)},
-    {label: 'Started at', value: formatSettingsDateTime(state.started_at)},
+    {label: 'Rows', value: String(counts[0]?.n || 0)},
+    {label: 'Started', value: formatSettingsDateTime(state.started_at)},
     {label: 'Last poll', value: formatSettingsTime(state.last_poll_at)},
-    {label: 'Poll duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-'}
+    {label: 'Duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-'}
   ]
 
   return (
@@ -334,8 +337,13 @@ export function Settings({editor}: SettingsProps) {
             ))}
           </InkBox>
 
-          <InkBox flexDirection="column" marginTop={1} marginBottom={1}>
-            <Text color={statusColor}>{configHelperLine}</Text>
+          <InkBox flexDirection="column" marginTop={1}>
+            <Text> </Text>
+            {configHelperLines.map((line, index) => (
+              <Text key={`config-status-${index}`} color={statusColor}>
+                {line}
+              </Text>
+            ))}
           </InkBox>
         </Box>
 

@@ -5,14 +5,15 @@ export function BarSparkline({ value, width = 20, label, positive, centered = fa
     const magnitude = Math.max(0, Math.min(1, Math.abs(value)));
     const fillColor = color || ((positive ?? value >= 0) ? theme.green : theme.red);
     if (centered) {
-        const halfWidth = Math.max(1, Math.floor((width - 1) / 2));
+        const slotWidth = 2;
+        const halfWidth = Math.max(1, Math.floor((width - 1) / (slotWidth * 2)));
         const filled = Math.round(magnitude * halfWidth);
         const empty = Math.max(0, halfWidth - filled);
-        const leftEmpty = ' '.repeat(empty);
-        const rightEmpty = ' '.repeat(empty);
-        const leftBlank = ' '.repeat(halfWidth);
-        const rightBlank = ' '.repeat(halfWidth);
-        const filledBar = ' '.repeat(filled);
+        const leftEmpty = ' '.repeat(empty * slotWidth);
+        const rightEmpty = ' '.repeat(empty * slotWidth);
+        const leftBlank = ' '.repeat(halfWidth * slotWidth);
+        const rightBlank = ' '.repeat(halfWidth * slotWidth);
+        const filledBar = ' '.repeat(filled * slotWidth);
         return (React.createElement(Text, null,
             (positive ?? value >= 0) ? (React.createElement(React.Fragment, null,
                 React.createElement(Text, null, leftBlank),

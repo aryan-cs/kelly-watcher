@@ -14,11 +14,14 @@ export const identityPath = path.resolve(dataDir, 'identity_cache.json');
 export const botStatePath = path.resolve(dataDir, 'bot_state.json');
 export const retrainRequestPath = path.resolve(dataDir, 'manual_retrain_request.json');
 export const manualTradeRequestPath = path.resolve(dataDir, 'manual_trade_request.json');
+export const saveEnvPath = path.resolve(saveDir, envFileName);
 export const envPath = path.resolve(projectRoot, envFileName);
 export const legacyEnvPath = path.resolve(projectRoot, '.env');
 export const envExamplePath = path.resolve(projectRoot, '.env.example');
-export const envReadPath = fs.existsSync(envPath)
-    ? envPath
-    : envProfile === 'dev' && fs.existsSync(legacyEnvPath)
-        ? legacyEnvPath
-        : envPath;
+export const envReadPath = fs.existsSync(saveEnvPath)
+    ? saveEnvPath
+    : fs.existsSync(envPath)
+        ? envPath
+        : envProfile === 'dev' && fs.existsSync(legacyEnvPath)
+            ? legacyEnvPath
+            : envPath;

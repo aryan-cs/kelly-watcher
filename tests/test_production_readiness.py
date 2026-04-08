@@ -22,6 +22,8 @@ class ProductionReadinessTest(unittest.TestCase):
     def test_live_entry_ensures_allowance_before_posting_order(self) -> None:
         ops: list[str] = []
         executor = object.__new__(PolymarketExecutor)
+        executor.refresh_event_market_data = lambda event: (True, None)
+        executor.get_fee_rate_bps = lambda token_id, market_meta=None: (0, None)
         executor._ensure_live_token_allowance = lambda token_id: ops.append(f"allow:{token_id}")
         executor._clob = SimpleNamespace(
             create_market_order=lambda order: ops.append("create") or order,
@@ -80,6 +82,8 @@ class ProductionReadinessTest(unittest.TestCase):
     def test_live_entry_fok_cancellation_is_nonfatal(self) -> None:
         release = Mock()
         executor = object.__new__(PolymarketExecutor)
+        executor.refresh_event_market_data = lambda event: (True, None)
+        executor.get_fee_rate_bps = lambda token_id, market_meta=None: (0, None)
         executor._ensure_live_token_allowance = lambda token_id: None
         executor._clob = SimpleNamespace(
             create_market_order=lambda order: order,
@@ -122,6 +126,7 @@ class ProductionReadinessTest(unittest.TestCase):
 
     def test_live_exit_commits_reconciled_fill_when_position_sync_stays_stale(self) -> None:
         executor = object.__new__(PolymarketExecutor)
+        executor.get_fee_rate_bps = lambda token_id, market_meta=None: (0, None)
         executor._ensure_live_token_allowance = lambda token_id: None
         executor._clob = SimpleNamespace(
             create_market_order=lambda order: order,

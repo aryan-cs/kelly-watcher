@@ -15,7 +15,9 @@ import numpy as np
 
 from alerter import send_alert
 from beliefs import invalidate_belief_cache, sync_belief_priors
+from config import entry_fixed_cost_usd, settlement_fixed_cost_usd
 from db import DB_PATH, get_conn
+from economics import build_entry_economics
 from performance_preview import compute_tracker_preview_summary
 from trade_contract import (
     EXECUTED_ENTRY_SQL,
@@ -95,6 +97,49 @@ AND (
 """
 
 
+def _snapshot_fee_rate_bps(snapshot_json: Any) -> int:
+    if not snapshot_json:
+        return 0
+    snapshot = snapshot_json
+    if isinstance(snapshot_json, str):
+        try:
+            snapshot = json.loads(snapshot_json)
+        except Exception:
+            return 0
+    if not isinstance(snapshot, dict):
+        return 0
+    try:
+        return max(int(round(float(snapshot.get("fee_rate_bps") or 0))), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _counterfactual_return_with_fees(row, *, won: bool) -> float | None:
+    price = float(row["price_at_signal"] or 0.0)
+    gross_size = float(row["signal_size_usd"] or 0.0)
+    if gross_size <= 0 or not (0.0 < price < 1.0):
+        return None
+
+    entry_economics = build_entry_economics(
+        gross_price=price,
+        gross_shares=gross_size / price,
+        gross_spent_usd=gross_size,
+        fee_rate_bps=_snapshot_fee_rate_bps(row["snapshot_json"]),
+        fixed_cost_usd=entry_fixed_cost_usd(),
+        include_expected_exit_fee_in_sizing=False,
+        expected_close_fixed_cost_usd=0.0,
+    )
+    if entry_economics.net_shares <= 0 or entry_economics.total_cost_usd <= 0:
+        return None
+
+    resolution_fixed_cost = settlement_fixed_cost_usd() if won and entry_economics.net_shares > 1e-9 else 0.0
+    payout = entry_economics.net_shares if won else 0.0
+    return round(
+        (payout - entry_economics.total_cost_usd - resolution_fixed_cost) / entry_economics.total_cost_usd,
+        6,
+    )
+
+
 def resolve_shadow_trades(
     *,
     trade_id: str | None = None,
@@ -106,6 +151,7 @@ def resolve_shadow_trades(
     where_clauses = [
         "outcome IS NULL",
         "COALESCE(source_action, 'buy')='buy'",
+        "real_money=0",
     ]
     params: list[Any] = []
     if trade_id:
@@ -123,8 +169,9 @@ def resolve_shadow_trades(
                trader_address, trader_name,
                token_id, side, price_at_signal, signal_size_usd,
                actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+               snapshot_json,
                remaining_entry_shares, remaining_entry_size_usd, realized_exit_pnl_usd,
-               shadow_pnl_usd, actual_pnl_usd,
+               shadow_pnl_usd, actual_pnl_usd, resolution_fixed_cost_usd,
                real_money, skipped, source_action, exited_at, source_shares
         FROM trade_log
         WHERE {" AND ".join(where_clauses)}
@@ -183,17 +230,28 @@ def resolve_shadow_trades(
                 price = float(
                     row["actual_entry_price"] if row["actual_entry_price"] is not None else row["price_at_signal"]
                 )
-                if won and price > 0:
+                if row["skipped"]:
+                    unit_return = _counterfactual_return_with_fees(row, won=won)
+                    if unit_return is None:
+                        if won and price > 0:
+                            unit_return = round((1.0 - price) / price, 6)
+                        elif price > 0:
+                            unit_return = round(-price / price, 6)
+                        else:
+                            unit_return = -1.0
+                elif won and price > 0:
                     unit_return = round((1.0 - price) / price, 6)
                 elif price > 0:
                     unit_return = round(-price / price, 6)
                 else:
                     unit_return = -1.0
                 pnl = None
+                resolution_fixed_cost = 0.0
                 if fill_aware:
                     existing_pnl = row["actual_pnl_usd"] if row["real_money"] == 1 else row["shadow_pnl_usd"]
                     if existing_pnl is not None and row["exited_at"] is not None:
                         pnl = round(float(existing_pnl), 2)
+                        resolution_fixed_cost = float(row["resolution_fixed_cost_usd"] or 0.0)
                     else:
                         remaining_shares = float(
                             row["remaining_entry_shares"]
@@ -210,8 +268,13 @@ def resolve_shadow_trades(
                             else row["signal_size_usd"] or 0.0
                         )
                         realized_exit_pnl = float(row["realized_exit_pnl_usd"] or 0.0)
+                        resolution_fixed_cost = (
+                            round(settlement_fixed_cost_usd(), 6)
+                            if won and remaining_shares > 1e-9
+                            else 0.0
+                        )
                         payout = remaining_shares if won else 0.0
-                        pnl = round(realized_exit_pnl + payout - remaining_size, 2)
+                        pnl = round(realized_exit_pnl + payout - remaining_size - resolution_fixed_cost, 2)
 
                 conn = get_conn()
                 conn.execute(
@@ -220,6 +283,10 @@ def resolve_shadow_trades(
                     SET outcome=?, market_resolved_outcome=?, counterfactual_return=?,
                         shadow_pnl_usd=COALESCE(?, shadow_pnl_usd),
                         actual_pnl_usd=COALESCE(?, actual_pnl_usd),
+                        resolution_fixed_cost_usd=CASE
+                            WHEN ? IS NOT NULL AND exited_at IS NULL THEN ?
+                            ELSE resolution_fixed_cost_usd
+                        END,
                         remaining_entry_shares=CASE
                             WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
                             ELSE remaining_entry_shares
@@ -243,6 +310,8 @@ def resolve_shadow_trades(
                         unit_return,
                         pnl if row["real_money"] == 0 and fill_aware else None,
                         pnl if row["real_money"] == 1 and fill_aware else None,
+                        pnl if fill_aware else None,
+                        resolution_fixed_cost,
                         pnl if fill_aware else None,
                         pnl if fill_aware else None,
                         pnl if fill_aware else None,

@@ -18,15 +18,29 @@ from alerter import (
     send_alert,
 )
 from config import (
+    approval_fixed_cost_usd,
+    entry_fixed_cost_usd,
+    expected_close_fixed_cost_usd,
+    exit_fixed_cost_usd,
+    include_expected_exit_fee_in_sizing,
     max_live_health_failures,
     max_market_exposure_fraction,
+    max_orderbook_staleness_seconds,
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
+    settlement_fixed_cost_usd,
     shadow_bankroll_usd,
     use_real_money,
     wallet_address,
 )
 from db import get_conn
+from economics import (
+    EntryEconomics,
+    ExitEconomics,
+    build_entry_economics,
+    build_exit_economics,
+    taker_fee_usd,
+)
 from market_urls import market_url_from_metadata
 from trade_contract import (
     OPEN_EXECUTED_ENTRY_SQL,
@@ -38,9 +52,13 @@ from wallet_trust import total_open_exposure_cap_fraction_for_wallet
 
 logger = logging.getLogger(__name__)
 DATA_API = "https://data-api.polymarket.com"
+CLOB_API = "https://clob.polymarket.com"
 LIVE_SYNC_ATTEMPTS = 4
 LIVE_SYNC_DELAY_S = 0.35
 USDC_DECIMALS = 1_000_000.0
+EXECUTION_ORDERBOOK_TIMEOUT_S = 3.0
+FEE_RATE_TIMEOUT_S = 3.0
+FEE_RATE_CACHE_TTL_S = 300.0
 
 
 @dataclass
@@ -102,7 +120,258 @@ class PolymarketExecutor:
         self._last_live_position_sync_ok_at = 0
         self._consecutive_live_balance_failures = 0
         self._consecutive_live_position_sync_failures = 0
+        self._fee_rate_cache: dict[str, tuple[float, int]] = {}
+        self._conditional_allowance_cache: dict[str, bool] = {}
         self._init_clob()
+
+    @staticmethod
+    def _fees_enabled_from_metadata(meta: Any) -> bool | None:
+        if not isinstance(meta, dict):
+            return None
+        raw_value = meta.get("feesEnabled")
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, bool):
+            return raw_value
+        normalized = str(raw_value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+
+    @staticmethod
+    def _extract_fee_rate_bps(payload: Any) -> int | None:
+        if not isinstance(payload, dict):
+            return None
+        raw_value = (
+            payload.get("base_fee")
+            or payload.get("baseFee")
+            or payload.get("fee_rate_bps")
+            or payload.get("feeRateBps")
+        )
+        if raw_value in {None, ""}:
+            return None
+        try:
+            return max(int(round(float(raw_value))), 0)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _build_orderbook_snapshot(raw_book: dict[str, Any] | None) -> dict[str, float] | None:
+        if not isinstance(raw_book, dict):
+            return None
+        bids = raw_book.get("bids", [])
+        asks = raw_book.get("asks", [])
+        best_bid = _to_float(bids[0].get("price")) if bids else 0.0
+        best_ask = _to_float(asks[0].get("price")) if asks else 0.0
+        if best_bid <= 0 and best_ask <= 0:
+            return None
+        return {
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "mid": (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 0.0,
+            "bid_depth_usd": sum(_to_float(level.get("size")) * _to_float(level.get("price")) for level in bids[:5] if isinstance(level, dict)),
+            "ask_depth_usd": sum(_to_float(level.get("size")) * _to_float(level.get("price")) for level in asks[:5] if isinstance(level, dict)),
+        }
+
+    def get_fee_rate_bps(
+        self,
+        token_id: str,
+        *,
+        market_meta: dict[str, Any] | None = None,
+    ) -> tuple[int | None, str | None]:
+        normalized_token = str(token_id or "").strip()
+        if not normalized_token:
+            return 0, None
+
+        cache = getattr(self, "_fee_rate_cache", None)
+        if cache is None:
+            cache = {}
+            self._fee_rate_cache = cache
+        cached = cache.get(normalized_token)
+        if cached is not None and (time.time() - cached[0]) <= FEE_RATE_CACHE_TTL_S:
+            return cached[1], None
+
+        fees_enabled = self._fees_enabled_from_metadata(market_meta)
+        try:
+            with httpx.Client(timeout=FEE_RATE_TIMEOUT_S, follow_redirects=True) as client:
+                response = client.get(f"{CLOB_API}/fee-rate", params={"token_id": normalized_token})
+            if response.status_code == 404:
+                if fees_enabled is False:
+                    cache[normalized_token] = (time.time(), 0)
+                    return 0, None
+                if cached is not None:
+                    logger.warning("Using stale fee rate cache for %s after 404 lookup", normalized_token[:16])
+                    return cached[1], None
+                return None, "market fee rate was unavailable at execution time"
+            response.raise_for_status()
+            fee_rate_bps = self._extract_fee_rate_bps(response.json())
+            if fee_rate_bps is None:
+                if fees_enabled is False:
+                    fee_rate_bps = 0
+                elif cached is not None:
+                    logger.warning("Using stale fee rate cache for %s after empty lookup payload", normalized_token[:16])
+                    return cached[1], None
+                else:
+                    return None, "market fee rate was unavailable at execution time"
+            cache[normalized_token] = (time.time(), fee_rate_bps)
+            return fee_rate_bps, None
+        except Exception as exc:
+            logger.warning("Fee rate lookup failed for %s: %s", normalized_token[:16], exc)
+            if cached is not None:
+                logger.warning("Using stale fee rate cache for %s after refresh failure", normalized_token[:16])
+                return cached[1], None
+            if fees_enabled is False:
+                return 0, None
+            return None, "market fee rate was unavailable at execution time"
+
+    def fetch_execution_orderbook(self, token_id: str) -> tuple[dict[str, float] | None, dict[str, Any] | None, int]:
+        normalized_token = str(token_id or "").strip()
+        if not normalized_token:
+            return None, None, 0
+        try:
+            with httpx.Client(timeout=EXECUTION_ORDERBOOK_TIMEOUT_S, follow_redirects=True) as client:
+                response = client.get(f"{CLOB_API}/book", params={"token_id": normalized_token})
+            response.raise_for_status()
+            raw_book = response.json()
+        except Exception as exc:
+            logger.warning("Execution orderbook refresh failed for %s: %s", normalized_token[:16], exc)
+            return None, None, 0
+
+        snapshot = self._build_orderbook_snapshot(raw_book)
+        return snapshot, raw_book if isinstance(raw_book, dict) else None, int(time.time())
+
+    def refresh_event_market_data(self, event) -> tuple[bool, str | None]:
+        token_id = str(getattr(event, "token_id", "") or "").strip()
+        if not token_id:
+            return True, None
+
+        snapshot = dict(getattr(event, "snapshot", None) or {})
+        now_ts = int(time.time())
+        current_age = (
+            max(now_ts - int(getattr(event, "orderbook_fetched_at", 0) or 0), 0)
+            if getattr(event, "orderbook_fetched_at", 0)
+            else max_orderbook_staleness_seconds() + 1
+        )
+        should_refresh = getattr(event, "raw_orderbook", None) is None or current_age > max_orderbook_staleness_seconds()
+        if should_refresh:
+            refreshed_snapshot, raw_book, fetched_at = self.fetch_execution_orderbook(token_id)
+            if raw_book is None or refreshed_snapshot is None:
+                if getattr(event, "raw_orderbook", None) is None or current_age > max_orderbook_staleness_seconds():
+                    return False, "current order book quote was unavailable at execution time"
+            else:
+                snapshot.update(refreshed_snapshot)
+                event.raw_orderbook = raw_book
+                event.orderbook_fetched_at = fetched_at
+
+        fee_rate_bps, fee_reason = self.get_fee_rate_bps(
+            token_id,
+            market_meta=getattr(event, "raw_market_metadata", None),
+        )
+        if fee_reason:
+            return False, fee_reason
+
+        fees_enabled = self._fees_enabled_from_metadata(getattr(event, "raw_market_metadata", None))
+        snapshot["fee_rate_bps"] = int(fee_rate_bps or 0)
+        if fees_enabled is not None:
+            snapshot["fees_enabled"] = fees_enabled
+        elif int(fee_rate_bps or 0) > 0:
+            snapshot["fees_enabled"] = True
+        event.snapshot = snapshot
+        return True, None
+
+    def _conditional_allowance_ready(self, token_id: str) -> bool | None:
+        normalized_token = str(token_id or "").strip()
+        if not normalized_token or self._clob is None or not use_real_money():
+            return True
+        cache = getattr(self, "_conditional_allowance_cache", None)
+        if cache is None:
+            cache = {}
+            self._conditional_allowance_cache = cache
+        if normalized_token in cache:
+            return cache[normalized_token]
+        try:
+            payload = self._get_live_allowance_payload(asset_type="CONDITIONAL", token_id=normalized_token)
+        except Exception as exc:
+            logger.warning("Conditional allowance pre-check failed for %s: %s", normalized_token[:16], exc)
+            return None
+        ready = self._payload_max_allowance_usd(payload) > 0.0
+        cache[normalized_token] = ready
+        return ready
+
+    def estimate_entry_economics(
+        self,
+        *,
+        token_id: str,
+        fill: SimulatedFill,
+        market_meta: dict[str, Any] | None = None,
+    ) -> tuple[EntryEconomics | None, str | None]:
+        fee_rate_bps, fee_reason = self.get_fee_rate_bps(token_id, market_meta=market_meta)
+        if fee_reason:
+            return None, fee_reason
+
+        needs_approval = self._conditional_allowance_ready(token_id) is False
+        fixed_cost = entry_fixed_cost_usd() + (approval_fixed_cost_usd() if needs_approval else 0.0)
+        economics = build_entry_economics(
+            gross_price=fill.avg_price,
+            gross_shares=fill.shares,
+            gross_spent_usd=fill.spent_usd,
+            fee_rate_bps=int(fee_rate_bps or 0),
+            fixed_cost_usd=fixed_cost,
+            include_expected_exit_fee_in_sizing=include_expected_exit_fee_in_sizing(),
+            expected_close_fixed_cost_usd=expected_close_fixed_cost_usd(),
+        )
+        if economics.net_shares <= 0 or economics.sizing_effective_price <= 0:
+            return None, "fees consumed the entire quoted fill"
+        return economics, None
+
+    def _entry_economics_for_fill(
+        self,
+        *,
+        token_id: str,
+        fill: SimulatedFill,
+        include_approval_cost: bool,
+        market_meta: dict[str, Any] | None = None,
+    ) -> tuple[EntryEconomics | None, str | None]:
+        fee_rate_bps, fee_reason = self.get_fee_rate_bps(token_id, market_meta=market_meta)
+        if fee_reason:
+            return None, fee_reason
+        economics = build_entry_economics(
+            gross_price=fill.avg_price,
+            gross_shares=fill.shares,
+            gross_spent_usd=fill.spent_usd,
+            fee_rate_bps=int(fee_rate_bps or 0),
+            fixed_cost_usd=entry_fixed_cost_usd() + (approval_fixed_cost_usd() if include_approval_cost else 0.0),
+            include_expected_exit_fee_in_sizing=False,
+            expected_close_fixed_cost_usd=0.0,
+        )
+        if economics.net_shares <= 0 or economics.effective_entry_price <= 0:
+            return None, "fees consumed the executed buy"
+        return economics, None
+
+    def _exit_economics_for_fill(
+        self,
+        *,
+        token_id: str,
+        gross_shares: float,
+        gross_notional_usd: float,
+        gross_price: float,
+        market_meta: dict[str, Any] | None = None,
+    ) -> tuple[ExitEconomics | None, str | None]:
+        fee_rate_bps, fee_reason = self.get_fee_rate_bps(token_id, market_meta=market_meta)
+        if fee_reason:
+            return None, fee_reason
+        economics = build_exit_economics(
+            gross_price=gross_price,
+            gross_shares=gross_shares,
+            gross_notional_usd=gross_notional_usd,
+            fee_rate_bps=int(fee_rate_bps or 0),
+            fixed_cost_usd=exit_fixed_cost_usd(),
+        )
+        if economics.net_proceeds_usd <= 0:
+            return None, "fees consumed the executed exit"
+        return economics, None
 
     def _init_clob(self) -> None:
         if not use_real_money():
@@ -271,16 +540,21 @@ class PolymarketExecutor:
             raise RuntimeError("live balance check returned an unexpected response payload")
         return payload
 
-    def _ensure_live_token_allowance(self, token_id: str) -> None:
+    def _ensure_live_token_allowance(self, token_id: str) -> bool:
         normalized_token = str(token_id or "").strip()
         if not normalized_token or self._clob is None or not use_real_money():
-            return
+            return False
 
         from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 
         payload = self._get_live_allowance_payload(asset_type="CONDITIONAL", token_id=normalized_token)
         if self._payload_max_allowance_usd(payload) > 0.0:
-            return
+            cache = getattr(self, "_conditional_allowance_cache", None)
+            if cache is None:
+                cache = {}
+                self._conditional_allowance_cache = cache
+            cache[normalized_token] = True
+            return False
 
         logger.info("Conditional token allowance missing for %s; requesting approval", normalized_token[:16])
         params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=normalized_token)
@@ -291,7 +565,12 @@ class PolymarketExecutor:
             payload = self._get_live_allowance_payload(asset_type="CONDITIONAL", token_id=normalized_token)
             if self._payload_max_allowance_usd(payload) > 0.0:
                 logger.info("Conditional token allowance ready for %s", normalized_token[:16])
-                return
+                cache = getattr(self, "_conditional_allowance_cache", None)
+                if cache is None:
+                    cache = {}
+                    self._conditional_allowance_cache = cache
+                cache[normalized_token] = True
+                return True
             if attempt < LIVE_SYNC_ATTEMPTS - 1:
                 time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
 
@@ -887,10 +1166,31 @@ class PolymarketExecutor:
         market_f,
         dedup,
     ) -> ExecutionResult:
+        ok, market_data_reason = self.refresh_event_market_data(event)
+        if not ok:
+            dedup.release(market_id, token_id, side)
+            return ExecutionResult(
+                False,
+                True,
+                None,
+                0.0,
+                market_data_reason or "execution market data refresh failed",
+            )
+
         fill, reject_reason = self._simulate_shadow_buy(getattr(event, "raw_orderbook", None), dollar_size)
         if fill is None:
             dedup.release(market_id, token_id, side)
             return ExecutionResult(False, True, None, 0.0, reject_reason or "shadow simulation buy failed")
+
+        entry_economics, economics_reason = self._entry_economics_for_fill(
+            token_id=token_id,
+            fill=fill,
+            include_approval_cost=False,
+            market_meta=getattr(event, "raw_market_metadata", None),
+        )
+        if entry_economics is None:
+            dedup.release(market_id, token_id, side)
+            return ExecutionResult(False, True, None, 0.0, economics_reason or "entry fee model rejected the buy")
 
         log_trade(
             trade_id=trade_id,
@@ -906,32 +1206,40 @@ class PolymarketExecutor:
             order_id=None,
             skipped=False,
             skip_reason=None,
-            actual_entry_price=fill.avg_price,
-            actual_entry_shares=fill.shares,
-            actual_entry_size_usd=fill.spent_usd,
+            actual_entry_price=entry_economics.effective_entry_price,
+            actual_entry_shares=entry_economics.net_shares,
+            actual_entry_size_usd=entry_economics.total_cost_usd,
+            entry_economics=entry_economics,
             trader_f=trader_f,
             market_f=market_f,
             event=event,
             signal=_signal,
         )
-        dedup.confirm(market_id, side, fill.spent_usd, token_id, fill.avg_price, real_money=False)
+        dedup.confirm(
+            market_id,
+            side,
+            entry_economics.total_cost_usd,
+            token_id,
+            entry_economics.effective_entry_price,
+            real_money=False,
+        )
         dedup.mark_seen(trade_id, market_id, event.trader_address)
         logger.info(
             "[SHADOW] %s | %s | $%.2f | %.3f sh @ %.3f | conf=%.3f",
             event.question[:60],
             side.upper(),
-            fill.spent_usd,
-            fill.shares,
-            fill.avg_price,
+            entry_economics.total_cost_usd,
+            entry_economics.net_shares,
+            entry_economics.effective_entry_price,
             confidence,
         )
         send_alert(
             build_trade_entry_alert(
                 mode="shadow",
                 side=side,
-                shares=fill.shares,
-                price=fill.avg_price,
-                total_usd=fill.spent_usd,
+                shares=entry_economics.net_shares,
+                price=entry_economics.effective_entry_price,
+                total_usd=entry_economics.total_cost_usd,
                 confidence=confidence,
                 question=event.question,
                 market_url=_market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
@@ -940,7 +1248,15 @@ class PolymarketExecutor:
             ),
             kind="buy",
         )
-        return ExecutionResult(True, True, None, fill.spent_usd, "ok", shares=fill.shares, action="entry")
+        return ExecutionResult(
+            True,
+            True,
+            None,
+            entry_economics.total_cost_usd,
+            "ok",
+            shares=entry_economics.net_shares,
+            action="entry",
+        )
 
     def _execute_live(
         self,
@@ -961,8 +1277,12 @@ class PolymarketExecutor:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
             from py_clob_client.order_builder.constants import BUY
 
+            ok, market_data_reason = self.refresh_event_market_data(event)
+            if not ok:
+                raise RuntimeError(market_data_reason or "execution market data refresh failed")
+
             # Refuse the entry if we cannot guarantee that a later exit can be approved.
-            self._ensure_live_token_allowance(token_id)
+            approval_requested = self._ensure_live_token_allowance(token_id)
             balance_before = self.get_usdc_balance()
             # token_id already identifies the YES or NO outcome token we want.
             order = MarketOrderArgs(
@@ -1018,11 +1338,27 @@ class PolymarketExecutor:
                 raise RuntimeError(
                     "live buy order posted but the fill could not be confirmed from exchange order, trade, balance, or position data"
                 )
-            actual_price = (
+            gross_price = (
                 (actual_spend / actual_shares)
                 if actual_spend > 0 and actual_shares > 0
                 else fallback_price
             )
+            entry_economics, economics_reason = self._entry_economics_for_fill(
+                token_id=token_id,
+                fill=SimulatedFill(
+                    spent_usd=actual_spend,
+                    shares=actual_shares,
+                    avg_price=gross_price,
+                ),
+                include_approval_cost=approval_requested,
+                market_meta=getattr(event, "raw_market_metadata", None),
+            )
+            if entry_economics is None:
+                raise RuntimeError(economics_reason or "entry fee model rejected the executed buy")
+
+            actual_shares = entry_economics.net_shares
+            actual_spend = entry_economics.total_cost_usd
+            actual_price = entry_economics.effective_entry_price
 
             log_trade(
                 trade_id=trade_id,
@@ -1041,6 +1377,7 @@ class PolymarketExecutor:
                 actual_entry_price=actual_price,
                 actual_entry_shares=actual_shares,
                 actual_entry_size_usd=actual_spend,
+                entry_economics=entry_economics,
                 trader_f=trader_f,
                 market_f=market_f,
                 event=event,
@@ -1155,6 +1492,19 @@ class PolymarketExecutor:
                 action="exit",
             )
 
+        if not getattr(event, "token_id", None):
+            event.token_id = token_id or str(position.get("token_id") or "")
+        ok, market_data_reason = self.refresh_event_market_data(event)
+        if not ok:
+            return ExecutionResult(
+                False,
+                shadow,
+                None,
+                0.0,
+                market_data_reason or "execution market data refresh failed",
+                action="exit",
+            )
+
         dedup.mark_pending(
             market_id,
             str(position.get("token_id") or token_id or ""),
@@ -1244,6 +1594,8 @@ class PolymarketExecutor:
                        actual_entry_shares, actual_entry_size_usd, source_shares, confidence,
                        kelly_fraction, market_close_ts, remaining_entry_shares,
                        remaining_entry_size_usd, remaining_source_shares,
+                       exit_fee_rate_bps, exit_fee_usd, exit_fixed_cost_usd,
+                       exit_gross_price, exit_gross_shares, exit_gross_size_usd,
                        realized_exit_shares, realized_exit_size_usd, realized_exit_pnl_usd,
                        partial_exit_count
                 FROM trade_log
@@ -1303,16 +1655,15 @@ class PolymarketExecutor:
         exit_price: float,
         observed_source_shares: float,
     ) -> tuple[float, float, float, float]:
-        total_size_usd = float(position.get("size_usd") or 0.0)
+        total_size_usd = sum(self._entry_open_size(entry) for entry in entries)
         if total_size_usd <= 0:
-            total_size_usd = sum(self._entry_open_size(entry) for entry in entries)
+            total_size_usd = float(position.get("size_usd") or 0.0)
 
-        entry_price = float(position.get("avg_price") or 0.0)
-        total_actual_shares = 0.0
-        if entry_price > 0 and total_size_usd > 0:
-            total_actual_shares = total_size_usd / entry_price
+        total_actual_shares = sum(self._entry_open_shares(entry) for entry in entries)
         if total_actual_shares <= 0:
-            total_actual_shares = sum(self._entry_open_shares(entry) for entry in entries)
+            entry_price = float(position.get("avg_price") or 0.0)
+            if entry_price > 0 and total_size_usd > 0:
+                total_actual_shares = total_size_usd / entry_price
 
         total_source_shares = sum(self._entry_open_source_shares(entry) for entry in entries)
         if total_actual_shares <= 0 or total_size_usd <= 0:
@@ -1429,6 +1780,7 @@ class PolymarketExecutor:
         exit_notional: float,
         exit_reason: str,
         exit_order_id: str | None,
+        exit_economics: ExitEconomics | None = None,
         market_id: str,
         trader_address: str,
         dedup,
@@ -1449,6 +1801,17 @@ class PolymarketExecutor:
 
         remaining_exit_shares = float(exit_shares)
         remaining_exit_notional = float(exit_notional)
+        remaining_exit_gross_shares = float(exit_economics.gross_shares) if exit_economics is not None else float(exit_shares)
+        remaining_exit_gross_notional = (
+            float(exit_economics.gross_notional_usd) if exit_economics is not None else float(exit_notional)
+        )
+        remaining_exit_fee_usd = float(exit_economics.exit_fee_usd) if exit_economics is not None else 0.0
+        remaining_exit_fixed_cost = float(exit_economics.fixed_cost_usd) if exit_economics is not None else 0.0
+        total_exit_gross_shares = remaining_exit_gross_shares
+        total_exit_gross_notional = remaining_exit_gross_notional
+        total_exit_fee_usd = remaining_exit_fee_usd
+        total_exit_fixed_cost = remaining_exit_fixed_cost
+        exit_fee_rate_bps = int(exit_economics.fee_rate_bps) if exit_economics is not None else 0
         for index, entry in enumerate(active_entries):
             open_shares = self._entry_open_shares(entry)
             open_size = self._entry_open_size(entry)
@@ -1460,10 +1823,18 @@ class PolymarketExecutor:
             if is_last:
                 entry_exit_shares = min(open_shares, max(remaining_exit_shares, 0.0))
                 entry_exit_notional = max(round(remaining_exit_notional, 6), 0.0)
+                entry_exit_gross_shares = max(round(remaining_exit_gross_shares, 6), 0.0)
+                entry_exit_gross_notional = max(round(remaining_exit_gross_notional, 6), 0.0)
+                entry_exit_fee_usd = max(round(remaining_exit_fee_usd, 6), 0.0)
+                entry_exit_fixed_cost = max(round(remaining_exit_fixed_cost, 6), 0.0)
             else:
                 entry_exit_shares = min(open_shares, round(open_shares * fraction, 6))
                 share_ratio = (entry_exit_shares / exit_shares) if exit_shares > 0 else 0.0
                 entry_exit_notional = max(round(exit_notional * share_ratio, 6), 0.0)
+                entry_exit_gross_shares = max(round(total_exit_gross_shares * share_ratio, 6), 0.0)
+                entry_exit_gross_notional = max(round(total_exit_gross_notional * share_ratio, 6), 0.0)
+                entry_exit_fee_usd = max(round(total_exit_fee_usd * share_ratio, 6), 0.0)
+                entry_exit_fixed_cost = max(round(total_exit_fixed_cost * share_ratio, 6), 0.0)
             if entry_exit_shares <= 1e-9:
                 continue
 
@@ -1479,6 +1850,25 @@ class PolymarketExecutor:
                 float(entry.get("realized_exit_pnl_usd") or 0.0) + entry_exit_notional - closed_cost,
                 6,
             )
+            cumulative_exit_fee_usd = round(float(entry.get("exit_fee_usd") or 0.0) + entry_exit_fee_usd, 6)
+            cumulative_exit_fixed_cost = round(
+                float(entry.get("exit_fixed_cost_usd") or 0.0) + entry_exit_fixed_cost,
+                6,
+            )
+            cumulative_exit_gross_shares = round(
+                float(entry.get("exit_gross_shares") or 0.0) + entry_exit_gross_shares,
+                6,
+            )
+            cumulative_exit_gross_size = round(
+                float(entry.get("exit_gross_size_usd") or 0.0) + entry_exit_gross_notional,
+                6,
+            )
+            cumulative_exit_price = round(realized_exit_size / realized_exit_shares, 6) if realized_exit_shares > 0 else 0.0
+            cumulative_exit_gross_price = (
+                round(cumulative_exit_gross_size / cumulative_exit_gross_shares, 6)
+                if cumulative_exit_gross_shares > 0
+                else 0.0
+            )
             prior_partial_count = int(entry.get("partial_exit_count") or 0)
             partial_count = prior_partial_count + (1 if remaining_shares > 1e-9 else 0)
             is_fully_closed = remaining_shares <= 1e-9 or remaining_size <= 1e-9
@@ -1488,6 +1878,10 @@ class PolymarketExecutor:
             total_pnl += entry_exit_notional - closed_cost
             remaining_exit_shares = max(round(remaining_exit_shares - entry_exit_shares, 6), 0.0)
             remaining_exit_notional = max(round(remaining_exit_notional - entry_exit_notional, 6), 0.0)
+            remaining_exit_gross_shares = max(round(remaining_exit_gross_shares - entry_exit_gross_shares, 6), 0.0)
+            remaining_exit_gross_notional = max(round(remaining_exit_gross_notional - entry_exit_gross_notional, 6), 0.0)
+            remaining_exit_fee_usd = max(round(remaining_exit_fee_usd - entry_exit_fee_usd, 6), 0.0)
+            remaining_exit_fixed_cost = max(round(remaining_exit_fixed_cost - entry_exit_fixed_cost, 6), 0.0)
 
             if is_fully_closed:
                 conn.execute(
@@ -1498,6 +1892,12 @@ class PolymarketExecutor:
                         exit_price=?,
                         exit_shares=?,
                         exit_size_usd=?,
+                        exit_fee_rate_bps=?,
+                        exit_fee_usd=?,
+                        exit_fixed_cost_usd=?,
+                        exit_gross_price=?,
+                        exit_gross_shares=?,
+                        exit_gross_size_usd=?,
                         exit_order_id=?,
                         exit_reason=?,
                         resolved_at=COALESCE(resolved_at, ?),
@@ -1514,9 +1914,15 @@ class PolymarketExecutor:
                     (
                         now_ts,
                         exit_trade_id,
-                        exit_price,
+                        cumulative_exit_price,
                         realized_exit_shares,
                         realized_exit_size,
+                        exit_fee_rate_bps or int(entry.get("exit_fee_rate_bps") or 0),
+                        cumulative_exit_fee_usd,
+                        cumulative_exit_fixed_cost,
+                        cumulative_exit_gross_price,
+                        cumulative_exit_gross_shares,
+                        cumulative_exit_gross_size,
                         exit_order_id,
                         exit_reason,
                         now_ts,
@@ -1536,6 +1942,12 @@ class PolymarketExecutor:
                         exit_price=?,
                         exit_shares=?,
                         exit_size_usd=?,
+                        exit_fee_rate_bps=?,
+                        exit_fee_usd=?,
+                        exit_fixed_cost_usd=?,
+                        exit_gross_price=?,
+                        exit_gross_shares=?,
+                        exit_gross_size_usd=?,
                         exit_order_id=?,
                         exit_reason=?,
                         remaining_entry_shares=?,
@@ -1549,9 +1961,15 @@ class PolymarketExecutor:
                     """,
                     (
                         exit_trade_id,
-                        exit_price,
-                        entry_exit_shares,
-                        entry_exit_notional,
+                        cumulative_exit_price,
+                        realized_exit_shares,
+                        realized_exit_size,
+                        exit_fee_rate_bps or int(entry.get("exit_fee_rate_bps") or 0),
+                        cumulative_exit_fee_usd,
+                        cumulative_exit_fixed_cost,
+                        cumulative_exit_gross_price,
+                        cumulative_exit_gross_shares,
+                        cumulative_exit_gross_size,
                         exit_order_id,
                         exit_reason,
                         remaining_shares,
@@ -1611,18 +2029,34 @@ class PolymarketExecutor:
             )
             return ExecutionResult(False, True, None, 0.0, reject_reason or "shadow simulation sell failed", action="exit")
 
+        exit_economics, economics_reason = self._exit_economics_for_fill(
+            token_id=token_id or str(position.get("token_id") or ""),
+            gross_shares=fill.shares,
+            gross_notional_usd=fill.spent_usd,
+            gross_price=fill.avg_price,
+            market_meta=getattr(event, "raw_market_metadata", None),
+        )
+        if exit_economics is None:
+            dedup.release(
+                market_id,
+                str(position.get("token_id") or token_id or ""),
+                str(position.get("side") or event.side or ""),
+            )
+            return ExecutionResult(False, True, None, 0.0, economics_reason or "exit fee model rejected the sell", action="exit")
+
         reason = self._exit_reason(exit_fraction)
         shares, exit_notional, pnl = self._finalize_exit(
             entries=entries,
             position=position,
             real_money=False,
             exit_trade_id=trade_id,
-            exit_price=fill.avg_price,
+            exit_price=exit_economics.effective_exit_price,
             exit_fraction=exit_fraction,
             exit_shares=fill.shares,
-            exit_notional=fill.spent_usd,
+            exit_notional=exit_economics.net_proceeds_usd,
             exit_reason=reason,
             exit_order_id=None,
+            exit_economics=exit_economics,
             market_id=market_id,
             trader_address=event.trader_address,
             dedup=dedup,
@@ -1640,7 +2074,7 @@ class PolymarketExecutor:
                 mode="shadow",
                 side=event.side,
                 shares=shares,
-                price=fill.avg_price,
+                price=exit_economics.effective_exit_price,
                 total_usd=exit_notional,
                 pnl_usd=pnl,
                 question=event.question,
@@ -1692,6 +2126,25 @@ class PolymarketExecutor:
             signed = self._clob.create_market_order(order)
             response = self._clob.post_order(signed, OrderType.FOK)
             order_id = self._extract_order_id(response)
+            if self._is_unfilled_fok_response(response):
+                dedup.release(
+                    market_id,
+                    str(position.get("token_id") or token_id or ""),
+                    str(position.get("side") or ""),
+                )
+                logger.info(
+                    "[LIVE EXIT] FOK order cancelled for %s at %s; no exit fill recorded",
+                    market_id[:12],
+                    str(position.get("token_id") or token_id or "")[:12],
+                )
+                return ExecutionResult(
+                    False,
+                    False,
+                    order_id if order_id != "unknown" else None,
+                    0.0,
+                    "FOK order cancelled - order book too thin",
+                    action="exit",
+                )
             reconciled_fill = self._reconcile_live_order_fill(
                 order_id=order_id,
                 response=response,
@@ -1779,11 +2232,45 @@ class PolymarketExecutor:
                 raise RuntimeError(
                     "live exit order posted but the realized fill could not be confirmed from exchange order, trade, balance, or position data"
                 )
-            actual_exit_price = (
-                (actual_exit_notional / actual_exit_shares)
-                if actual_exit_notional > 0 and actual_exit_shares > 0
-                else (reconciled_fill.avg_price if reconciled_fill is not None else exit_price)
+            target_token = token_id or str(position.get("token_id") or "")
+            gross_exit_price = (
+                reconciled_fill.avg_price
+                if reconciled_fill is not None and reconciled_fill.avg_price > 0
+                else (
+                    (actual_exit_notional / actual_exit_shares)
+                    if actual_exit_notional > 0 and actual_exit_shares > 0
+                    else exit_price
+                )
             )
+            if reconciled_fill is not None:
+                exit_economics, economics_reason = self._exit_economics_for_fill(
+                    token_id=target_token,
+                    gross_shares=actual_exit_shares,
+                    gross_notional_usd=actual_exit_notional,
+                    gross_price=gross_exit_price,
+                    market_meta=getattr(event, "raw_market_metadata", None),
+                )
+            else:
+                fee_rate_bps, fee_reason = self.get_fee_rate_bps(
+                    target_token,
+                    market_meta=getattr(event, "raw_market_metadata", None),
+                )
+                if fee_reason:
+                    raise RuntimeError(fee_reason)
+                estimated_fee_usd = taker_fee_usd(actual_exit_shares, gross_exit_price, int(fee_rate_bps or 0))
+                exit_economics = build_exit_economics(
+                    gross_price=gross_exit_price,
+                    gross_shares=actual_exit_shares,
+                    gross_notional_usd=actual_exit_notional + estimated_fee_usd,
+                    fee_rate_bps=int(fee_rate_bps or 0),
+                    fixed_cost_usd=exit_fixed_cost_usd(),
+                )
+                economics_reason = None
+            if exit_economics is None:
+                raise RuntimeError(economics_reason or "exit fee model rejected the executed sell")
+
+            actual_exit_price = exit_economics.effective_exit_price
+            actual_exit_notional = exit_economics.net_proceeds_usd
             reason = self._exit_reason(exit_fraction)
             shares, exit_notional, pnl = self._finalize_exit(
                 entries=entries,
@@ -1796,6 +2283,7 @@ class PolymarketExecutor:
                 exit_notional=actual_exit_notional,
                 exit_reason=reason,
                 exit_order_id=order_id,
+                exit_economics=exit_economics,
                 market_id=market_id,
                 trader_address=event.trader_address,
                 dedup=dedup,
@@ -1916,6 +2404,7 @@ def log_trade(
     actual_entry_price=None,
     actual_entry_shares=None,
     actual_entry_size_usd=None,
+    entry_economics: EntryEconomics | None = None,
     trader_f=None,
     market_f=None,
     event=None,
@@ -2015,6 +2504,13 @@ def log_trade(
         and actual_entry_shares is not None
         and actual_entry_size_usd is not None
     )
+    entry_fee_rate_bps = float(entry_economics.fee_rate_bps) if entry_economics is not None else 0.0
+    entry_fee_usd = float(entry_economics.entry_fee_usd) if entry_economics is not None else 0.0
+    entry_fee_shares = float(entry_economics.entry_fee_shares) if entry_economics is not None else 0.0
+    entry_fixed_cost = float(entry_economics.fixed_cost_usd) if entry_economics is not None else 0.0
+    entry_gross_price = float(entry_economics.gross_price) if entry_economics is not None else None
+    entry_gross_shares = float(entry_economics.gross_shares) if entry_economics is not None else None
+    entry_gross_size_usd = float(entry_economics.gross_spent_usd) if entry_economics is not None else None
     values = [
         trade_id,
         market_id,
@@ -2054,6 +2550,13 @@ def log_trade(
         actual_entry_price,
         actual_entry_shares,
         actual_entry_size_usd,
+        entry_fee_rate_bps,
+        entry_fee_usd,
+        entry_fee_shares,
+        entry_fixed_cost,
+        entry_gross_price,
+        entry_gross_shares,
+        entry_gross_size_usd,
         confidence,
         signal.get("raw_confidence") if isinstance(signal, dict) else None,
         kelly_f,
@@ -2110,7 +2613,9 @@ def log_trade(
             observation_latency_s, processing_latency_s, source_shares, source_amount_usd,
             source_trade_json, market_metadata_json, orderbook_json, snapshot_json,
             price_at_signal, signal_size_usd, actual_entry_price, actual_entry_shares,
-            actual_entry_size_usd, confidence, raw_confidence, kelly_fraction,
+            actual_entry_size_usd, entry_fee_rate_bps, entry_fee_usd, entry_fee_shares,
+            entry_fixed_cost_usd, entry_gross_price, entry_gross_shares, entry_gross_size_usd,
+            confidence, raw_confidence, kelly_fraction,
             signal_mode, belief_prior, belief_blend, belief_evidence, trader_score,
             market_score, market_veto, real_money, order_id, skipped, skip_reason, placed_at,
             remaining_entry_shares, remaining_entry_size_usd, remaining_source_shares,

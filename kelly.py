@@ -48,6 +48,8 @@ def heuristic_size(
     score: float,
     bankroll_usd: float,
     *,
+    quoted_market_price: float | None = None,
+    effective_market_price: float | None = None,
     min_confidence_override: float | None = None,
 ) -> dict:
     threshold = _effective_min_confidence(min_confidence_override)
@@ -59,6 +61,19 @@ def heuristic_size(
 
     span = max(1.0 - threshold, 1e-6)
     raw_edge = min(max((score - threshold) / span, 0.0), 1.0)
+    price_drag = 0.0
+    if (
+        quoted_market_price is not None
+        and effective_market_price is not None
+        and quoted_market_price > 0
+        and effective_market_price > 0
+    ):
+        price_drag = max(float(effective_market_price) - float(quoted_market_price), 0.0)
+        raw_edge = max(raw_edge - price_drag, 0.0)
+        if raw_edge <= 0:
+            return _no_bet(
+                f"heuristic edge {score - threshold:.3f} <= execution drag {price_drag:.3f}"
+            )
 
     # Heuristic scores are ranking signals, not calibrated probabilities.
     # Expand small but valid score margins so the ranking signal does not
@@ -76,6 +91,7 @@ def heuristic_size(
         "full_kelly_f": 0.0,
         "heuristic_raw_edge": round(raw_edge, 5),
         "heuristic_size_edge": round(edge, 5),
+        "execution_price_drag": round(price_drag, 5),
         "method": "heuristic",
         "reason": "ok",
     }
@@ -83,12 +99,18 @@ def heuristic_size(
 
 def size_signal(
     confidence: float,
-    market_price: float,
+    quoted_market_price: float,
     bankroll_usd: float,
     mode: str,
     *,
+    effective_market_price: float | None = None,
     min_confidence_override: float | None = None,
 ) -> dict:
+    market_price = (
+        float(effective_market_price)
+        if effective_market_price is not None
+        else float(quoted_market_price)
+    )
     if mode == "xgboost":
         return kelly_size(
             confidence,
@@ -99,6 +121,8 @@ def size_signal(
     return heuristic_size(
         confidence,
         bankroll_usd,
+        quoted_market_price=quoted_market_price,
+        effective_market_price=market_price,
         min_confidence_override=min_confidence_override,
     )
 

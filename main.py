@@ -83,6 +83,7 @@ from config import (
 from dashboard_api import DashboardApiServer, start_dashboard_api_server
 from db import DB_PATH, get_conn, init_db
 from dedup import DedupeCache
+from economics import EntryEconomics
 from evaluator import daily_report, resolve_shadow_trades
 from executor import PolymarketExecutor
 from kelly import size_signal
@@ -601,6 +602,54 @@ def _apply_total_exposure_cap_to_size(
     return allowed_size_usd, None, clip_note
 
 
+def _apply_total_exposure_cap_to_entry_cost(
+    executor: PolymarketExecutor,
+    *,
+    requested_size_usd: float,
+    fill_economics: EntryEconomics,
+    account_equity: float,
+    trader_address: str = "",
+) -> tuple[float, str | None, str | None]:
+    decision = executor.total_open_exposure_decision(
+        proposed_size_usd=float(fill_economics.total_cost_usd or 0.0),
+        account_equity=account_equity,
+        trader_address=trader_address,
+    )
+    if decision.block_reason:
+        return 0.0, decision.block_reason, None
+
+    allowed_total_cost_usd = float(decision.allowed_size_usd or 0.0)
+    if decision.clipped and allowed_total_cost_usd + 1e-9 < min_bet_usd():
+        return (
+            0.0,
+            (
+                f"remaining total exposure headroom was ${allowed_total_cost_usd:.2f}, "
+                f"below the ${min_bet_usd():.2f} minimum bet size"
+            ),
+            None,
+        )
+    if allowed_total_cost_usd + 1e-9 >= float(fill_economics.total_cost_usd or 0.0):
+        return requested_size_usd, None, None
+
+    allowed_gross_size_usd = max(allowed_total_cost_usd - float(fill_economics.fixed_cost_usd or 0.0), 0.0)
+    allowed_gross_size_usd = max(0.0, int((allowed_gross_size_usd + 1e-9) * 100.0) / 100.0)
+    if allowed_gross_size_usd + 1e-9 < min_bet_usd():
+        return (
+            0.0,
+            (
+                f"remaining total exposure headroom was ${allowed_total_cost_usd:.2f}, "
+                f"below the ${min_bet_usd():.2f} minimum bet size"
+            ),
+            None,
+        )
+
+    return (
+        allowed_gross_size_usd,
+        None,
+        f"total exposure cap clipped size from ${requested_size_usd:.2f} to ${allowed_gross_size_usd:.2f}",
+    )
+
+
 def _apply_total_exposure_cap_to_sizing(
     executor: PolymarketExecutor,
     sizing: dict,
@@ -1006,10 +1055,117 @@ def _process_manual_trade_request(
             _skip_event(event, amount_usd, _humanize_reason(fill_reason or "manual buy quote failed"), decision="MANUAL")
             return
 
+        fill_economics, fill_reason = executor.estimate_entry_economics(
+            token_id=request.token_id,
+            fill=fill_estimate,
+            market_meta=meta,
+        )
+        if fill_economics is None:
+            event = _manual_trade_event(
+                request,
+                trade_id=manual_trade_id,
+                question=question,
+                price=fill_estimate.avg_price,
+                shares=fill_estimate.shares,
+                size_usd=amount_usd,
+                close_time=close_time,
+                snapshot=snapshot,
+                raw_market_metadata=meta,
+                raw_orderbook=raw_book,
+                metadata_fetched_at=metadata_fetched_at,
+                orderbook_fetched_at=orderbook_fetched_at,
+            )
+            _skip_event(
+                event,
+                amount_usd,
+                _humanize_reason(fill_reason or "entry fee model rejected the quoted fill"),
+                decision="MANUAL",
+            )
+            return
+
+        precise_amount_usd, exposure_block_reason, clip_note = _apply_total_exposure_cap_to_entry_cost(
+            executor,
+            requested_size_usd=amount_usd,
+            fill_economics=fill_economics,
+            account_equity=account_equity,
+            trader_address=trader_address,
+        )
+        if clip_note:
+            logger.info("Manual buy %s: %s", manual_trade_id, clip_note)
+        if exposure_block_reason:
+            event = _manual_trade_event(
+                request,
+                trade_id=manual_trade_id,
+                question=question,
+                price=fill_estimate.avg_price,
+                shares=fill_estimate.shares,
+                size_usd=amount_usd,
+                close_time=close_time,
+                snapshot=snapshot,
+                raw_market_metadata=meta,
+                raw_orderbook=raw_book,
+                metadata_fetched_at=metadata_fetched_at,
+                orderbook_fetched_at=orderbook_fetched_at,
+            )
+            _skip_event(event, amount_usd, exposure_block_reason, decision="MANUAL")
+            return
+        if precise_amount_usd + 1e-9 < amount_usd:
+            amount_usd = precise_amount_usd
+            fill_estimate, fill_reason = executor.estimate_entry_fill(raw_book, amount_usd)
+            if fill_estimate is None:
+                event = _manual_trade_event(
+                    request,
+                    trade_id=manual_trade_id,
+                    question=question,
+                    price=float(snapshot.get("best_ask") or snapshot.get("mid") or 0.0),
+                    shares=0.0,
+                    size_usd=amount_usd,
+                    close_time=close_time,
+                    snapshot=snapshot,
+                    raw_market_metadata=meta,
+                    raw_orderbook=raw_book,
+                    metadata_fetched_at=metadata_fetched_at,
+                    orderbook_fetched_at=orderbook_fetched_at,
+                )
+                _skip_event(
+                    event,
+                    amount_usd,
+                    _humanize_reason(fill_reason or "manual buy quote failed"),
+                    decision="MANUAL",
+                )
+                return
+            fill_economics, fill_reason = executor.estimate_entry_economics(
+                token_id=request.token_id,
+                fill=fill_estimate,
+                market_meta=meta,
+            )
+            if fill_economics is None:
+                event = _manual_trade_event(
+                    request,
+                    trade_id=manual_trade_id,
+                    question=question,
+                    price=fill_estimate.avg_price,
+                    shares=fill_estimate.shares,
+                    size_usd=amount_usd,
+                    close_time=close_time,
+                    snapshot=snapshot,
+                    raw_market_metadata=meta,
+                    raw_orderbook=raw_book,
+                    metadata_fetched_at=metadata_fetched_at,
+                    orderbook_fetched_at=orderbook_fetched_at,
+                )
+                _skip_event(
+                    event,
+                    amount_usd,
+                    _humanize_reason(fill_reason or "entry fee model rejected the quoted fill"),
+                    decision="MANUAL",
+                )
+                return
+
         exposure_block_reason = executor.entry_risk_block_reason(
             market_id=request.market_id,
             trader_address=trader_address,
-            proposed_size_usd=amount_usd,
+            proposed_size_usd=fill_economics.total_cost_usd,
             account_equity=account_equity,
         )
         if exposure_block_reason:
@@ -1373,6 +1529,26 @@ def process_event(
         _pause_event(event, 0.0, entry_block_reason)
         return 0.0
 
+    market_data_ok, market_data_reason = executor.refresh_event_market_data(event)
+    if not market_data_ok:
+        reason = _humanize_reason(market_data_reason or "missing execution market data")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=reason,
+            event=event,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, 0.0, 0.0, reason)
+        return 0.0
+
     if not event.snapshot:
         reason = _humanize_reason("missing market snapshot")
         executor.log_skip(
@@ -1401,6 +1577,31 @@ def process_event(
     rough_fill, rough_fill_reason = executor.estimate_entry_fill(getattr(event, "raw_orderbook", None), rough_size)
     if rough_fill is None:
         reason = _humanize_reason(rough_fill_reason or "shadow simulation buy failed")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=rough_size,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=reason,
+            trader_f=trader_f,
+            event=event,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, 0.0, rough_size, reason)
+        return 0.0
+
+    rough_entry_economics, rough_econ_reason = executor.estimate_entry_economics(
+        token_id=event.token_id,
+        fill=rough_fill,
+        market_meta=getattr(event, "raw_market_metadata", None),
+    )
+    if rough_entry_economics is None:
+        reason = _humanize_reason(rough_econ_reason or "entry fee model rejected the quoted fill")
         executor.log_skip(
             trade_id=event.trade_id,
             market_id=event.market_id,
@@ -1502,6 +1703,7 @@ def process_event(
         rough_fill.avg_price if rough_fill.avg_price > 0 else event.price,
         bankroll,
         signal.get("mode", "heuristic"),
+        effective_market_price=rough_entry_economics.sizing_effective_price,
         min_confidence_override=signal.get("min_confidence"),
     )
 
@@ -1571,6 +1773,7 @@ def process_event(
         logger.info("Trade %s: %s", event.trade_id, clip_note)
     fill_estimate = rough_fill
     fill_reason = None
+    fill_economics = rough_entry_economics
     for _ in range(3):
         if sizing["dollar_size"] == 0.0:
             break
@@ -1580,11 +1783,19 @@ def process_event(
         )
         if fill_estimate is None:
             break
+        fill_economics, fill_reason = executor.estimate_entry_economics(
+            token_id=event.token_id,
+            fill=fill_estimate,
+            market_meta=getattr(event, "raw_market_metadata", None),
+        )
+        if fill_economics is None:
+            break
         next_sizing = size_signal(
             signal["confidence"],
             fill_estimate.avg_price if fill_estimate.avg_price > 0 else event.price,
             bankroll,
             signal.get("mode", "heuristic"),
+            effective_market_price=fill_economics.sizing_effective_price,
             min_confidence_override=signal.get("min_confidence"),
         )
         next_sizing = apply_wallet_trust_sizing(
@@ -1632,8 +1843,8 @@ def process_event(
         _reject_event(event, signal["confidence"], 0.0, reason)
         return 0.0
 
-    if fill_estimate is None:
-        reason = _humanize_reason(fill_reason or "shadow simulation buy failed")
+    if fill_estimate is None or fill_economics is None:
+        reason = _humanize_reason(fill_reason or "entry fee model rejected the quoted fill")
         executor.log_skip(
             trade_id=event.trade_id,
             market_id=event.market_id,
@@ -1654,10 +1865,94 @@ def process_event(
         _reject_event(event, signal["confidence"], sizing["dollar_size"], reason)
         return 0.0
 
+    precise_size_usd, exposure_block_reason, clip_note = _apply_total_exposure_cap_to_entry_cost(
+        executor,
+        requested_size_usd=sizing["dollar_size"],
+        fill_economics=fill_economics,
+        account_equity=account_equity,
+        trader_address=event.trader_address,
+    )
+    if clip_note:
+        logger.info("Trade %s: %s", event.trade_id, clip_note)
+    if exposure_block_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal["confidence"],
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=exposure_block_reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _skip_event(event, sizing["dollar_size"], exposure_block_reason)
+        return 0.0
+    if precise_size_usd + 1e-9 < sizing["dollar_size"]:
+        sizing["dollar_size"] = precise_size_usd
+        sizing["kelly_f"] = round(precise_size_usd / bankroll, 5) if bankroll > 0 else 0.0
+        fill_estimate, fill_reason = executor.estimate_entry_fill(
+            getattr(event, "raw_orderbook", None),
+            sizing["dollar_size"],
+        )
+        if fill_estimate is None:
+            reason = _humanize_reason(fill_reason or "entry fee model rejected the quoted fill")
+            executor.log_skip(
+                trade_id=event.trade_id,
+                market_id=event.market_id,
+                question=event.question,
+                trader_address=event.trader_address,
+                side=event.side,
+                price=event.price,
+                size_usd=sizing["dollar_size"],
+                confidence=signal["confidence"],
+                kelly_f=sizing.get("kelly_f", 0.0),
+                reason=reason,
+                trader_f=trader_f,
+                market_f=market_f,
+                event=event,
+                signal=signal,
+            )
+            dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+            _reject_event(event, signal["confidence"], sizing["dollar_size"], reason)
+            return 0.0
+        fill_economics, fill_reason = executor.estimate_entry_economics(
+            token_id=event.token_id,
+            fill=fill_estimate,
+            market_meta=getattr(event, "raw_market_metadata", None),
+        )
+        if fill_economics is None:
+            reason = _humanize_reason(fill_reason or "entry fee model rejected the quoted fill")
+            executor.log_skip(
+                trade_id=event.trade_id,
+                market_id=event.market_id,
+                question=event.question,
+                trader_address=event.trader_address,
+                side=event.side,
+                price=event.price,
+                size_usd=sizing["dollar_size"],
+                confidence=signal["confidence"],
+                kelly_f=sizing.get("kelly_f", 0.0),
+                reason=reason,
+                trader_f=trader_f,
+                market_f=market_f,
+                event=event,
+                signal=signal,
+            )
+            dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+            _reject_event(event, signal["confidence"], sizing["dollar_size"], reason)
+            return 0.0
+
     exposure_block_reason = executor.entry_risk_block_reason(
         market_id=event.market_id,
         trader_address=event.trader_address,
-        proposed_size_usd=sizing["dollar_size"],
+        proposed_size_usd=fill_economics.total_cost_usd,
         account_equity=account_equity,
     )
     if exposure_block_reason:

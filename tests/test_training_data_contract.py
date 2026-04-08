@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,8 +27,9 @@ class TrainingDataContractTest(unittest.TestCase):
                         price_at_signal, signal_size_usd, confidence, kelly_fraction,
                         real_money, skipped, skip_reason, placed_at,
                         actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        entry_gross_price, entry_gross_shares, entry_gross_size_usd,
                         shadow_pnl_usd, resolved_at, label_applied_at, counterfactual_return
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     [
                         (
@@ -45,6 +47,9 @@ class TrainingDataContractTest(unittest.TestCase):
                             0,
                             None,
                             1_700_000_000,
+                            0.40,
+                            25.0,
+                            10.0,
                             0.40,
                             25.0,
                             10.0,
@@ -71,6 +76,9 @@ class TrainingDataContractTest(unittest.TestCase):
                             0.45,
                             26.0,
                             12.0,
+                            0.45,
+                            26.0,
+                            12.0,
                             3.0,
                             1_700_000_200,
                             1_700_000_200,
@@ -87,6 +95,149 @@ class TrainingDataContractTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_load_training_data_excludes_fee_blind_rows(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at,
+                        actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        entry_gross_price, entry_gross_shares, entry_gross_size_usd,
+                        shadow_pnl_usd, resolved_at, label_applied_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "fee-aware-executed",
+                        "market-1",
+                        "Fee-aware executed row",
+                        "0xaaa",
+                        "yes",
+                        "buy",
+                        0.40,
+                        10.0,
+                        0.71,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                        0.41,
+                        24.0,
+                        10.0,
+                        0.40,
+                        25.0,
+                        10.0,
+                        5.0,
+                        1_700_000_100,
+                        1_700_000_100,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at,
+                        actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        shadow_pnl_usd, resolved_at, label_applied_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "fee-blind-executed",
+                        "market-2",
+                        "Legacy executed row",
+                        "0xbbb",
+                        "yes",
+                        "buy",
+                        0.42,
+                        10.0,
+                        0.72,
+                        0.09,
+                        0,
+                        0,
+                        1_700_000_010,
+                        0.42,
+                        23.8,
+                        10.0,
+                        4.0,
+                        1_700_000_110,
+                        1_700_000_110,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, skip_reason, placed_at,
+                        resolved_at, label_applied_at, counterfactual_return, snapshot_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "fee-aware-skip",
+                        "market-3",
+                        "Fee-aware skipped row",
+                        "0xccc",
+                        "yes",
+                        "buy",
+                        0.45,
+                        12.0,
+                        0.59,
+                        0.08,
+                        0,
+                        1,
+                        "signal confidence was 59.0%, below the 60.0% minimum",
+                        1_700_000_020,
+                        1_700_000_120,
+                        1_700_000_120,
+                        1.222222,
+                        json.dumps({"fee_rate_bps": 0}),
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, skip_reason, placed_at,
+                        resolved_at, label_applied_at, counterfactual_return
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "fee-blind-skip",
+                        "market-4",
+                        "Legacy skipped row",
+                        "0xddd",
+                        "yes",
+                        "buy",
+                        0.46,
+                        12.0,
+                        0.58,
+                        0.07,
+                        0,
+                        1,
+                        "signal confidence was 58.0%, below the 60.0% minimum",
+                        1_700_000_030,
+                        1_700_000_130,
+                        1_700_000_130,
+                        1.173913,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                df = train.load_training_data()
+
+                self.assertEqual(list(df["trade_id"]), ["fee-aware-executed", "fee-aware-skip"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_load_training_data_includes_trainable_skips_but_excludes_policy_skips(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -94,40 +245,54 @@ class TrainingDataContractTest(unittest.TestCase):
                 db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
                 db.init_db()
                 conn = db.get_conn()
-                conn.executemany(
+                conn.execute(
                     """
                     INSERT INTO trade_log (
                         trade_id, market_id, question, trader_address, side, source_action,
                         price_at_signal, signal_size_usd, confidence, kelly_fraction,
                         real_money, skipped, skip_reason, placed_at,
                         actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        entry_gross_price, entry_gross_shares, entry_gross_size_usd,
                         shadow_pnl_usd, resolved_at, label_applied_at, counterfactual_return
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "accepted-win",
+                        "market-1",
+                        "Accepted trade",
+                        "0xaaa",
+                        "yes",
+                        "buy",
+                        0.40,
+                        10.0,
+                        0.71,
+                        0.10,
+                        0,
+                        0,
+                        None,
+                        1_700_000_000,
+                        0.40,
+                        25.0,
+                        10.0,
+                        0.40,
+                        25.0,
+                        10.0,
+                        5.0,
+                        1_700_000_100,
+                        1_700_000_100,
+                        1.5,
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, skip_reason, placed_at,
+                        resolved_at, label_applied_at, counterfactual_return, snapshot_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     [
-                        (
-                            "accepted-win",
-                            "market-1",
-                            "Accepted trade",
-                            "0xaaa",
-                            "yes",
-                            "buy",
-                            0.40,
-                            10.0,
-                            0.71,
-                            0.10,
-                            0,
-                            0,
-                            None,
-                            1_700_000_000,
-                            0.40,
-                            25.0,
-                            10.0,
-                            5.0,
-                            1_700_000_100,
-                            1_700_000_100,
-                            1.5,
-                        ),
                         (
                             "skip-trainable-win",
                             "market-2",
@@ -143,13 +308,10 @@ class TrainingDataContractTest(unittest.TestCase):
                             1,
                             "signal confidence was 59.0%, below the 60.0% minimum",
                             1_700_000_010,
-                            None,
-                            None,
-                            None,
-                            None,
                             1_700_000_110,
                             1_700_000_110,
                             1.222222,
+                            json.dumps({"fee_rate_bps": 0}),
                         ),
                         (
                             "skip-trainable-loss",
@@ -166,13 +328,10 @@ class TrainingDataContractTest(unittest.TestCase):
                             1,
                             "confidence was 58.0%, below the 60.0% minimum needed to place a trade",
                             1_700_000_020,
-                            None,
-                            None,
-                            None,
-                            None,
                             1_700_000_120,
                             1_700_000_120,
                             -1.0,
+                            json.dumps({"fee_rate_bps": 0}),
                         ),
                         (
                             "skip-policy-win",
@@ -189,13 +348,10 @@ class TrainingDataContractTest(unittest.TestCase):
                             1,
                             "too close to resolution, less than 45 seconds remained to place the trade",
                             1_700_000_030,
-                            None,
-                            None,
-                            None,
-                            None,
                             1_700_000_130,
                             1_700_000_130,
                             1.857143,
+                            json.dumps({"fee_rate_bps": 0}),
                         ),
                     ],
                 )
@@ -244,8 +400,9 @@ class TrainingDataContractTest(unittest.TestCase):
                         price_at_signal, signal_size_usd, confidence, kelly_fraction,
                         real_money, skipped, skip_reason, placed_at,
                         actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        entry_gross_price, entry_gross_shares, entry_gross_size_usd,
                         shadow_pnl_usd, resolved_at, label_applied_at, counterfactual_return
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         "accepted-win",
@@ -265,6 +422,9 @@ class TrainingDataContractTest(unittest.TestCase):
                         0.40,
                         25.0,
                         10.0,
+                        0.40,
+                        25.0,
+                        10.0,
                         5.0,
                         1_700_000_100,
                         1_700_000_100,
@@ -277,8 +437,8 @@ class TrainingDataContractTest(unittest.TestCase):
                         trade_id, market_id, question, trader_address, side, source_action,
                         price_at_signal, signal_size_usd, confidence, kelly_fraction,
                         real_money, skipped, skip_reason, placed_at,
-                        resolved_at, label_applied_at, counterfactual_return
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        resolved_at, label_applied_at, counterfactual_return, snapshot_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     [
                         (
@@ -299,6 +459,7 @@ class TrainingDataContractTest(unittest.TestCase):
                             1_700_000_110 + idx,
                             1_700_000_110 + idx,
                             1.222222,
+                            json.dumps({"fee_rate_bps": 0}),
                         )
                         for idx in range(8)
                     ],
@@ -336,8 +497,8 @@ class TrainingDataContractTest(unittest.TestCase):
                         trade_id, market_id, question, trader_address, side, source_action,
                         price_at_signal, signal_size_usd, confidence, kelly_fraction,
                         real_money, skipped, skip_reason, placed_at,
-                        resolved_at, label_applied_at, counterfactual_return
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        resolved_at, label_applied_at, counterfactual_return, snapshot_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     [
                         (
@@ -358,6 +519,7 @@ class TrainingDataContractTest(unittest.TestCase):
                             1_500,
                             3_000,
                             1.222222,
+                            json.dumps({"fee_rate_bps": 0}),
                         ),
                         (
                             "ineligible-new-skip",
@@ -377,6 +539,27 @@ class TrainingDataContractTest(unittest.TestCase):
                             1_600,
                             3_100,
                             1.857143,
+                            json.dumps({"fee_rate_bps": 0}),
+                        ),
+                        (
+                            "fee-blind-new-skip",
+                            "market-4",
+                            "Eligible but fee-blind skipped label",
+                            "0x654",
+                            "yes",
+                            "buy",
+                            0.44,
+                            11.0,
+                            0.58,
+                            0.08,
+                            0,
+                            1,
+                            "signal confidence was 58.0%, below the 60.0% minimum",
+                            1_002,
+                            1_700,
+                            3_200,
+                            1.272727,
+                            None,
                         ),
                     ],
                 )

@@ -149,6 +149,39 @@ def min_bet_usd() -> float:
     return _get_float("MIN_BET_USD", "1.00")
 
 
+def entry_fixed_cost_usd() -> float:
+    return _get_bounded_float("ENTRY_FIXED_COST_USD", "0.00", minimum=0.0)
+
+
+def exit_fixed_cost_usd() -> float:
+    return _get_bounded_float("EXIT_FIXED_COST_USD", "0.00", minimum=0.0)
+
+
+def approval_fixed_cost_usd() -> float:
+    return _get_bounded_float("APPROVAL_FIXED_COST_USD", "0.00", minimum=0.0)
+
+
+def settlement_fixed_cost_usd() -> float:
+    return _get_bounded_float("SETTLEMENT_FIXED_COST_USD", "0.00", minimum=0.0)
+
+
+def include_expected_exit_fee_in_sizing() -> bool:
+    return _get_bool("INCLUDE_EXPECTED_EXIT_FEE_IN_SIZING", "true")
+
+
+def expected_close_fixed_cost_usd() -> float:
+    raw = _get_env_file_value("EXPECTED_CLOSE_FIXED_COST_USD") or _get("EXPECTED_CLOSE_FIXED_COST_USD", "")
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ConfigError(f"EXPECTED_CLOSE_FIXED_COST_USD must be numeric, got {raw!r}") from exc
+        if value < 0:
+            raise ConfigError(f"EXPECTED_CLOSE_FIXED_COST_USD must be >= 0, got {value}")
+        return value
+    return max(exit_fixed_cost_usd(), settlement_fixed_cost_usd())
+
+
 def heuristic_min_entry_price() -> float:
     return _get_env_file_bounded_float(
         "HEURISTIC_MIN_ENTRY_PRICE",
@@ -419,6 +452,14 @@ def max_feed_staleness_seconds() -> int:
     if seconds == float("inf"):
         return 3 * 60
     return max(int(seconds), 30)
+
+
+def max_orderbook_staleness_seconds() -> int:
+    raw = _get_env_file_value("MAX_ORDERBOOK_STALENESS") or _get("MAX_ORDERBOOK_STALENESS", "3s")
+    seconds = _parse_duration(raw, 3.0)
+    if seconds == float("inf"):
+        return 3
+    return max(int(seconds), 1)
 
 
 def min_execution_window_seconds() -> int:

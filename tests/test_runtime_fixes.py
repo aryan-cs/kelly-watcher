@@ -23,6 +23,7 @@ import main
 import tracker
 import trader_scorer
 from executor import PolymarketExecutor, TotalExposureDecision, log_trade
+from economics import build_entry_economics
 from market_scorer import MarketScorer, build_market_features
 from trader_scorer import TraderScorer
 
@@ -528,6 +529,71 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_resolve_shadow_trades_ignores_live_rows(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        token_id, price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
+                        actual_entry_size_usd
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "live-trade-1",
+                        "market-live",
+                        "Live unresolved trade",
+                        "0xabc",
+                        "yes",
+                        "buy",
+                        "token-live",
+                        0.5,
+                        10.0,
+                        0.7,
+                        0.1,
+                        1,
+                        0,
+                        1_700_000_000,
+                        0.5,
+                        20.0,
+                        10.0,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO positions (
+                        market_id, token_id, side, size_usd, avg_price, entered_at, real_money
+                    ) VALUES (?,?,?,?,?,?,?)
+                    """,
+                    ("market-live", "token-live", "yes", 10.0, 0.5, 1_700_000_000, 1),
+                )
+                conn.commit()
+                conn.close()
+
+                resolved = evaluator.resolve_shadow_trades(trade_id="live-trade-1", forced_outcome="yes")
+
+                self.assertEqual(resolved, [])
+                conn = db.get_conn()
+                row = conn.execute(
+                    "SELECT outcome, actual_pnl_usd FROM trade_log WHERE trade_id='live-trade-1'"
+                ).fetchone()
+                position = conn.execute(
+                    "SELECT size_usd FROM positions WHERE market_id='market-live' AND token_id='token-live' AND real_money=1"
+                ).fetchone()
+                conn.close()
+
+                self.assertIsNone(row["outcome"])
+                self.assertIsNone(row["actual_pnl_usd"])
+                self.assertAlmostEqual(float(position["size_usd"]), 10.0, places=6)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_send_resolution_alerts_only_notifies_executed_positions(self) -> None:
         resolved_rows = [
             {
@@ -556,7 +622,7 @@ class RuntimeFixesTest(unittest.TestCase):
         alert_mock.assert_called_once()
         self.assertEqual(
             alert_mock.call_args.args[0],
-            "✅ shadow won YES, made $3.50\nWill it happen?: https://polymarket.com/event/will-it-happen",
+            "✅ shadow won YES, made $3.50\n\nWill it happen?: https://polymarket.com/event/will-it-happen",
         )
         self.assertEqual(alert_mock.call_args.kwargs["kind"], "resolution")
 
@@ -1514,8 +1580,9 @@ class RuntimeFixesTest(unittest.TestCase):
                         trade_id, market_id, question, trader_address, side, source_action,
                         price_at_signal, signal_size_usd, confidence, kelly_fraction,
                         real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
-                        actual_entry_size_usd, shadow_pnl_usd, resolved_at, label_applied_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        actual_entry_size_usd, entry_gross_price, entry_gross_shares,
+                        entry_gross_size_usd, shadow_pnl_usd, resolved_at, label_applied_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         "trade-2",
@@ -1531,6 +1598,9 @@ class RuntimeFixesTest(unittest.TestCase):
                         0,
                         0,
                         1_000,
+                        0.45,
+                        26.666667,
+                        12.0,
                         0.45,
                         26.666667,
                         12.0,
@@ -1578,6 +1648,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 "takingAmount": "20.0",
             },
         )
+        executor.refresh_event_market_data = lambda event: (True, None)
+        executor.get_fee_rate_bps = lambda token_id, market_meta=None: (0, None)
         executor._ensure_live_token_allowance = lambda token_id: None
         executor.get_usdc_balance = lambda: 100.0
         executor._measure_live_balance_change = lambda before, expect_increase=False: (before, 0.0)
@@ -1648,6 +1720,178 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertAlmostEqual(float(captured["actual_entry_price"]), 0.5, places=6)
         self.assertAlmostEqual(float(captured["actual_entry_shares"]), 20.0, places=6)
         self.assertAlmostEqual(float(captured["actual_entry_size_usd"]), 10.0, places=6)
+
+    def test_log_trade_persists_entry_fee_breakdown(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+
+                event = SimpleNamespace(
+                    token_id="token-1",
+                    action="buy",
+                    timestamp=1_700_000_000,
+                    observed_at=1_700_000_001,
+                    poll_started_at=1_700_000_000,
+                    market_close_ts=1_700_010_000,
+                    metadata_fetched_at=1_700_000_000,
+                    orderbook_fetched_at=1_700_000_000,
+                    source_ts_raw="1700000000",
+                    shares=50.0,
+                    size_usd=25.0,
+                    question="Will it happen?",
+                    raw_trade=None,
+                    raw_market_metadata=None,
+                    raw_orderbook=None,
+                    snapshot={"fee_rate_bps": 10},
+                    trader_address="0xabc",
+                    trader_name="Trader",
+                )
+                economics = build_entry_economics(
+                    gross_price=0.5,
+                    gross_shares=20.0,
+                    gross_spent_usd=10.0,
+                    fee_rate_bps=10,
+                    fixed_cost_usd=0.2,
+                    include_expected_exit_fee_in_sizing=False,
+                    expected_close_fixed_cost_usd=0.0,
+                )
+                row_id = log_trade(
+                    trade_id="buy-1",
+                    market_id="market-1",
+                    question="Will it happen?",
+                    trader_address="0xabc",
+                    side="yes",
+                    price=0.5,
+                    signal_size_usd=10.0,
+                    confidence=0.7,
+                    kelly_f=0.1,
+                    real_money=False,
+                    order_id=None,
+                    skipped=False,
+                    skip_reason=None,
+                    actual_entry_price=economics.effective_entry_price,
+                    actual_entry_shares=economics.net_shares,
+                    actual_entry_size_usd=economics.total_cost_usd,
+                    entry_economics=economics,
+                    event=event,
+                    signal={"mode": "heuristic"},
+                )
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT entry_fee_rate_bps, entry_fee_usd, entry_fee_shares,
+                           entry_fixed_cost_usd, entry_gross_price, entry_gross_shares,
+                           entry_gross_size_usd
+                    FROM trade_log
+                    WHERE id=?
+                    """,
+                    (row_id,),
+                ).fetchone()
+                conn.close()
+
+                self.assertAlmostEqual(float(row["entry_fee_rate_bps"]), 10.0, places=6)
+                self.assertAlmostEqual(float(row["entry_fee_usd"]), economics.entry_fee_usd, places=6)
+                self.assertAlmostEqual(float(row["entry_fee_shares"]), economics.entry_fee_shares, places=6)
+                self.assertAlmostEqual(float(row["entry_fixed_cost_usd"]), economics.fixed_cost_usd, places=6)
+                self.assertAlmostEqual(float(row["entry_gross_price"]), economics.gross_price, places=6)
+                self.assertAlmostEqual(float(row["entry_gross_shares"]), economics.gross_shares, places=6)
+                self.assertAlmostEqual(float(row["entry_gross_size_usd"]), economics.gross_spent_usd, places=6)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_resolve_shadow_trades_applies_settlement_cost_and_fee_aware_counterfactuals(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        token_id, price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
+                        actual_entry_size_usd, remaining_entry_shares, remaining_entry_size_usd,
+                        snapshot_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "open-win",
+                        "market-1",
+                        "Open winner",
+                        "0xabc",
+                        "yes",
+                        "buy",
+                        "token-1",
+                        0.50,
+                        10.0,
+                        0.7,
+                        0.1,
+                        0,
+                        0,
+                        1_700_000_000,
+                        0.51,
+                        19.98,
+                        10.2,
+                        19.98,
+                        10.2,
+                        json.dumps({"fee_rate_bps": 10}),
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        token_id, price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at, snapshot_json, skip_reason
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "skip-win",
+                        "market-2",
+                        "Skipped winner",
+                        "0xdef",
+                        "yes",
+                        "buy",
+                        "token-2",
+                        0.50,
+                        10.0,
+                        0.58,
+                        0.05,
+                        0,
+                        1,
+                        1_700_000_100,
+                        json.dumps({"fee_rate_bps": 10}),
+                        "signal confidence was 58.0%, below the 60.0% minimum",
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("evaluator.settlement_fixed_cost_usd", return_value=0.25), patch(
+                    "evaluator.entry_fixed_cost_usd", return_value=0.20
+                ):
+                    resolved = evaluator.resolve_shadow_trades(question_contains="winner", forced_outcome="yes")
+
+                self.assertEqual(len(resolved), 2)
+                conn = db.get_conn()
+                open_row = conn.execute(
+                    "SELECT shadow_pnl_usd, resolution_fixed_cost_usd FROM trade_log WHERE trade_id='open-win'"
+                ).fetchone()
+                skipped_row = conn.execute(
+                    "SELECT counterfactual_return FROM trade_log WHERE trade_id='skip-win'"
+                ).fetchone()
+                conn.close()
+
+                self.assertAlmostEqual(float(open_row["shadow_pnl_usd"]), 9.53, places=2)
+                self.assertAlmostEqual(float(open_row["resolution_fixed_cost_usd"]), 0.25, places=6)
+                self.assertLess(float(skipped_row["counterfactual_return"]), 0.955)
+            finally:
+                db.DB_PATH = original_db_path
 
     def test_validate_startup_fails_closed_on_invalid_live_risk_limit(self) -> None:
         valid_wallet = "0x1111111111111111111111111111111111111111"
@@ -1784,6 +2028,55 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(sizing["kelly_f"], 0.0)
         self.assertIn("remaining total exposure headroom was $0.75", sizing["reason"])
         self.assertIsNone(clip_note)
+
+    def test_apply_total_exposure_cap_to_entry_cost_converts_total_headroom_back_to_gross_size(self) -> None:
+        executor = Mock()
+        executor.total_open_exposure_decision.return_value = TotalExposureDecision(
+            allowed_size_usd=9.75,
+            clipped=True,
+        )
+        fill_economics = build_entry_economics(
+            gross_price=0.5,
+            gross_shares=20.0,
+            gross_spent_usd=10.0,
+            fee_rate_bps=0,
+            fixed_cost_usd=0.25,
+            include_expected_exit_fee_in_sizing=False,
+            expected_close_fixed_cost_usd=0.0,
+        )
+
+        allowed_size_usd, block_reason, clip_note = main._apply_total_exposure_cap_to_entry_cost(
+            executor,
+            requested_size_usd=10.0,
+            fill_economics=fill_economics,
+            account_equity=1000.0,
+        )
+
+        self.assertAlmostEqual(allowed_size_usd, 9.5, places=6)
+        self.assertIsNone(block_reason)
+        self.assertEqual(clip_note, "total exposure cap clipped size from $10.00 to $9.50")
+
+    def test_get_fee_rate_bps_uses_stale_cache_when_refresh_fails(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._fee_rate_cache = {"token-1": (600.0, 17)}
+
+        with patch("executor.time.time", return_value=1_000.0), patch(
+            "executor.httpx.Client", side_effect=RuntimeError("boom")
+        ):
+            fee_rate_bps, fee_reason = executor.get_fee_rate_bps("token-1")
+
+        self.assertEqual(fee_rate_bps, 17)
+        self.assertIsNone(fee_reason)
+
+    def test_get_fee_rate_bps_blocks_when_lookup_fails_without_cache(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._fee_rate_cache = {}
+
+        with patch("executor.httpx.Client", side_effect=RuntimeError("boom")):
+            fee_rate_bps, fee_reason = executor.get_fee_rate_bps("token-1")
+
+        self.assertIsNone(fee_rate_bps)
+        self.assertIn("unavailable", str(fee_reason))
 
     def test_trader_cache_refresh_rotates_batched_wallets(self) -> None:
         wallets = ["0x1", "0x2", "0x3"]

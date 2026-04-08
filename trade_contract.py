@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-DATA_CONTRACT_VERSION = 4
+DATA_CONTRACT_VERSION = 6
 MODEL_LABEL_MODE = "expected_return_weighted_counterfactual_v1"
 RESOLVED_PNL_SQL = "COALESCE(actual_pnl_usd, shadow_pnl_usd)"
 REALIZED_CLOSE_TS_SQL = "COALESCE(exited_at, resolved_at, placed_at)"
@@ -19,6 +19,13 @@ AND COALESCE(source_action, 'buy')='buy'
 AND actual_entry_price IS NOT NULL
 AND actual_entry_shares IS NOT NULL
 AND actual_entry_size_usd IS NOT NULL
+"""
+
+FEE_AWARE_EXECUTED_ENTRY_SQL = f"""
+{EXECUTED_ENTRY_SQL}
+AND entry_gross_price IS NOT NULL
+AND entry_gross_shares IS NOT NULL
+AND entry_gross_size_usd IS NOT NULL
 """
 
 OPEN_EXECUTED_ENTRY_SQL = f"""
@@ -49,12 +56,16 @@ RESOLVED_TRAINABLE_SKIPPED_BUY_SQL = f"""
 skipped=1
 AND {OBSERVED_BUY_SQL}
 AND counterfactual_return IS NOT NULL
+AND snapshot_json IS NOT NULL
+AND json_valid(snapshot_json)
+AND json_extract(snapshot_json, '$.fee_rate_bps') IS NOT NULL
 AND {TRAINABLE_SKIPPED_REASON_SQL}
 """
 
 RESOLVED_TRAINING_SAMPLE_SQL = f"""
 (
-    {RESOLVED_EXECUTED_ENTRY_SQL}
+    {FEE_AWARE_EXECUTED_ENTRY_SQL}
+    AND {RESOLVED_PNL_SQL} IS NOT NULL
 )
 OR
 (

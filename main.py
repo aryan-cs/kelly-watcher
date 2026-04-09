@@ -61,6 +61,9 @@ from config import (
     retrain_early_check_seconds,
     retrain_hour_local,
     retrain_min_samples,
+    stop_loss_enabled,
+    stop_loss_max_loss_pct,
+    stop_loss_min_hold_seconds,
     use_real_money,
     wallet_inactivity_limit_seconds,
     wallet_slow_drop_max_tracking_age_seconds,
@@ -97,7 +100,7 @@ from market_scorer import build_market_features
 from market_urls import market_url_from_metadata
 from signal_engine import SignalEngine
 from telegram_runtime import service_telegram_commands
-from trade_contract import RESOLVED_EXECUTED_ENTRY_SQL
+from trade_contract import OPEN_EXECUTED_ENTRY_SQL, RESOLVED_EXECUTED_ENTRY_SQL
 from tracker import PolymarketTracker, TradeEvent
 from trader_scorer import get_trader_features, refresh_trader_cache
 from runtime_paths import (
@@ -311,6 +314,18 @@ class ShadowResetRequest:
 class EntryPauseState:
     key: str
     reason: str
+
+
+@dataclass(frozen=True)
+class StopLossCandidate:
+    market_id: str
+    token_id: str
+    side: str
+    question: str
+    trader_address: str
+    trader_name: str
+    entered_at: int
+    size_usd: float
 
 
 @dataclass
@@ -2069,6 +2084,242 @@ def _resolved_shadow_trade_count() -> int:
         conn.close()
 
 
+def _load_stop_loss_candidates(*, real_money: bool) -> list[StopLossCandidate]:
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                p.market_id,
+                p.token_id,
+                p.side,
+                p.size_usd,
+                p.entered_at,
+                COALESCE(t.question, p.market_id) AS question,
+                COALESCE(t.trader_address, '') AS trader_address,
+                COALESCE(t.trader_name, '') AS trader_name
+            FROM positions p
+            LEFT JOIN trade_log t
+              ON t.id = (
+                    SELECT t2.id
+                    FROM trade_log t2
+                    WHERE t2.market_id = p.market_id
+                      AND t2.real_money = p.real_money
+                      AND LOWER(COALESCE(t2.side, '')) = LOWER(COALESCE(p.side, ''))
+                      AND COALESCE(t2.token_id, '') = COALESCE(p.token_id, '')
+                      AND {OPEN_EXECUTED_ENTRY_SQL}
+                    ORDER BY t2.placed_at DESC, t2.id DESC
+                    LIMIT 1
+              )
+            WHERE p.real_money=?
+            ORDER BY p.entered_at ASC, p.market_id ASC, p.token_id ASC
+            """,
+            (1 if real_money else 0,),
+        ).fetchall()
+        return [
+            StopLossCandidate(
+                market_id=str(row["market_id"] or "").strip(),
+                token_id=str(row["token_id"] or "").strip(),
+                side=str(row["side"] or "").strip().lower(),
+                question=str(row["question"] or row["market_id"] or "").strip(),
+                trader_address=str(row["trader_address"] or "").strip().lower(),
+                trader_name=str(row["trader_name"] or "").strip(),
+                entered_at=int(row["entered_at"] or 0),
+                size_usd=float(row["size_usd"] or 0.0),
+            )
+            for row in rows
+            if str(row["market_id"] or "").strip() and str(row["token_id"] or "").strip()
+        ]
+    finally:
+        conn.close()
+
+
+def _build_stop_loss_reason(*, estimated_return: float, max_loss_pct: float) -> str:
+    return (
+        "stop-loss triggered because the current executable exit quote fell to "
+        f"{estimated_return * 100:.1f}% return (limit -{max_loss_pct * 100:.1f}%)"
+    )
+
+
+def _run_stop_loss_checks(
+    tracker: PolymarketTracker,
+    executor: PolymarketExecutor,
+    dedup: DedupeCache,
+) -> None:
+    if not stop_loss_enabled():
+        return
+
+    real_money = use_real_money()
+    if real_money and not dedup.sync_positions_from_api(tracker, wallet_address()):
+        logger.warning("Stop-loss check skipped because live positions could not be refreshed")
+        return
+
+    now_ts = int(time.time())
+    max_loss_pct = stop_loss_max_loss_pct()
+    min_hold_seconds = stop_loss_min_hold_seconds()
+    candidates = _load_stop_loss_candidates(real_money=real_money)
+    for candidate in candidates:
+        if candidate.entered_at > 0 and (now_ts - candidate.entered_at) < min_hold_seconds:
+            continue
+
+        position_state = executor._load_open_position_state(
+            candidate.market_id,
+            candidate.side,
+            candidate.token_id,
+            real_money=real_money,
+        )
+        if position_state is None:
+            continue
+
+        position, entries = position_state
+        open_shares = sum(executor._entry_open_shares(entry) for entry in entries)
+        open_size_usd = sum(executor._entry_open_size(entry) for entry in entries)
+        if open_shares <= 1e-9:
+            continue
+        if open_size_usd <= 1e-9:
+            open_size_usd = float(position.get("size_usd") or candidate.size_usd or 0.0)
+        if open_size_usd <= 1e-9:
+            continue
+
+        market_meta, metadata_fetched_at = tracker.get_market_metadata(candidate.market_id)
+        snapshot, raw_book, orderbook_fetched_at = tracker.get_orderbook_snapshot(candidate.token_id)
+        if raw_book is None or snapshot is None:
+            logger.debug(
+                "Stop-loss quote unavailable for %s/%s: missing order book",
+                candidate.market_id[:12],
+                candidate.side.upper(),
+            )
+            continue
+
+        fill, fill_reason = executor.estimate_exit_fill(raw_book, open_shares)
+        if fill is None:
+            logger.debug(
+                "Stop-loss quote unavailable for %s/%s: %s",
+                candidate.market_id[:12],
+                candidate.side.upper(),
+                fill_reason or "sell simulation failed",
+            )
+            continue
+
+        exit_economics, economics_reason = executor.estimate_exit_economics(
+            token_id=candidate.token_id,
+            fill=fill,
+            market_meta=market_meta,
+        )
+        if exit_economics is None:
+            logger.debug(
+                "Stop-loss quote rejected for %s/%s: %s",
+                candidate.market_id[:12],
+                candidate.side.upper(),
+                economics_reason or "exit economics unavailable",
+            )
+            continue
+
+        estimated_return = (float(exit_economics.net_proceeds_usd) / open_size_usd) - 1.0
+        if estimated_return > (-max_loss_pct + 1e-9):
+            continue
+
+        question = str(market_meta.get("question") or market_meta.get("title") or candidate.question or candidate.market_id)
+        close_time = str(
+            market_meta.get("endDate")
+            or market_meta.get("closedTime")
+            or market_meta.get("closeTime")
+            or ""
+        ).strip()
+        quoted_price = float(snapshot.get("best_bid") or snapshot.get("mid") or fill.avg_price or 0.0)
+        if quoted_price <= 0:
+            quoted_price = float(exit_economics.effective_exit_price or 0.0)
+        if quoted_price <= 0:
+            continue
+
+        reason = _build_stop_loss_reason(
+            estimated_return=estimated_return,
+            max_loss_pct=max_loss_pct,
+        )
+        trade_id = f"stop-loss-{uuid.uuid4().hex}"
+        event = TradeEvent(
+            trade_id=trade_id,
+            market_id=candidate.market_id,
+            question=question,
+            side=candidate.side,
+            action="sell",
+            price=quoted_price,
+            shares=0.0,
+            size_usd=round(open_size_usd, 6),
+            token_id=candidate.token_id,
+            trader_name=candidate.trader_name,
+            trader_address=candidate.trader_address or "risk-engine",
+            timestamp=now_ts,
+            close_time=close_time,
+            snapshot=dict(snapshot or {}),
+            raw_trade={
+                "source": "risk-engine",
+                "risk_action": "stop_loss",
+                "estimated_return": estimated_return,
+                "max_loss_pct": max_loss_pct,
+                "entered_at": candidate.entered_at,
+            },
+            raw_market_metadata=market_meta or {},
+            raw_orderbook=raw_book,
+            source_ts_raw=str(now_ts),
+            observed_at=now_ts,
+            poll_started_at=now_ts,
+            metadata_fetched_at=metadata_fetched_at,
+            orderbook_fetched_at=orderbook_fetched_at,
+            market_close_ts=PolymarketTracker._normalize_timestamp(close_time) if close_time else 0,
+        )
+        result = executor.execute_exit(
+            trade_id=trade_id,
+            market_id=candidate.market_id,
+            token_id=candidate.token_id,
+            side=candidate.side,
+            event=event,
+            dedup=dedup,
+            reason_override=reason,
+        )
+        if not result.placed:
+            reason_text = str(result.reason or "").strip()
+            if (
+                reason_text
+                and "order in-flight" not in reason_text.lower()
+                and not _is_non_actionable_exit_reason(reason_text)
+            ):
+                logger.warning(
+                    "Stop-loss exit failed for %s/%s: %s",
+                    candidate.market_id[:12],
+                    candidate.side.upper(),
+                    reason_text,
+                )
+            continue
+
+        execution_price = (result.dollar_size / result.shares) if result.shares > 0 else quoted_price
+        _emit_event(
+            {
+                "type": "signal",
+                "trade_id": trade_id,
+                "market_id": candidate.market_id,
+                "question": question,
+                **_event_market_payload(event),
+                "side": candidate.side,
+                "action": "sell",
+                "price": round(execution_price, 6),
+                "shares": round(result.shares, 6),
+                "amount_usd": result.dollar_size,
+                "size_usd": result.dollar_size,
+                "username": candidate.trader_name,
+                "trader": candidate.trader_address,
+                "decision": "STOP LOSS",
+                "confidence": 0.0,
+                "shadow": result.shadow,
+                "order_id": result.order_id,
+                "reason": reason,
+                "estimated_return": round(estimated_return, 6),
+                "stop_loss_limit_pct": max_loss_pct,
+                "ts": int(time.time()),
+            }
+        )
+
+
 def _validate_startup() -> None:
     errors: list[str] = []
     warnings: list[str] = []
@@ -2632,6 +2883,12 @@ def main() -> None:
         "interval",
         minutes=5,
         id="sync_positions",
+    )
+    scheduler.add_job(
+        lambda: _run_stop_loss_checks(tracker, executor, dedup),
+        "interval",
+        minutes=1,
+        id="stop_loss_check",
     )
     scheduler.add_job(
         _refresh_watchlist,

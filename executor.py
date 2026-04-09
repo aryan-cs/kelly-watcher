@@ -1102,6 +1102,21 @@ class PolymarketExecutor:
     ) -> tuple[SimulatedFill | None, str | None]:
         return self._simulate_shadow_sell(raw_book, shares)
 
+    def estimate_exit_economics(
+        self,
+        *,
+        token_id: str,
+        fill: SimulatedFill,
+        market_meta: dict[str, Any] | None = None,
+    ) -> tuple[ExitEconomics | None, str | None]:
+        return self._exit_economics_for_fill(
+            token_id=token_id,
+            gross_shares=fill.shares,
+            gross_notional_usd=fill.spent_usd,
+            gross_price=fill.avg_price,
+            market_meta=market_meta,
+        )
+
     def execute(
         self,
         trade_id: str,
@@ -1442,8 +1457,18 @@ class PolymarketExecutor:
         side: str,
         event,
         dedup,
+        reason_override: str | None = None,
     ) -> ExecutionResult:
         shadow = not use_real_money()
+        if dedup.has_pending_position(market_id, token_id, side):
+            return ExecutionResult(
+                False,
+                shadow,
+                None,
+                0.0,
+                "matching position already has an order in-flight",
+                action="exit",
+            )
         if not shadow:
             self._sync_live_positions(
                 dedup,
@@ -1524,6 +1549,7 @@ class PolymarketExecutor:
                 exit_notional=exit_notional,
                 pnl=pnl,
                 exit_fraction=exit_fraction,
+                reason_override=reason_override,
             )
 
         return self._execute_live_exit(
@@ -1539,6 +1565,7 @@ class PolymarketExecutor:
             exit_notional=exit_notional,
             pnl=pnl,
             exit_fraction=exit_fraction,
+            reason_override=reason_override,
         )
 
     def _load_open_position_state(
@@ -2019,6 +2046,7 @@ class PolymarketExecutor:
         exit_notional: float,
         pnl: float,
         exit_fraction: float,
+        reason_override: str | None = None,
     ) -> ExecutionResult:
         fill, reject_reason = self._simulate_shadow_sell(getattr(event, "raw_orderbook", None), shares)
         if fill is None:
@@ -2044,7 +2072,7 @@ class PolymarketExecutor:
             )
             return ExecutionResult(False, True, None, 0.0, economics_reason or "exit fee model rejected the sell", action="exit")
 
-        reason = self._exit_reason(exit_fraction)
+        reason = reason_override or self._exit_reason(exit_fraction)
         shares, exit_notional, pnl = self._finalize_exit(
             entries=entries,
             position=position,
@@ -2110,6 +2138,7 @@ class PolymarketExecutor:
         exit_notional: float,
         pnl: float,
         exit_fraction: float,
+        reason_override: str | None = None,
     ) -> ExecutionResult:
         try:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
@@ -2271,7 +2300,7 @@ class PolymarketExecutor:
 
             actual_exit_price = exit_economics.effective_exit_price
             actual_exit_notional = exit_economics.net_proceeds_usd
-            reason = self._exit_reason(exit_fraction)
+            reason = reason_override or self._exit_reason(exit_fraction)
             shares, exit_notional, pnl = self._finalize_exit(
                 entries=entries,
                 position=position,

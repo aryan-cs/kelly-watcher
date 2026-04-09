@@ -247,6 +247,50 @@ class WalletTrustTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_negative_local_copied_history_clamps_trusted_wallet_size(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                for idx in range(20):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"trusted-bad-{idx}",
+                        trader_address="0xabc",
+                        skipped=False,
+                        resolved_pnl_usd=-1.5,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
+                        "WALLET_LOCAL_PERFORMANCE_PENALTY_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_LOCAL_PERFORMANCE_PENALTY_MAX_AVG_RETURN": "-0.10",
+                        "WALLET_LOCAL_PERFORMANCE_PENALTY_SIZE_MULTIPLIER": "0.25",
+                    },
+                    clear=False,
+                ):
+                    state = get_wallet_trust_state("0xabc")
+
+                self.assertEqual(state.tier, "trusted")
+                self.assertAlmostEqual(state.resolved_copied_avg_return or 0.0, -0.15, places=6)
+                self.assertAlmostEqual(state.size_multiplier, 0.25, places=6)
+                self.assertAlmostEqual(state.local_performance_penalty_multiplier or 0.0, 0.25, places=6)
+                self.assertIn("local copied avg return -15.0%", state.tier_note or "")
+                self.assertIn("limiting size to 25%", state.tier_note or "")
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_probation_sizing_scales_down_and_tracks_effective_multiplier(self) -> None:
         trust_state = WalletTrustState(
             wallet_address="0xabc",

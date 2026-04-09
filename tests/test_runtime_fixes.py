@@ -2,12 +2,74 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
+import types
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+if "apscheduler.schedulers.background" not in sys.modules:
+    apscheduler_module = types.ModuleType("apscheduler")
+    schedulers_module = types.ModuleType("apscheduler.schedulers")
+    background_module = types.ModuleType("apscheduler.schedulers.background")
+
+    class _BackgroundScheduler:
+        def add_job(self, *args, **kwargs) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+    background_module.BackgroundScheduler = _BackgroundScheduler
+    schedulers_module.background = background_module
+    apscheduler_module.schedulers = schedulers_module
+    sys.modules["apscheduler"] = apscheduler_module
+    sys.modules["apscheduler.schedulers"] = schedulers_module
+    sys.modules["apscheduler.schedulers.background"] = background_module
+
+if "py_clob_client.clob_types" not in sys.modules:
+    py_clob_client_module = types.ModuleType("py_clob_client")
+    clob_types_module = types.ModuleType("py_clob_client.clob_types")
+    order_builder_module = types.ModuleType("py_clob_client.order_builder")
+    constants_module = types.ModuleType("py_clob_client.order_builder.constants")
+    client_module = types.ModuleType("py_clob_client.client")
+
+    class _MarketOrderArgs:
+        def __init__(self, *, token_id: str, amount: float, side: str) -> None:
+            self.token_id = token_id
+            self.amount = amount
+            self.side = side
+
+    class _OrderType:
+        FOK = "FOK"
+
+    class _ClobClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def set_api_creds(self, *args, **kwargs) -> None:
+            return None
+
+        def create_or_derive_api_creds(self):
+            return {}
+
+    clob_types_module.MarketOrderArgs = _MarketOrderArgs
+    clob_types_module.OrderType = _OrderType
+    constants_module.BUY = "BUY"
+    constants_module.SELL = "SELL"
+    client_module.ClobClient = _ClobClient
+    order_builder_module.constants = constants_module
+    py_clob_client_module.clob_types = clob_types_module
+    py_clob_client_module.order_builder = order_builder_module
+    py_clob_client_module.client = client_module
+    sys.modules["py_clob_client"] = py_clob_client_module
+    sys.modules["py_clob_client.clob_types"] = clob_types_module
+    sys.modules["py_clob_client.order_builder"] = order_builder_module
+    sys.modules["py_clob_client.order_builder.constants"] = constants_module
+    sys.modules["py_clob_client.client"] = client_module
 
 import auto_retrain
 import alerter
@@ -22,10 +84,79 @@ import identity_cache
 import main
 import tracker
 import trader_scorer
-from executor import PolymarketExecutor, TotalExposureDecision, log_trade
+from executor import ExecutionResult, PolymarketExecutor, SimulatedFill, TotalExposureDecision, log_trade
 from economics import build_entry_economics
 from market_scorer import MarketScorer, build_market_features
 from trader_scorer import TraderScorer
+
+
+def _insert_open_position_for_stop_loss_test(
+    *,
+    market_id: str = "market-stop",
+    token_id: str = "token-stop",
+    side: str = "yes",
+    question: str = "Will the stop loss trigger?",
+    trader_address: str = "0xabc",
+    trader_name: str = "Trader",
+    size_usd: float = 100.0,
+    shares: float = 200.0,
+    entry_price: float = 0.50,
+    entered_at: int | None = None,
+    real_money: bool = False,
+) -> None:
+    now_ts = int(time.time())
+    opened_at = entered_at if entered_at is not None else (now_ts - 3600)
+    conn = db.get_conn()
+    conn.execute(
+        """
+        INSERT INTO positions (
+            market_id, side, size_usd, avg_price, token_id, entered_at, real_money
+        ) VALUES (?,?,?,?,?,?,?)
+        """,
+        (
+            market_id,
+            side,
+            size_usd,
+            entry_price,
+            token_id,
+            opened_at,
+            1 if real_money else 0,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO trade_log (
+            trade_id, market_id, question, trader_address, trader_name, side, token_id,
+            source_action, price_at_signal, signal_size_usd, confidence, kelly_fraction,
+            real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
+            actual_entry_size_usd, remaining_entry_shares, remaining_entry_size_usd
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            f"entry-{market_id}",
+            market_id,
+            question,
+            trader_address,
+            trader_name,
+            side,
+            token_id,
+            "buy",
+            entry_price,
+            size_usd,
+            0.70,
+            0.10,
+            1 if real_money else 0,
+            0,
+            opened_at,
+            entry_price,
+            shares,
+            size_usd,
+            shares,
+            size_usd,
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 class RuntimeFixesTest(unittest.TestCase):
@@ -2676,6 +2807,177 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertGreater(low_evidence, 0.5)
         self.assertLess(low_evidence, 0.9)
         self.assertGreater(high_evidence, low_evidence)
+
+    def test_stop_loss_checks_trigger_exit_when_estimated_loss_breaches_threshold(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                _insert_open_position_for_stop_loss_test()
+
+                tracker_obj = Mock()
+                tracker_obj.get_market_metadata.return_value = (
+                    {
+                        "question": "Will the stop loss trigger?",
+                        "endDate": "2030-01-01T00:00:00Z",
+                    },
+                    111,
+                )
+                tracker_obj.get_orderbook_snapshot.return_value = (
+                    {
+                        "best_bid": 0.38,
+                        "best_ask": 0.39,
+                        "mid": 0.385,
+                    },
+                    {
+                        "bids": [{"price": "0.38", "size": "200"}],
+                        "asks": [{"price": "0.39", "size": "200"}],
+                    },
+                    222,
+                )
+
+                entry = {
+                    "remaining_entry_shares": 200.0,
+                    "remaining_entry_size_usd": 100.0,
+                }
+                executor_obj = Mock()
+                executor_obj._load_open_position_state.return_value = (
+                    {"token_id": "token-stop", "side": "yes", "size_usd": 100.0},
+                    [entry],
+                )
+                executor_obj._entry_open_shares = lambda row: float(row["remaining_entry_shares"])
+                executor_obj._entry_open_size = lambda row: float(row["remaining_entry_size_usd"])
+                executor_obj.estimate_exit_fill.return_value = (
+                    SimulatedFill(spent_usd=76.0, shares=200.0, avg_price=0.38),
+                    None,
+                )
+                executor_obj.estimate_exit_economics.return_value = (
+                    SimpleNamespace(net_proceeds_usd=76.0, effective_exit_price=0.38),
+                    None,
+                )
+                executor_obj.execute_exit.return_value = ExecutionResult(
+                    True,
+                    True,
+                    None,
+                    76.0,
+                    "stop-loss triggered",
+                    shares=200.0,
+                    pnl_usd=-24.0,
+                    action="exit",
+                )
+                dedup_cache = Mock()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "USE_REAL_MONEY": "false",
+                        "STOP_LOSS_ENABLED": "true",
+                        "STOP_LOSS_MAX_LOSS_PCT": "0.20",
+                        "STOP_LOSS_MIN_HOLD": "20m",
+                    },
+                    clear=False,
+                ), patch.object(main, "_emit_event") as emit_mock:
+                    main._run_stop_loss_checks(tracker_obj, executor_obj, dedup_cache)
+
+                executor_obj.execute_exit.assert_called_once()
+                execute_kwargs = executor_obj.execute_exit.call_args.kwargs
+                self.assertTrue(execute_kwargs["trade_id"].startswith("stop-loss-"))
+                self.assertIn("stop-loss triggered", execute_kwargs["reason_override"])
+                self.assertIn("-24.0%", execute_kwargs["reason_override"])
+
+                emit_mock.assert_called_once()
+                payload = emit_mock.call_args.args[0]
+                self.assertEqual(payload["decision"], "STOP LOSS")
+                self.assertEqual(payload["action"], "sell")
+                self.assertAlmostEqual(payload["estimated_return"], -0.24, places=6)
+                self.assertEqual(payload["size_usd"], 76.0)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_stop_loss_checks_respect_min_hold_window(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                _insert_open_position_for_stop_loss_test(entered_at=int(time.time()) - 60)
+
+                tracker_obj = Mock()
+                executor_obj = Mock()
+                dedup_cache = Mock()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "USE_REAL_MONEY": "false",
+                        "STOP_LOSS_ENABLED": "true",
+                        "STOP_LOSS_MAX_LOSS_PCT": "0.20",
+                        "STOP_LOSS_MIN_HOLD": "20m",
+                    },
+                    clear=False,
+                ):
+                    main._run_stop_loss_checks(tracker_obj, executor_obj, dedup_cache)
+
+                tracker_obj.get_market_metadata.assert_not_called()
+                tracker_obj.get_orderbook_snapshot.assert_not_called()
+                executor_obj.execute_exit.assert_not_called()
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_shadow_exit_uses_reason_override_when_provided(self) -> None:
+        executor_obj = object.__new__(PolymarketExecutor)
+        executor_obj._simulate_shadow_sell = Mock(
+            return_value=(SimulatedFill(spent_usd=76.0, shares=200.0, avg_price=0.38), None)
+        )
+        executor_obj._exit_economics_for_fill = Mock(
+            return_value=(
+                SimpleNamespace(
+                    effective_exit_price=0.38,
+                    net_proceeds_usd=76.0,
+                    gross_shares=200.0,
+                    gross_notional_usd=76.0,
+                    exit_fee_usd=0.0,
+                    fixed_cost_usd=0.0,
+                    fee_rate_bps=0,
+                ),
+                None,
+            )
+        )
+        executor_obj._finalize_exit = Mock(return_value=(200.0, 76.0, -24.0))
+        event = SimpleNamespace(
+            question="Will the stop loss trigger?",
+            side="yes",
+            raw_orderbook={"bids": [{"price": "0.38", "size": "200"}]},
+            raw_market_metadata={},
+            trader_name="Trader",
+            trader_address="0xabc",
+        )
+        dedup_cache = Mock()
+
+        with patch("executor.build_trade_exit_alert", return_value="alert"), patch("executor.send_alert"):
+            result = executor_obj._execute_shadow_exit(
+                trade_id="stop-loss-test",
+                market_id="market-stop",
+                token_id="token-stop",
+                event=event,
+                dedup=dedup_cache,
+                position={"token_id": "token-stop", "side": "yes"},
+                entries=[{"id": 1}],
+                exit_price=0.38,
+                shares=200.0,
+                exit_notional=76.0,
+                pnl=-24.0,
+                exit_fraction=1.0,
+                reason_override="custom stop loss reason",
+            )
+
+        self.assertTrue(result.placed)
+        self.assertEqual(result.reason, "custom stop loss reason")
+        self.assertEqual(
+            executor_obj._finalize_exit.call_args.kwargs["exit_reason"],
+            "custom stop loss reason",
+        )
 
 
 if __name__ == "__main__":

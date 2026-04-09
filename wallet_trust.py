@@ -14,6 +14,9 @@ from config import (
     wallet_discovery_min_observed_buys,
     wallet_discovery_min_resolved_buys,
     wallet_discovery_size_multiplier,
+    wallet_local_performance_penalty_max_avg_return,
+    wallet_local_performance_penalty_min_resolved_copied_buys,
+    wallet_local_performance_penalty_size_multiplier,
     wallet_quality_size_max_multiplier,
     wallet_quality_size_min_multiplier,
     wallet_probation_size_multiplier,
@@ -40,6 +43,8 @@ class WalletTrustState:
     min_observed_buy_count: int
     min_resolved_observed_buy_count: int
     min_resolved_copied_buy_count: int
+    local_performance_penalty_multiplier: float | None = None
+    local_performance_penalty_reason: str | None = None
 
     @property
     def cold_start_ready(self) -> bool:
@@ -67,19 +72,22 @@ class WalletTrustState:
 
     @property
     def tier_note(self) -> str | None:
+        notes: list[str] = []
         if self.tier == "discovery":
-            return (
+            notes.append(
                 "wallet is in discovery, "
                 f"observed {self.observed_buy_count}/{self.min_observed_buy_count} buy opportunities "
                 f"and {self.resolved_observed_buy_count}/{self.min_resolved_observed_buy_count} resolved outcomes"
             )
-        if self.tier != "probation":
-            return None
-        return (
-            "wallet is in probation, "
-            f"local copied history is {self.resolved_copied_buy_count}/{self.min_resolved_copied_buy_count} "
-            "resolved trades"
-        )
+        elif self.tier == "probation":
+            notes.append(
+                "wallet is in probation, "
+                f"local copied history is {self.resolved_copied_buy_count}/{self.min_resolved_copied_buy_count} "
+                "resolved trades"
+            )
+        if self.local_performance_penalty_reason:
+            notes.append(self.local_performance_penalty_reason)
+        return ", ".join(notes) if notes else None
 
     def as_dict(self) -> dict[str, float | int | str | None]:
         return {
@@ -94,6 +102,8 @@ class WalletTrustState:
             "min_observed_buy_count": self.min_observed_buy_count,
             "min_resolved_observed_buy_count": self.min_resolved_observed_buy_count,
             "min_resolved_copied_buy_count": self.min_resolved_copied_buy_count,
+            "local_performance_penalty_multiplier": self.local_performance_penalty_multiplier,
+            "local_performance_penalty_reason": self.local_performance_penalty_reason,
         }
 
 
@@ -128,6 +138,8 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
             min_observed_buy_count=discovery_min_observed,
             min_resolved_observed_buy_count=discovery_min_resolved,
             min_resolved_copied_buy_count=trusted_min_resolved_copied,
+            local_performance_penalty_multiplier=None,
+            local_performance_penalty_reason=None,
         )
 
     conn = get_conn()
@@ -191,6 +203,13 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
         tier = "trusted"
         size_multiplier = 1.0
 
+    local_penalty_multiplier, local_penalty_reason = _local_performance_penalty(
+        resolved_copied_buy_count=resolved_copied_buy_count,
+        resolved_copied_avg_return=resolved_copied_avg_return,
+    )
+    if local_penalty_multiplier is not None:
+        size_multiplier = min(size_multiplier, local_penalty_multiplier)
+
     return WalletTrustState(
         wallet_address=wallet_key,
         tier=tier,
@@ -204,7 +223,34 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
         min_observed_buy_count=discovery_min_observed,
         min_resolved_observed_buy_count=discovery_min_resolved,
         min_resolved_copied_buy_count=trusted_min_resolved_copied,
+        local_performance_penalty_multiplier=local_penalty_multiplier,
+        local_performance_penalty_reason=local_penalty_reason,
     )
+
+
+def _local_performance_penalty(
+    *,
+    resolved_copied_buy_count: int,
+    resolved_copied_avg_return: float | None,
+) -> tuple[float | None, str | None]:
+    minimum_trades = wallet_local_performance_penalty_min_resolved_copied_buys()
+    max_avg_return = wallet_local_performance_penalty_max_avg_return()
+    penalty_multiplier = wallet_local_performance_penalty_size_multiplier()
+    if (
+        minimum_trades <= 0
+        or penalty_multiplier >= 1.0
+        or resolved_copied_buy_count < minimum_trades
+        or resolved_copied_avg_return is None
+        or resolved_copied_avg_return > max_avg_return
+    ):
+        return None, None
+
+    clamped_multiplier = max(0.0, min(float(penalty_multiplier), 1.0))
+    reason = (
+        f"local copied avg return {resolved_copied_avg_return * 100.0:.1f}% "
+        f"over {resolved_copied_buy_count} resolved trades, limiting size to {clamped_multiplier * 100.0:.0f}%"
+    )
+    return clamped_multiplier, reason
 
 
 def reset_wallet_skip_override_cache() -> None:

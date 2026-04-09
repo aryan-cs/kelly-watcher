@@ -53,6 +53,13 @@ def _get_bool(name: str, default: str = "false") -> bool:
     return _get(name, default).lower() in {"1", "true", "yes", "on"}
 
 
+def _get_env_file_bool(name: str, default: str = "false") -> bool:
+    raw = _get_env_file_value(name)
+    if raw is None:
+        raw = _get(name, default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _get_float(name: str, default: str) -> float:
     raw = _get(name, default)
     try:
@@ -394,6 +401,32 @@ def wallet_probation_size_multiplier() -> float:
     return _get_bounded_float("WALLET_PROBATION_SIZE_MULTIPLIER", "0.50", minimum=0.01, maximum=1.0)
 
 
+def wallet_local_performance_penalty_min_resolved_copied_buys() -> int:
+    return _get_bounded_int(
+        "WALLET_LOCAL_PERFORMANCE_PENALTY_MIN_RESOLVED_COPIED_BUYS",
+        "15",
+        minimum=0,
+    )
+
+
+def wallet_local_performance_penalty_max_avg_return() -> float:
+    return _get_bounded_float(
+        "WALLET_LOCAL_PERFORMANCE_PENALTY_MAX_AVG_RETURN",
+        "-0.10",
+        minimum=-1.0,
+        maximum=1.0,
+    )
+
+
+def wallet_local_performance_penalty_size_multiplier() -> float:
+    return _get_bounded_float(
+        "WALLET_LOCAL_PERFORMANCE_PENALTY_SIZE_MULTIPLIER",
+        "0.25",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
 def wallet_quality_size_min_multiplier() -> float:
     return _get_bounded_float("WALLET_QUALITY_SIZE_MIN_MULTIPLIER", "0.75", minimum=0.10, maximum=1.0)
 
@@ -492,6 +525,24 @@ def max_live_drawdown_pct() -> float:
 
 def max_daily_loss_pct() -> float:
     return _get_env_file_bounded_float("MAX_DAILY_LOSS_PCT", "0.08", minimum=0.0, maximum=1.0)
+
+
+def stop_loss_enabled() -> bool:
+    return _get_env_file_bool("STOP_LOSS_ENABLED", "true")
+
+
+def stop_loss_max_loss_pct() -> float:
+    return _get_env_file_bounded_float("STOP_LOSS_MAX_LOSS_PCT", "0.15", minimum=0.0, maximum=1.0)
+
+
+def stop_loss_min_hold_seconds() -> int:
+    seconds = _get_duration_seconds(
+        "STOP_LOSS_MIN_HOLD",
+        "20m",
+        minimum_seconds=0.0,
+        allow_unlimited=False,
+    )
+    return int(seconds)
 
 
 def max_total_open_exposure_fraction() -> float:

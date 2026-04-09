@@ -237,6 +237,10 @@ class DedupeCache:
             key = self._find_key(market_id, token_id, side)
             return self.open_positions.get(key) if key else None
 
+    def has_pending_position(self, market_id: str, token_id: str = "", side: str = "") -> bool:
+        with self._lock:
+            return self._has_pending(market_id, token_id, side)
+
     def mark_seen(self, trade_id: str, market_id: str, trader_id: str) -> None:
         now = int(time.time())
         with self._lock:

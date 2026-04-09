@@ -7,7 +7,7 @@ import { StatRow } from '../components/StatRow.js';
 import { fit, fitRight, formatAdaptiveDollar, formatAdaptiveNumber, formatDisplayId, formatShortDateTime, formatDollar, formatNumber, formatPct, secondsAgo, truncate, terminalHyperlink, timeUntil, shortAddress } from '../format.js';
 import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
-import { centeredGradientColor, outcomeColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme } from '../theme.js';
+import { centeredGradientColor, negativeHeatColor, outcomeColor, positiveDollarColor, probabilityColor, selectionBackgroundColor, theme } from '../theme.js';
 import { useBotState } from '../useBotState.js';
 import { useQuery } from '../useDb.js';
 import { useEventStream } from '../useEventStream.js';
@@ -1580,15 +1580,22 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                 }
             }
         }
+        const roundedMaxDrawdownPct = activeStartingBankroll != null && activeStartingBankroll > 0 ? roundTo(maxDrawdownPct, 4) : null;
+        const returnToDrawdownRatio = returnPct == null
+            ? null
+            : maxDrawdownPct > 0
+                ? roundTo(returnPct / maxDrawdownPct, 2)
+                : returnPct > 0
+                    ? Number.POSITIVE_INFINITY
+                    : null;
         return {
             exposurePct,
             expectancyPct,
             expectancyUsd,
-            maxDrawdownPct: activeStartingBankroll != null && activeStartingBankroll > 0
-                ? roundTo(maxDrawdownPct, 4)
-                : null,
+            maxDrawdownPct: roundedMaxDrawdownPct,
             profitFactor,
-            returnPct
+            returnPct,
+            returnToDrawdownRatio
         };
     }, [activeEquity, activeStartingBankroll, activeSummary?.total_pnl, deployedCapital, resolvedPerformancePositions]);
     const expectancyValue = activePerformanceStats.expectancyUsd == null && activePerformanceStats.expectancyPct == null
@@ -1666,9 +1673,22 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             value: formatPct(activePerformanceStats.maxDrawdownPct, 1),
             color: activePerformanceStats.maxDrawdownPct == null
                 ? theme.dim
-                : activePerformanceStats.maxDrawdownPct > 0
-                    ? theme.red
-                    : theme.white
+                : negativeHeatColor(activePerformanceStats.maxDrawdownPct * 100, 20)
+        },
+        {
+            label: 'Return / DD',
+            value: activePerformanceStats.returnToDrawdownRatio == null
+                ? '-'
+                : Number.isFinite(activePerformanceStats.returnToDrawdownRatio)
+                    ? formatNumber(activePerformanceStats.returnToDrawdownRatio, 2)
+                    : 'inf',
+            color: activePerformanceStats.returnToDrawdownRatio == null
+                ? theme.dim
+                : activePerformanceStats.returnToDrawdownRatio >= 1
+                    ? theme.green
+                    : activePerformanceStats.returnToDrawdownRatio >= 0
+                        ? theme.yellow
+                        : theme.red
         },
         {
             label: 'Avg confidence',

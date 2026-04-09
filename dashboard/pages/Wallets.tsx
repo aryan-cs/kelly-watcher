@@ -3,7 +3,7 @@ import {Box as InkBox, Text} from 'ink'
 import {Box} from '../components/Box.js'
 import {ModalOverlay} from '../components/ModalOverlay.js'
 import {useDashboardConfig} from '../configEditor.js'
-import {fit, fitRight, formatPct, secondsAgo, shortAddress, terminalHyperlink, truncate, wrapText} from '../format.js'
+import {fit, fitRight, formatPct, formatShortDateTime, secondsAgo, shortAddress, terminalHyperlink, truncate, wrapText} from '../format.js'
 import {isPlaceholderUsername, useIdentityMap} from '../identities.js'
 import {rowsForHeight} from '../responsive.js'
 import {useTerminalSize} from '../terminal.js'
@@ -74,6 +74,10 @@ export interface WalletMeta {
   droppedWalletAddresses: string[]
 }
 
+export interface WalletDetailHistoryMeta {
+  maxOffset: number
+}
+
 interface WalletRow {
   trader_address: string
   username: string
@@ -126,6 +130,21 @@ interface TopShadowRow {
   pnl: number | null
 }
 
+interface WalletPnlHistoryRow {
+  resolved_ts: number | null
+  pnl_usd: number | null
+}
+
+interface WalletPnlPoint {
+  ts: number
+  pnl: number
+}
+
+interface WalletChartCell {
+  char: string
+  color?: string
+}
+
 interface ShadowLeaderboards {
   best: TopShadowRow[]
   worst: TopShadowRow[]
@@ -161,7 +180,9 @@ interface WalletsProps {
   trackedSelectedIndex: number
   droppedSelectedIndex: number
   detailOpen: boolean
+  detailHistoryOffset: number
   onWalletMetaChange?: (meta: WalletMeta) => void
+  onDetailHistoryMetaChange?: (meta: WalletDetailHistoryMeta) => void
 }
 
 interface WalletDetailMetric {
@@ -313,6 +334,17 @@ FROM trade_log
 WHERE real_money=0
 GROUP BY trader_address
 HAVING SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) > 0
+`
+
+const WALLET_LOCAL_PNL_HISTORY_SQL = `
+SELECT
+  COALESCE(exited_at, resolved_at, placed_at) AS resolved_ts,
+  ROUND(COALESCE(shadow_pnl_usd, actual_pnl_usd), 3) AS pnl_usd
+FROM trade_log
+WHERE trader_address=?
+  AND COALESCE(source_action, 'buy')='buy'
+  AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
+ORDER BY resolved_ts ASC, id ASC
 `
 
 function readWatchConfig(envValues: Record<string, string>): {
@@ -637,6 +669,207 @@ function getDroppedWalletsLayout(width: number, sharedLayout: WalletsLayout): Dr
   }
 }
 
+function makeWalletChartCell(char: string, color?: string): WalletChartCell {
+  return {char, color}
+}
+
+function drawWalletSeriesCell(grid: WalletChartCell[][], x: number, y: number, char: string, color: string) {
+  const row = grid[y]
+  if (!row || !row[x]) {
+    return
+  }
+  const current = row[x]
+  if (current.char === ' ' || current.color === theme.dim) {
+    row[x] = makeWalletChartCell(char, color)
+    return
+  }
+  if (current.color === color) {
+    row[x] = makeWalletChartCell(current.char === '.' ? current.char : char, color)
+    return
+  }
+  row[x] = makeWalletChartCell('+', theme.white)
+}
+
+function drawWalletHorizontalSegment(grid: WalletChartCell[][], y: number, fromX: number, toX: number, color: string) {
+  const start = Math.min(fromX, toX)
+  const end = Math.max(fromX, toX)
+  for (let x = start; x <= end; x += 1) {
+    drawWalletSeriesCell(grid, x, y, '─', color)
+  }
+}
+
+function drawWalletVerticalSegment(grid: WalletChartCell[][], x: number, fromY: number, toY: number, color: string) {
+  const start = Math.min(fromY, toY)
+  const end = Math.max(fromY, toY)
+  for (let y = start; y <= end; y += 1) {
+    drawWalletSeriesCell(grid, x, y, '│', color)
+  }
+}
+
+function renderWalletCellSegments(cells: WalletChartCell[], key: string, backgroundColor?: string) {
+  const segments: Array<{text: string; color?: string}> = []
+  for (const cell of cells) {
+    const last = segments[segments.length - 1]
+    if (last && last.color === cell.color) {
+      last.text += cell.char
+    } else {
+      segments.push({text: cell.char, color: cell.color})
+    }
+  }
+  return (
+    <Text key={key} backgroundColor={backgroundColor}>
+      {segments.map((segment, index) => (
+        <Text key={`${key}-segment-${index}`} color={segment.color} backgroundColor={backgroundColor}>
+          {segment.text}
+        </Text>
+      ))}
+    </Text>
+  )
+}
+
+function buildWalletPnlChart(points: WalletPnlPoint[], width: number, height = 7): WalletChartCell[][] {
+  const chartHeight = Math.max(4, Math.floor(height))
+  const yLabelWidth = 10
+  const plotWidth = Math.max(18, Math.floor(width) - yLabelWidth - 1)
+  const plotPaddingLeft = 2
+  const plotPaddingRight = 2
+  const plotDataWidth = Math.max(3, plotWidth - plotPaddingLeft - plotPaddingRight)
+
+  if (!points.length) {
+    return Array.from({length: chartHeight + 1}, () =>
+      Array.from({length: yLabelWidth + 1 + plotWidth}, () => makeWalletChartCell(' ', undefined))
+    )
+  }
+
+  const sampled =
+    points.length <= plotDataWidth
+      ? points
+      : Array.from({length: plotDataWidth}, (_, index) => {
+          const sourceIndex =
+            plotDataWidth === 1
+              ? points.length - 1
+              : Math.round((index / Math.max(plotDataWidth - 1, 1)) * Math.max(points.length - 1, 0))
+          return points[Math.max(0, Math.min(points.length - 1, sourceIndex))]
+        })
+  const values = sampled.map((point) => point.pnl)
+  const rawMin = Math.min(...values, 0)
+  const rawMax = Math.max(...values, 0)
+  const pad = Math.max(1, (rawMax - rawMin) * 0.08)
+  const minValue = rawMin === rawMax ? rawMin - pad : rawMin - pad
+  const maxValue = rawMin === rawMax ? rawMax + pad : rawMax + pad
+  const startTs = sampled[0]?.ts || 0
+  const endTs = sampled[sampled.length - 1]?.ts || startTs
+  const safeEndTs = endTs > startTs ? endTs : startTs + 3600
+  const grid = Array.from({length: chartHeight}, () =>
+    Array.from({length: plotWidth}, (_, column) => makeWalletChartCell(column === 0 ? '│' : ' ', column === 0 ? theme.dim : undefined))
+  )
+  const axisRow = chartHeight - 1
+  for (let column = 0; column < plotWidth; column += 1) {
+    grid[axisRow][column] = makeWalletChartCell(
+      column === 0 ? '└' : column === plotWidth - 1 ? '┘' : '─',
+      theme.dim
+    )
+  }
+
+  const mapValueToY = (value: number) => {
+    const normalized = Math.abs(maxValue - minValue) <= 1e-9 ? 0.5 : (value - minValue) / (maxValue - minValue)
+    return Math.max(0, Math.min(chartHeight - 2, (chartHeight - 2) - Math.round(normalized * Math.max(chartHeight - 2, 1))))
+  }
+  const zeroRow = mapValueToY(0)
+  if (zeroRow >= 0 && zeroRow < chartHeight - 1) {
+    for (let column = 1; column < plotWidth; column += 1) {
+      if (grid[zeroRow]?.[column]?.char === ' ') {
+        grid[zeroRow][column] = makeWalletChartCell('┄', theme.dim)
+      }
+    }
+  }
+
+  const mapPoint = (point: WalletPnlPoint) => {
+    const x =
+      plotPaddingLeft +
+      Math.round((((point.ts - startTs) / Math.max(safeEndTs - startTs, 1)) * Math.max(plotDataWidth - 1, 1)))
+    const y = mapValueToY(point.pnl)
+    return {x, y}
+  }
+
+  const color =
+    (sampled[sampled.length - 1]?.pnl || 0) >= 0
+      ? theme.green
+      : theme.red
+  const mapped = sampled.map(mapPoint)
+  for (let index = 0; index < mapped.length - 1; index += 1) {
+    const current = mapped[index]
+    const next = mapped[index + 1]
+    drawWalletHorizontalSegment(grid, current.y, current.x, next.x, color)
+    if (next.y !== current.y) {
+      drawWalletVerticalSegment(grid, next.x, current.y, next.y, color)
+    }
+  }
+  for (const point of mapped) {
+    drawWalletSeriesCell(grid, point.x, point.y, '.', color)
+  }
+
+  const rows = grid.map((plotRow, rowIndex) => {
+    const value = maxValue - ((rowIndex / Math.max(chartHeight - 2, 1)) * (maxValue - minValue))
+    const showLabel = rowIndex === 0 || rowIndex === chartHeight - 2 || rowIndex === Math.floor((chartHeight - 2) / 2)
+    const label = showLabel ? fitRight(formatSignedMoney(value, yLabelWidth), yLabelWidth) : ' '.repeat(yLabelWidth)
+    return [
+      ...label.split('').map((char) => makeWalletChartCell(char, theme.dim)),
+      makeWalletChartCell(' ', undefined),
+      ...plotRow
+    ]
+  })
+
+  const startLabel = startTs ? formatShortDateTime(startTs) : '-'
+  const endLabel = endTs ? formatShortDateTime(endTs) : '-'
+  const axisLabelWidth = yLabelWidth + 1 + plotWidth
+  const leftWidth = Math.max(1, axisLabelWidth - endLabel.length)
+  rows.push(`${fit(startLabel, leftWidth)}${fitRight(endLabel, endLabel.length)}`.split('').map((char) => makeWalletChartCell(char, theme.dim)))
+  return rows
+}
+
+function WalletPnlHistoryChart({
+  points,
+  width,
+  offset,
+  backgroundColor
+}: {
+  points: WalletPnlPoint[]
+  width: number
+  offset: number
+  backgroundColor?: string
+}) {
+  const yLabelWidth = 10
+  const plotWidth = Math.max(18, Math.floor(width) - yLabelWidth - 1)
+  const visiblePointCount = Math.max(12, plotWidth - 4)
+  const maxOffset = Math.max(0, points.length - visiblePointCount)
+  const clampedOffset = Math.max(0, Math.min(maxOffset, offset))
+  const endExclusive = Math.max(1, points.length - clampedOffset)
+  const startIndex = Math.max(0, endExclusive - visiblePointCount)
+  const visiblePoints = points.slice(startIndex, endExclusive)
+  const rows = buildWalletPnlChart(visiblePoints, width, 7)
+  const latestValue = visiblePoints[visiblePoints.length - 1]?.pnl ?? 0
+  const oldestValue = visiblePoints[0]?.pnl ?? 0
+  const delta = latestValue - oldestValue
+  const summaryColor = delta > 0 ? theme.green : delta < 0 ? theme.red : theme.dim
+
+  return (
+    <InkBox flexDirection="column" width="100%">
+      {rows.map((row, index) => renderWalletCellSegments(row, `wallet-pnl-chart-${index}`, backgroundColor))}
+      <InkBox width="100%">
+        <Text backgroundColor={backgroundColor}> </Text>
+        <Text color={theme.dim} backgroundColor={backgroundColor}>
+          {fit(`Window ${startIndex + 1}-${endExclusive} of ${Math.max(points.length, 1)}`, Math.max(12, width - 20))}
+        </Text>
+        <Text color={summaryColor} backgroundColor={backgroundColor}>
+          {fitRight(`Δ ${formatSignedMoney(delta, 12)}`, 14)}
+        </Text>
+        <Text backgroundColor={backgroundColor}> </Text>
+      </InkBox>
+    </InkBox>
+  )
+}
+
 export function Wallets({
   activePane,
   bestSelectedIndex,
@@ -644,7 +877,9 @@ export function Wallets({
   trackedSelectedIndex,
   droppedSelectedIndex,
   detailOpen,
-  onWalletMetaChange
+  detailHistoryOffset,
+  onWalletMetaChange,
+  onDetailHistoryMetaChange
 }: WalletsProps) {
   const terminal = useTerminalSize()
   const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
@@ -652,7 +887,7 @@ export function Wallets({
   const shadowLeaderboardRows = 5
   const shadowPanelHeight = shadowLeaderboardRows + 4
   const totalVisibleRows = Math.max(8, rowsForHeight(terminal.height, terminal.wide ? 18 : 24, 4) - footerRows)
-  const profileChromeRows = 4
+  const profileChromeRows = 5
   const profileVisibleRows = Math.max(2, Math.floor(totalVisibleRows / 2) - profileChromeRows)
   const trackedVisibleRows = profileVisibleRows
   const droppedVisibleRows = profileVisibleRows
@@ -933,6 +1168,26 @@ export function Wallets({
     [wallets]
   )
   const selectedWallet = selectedWalletAddress ? walletByAddress.get(selectedWalletAddress.toLowerCase()) || null : null
+  const walletPnlHistoryRows = useQuery<WalletPnlHistoryRow>(
+    WALLET_LOCAL_PNL_HISTORY_SQL,
+    [selectedWallet?.trader_address || '__none__'],
+    detailOpen && selectedWallet ? 5000 : 15000
+  )
+  const walletPnlHistoryPoints = useMemo<WalletPnlPoint[]>(() => {
+    const sorted = walletPnlHistoryRows
+      .map((row) => ({
+        ts: Number(row.resolved_ts || 0),
+        pnl: Number(row.pnl_usd || 0)
+      }))
+      .filter((row) => Number.isFinite(row.ts) && row.ts > 0 && Number.isFinite(row.pnl))
+      .sort((left, right) => left.ts - right.ts)
+
+    let cumulative = 0
+    return sorted.map((row) => {
+      cumulative = Number((cumulative + row.pnl).toFixed(3))
+      return {ts: row.ts, pnl: cumulative}
+    })
+  }, [walletPnlHistoryRows])
 
   useEffect(() => {
     onWalletMetaChange?.({
@@ -1216,6 +1471,9 @@ export function Wallets({
           : `${clampedTrackedSelectedIndex + 1}/${Math.max(trackedWallets.length, 1)}`
   const detailHeaderWidth = Math.max(1, modalContentWidth - detailIndexLabel.length - 1)
   const modalSpacerLine = ' '.repeat(modalWidth - 2)
+  const walletChartWidth = Math.max(36, modalContentWidth)
+  const walletChartVisiblePoints = Math.max(12, Math.max(18, Math.floor(walletChartWidth) - 11) - 4)
+  const walletChartMaxOffset = Math.max(0, walletPnlHistoryPoints.length - walletChartVisiblePoints)
   const detailTitle = selectedWallet?.username || (selectedWallet ? shortAddress(selectedWallet.trader_address) : '-')
   const detailAddressLines = selectedWallet
     ? wrapText(`Address ${selectedWallet.trader_address}`, Math.max(20, modalContentWidth))
@@ -1246,6 +1504,10 @@ export function Wallets({
     () => detailColumnLines.reduce((max, column) => Math.max(max, column.length), 0),
     [detailColumnLines]
   )
+
+  useEffect(() => {
+    onDetailHistoryMetaChange?.({maxOffset: walletChartMaxOffset})
+  }, [onDetailHistoryMetaChange, walletChartMaxOffset])
 
   const renderShadowWalletBox = (title: string, pane: 'best' | 'worst', shadowWallets: TopShadowRow[]) => {
     const activeShadowAddress = pane === 'best' ? selectedBestWalletAddress : selectedWorstWalletAddress
@@ -1386,8 +1648,11 @@ export function Wallets({
 
       <InkBox marginTop={1} flexGrow={1} flexDirection="column">
         <InkBox flexGrow={1}>
-          <Box title={`Tracked Wallet Profiles: ${trackedWallets.length}`} height="100%" accent={activePane === 'tracked'}>
-            <InkBox width="100%" height={1}>
+          <Box height="100%" accent={activePane === 'tracked'}>
+            <InkBox width="100%" flexShrink={0}>
+              <Text color={theme.accent} bold>{fit(`Tracked Wallet Profiles: ${trackedWallets.length}`, tableWidth)}</Text>
+            </InkBox>
+            <InkBox width="100%" height={1} flexShrink={0}>
               <Text color={theme.dim}>{fit('USERNAME', layout.usernameWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('ADDRESS', layout.addressWidth)}</Text>
@@ -1512,8 +1777,11 @@ export function Wallets({
         <InkBox height={1} />
 
         <InkBox flexGrow={1}>
-          <Box title={`Dropped Wallet Profiles: ${droppedWallets.length}`} height="100%" accent={activePane === 'dropped'}>
-            <InkBox width="100%" height={1}>
+          <Box height="100%" accent={activePane === 'dropped'}>
+            <InkBox width="100%" flexShrink={0}>
+              <Text color={theme.accent} bold>{fit(`Dropped Wallet Profiles: ${droppedWallets.length}`, tableWidth)}</Text>
+            </InkBox>
+            <InkBox width="100%" height={1} flexShrink={0}>
               <Text color={theme.dim}>{fit('USERNAME', droppedLayout.usernameWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('ADDRESS', droppedLayout.addressWidth)}</Text>
@@ -1600,6 +1868,23 @@ export function Wallets({
             </Text>
             <Text backgroundColor={modalBackground}>{modalSpacerLine}</Text>
 
+            <Text color={theme.accent} backgroundColor={modalBackground} bold>
+              {` ${fit('LOCAL COPY P&L OVER TIME', modalContentWidth)} `}
+            </Text>
+            {walletPnlHistoryPoints.length ? (
+              <WalletPnlHistoryChart
+                points={walletPnlHistoryPoints}
+                width={walletChartWidth}
+                offset={detailHistoryOffset}
+                backgroundColor={modalBackground}
+              />
+            ) : (
+              <Text color={theme.dim} backgroundColor={modalBackground}>
+                {` ${fit('No resolved copied P&L history yet.', modalContentWidth)} `}
+              </Text>
+            )}
+            <Text backgroundColor={modalBackground}>{modalSpacerLine}</Text>
+
             <InkBox flexDirection="column" width="100%">
               {Array.from({length: detailLineCount}, (_, rowIndex) => {
                 const left = detailColumnLines[0]?.[rowIndex] || {kind: 'blank'}
@@ -1648,10 +1933,10 @@ export function Wallets({
               {` ${fit(
                 truncate(
                   activePane === 'dropped'
-                    ? 'Up/down switches dropped wallets. a reactivates. esc closes.'
+                    ? 'Up/down switches dropped wallets. left/right scrolls chart. a reactivates. esc closes.'
                     : activePane === 'tracked'
-                      ? 'Up/down switches tracked wallets. d drops. left/right switches panes. esc closes.'
-                      : 'Up/down switches leaderboard wallets. f finds this wallet in profiles. esc closes.',
+                      ? 'Up/down switches tracked wallets. left/right scrolls chart. d drops. esc closes.'
+                      : 'Up/down switches leaderboard wallets. left/right scrolls chart. f finds this wallet in profiles. esc closes.',
                   modalContentWidth
                 ),
                 modalContentWidth

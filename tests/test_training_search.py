@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -119,6 +120,72 @@ class TrainingSearchTest(unittest.TestCase):
             train._candidate_rank_key(stronger_but_failed),
         )
 
+    def test_should_deploy_candidate_uses_standard_gate_when_all_checks_pass(self) -> None:
+        deployable, mode = train._should_deploy_candidate(
+            best_candidate={
+                "search_passed": True,
+                "search_selected_trades": 24,
+                "search_total_pnl": 9.0,
+                "search_avg_pnl": 0.3,
+            },
+            holdout_report={
+                "selected_trades": 28,
+                "total_pnl": 5.0,
+                "avg_pnl": 0.18,
+            },
+            beats_baseline=True,
+            incumbent_present=True,
+            incumbent_runtime_compatible=True,
+            beats_incumbent=True,
+        )
+
+        self.assertTrue(deployable)
+        self.assertEqual(mode, "standard")
+
+    def test_should_deploy_candidate_allows_recovery_for_incompatible_incumbent(self) -> None:
+        deployable, mode = train._should_deploy_candidate(
+            best_candidate={
+                "search_passed": False,
+                "search_selected_trades": 30,
+                "search_total_pnl": 12.0,
+                "search_avg_pnl": 0.4,
+            },
+            holdout_report={
+                "selected_trades": 30,
+                "total_pnl": 18.7,
+                "avg_pnl": 0.62,
+            },
+            beats_baseline=False,
+            incumbent_present=True,
+            incumbent_runtime_compatible=False,
+            beats_incumbent=True,
+        )
+
+        self.assertTrue(deployable)
+        self.assertEqual(mode, "recovery_incompatible_incumbent")
+
+    def test_should_deploy_candidate_does_not_use_recovery_without_incumbent(self) -> None:
+        deployable, mode = train._should_deploy_candidate(
+            best_candidate={
+                "search_passed": False,
+                "search_selected_trades": 30,
+                "search_total_pnl": 12.0,
+                "search_avg_pnl": 0.4,
+            },
+            holdout_report={
+                "selected_trades": 30,
+                "total_pnl": 18.7,
+                "avg_pnl": 0.62,
+            },
+            beats_baseline=False,
+            incumbent_present=False,
+            incumbent_runtime_compatible=False,
+            beats_incumbent=True,
+        )
+
+        self.assertFalse(deployable)
+        self.assertEqual(mode, "rejected")
+
     def test_select_prediction_path_prefers_raw_when_calibration_is_worse(self) -> None:
         calibrated = {"log_loss": 0.91, "brier_score": 0.31}
         raw = {"log_loss": 0.62, "brier_score": 0.22}
@@ -195,7 +262,7 @@ class TrainingSearchTest(unittest.TestCase):
             }
         )
 
-        with unittest.mock.patch("train._build_regressor", return_value=(StubRegressor(), "hist_gradient_boosting")):
+        with mock.patch("train._build_regressor", return_value=(StubRegressor(), "hist_gradient_boosting")):
             fit_result = train._fit_calibrated_model(
                 spec={"backend": "hist_gradient_boosting", "params": {}, "calibration_mode": "auto"},
                 train_df=train_df,

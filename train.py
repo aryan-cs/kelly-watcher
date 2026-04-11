@@ -280,8 +280,9 @@ def train(df=None) -> dict:
             baseline_rate=float(final_train_df[OUTCOME_COL].mean()),
         ),
     }
+    incumbent_artifact = _load_model_artifact()
     incumbent_gate = _compare_against_incumbent(
-        incumbent_artifact=_load_model_artifact(),
+        incumbent_artifact=incumbent_artifact,
         final_train_df=final_train_df,
         holdout_df=holdout_df,
         challenger_model=final_fit["base_model"],
@@ -290,44 +291,59 @@ def train(df=None) -> dict:
         challenger_prediction_mode="expected_return",
     )
     metrics.update(incumbent_gate)
-
-    deployable = (
-        best_candidate["search_passed"]
-        and metrics["beats_baseline"]
-        and holdout_report["selected_trades"] >= MIN_VALIDATION_TRADES
-        and holdout_report["total_pnl"] > 0
-        and holdout_report["avg_pnl"] > 0
-        and bool(metrics.get("beats_incumbent", True))
+    incumbent_runtime_compatible = _artifact_runtime_compatible(incumbent_artifact)
+    metrics["incumbent_runtime_compatible"] = incumbent_runtime_compatible
+    deployable, promotion_mode = _should_deploy_candidate(
+        best_candidate=best_candidate,
+        holdout_report=holdout_report,
+        beats_baseline=bool(metrics["beats_baseline"]),
+        incumbent_present=bool(metrics.get("incumbent_present")),
+        incumbent_runtime_compatible=incumbent_runtime_compatible,
+        beats_incumbent=bool(metrics.get("beats_incumbent", True)),
     )
+    metrics["promotion_mode"] = promotion_mode
     if not deployable:
+        metrics.setdefault(
+            "reject_reason",
+            _deployment_reject_reason(
+                best_candidate=best_candidate,
+                holdout_report=holdout_report,
+                beats_baseline=bool(metrics["beats_baseline"]),
+                beats_incumbent=bool(metrics.get("beats_incumbent", True)),
+            ),
+        )
         logger.warning("Model failed deployment checks - not deploying")
         return metrics | {"deployed": False}
+    if promotion_mode != "standard":
+        logger.warning(
+            "Deploying challenger via %s path because incumbent artifact is runtime-incompatible",
+            promotion_mode,
+        )
 
     path = model_path()
     artifact = {
         "model": final_fit["base_model"],
-        "probability_calibrator": final_fit["probability_calibrator"],
+        "probability_calibrator": selected_probability_calibrator,
         "feature_cols": feature_cols,
         "model_backend": final_fit["backend"],
         "prediction_mode": "expected_return",
         "data_contract_version": DATA_CONTRACT_VERSION,
-            "fill_aware_only": False,
-            "label_mode": MODEL_LABEL_MODE,
-            "target_transform": "signed_log1p_return",
-            "sample_weight_mode": "executed_1.0_skipped_0.25_capped_total_ratio_1.0",
-            "policy": {
-                "edge_threshold": float(holdout_report["edge_threshold"]),
-                "selected_trades": int(holdout_report["selected_trades"]),
-            },
-            "candidate": {
-                "name": best_candidate["name"],
-                "backend": best_candidate["backend"],
-                "search_passed": bool(best_candidate["search_passed"]),
-                "requested_calibration_mode": best_candidate["calibration_mode"],
-            },
-            "metrics": metrics,
-        }
-    artifact["probability_calibrator"] = selected_probability_calibrator
+        "fill_aware_only": False,
+        "label_mode": MODEL_LABEL_MODE,
+        "target_transform": "signed_log1p_return",
+        "sample_weight_mode": "executed_1.0_skipped_0.25_capped_total_ratio_1.0",
+        "policy": {
+            "edge_threshold": float(holdout_report["edge_threshold"]),
+            "selected_trades": int(holdout_report["selected_trades"]),
+        },
+        "candidate": {
+            "name": best_candidate["name"],
+            "backend": best_candidate["backend"],
+            "search_passed": bool(best_candidate["search_passed"]),
+            "requested_calibration_mode": best_candidate["calibration_mode"],
+        },
+        "metrics": metrics,
+    }
     joblib.dump(artifact, path)
 
     conn = get_conn()
@@ -770,8 +786,79 @@ def _load_model_artifact(path: str | None = None) -> dict[str, Any] | None:
         "probability_calibrator": artifact.get("probability_calibrator"),
         "prediction_mode": str(artifact.get("prediction_mode") or "probability"),
         "feature_cols": feature_cols or list(FEATURE_COLS),
+        "data_contract_version": int(artifact.get("data_contract_version") or 0),
+        "label_mode": str(artifact.get("label_mode") or ""),
         "path": selected_path,
     }
+
+
+def _artifact_runtime_compatible(artifact: dict[str, Any] | None) -> bool:
+    if artifact is None:
+        return True
+    return (
+        int(artifact.get("data_contract_version") or 0) == DATA_CONTRACT_VERSION
+        and str(artifact.get("label_mode") or "") == MODEL_LABEL_MODE
+    )
+
+
+def _should_deploy_candidate(
+    *,
+    best_candidate: dict[str, Any],
+    holdout_report: dict[str, Any],
+    beats_baseline: bool,
+    incumbent_present: bool,
+    incumbent_runtime_compatible: bool,
+    beats_incumbent: bool,
+) -> tuple[bool, str]:
+    standard = (
+        bool(best_candidate["search_passed"])
+        and beats_baseline
+        and int(holdout_report["selected_trades"]) >= MIN_VALIDATION_TRADES
+        and float(holdout_report["total_pnl"]) > 0
+        and float(holdout_report["avg_pnl"]) > 0
+        and bool(beats_incumbent)
+    )
+    if standard:
+        return True, "standard"
+
+    recovery = (
+        incumbent_present
+        and not incumbent_runtime_compatible
+        and bool(beats_incumbent)
+        and int(holdout_report["selected_trades"]) >= MIN_VALIDATION_TRADES
+        and float(holdout_report["total_pnl"]) > 0
+        and float(holdout_report["avg_pnl"]) > 0
+    )
+    if recovery:
+        return True, "recovery_incompatible_incumbent"
+
+    return False, "rejected"
+
+
+def _deployment_reject_reason(
+    *,
+    best_candidate: dict[str, Any],
+    holdout_report: dict[str, Any],
+    beats_baseline: bool,
+    beats_incumbent: bool,
+) -> str:
+    failures: list[str] = []
+    if not bool(best_candidate["search_passed"]):
+        failures.append("search candidate failed deployment policy")
+    if not beats_baseline:
+        failures.append("final holdout did not beat baseline on both ll and brier")
+    if int(holdout_report["selected_trades"]) < MIN_VALIDATION_TRADES:
+        failures.append(
+            f"final holdout selected only {int(holdout_report['selected_trades'])} trades "
+            f"(need {MIN_VALIDATION_TRADES})"
+        )
+    if float(holdout_report["total_pnl"]) <= 0:
+        failures.append(f"final holdout pnl {float(holdout_report['total_pnl']):.4f} <= 0")
+    if float(holdout_report["avg_pnl"]) <= 0:
+        failures.append(f"final holdout avg pnl {float(holdout_report['avg_pnl']):.4f} <= 0")
+    if not beats_incumbent:
+        failures.append("challenger did not beat incumbent on shared final holdout")
+    return "; ".join(failures) if failures else "model failed deployment checks"
 
 
 def _shared_eval_df(eval_df, feature_cols: list[str]):

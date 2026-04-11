@@ -810,27 +810,37 @@ def _should_deploy_candidate(
     incumbent_runtime_compatible: bool,
     beats_incumbent: bool,
 ) -> tuple[bool, str]:
-    standard = (
-        bool(best_candidate["search_passed"])
-        and beats_baseline
-        and int(holdout_report["selected_trades"]) >= MIN_VALIDATION_TRADES
+    meets_search_gate = bool(best_candidate["search_passed"]) and beats_baseline
+    meets_holdout_gate = (
+        int(holdout_report["selected_trades"]) >= MIN_VALIDATION_TRADES
         and float(holdout_report["total_pnl"]) > 0
         and float(holdout_report["avg_pnl"]) > 0
+    )
+    standard = (
+        meets_search_gate
+        and meets_holdout_gate
         and bool(beats_incumbent)
     )
     if standard:
         return True, "standard"
 
-    recovery = (
+    recovery_standard_gate = (
         incumbent_present
         and not incumbent_runtime_compatible
-        and bool(beats_incumbent)
-        and int(holdout_report["selected_trades"]) >= MIN_VALIDATION_TRADES
-        and float(holdout_report["total_pnl"]) > 0
-        and float(holdout_report["avg_pnl"]) > 0
+        and meets_search_gate
+        and meets_holdout_gate
     )
-    if recovery:
-        return True, "recovery_incompatible_incumbent"
+    if recovery_standard_gate:
+        return True, "recovery_incompatible_incumbent_standard_gate"
+
+    recovery_shared_holdout = (
+        incumbent_present
+        and not incumbent_runtime_compatible
+        and meets_holdout_gate
+        and bool(beats_incumbent)
+    )
+    if recovery_shared_holdout:
+        return True, "recovery_incompatible_incumbent_shared_holdout"
 
     return False, "rejected"
 

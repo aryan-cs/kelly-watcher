@@ -162,7 +162,29 @@ class TrainingSearchTest(unittest.TestCase):
         )
 
         self.assertTrue(deployable)
-        self.assertEqual(mode, "recovery_incompatible_incumbent")
+        self.assertEqual(mode, "recovery_incompatible_incumbent_shared_holdout")
+
+    def test_should_deploy_candidate_allows_standard_gate_recovery_for_incompatible_incumbent(self) -> None:
+        deployable, mode = train._should_deploy_candidate(
+            best_candidate={
+                "search_passed": True,
+                "search_selected_trades": 24,
+                "search_total_pnl": 9.0,
+                "search_avg_pnl": 0.3,
+            },
+            holdout_report={
+                "selected_trades": 27,
+                "total_pnl": 8.5,
+                "avg_pnl": 0.31,
+            },
+            beats_baseline=True,
+            incumbent_present=True,
+            incumbent_runtime_compatible=False,
+            beats_incumbent=False,
+        )
+
+        self.assertTrue(deployable)
+        self.assertEqual(mode, "recovery_incompatible_incumbent_standard_gate")
 
     def test_should_deploy_candidate_does_not_use_recovery_without_incumbent(self) -> None:
         deployable, mode = train._should_deploy_candidate(

@@ -92,7 +92,7 @@ function renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetCh
         case 4:
             return (React.createElement(Models, { selectedPanelIndex: modelSelectionIndex, detailOpen: modelDetailOpen, selectedSettingIndex: modelSettingSelectionIndex, settingsValues: settingsValues }));
         case 5:
-            return (React.createElement(Wallets, { activePane: walletPane, bestSelectedIndex: walletBestSelectionIndex, worstSelectedIndex: walletWorstSelectionIndex, trackedSelectedIndex: walletTrackedSelectionIndex, droppedSelectedIndex: walletDroppedSelectionIndex, detailOpen: walletDetailOpen, onWalletMetaChange: onWalletMetaChange }));
+            return (React.createElement(Wallets, { activePane: walletPane, bestSelectedIndex: walletBestSelectionIndex, worstSelectedIndex: walletWorstSelectionIndex, trackedSelectedIndex: walletTrackedSelectionIndex, droppedSelectedIndex: walletDroppedSelectionIndex, detailOpen: walletDetailOpen, detailHistoryOffset: 0, onWalletMetaChange: onWalletMetaChange }));
         case 6:
             return React.createElement(Settings, { editor: settingsEditor });
     }
@@ -1261,15 +1261,18 @@ function App() {
                     ? /^[0-9]$/
                     : selectedField.kind === 'choice'
                         ? /^[a-z0-9_-]$/i
-                        : selectedField.kind === 'duration'
-                            ? /^[0-9a-z.]$/i
-                            : /^[0-9.]$/;
+                        : selectedField.kind === 'text'
+                            ? /^[a-z0-9_./:@\\-]$/i
+                            : selectedField.kind === 'duration'
+                                ? /^[0-9a-z.]$/i
+                                : /^[0-9.]$/;
                 if (accepts.test(input)) {
+                    const nextChunk = selectedField.kind === 'text' ? input : input.toLowerCase();
                     setSettingsEditor((current) => ({
                         ...current,
                         draft: current.replaceDraftOnInput
-                            ? input.toLowerCase()
-                            : `${current.draft}${input.toLowerCase()}`,
+                            ? nextChunk
+                            : `${current.draft}${nextChunk}`,
                         replaceDraftOnInput: false
                     }));
                     return;

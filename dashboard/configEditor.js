@@ -16,6 +16,7 @@ export const retrainCadencePresets = ['daily', 'weekly'];
 export const retrainEarlyCheckPresets = ['6h', '12h', '24h', '48h'];
 export const walletInactivityPresets = ['1h', '3h', '5h', '8h', '24h', '7d', 'unlimited'];
 export const walletSlowDropPresets = ['1h', '5h', '8h', '24h', '3d', '7d', '14d', '30d', 'unlimited'];
+export const logLevelPresets = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
 export const editableConfigFields = [
     {
         key: 'POLL_INTERVAL_SECONDS',
@@ -42,13 +43,62 @@ export const editableConfigFields = [
         liveApplies: true
     },
     {
+        key: 'WARM_POLL_INTERVAL_MULTIPLIER',
+        label: 'Warm Poll Mult',
+        kind: 'int',
+        description: 'How much slower warm-wallet polling runs than the hot tier. Applies live on the next loop.',
+        defaultValue: '5',
+        liveApplies: true
+    },
+    {
+        key: 'DISCOVERY_POLL_INTERVAL_MULTIPLIER',
+        label: 'Disc Poll Mult',
+        kind: 'int',
+        description: 'How much slower discovery-wallet polling runs than the hot tier. Applies live on the next loop.',
+        defaultValue: '20',
+        liveApplies: true
+    },
+    {
         key: 'MAX_MARKET_HORIZON',
         label: 'Max Market Horizon',
         kind: 'duration',
         description: 'Longest time to resolution the bot will allow. Edit this field to type a value or cycle 5m, 1h, 24h, 3d, 7d, 30d, 180d, 365d, or unlimited.',
         defaultValue: '3d',
         liveApplies: true,
-        options: maxMarketHorizonPresets
+        options: maxMarketHorizonPresets,
+        allowUnlimited: true
+    },
+    {
+        key: 'MAX_SOURCE_TRADE_AGE',
+        label: 'Source Trade Age',
+        kind: 'duration',
+        description: 'Oldest source trade age the tracker will still consider copyable. Applies live on the next loop.',
+        defaultValue: '90s',
+        liveApplies: true
+    },
+    {
+        key: 'MAX_FEED_STALENESS',
+        label: 'Feed Staleness',
+        kind: 'duration',
+        description: 'Maximum age of fetched market data before it is treated as stale. Applies live on the next loop.',
+        defaultValue: '90s',
+        liveApplies: true
+    },
+    {
+        key: 'MAX_ORDERBOOK_STALENESS',
+        label: 'Book Staleness',
+        kind: 'duration',
+        description: 'Maximum age of order-book data before the market snapshot is rejected. Applies live on the next loop.',
+        defaultValue: '3s',
+        liveApplies: true
+    },
+    {
+        key: 'MIN_EXECUTION_WINDOW',
+        label: 'Exec Window Min',
+        kind: 'duration',
+        description: 'Minimum time remaining to resolution before a trade may still be opened. Applies live on the next loop.',
+        defaultValue: '45s',
+        liveApplies: true
     },
     {
         key: 'WALLET_INACTIVITY_LIMIT',
@@ -57,7 +107,8 @@ export const editableConfigFields = [
         description: 'Auto-drop a wallet after this much time without a new source trade, even if it never traded after tracking began. Edit this field to type a value or cycle 1h, 3h, 5h, 8h, 24h, 7d, or unlimited. Applies live on the next loop.',
         defaultValue: 'unlimited',
         liveApplies: true,
-        options: walletInactivityPresets
+        options: walletInactivityPresets,
+        allowUnlimited: true
     },
     {
         key: 'WALLET_SLOW_DROP_MAX_TRACKING_AGE',
@@ -66,7 +117,8 @@ export const editableConfigFields = [
         description: 'Auto-drop a wallet if it stays in the slow tier longer than this current tracking stint. Edit this field to type a value or cycle 1h, 5h, 8h, 24h, 3d, 7d, 14d, 30d, or unlimited. Applies live on the next loop.',
         defaultValue: 'unlimited',
         liveApplies: true,
-        options: walletSlowDropPresets
+        options: walletSlowDropPresets,
+        allowUnlimited: true
     },
     {
         key: 'WALLET_PERFORMANCE_DROP_MIN_TRADES',
@@ -105,6 +157,102 @@ export const editableConfigFields = [
         label: 'Uncopy Penalty Weight',
         kind: 'float',
         description: 'How strongly repeated uncopyable behavior penalizes wallet quality. Applies live on the next loop.',
+        defaultValue: '0.25',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_UNCOPYABLE_DROP_MIN_BUYS',
+        label: 'Uncopy Drop Min Buys',
+        kind: 'int',
+        description: 'Minimum observed buys before an uncopyable wallet can be fully dropped. Applies live on the next loop.',
+        defaultValue: '24',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE',
+        label: 'Uncopy Drop Max Skip',
+        kind: 'float',
+        description: 'Maximum tolerated skip rate before an uncopyable wallet is dropped. Applies live on the next loop.',
+        defaultValue: '0.75',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_UNCOPYABLE_DROP_MAX_RESOLVED_COPIED',
+        label: 'Uncopy Drop Max Copied',
+        kind: 'int',
+        description: 'Keeps a low-sample wallet from being dropped too early for uncopyable behavior. Applies live on the next loop.',
+        defaultValue: '3',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_COLD_START_MIN_OBSERVED_BUYS',
+        label: 'Cold Start Min Buys',
+        kind: 'int',
+        description: 'Minimum observed buys before a new wallet leaves cold-start handling. Applies live on the next loop.',
+        defaultValue: '3',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_DISCOVERY_MIN_OBSERVED_BUYS',
+        label: 'Disc Min Buys',
+        kind: 'int',
+        description: 'Minimum observed buys before a wallet qualifies for discovery scoring. Applies live on the next loop.',
+        defaultValue: '8',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_DISCOVERY_MIN_RESOLVED_BUYS',
+        label: 'Disc Min Resolved',
+        kind: 'int',
+        description: 'Minimum resolved buys before a discovery wallet is judged on realized outcomes. Applies live on the next loop.',
+        defaultValue: '3',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_DISCOVERY_SIZE_MULTIPLIER',
+        label: 'Disc Size Mult',
+        kind: 'float',
+        description: 'Sizing multiplier applied while a wallet is still in discovery. Applies live on the next loop.',
+        defaultValue: '0.20',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS',
+        label: 'Trusted Min Copied',
+        kind: 'int',
+        description: 'Minimum resolved copied buys before a wallet can qualify as trusted. Applies live on the next loop.',
+        defaultValue: '15',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_PROBATION_SIZE_MULTIPLIER',
+        label: 'Probation Mult',
+        kind: 'float',
+        description: 'Sizing multiplier used when a wallet falls into probation. Applies live on the next loop.',
+        defaultValue: '0.50',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_LOCAL_PERFORMANCE_PENALTY_MIN_RESOLVED_COPIED_BUYS',
+        label: 'Local Penalty Min',
+        kind: 'int',
+        description: 'Minimum resolved copied buys before local underperformance reduces sizing. Applies live on the next loop.',
+        defaultValue: '15',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_LOCAL_PERFORMANCE_PENALTY_MAX_AVG_RETURN',
+        label: 'Local Penalty Return',
+        kind: 'float',
+        description: 'Average copied return threshold that triggers the local performance sizing penalty. Applies live on the next loop.',
+        defaultValue: '-0.10',
+        liveApplies: true
+    },
+    {
+        key: 'WALLET_LOCAL_PERFORMANCE_PENALTY_SIZE_MULTIPLIER',
+        label: 'Local Penalty Mult',
+        kind: 'float',
+        description: 'Sizing multiplier applied after a wallet triggers the local performance penalty. Applies live on the next loop.',
         defaultValue: '0.25',
         liveApplies: true
     },
@@ -187,6 +335,54 @@ export const editableConfigFields = [
         description: 'Lowest order size the bot will place. Restart bot to apply.',
         defaultValue: '1.00',
         liveApplies: false
+    },
+    {
+        key: 'ENTRY_FIXED_COST_USD',
+        label: 'Entry Fee USD',
+        kind: 'float',
+        description: 'Fixed execution-cost estimate charged when sizing a new entry. Applies live on the next loop.',
+        defaultValue: '0.00',
+        liveApplies: true
+    },
+    {
+        key: 'EXIT_FIXED_COST_USD',
+        label: 'Exit Fee USD',
+        kind: 'float',
+        description: 'Fixed execution-cost estimate charged when sizing an exit. Applies live on the next loop.',
+        defaultValue: '0.00',
+        liveApplies: true
+    },
+    {
+        key: 'APPROVAL_FIXED_COST_USD',
+        label: 'Approval Fee USD',
+        kind: 'float',
+        description: 'Fixed approval-cost estimate used in the trading cost model. Applies live on the next loop.',
+        defaultValue: '0.00',
+        liveApplies: true
+    },
+    {
+        key: 'SETTLEMENT_FIXED_COST_USD',
+        label: 'Settle Fee USD',
+        kind: 'float',
+        description: 'Fixed settlement-cost estimate used in the trading cost model. Applies live on the next loop.',
+        defaultValue: '0.00',
+        liveApplies: true
+    },
+    {
+        key: 'EXPECTED_CLOSE_FIXED_COST_USD',
+        label: 'Exp Close Fee',
+        kind: 'float',
+        description: 'Override for the expected close cost used in sizing. Leave blank for auto. Applies live on the next loop.',
+        defaultValue: '',
+        liveApplies: true
+    },
+    {
+        key: 'INCLUDE_EXPECTED_EXIT_FEE_IN_SIZING',
+        label: 'Size With Exit Fee',
+        kind: 'bool',
+        description: 'Includes expected close cost when sizing entries. Applies live on the next loop.',
+        defaultValue: 'true',
+        liveApplies: true
     },
     {
         key: 'MAX_BET_FRACTION',
@@ -309,6 +505,30 @@ export const editableConfigFields = [
         liveApplies: false
     },
     {
+        key: 'MAX_LIVE_HEALTH_FAILURES',
+        label: 'Live Health Fails',
+        kind: 'int',
+        description: 'Maximum consecutive live health-check failures allowed before trading is halted. Restart bot to apply.',
+        defaultValue: '3',
+        liveApplies: false
+    },
+    {
+        key: 'LIVE_REQUIRE_SHADOW_HISTORY',
+        label: 'Need Shadow Hist',
+        kind: 'bool',
+        description: 'Requires enough resolved shadow history before live mode is allowed. Restart bot to apply.',
+        defaultValue: 'true',
+        liveApplies: false
+    },
+    {
+        key: 'LIVE_MIN_SHADOW_RESOLVED',
+        label: 'Min Shadow Res',
+        kind: 'int',
+        description: 'Minimum resolved shadow trades required before live mode may start when the history gate is enabled. Restart bot to apply.',
+        defaultValue: '100',
+        liveApplies: false
+    },
+    {
         key: 'RETRAIN_BASE_CADENCE',
         label: 'Retrain Cadence',
         kind: 'choice',
@@ -348,6 +568,23 @@ export const editableConfigFields = [
         kind: 'int',
         description: 'Minimum labeled samples required before a retrain can run. Restart bot to apply.',
         defaultValue: '200',
+        liveApplies: false
+    },
+    {
+        key: 'LOG_LEVEL',
+        label: 'Log Level',
+        kind: 'choice',
+        description: 'Python logging level for the bot process. Restart bot to apply.',
+        defaultValue: 'INFO',
+        liveApplies: false,
+        options: logLevelPresets
+    },
+    {
+        key: 'MODEL_PATH',
+        label: 'Model Path',
+        kind: 'text',
+        description: 'Relative path to the deployed model artifact. Restart bot to apply.',
+        defaultValue: 'save/model.joblib',
         liveApplies: false
     }
 ];
@@ -485,6 +722,9 @@ export function validateEditableConfigValue(field, raw) {
     const value = raw.trim();
     const normalizedPercentValue = isPercentEditableField(field) ? normalizePercentEditableValue(value) : value;
     if (!normalizedPercentValue) {
+        if (field.key === 'EXPECTED_CLOSE_FIXED_COST_USD') {
+            return { ok: true, value: '' };
+        }
         return { ok: false, error: `${field.label} cannot be empty.` };
     }
     if (field.kind === 'bool') {
@@ -496,7 +736,7 @@ export function validateEditableConfigValue(field, raw) {
     }
     if (field.kind === 'duration') {
         const normalized = value.toLowerCase();
-        if (normalized === 'unlimited' && field.key !== 'STOP_LOSS_MIN_HOLD') {
+        if (normalized === 'unlimited' && field.allowUnlimited) {
             return { ok: true, value: normalized };
         }
         const match = normalized.match(durationPattern);
@@ -505,7 +745,9 @@ export function validateEditableConfigValue(field, raw) {
                 ok: false,
                 error: field.key === 'STOP_LOSS_MIN_HOLD'
                     ? `${field.label} must look like 0s, 5m, 1h, 24h, or 7d.`
-                    : `${field.label} must look like 5m, 1h, 24h, 7d, or unlimited.`
+                    : field.allowUnlimited
+                        ? `${field.label} must look like 5m, 1h, 24h, 7d, or unlimited.`
+                        : `${field.label} must look like 5s, 45s, 5m, 1h, 24h, or 7d.`
             };
         }
         const numeric = Number(match[1]);
@@ -524,11 +766,14 @@ export function validateEditableConfigValue(field, raw) {
     }
     if (field.kind === 'choice') {
         const normalized = value.toLowerCase();
-        const options = (field.options || []).map((option) => option.toLowerCase());
-        if (!options.length || !options.includes(normalized)) {
+        const optionLookup = new Map((field.options || []).map((option) => [option.toLowerCase(), option]));
+        if (!optionLookup.size || !optionLookup.has(normalized)) {
             return { ok: false, error: `${field.label} must be one of: ${(field.options || []).join(', ')}.` };
         }
-        return { ok: true, value: normalized };
+        return { ok: true, value: optionLookup.get(normalized) || value };
+    }
+    if (field.kind === 'text') {
+        return { ok: true, value };
     }
     const numeric = Number(normalizedPercentValue);
     if (!Number.isFinite(numeric)) {
@@ -540,15 +785,27 @@ export function validateEditableConfigValue(field, raw) {
     if (field.key === 'POLL_INTERVAL_SECONDS' && numeric < 0.05) {
         return { ok: false, error: 'Poll interval must be at least 0.05 seconds.' };
     }
+    const isCostField = field.key === 'ENTRY_FIXED_COST_USD' ||
+        field.key === 'EXIT_FIXED_COST_USD' ||
+        field.key === 'APPROVAL_FIXED_COST_USD' ||
+        field.key === 'SETTLEMENT_FIXED_COST_USD' ||
+        field.key === 'EXPECTED_CLOSE_FIXED_COST_USD';
     if ((field.key === 'MIN_CONFIDENCE' ||
+        isCostField ||
         field.key === 'MAX_BET_FRACTION' ||
         field.key === 'WALLET_UNCOPYABLE_PENALTY_WEIGHT' ||
         field.key === 'MODEL_EDGE_MID_CONFIDENCE' ||
         field.key === 'MODEL_EDGE_HIGH_CONFIDENCE' ||
         field.key === 'MODEL_EDGE_MID_THRESHOLD' ||
-        field.key === 'MODEL_EDGE_HIGH_THRESHOLD') &&
-        (numeric < 0 || numeric > 1)) {
-        return { ok: false, error: `${field.label} must be between 0 and 1.` };
+        field.key === 'MODEL_EDGE_HIGH_THRESHOLD' ||
+        field.key === 'WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE') &&
+        (numeric < 0 || (!isCostField && numeric > 1))) {
+        return {
+            ok: false,
+            error: isCostField
+                ? `${field.label} must be 0 or greater.`
+                : `${field.label} must be between 0 and 1.`
+        };
     }
     if ((field.key === 'HEURISTIC_MIN_ENTRY_PRICE' && (numeric < 0 || numeric >= 1)) ||
         (field.key === 'HEURISTIC_MAX_ENTRY_PRICE' && (numeric <= 0 || numeric > 1))) {
@@ -562,16 +819,45 @@ export function validateEditableConfigValue(field, raw) {
     }
     if ((field.key === 'WARM_WALLET_COUNT' ||
         field.key === 'WALLET_PERFORMANCE_DROP_MIN_TRADES' ||
-        field.key === 'WALLET_UNCOPYABLE_PENALTY_MIN_BUYS') &&
+        field.key === 'WALLET_UNCOPYABLE_PENALTY_MIN_BUYS' ||
+        field.key === 'WALLET_UNCOPYABLE_DROP_MIN_BUYS' ||
+        field.key === 'WALLET_UNCOPYABLE_DROP_MAX_RESOLVED_COPIED' ||
+        field.key === 'WALLET_COLD_START_MIN_OBSERVED_BUYS' ||
+        field.key === 'WALLET_DISCOVERY_MIN_OBSERVED_BUYS' ||
+        field.key === 'WALLET_DISCOVERY_MIN_RESOLVED_BUYS' ||
+        field.key === 'WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS' ||
+        field.key === 'WALLET_LOCAL_PERFORMANCE_PENALTY_MIN_RESOLVED_COPIED_BUYS' ||
+        field.key === 'LIVE_MIN_SHADOW_RESOLVED') &&
         numeric < 0) {
         return { ok: false, error: `${field.label} must be 0 or greater.` };
+    }
+    if ((field.key === 'WARM_POLL_INTERVAL_MULTIPLIER' ||
+        field.key === 'DISCOVERY_POLL_INTERVAL_MULTIPLIER' ||
+        field.key === 'MAX_LIVE_HEALTH_FAILURES') &&
+        numeric < 1) {
+        return { ok: false, error: `${field.label} must be at least 1.` };
     }
     if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN' && (numeric < -1 || numeric > 1)) {
         return { ok: false, error: `${field.label} must be between -1 and 1.` };
     }
-    if ((field.key === 'DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN' || field.key === 'EXPOSURE_OVERRIDE_MIN_AVG_RETURN') &&
+    if ((field.key === 'DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN' ||
+        field.key === 'EXPOSURE_OVERRIDE_MIN_AVG_RETURN' ||
+        field.key === 'WALLET_LOCAL_PERFORMANCE_PENALTY_MAX_AVG_RETURN') &&
         (numeric < -1 || numeric > 1)) {
         return { ok: false, error: `${field.label} must be between -1 and 1.` };
+    }
+    if ((field.key === 'WALLET_DISCOVERY_SIZE_MULTIPLIER' || field.key === 'WALLET_PROBATION_SIZE_MULTIPLIER') &&
+        (numeric <= 0 || numeric > 1)) {
+        return { ok: false, error: `${field.label} must be greater than 0 and at most 1.` };
+    }
+    if (field.key === 'WALLET_LOCAL_PERFORMANCE_PENALTY_SIZE_MULTIPLIER' && (numeric < 0 || numeric > 1)) {
+        return { ok: false, error: `${field.label} must be between 0 and 1.` };
+    }
+    if (field.key === 'WALLET_QUALITY_SIZE_MIN_MULTIPLIER' && (numeric < 0.1 || numeric > 1)) {
+        return { ok: false, error: `${field.label} must be between 0.1 and 1.` };
+    }
+    if (field.key === 'WALLET_QUALITY_SIZE_MAX_MULTIPLIER' && (numeric < 1 || numeric > 3)) {
+        return { ok: false, error: `${field.label} must be between 1 and 3.` };
     }
     if ((field.key === 'MAX_DAILY_LOSS_PCT' ||
         field.key === 'MAX_LIVE_DRAWDOWN_PCT' ||
@@ -604,6 +890,9 @@ export function validateEditableConfigValue(field, raw) {
 export function formatEditableConfigValue(field, value) {
     const normalized = value.trim();
     if (!normalized) {
+        if (field.key === 'EXPECTED_CLOSE_FIXED_COST_USD') {
+            return 'auto';
+        }
         return '-';
     }
     if (field.kind === 'bool') {
@@ -618,6 +907,9 @@ export function formatEditableConfigValue(field, value) {
     if (field.key === 'RETRAIN_BASE_CADENCE') {
         return normalized.toLowerCase();
     }
+    if (field.key === 'LOG_LEVEL') {
+        return normalized.toUpperCase();
+    }
     if (field.key === 'RETRAIN_HOUR_LOCAL') {
         const hour = Math.min(Math.max(Number.parseInt(normalized, 10) || 0, 0), 23);
         return `${String(hour).padStart(2, '0')}:00 local`;
@@ -631,7 +923,13 @@ export function formatEditableConfigValue(field, value) {
     if (field.key === 'RETRAIN_MIN_SAMPLES') {
         return `${normalized} samples`;
     }
-    if (field.key === 'SHADOW_BANKROLL_USD' || field.key === 'MIN_BET_USD') {
+    if (field.key === 'SHADOW_BANKROLL_USD' ||
+        field.key === 'MIN_BET_USD' ||
+        field.key === 'ENTRY_FIXED_COST_USD' ||
+        field.key === 'EXIT_FIXED_COST_USD' ||
+        field.key === 'APPROVAL_FIXED_COST_USD' ||
+        field.key === 'SETTLEMENT_FIXED_COST_USD' ||
+        field.key === 'EXPECTED_CLOSE_FIXED_COST_USD') {
         return `$${normalized}`;
     }
     if (isPercentEditableField(field)) {

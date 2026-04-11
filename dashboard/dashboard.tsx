@@ -259,6 +259,7 @@ function renderPage(
           trackedSelectedIndex={walletTrackedSelectionIndex}
           droppedSelectedIndex={walletDroppedSelectionIndex}
           detailOpen={walletDetailOpen}
+          detailHistoryOffset={0}
           onWalletMetaChange={onWalletMetaChange}
         />
       )
@@ -1665,15 +1666,18 @@ function App() {
             ? /^[0-9]$/
             : selectedField.kind === 'choice'
               ? /^[a-z0-9_-]$/i
+            : selectedField.kind === 'text'
+              ? /^[a-z0-9_./:@\\-]$/i
             : selectedField.kind === 'duration'
               ? /^[0-9a-z.]$/i
               : /^[0-9.]$/
         if (accepts.test(input)) {
+          const nextChunk = selectedField.kind === 'text' ? input : input.toLowerCase()
           setSettingsEditor((current) => ({
             ...current,
             draft: current.replaceDraftOnInput
-              ? input.toLowerCase()
-              : `${current.draft}${input.toLowerCase()}`,
+              ? nextChunk
+              : `${current.draft}${nextChunk}`,
             replaceDraftOnInput: false
           }))
           return

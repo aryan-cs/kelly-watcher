@@ -62,7 +62,13 @@ const CONFIG_BLURBS = {
     POLL_INTERVAL_SECONDS: 'Sets seconds between wallet polling cycles.',
     HOT_WALLET_COUNT: 'Sets how many wallets stay in the fastest polling tier.',
     WARM_WALLET_COUNT: 'Sets how many additional wallets stay in the warm polling tier.',
+    WARM_POLL_INTERVAL_MULTIPLIER: 'Sets the warm-tier polling slowdown versus hot wallets.',
+    DISCOVERY_POLL_INTERVAL_MULTIPLIER: 'Sets the discovery-tier polling slowdown versus hot wallets.',
     MAX_MARKET_HORIZON: 'Limits how far out copied markets may resolve.',
+    MAX_SOURCE_TRADE_AGE: 'Skips source trades that are too old to copy.',
+    MAX_FEED_STALENESS: 'Rejects stale market-data snapshots.',
+    MAX_ORDERBOOK_STALENESS: 'Rejects stale order-book snapshots.',
+    MIN_EXECUTION_WINDOW: 'Requires this much time left before resolution to open a trade.',
     WALLET_INACTIVITY_LIMIT: 'Drops wallets after too much source inactivity.',
     WALLET_SLOW_DROP_MAX_TRACKING_AGE: 'Drops slow wallets after this tracking age.',
     WALLET_PERFORMANCE_DROP_MIN_TRADES: 'Requires this many trades before performance-based drops.',
@@ -70,6 +76,18 @@ const CONFIG_BLURBS = {
     WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN: 'Drops wallets below this average profile return.',
     WALLET_UNCOPYABLE_PENALTY_MIN_BUYS: 'Starts penalizing uncopyable wallets after this many observed buys.',
     WALLET_UNCOPYABLE_PENALTY_WEIGHT: 'Sets how strongly uncopyable behavior reduces wallet quality.',
+    WALLET_UNCOPYABLE_DROP_MIN_BUYS: 'Allows full uncopyable drops only after this many buys.',
+    WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE: 'Drops wallets whose uncopyable skip rate stays above this level.',
+    WALLET_UNCOPYABLE_DROP_MAX_RESOLVED_COPIED: 'Protects low-sample wallets from early uncopyable drops.',
+    WALLET_COLD_START_MIN_OBSERVED_BUYS: 'Keeps new wallets in cold start until this many buys are seen.',
+    WALLET_DISCOVERY_MIN_OBSERVED_BUYS: 'Requires this many buys before discovery scoring kicks in.',
+    WALLET_DISCOVERY_MIN_RESOLVED_BUYS: 'Requires this many resolved buys before discovery wallets are judged on outcomes.',
+    WALLET_DISCOVERY_SIZE_MULTIPLIER: 'Sets the smaller sizing multiplier for discovery wallets.',
+    WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS: 'Requires this many resolved copied buys before a wallet becomes trusted.',
+    WALLET_PROBATION_SIZE_MULTIPLIER: 'Sets sizing while a wallet is on probation.',
+    WALLET_LOCAL_PERFORMANCE_PENALTY_MIN_RESOLVED_COPIED_BUYS: 'Needs this many copied trades before local underperformance penalizes size.',
+    WALLET_LOCAL_PERFORMANCE_PENALTY_MAX_AVG_RETURN: 'Triggers the local penalty below this copied-trade average return.',
+    WALLET_LOCAL_PERFORMANCE_PENALTY_SIZE_MULTIPLIER: 'Sets sizing after the local performance penalty triggers.',
     WALLET_QUALITY_SIZE_MIN_MULTIPLIER: 'Sets the minimum size multiplier for weaker wallets.',
     WALLET_QUALITY_SIZE_MAX_MULTIPLIER: 'Sets the maximum size multiplier for stronger wallets.',
     MIN_CONFIDENCE: 'Requires this minimum confidence before taking trades.',
@@ -80,6 +98,12 @@ const CONFIG_BLURBS = {
     MODEL_EDGE_MID_THRESHOLD: 'Sets required edge for mid-confidence model trades.',
     MODEL_EDGE_HIGH_THRESHOLD: 'Sets required edge for high-confidence model trades.',
     MIN_BET_USD: 'Sets the smallest order size allowed.',
+    ENTRY_FIXED_COST_USD: 'Adds a fixed entry cost estimate to the sizing model.',
+    EXIT_FIXED_COST_USD: 'Adds a fixed exit cost estimate to the sizing model.',
+    APPROVAL_FIXED_COST_USD: 'Adds a fixed approval cost estimate to the sizing model.',
+    SETTLEMENT_FIXED_COST_USD: 'Adds a fixed settlement cost estimate to the sizing model.',
+    EXPECTED_CLOSE_FIXED_COST_USD: 'Overrides expected close cost for sizing; blank means auto.',
+    INCLUDE_EXPECTED_EXIT_FEE_IN_SIZING: 'Controls whether expected close cost is baked into entry sizing.',
     MAX_BET_FRACTION: 'Caps each bet as bankroll fraction.',
     MAX_MARKET_EXPOSURE_FRACTION: 'Caps bankroll exposure in any one market.',
     MAX_TRADER_EXPOSURE_FRACTION: 'Caps bankroll exposure to any one copied wallet.',
@@ -95,11 +119,16 @@ const CONFIG_BLURBS = {
     STOP_LOSS_MAX_LOSS_PCT: 'Sets the maximum allowed loss before stop-loss exits.',
     STOP_LOSS_MIN_HOLD: 'Sets how long a trade must be held before stop-loss can fire.',
     MAX_LIVE_DRAWDOWN_PCT: 'Sets the hard live-trading session drawdown stop.',
+    MAX_LIVE_HEALTH_FAILURES: 'Stops live trading after this many consecutive health-check failures.',
+    LIVE_REQUIRE_SHADOW_HISTORY: 'Requires enough resolved shadow history before live mode can start.',
+    LIVE_MIN_SHADOW_RESOLVED: 'Sets the resolved-shadow minimum for live-mode eligibility.',
     RETRAIN_BASE_CADENCE: 'Sets how often scheduled retraining runs.',
     RETRAIN_HOUR_LOCAL: 'Sets the local hour for scheduled retraining.',
     RETRAIN_EARLY_CHECK_INTERVAL: 'Checks for early retraining on this interval.',
     RETRAIN_MIN_NEW_LABELS: 'Needs this many new labels for early retraining.',
-    RETRAIN_MIN_SAMPLES: 'Needs this many samples before retraining starts.'
+    RETRAIN_MIN_SAMPLES: 'Needs this many samples before retraining starts.',
+    LOG_LEVEL: 'Sets the bot process log verbosity.',
+    MODEL_PATH: 'Sets the deployed model artifact path.'
 };
 const DANGER_ACTION_BLURBS = {
     live_trading: 'Toggles real-money mode in config.',
@@ -162,7 +191,14 @@ export function Settings({ editor }) {
     const configContentWidth = Math.max(28, configBoxWidth - 4);
     const dangerContentWidth = Math.max(24, dangerBoxWidth - 4);
     const configColumnCount = configContentWidth >= 78 ? 2 : 1;
-    const configColumns = useMemo(() => splitIntoColumns(editableConfigFields.map((field, index) => ({ field, index })), configColumnCount), [configColumnCount]);
+    const configVisibleRows = rowsForHeight(terminal.height, stacked ? 34 : 27, 8, 16);
+    const configPageSize = Math.max(1, configVisibleRows * configColumnCount);
+    const configPageIndex = Math.floor(safeSelectedIndex / configPageSize);
+    const configPageStart = configPageIndex * configPageSize;
+    const visibleConfigEntries = useMemo(() => editableConfigFields
+        .map((field, index) => ({ field, index }))
+        .slice(configPageStart, configPageStart + configPageSize), [configPageSize, configPageStart]);
+    const configColumns = useMemo(() => splitIntoColumns(visibleConfigEntries, configColumnCount), [visibleConfigEntries, configColumnCount]);
     const configColumnWidth = configColumnCount === 1
         ? configContentWidth
         : Math.max(24, Math.floor((configContentWidth - 2) / configColumnCount));
@@ -247,7 +283,7 @@ export function Settings({ editor }) {
                     })),
                     columnIndex < configColumns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(Text, null, " "),
+                    React.createElement(Text, { color: theme.dim }, truncate(`Showing ${configPageStart + 1}-${Math.min(configPageStart + configPageSize, editableConfigFields.length)} of ${editableConfigFields.length}`, helperWidth)),
                     configHelperLines.map((line, index) => (React.createElement(Text, { key: `config-status-${index}`, color: statusColor }, line))))),
             !stacked ? React.createElement(InkBox, { width: middleRowGap }) : React.createElement(InkBox, { height: 1 }),
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.red, flexDirection: "column", width: stacked ? '100%' : undefined, flexGrow: stacked ? 0 : 1, flexShrink: 1, paddingX: 1 },

@@ -192,7 +192,7 @@ def expected_close_fixed_cost_usd() -> float:
 def heuristic_min_entry_price() -> float:
     return _get_env_file_bounded_float(
         "HEURISTIC_MIN_ENTRY_PRICE",
-        "0.45",
+        "0.65",
         minimum=0.0,
         maximum=0.99,
     )
@@ -201,7 +201,7 @@ def heuristic_min_entry_price() -> float:
 def heuristic_max_entry_price() -> float:
     return _get_env_file_bounded_float(
         "HEURISTIC_MAX_ENTRY_PRICE",
-        "0.50",
+        "0.75",
         minimum=0.0,
         maximum=1.0,
     )

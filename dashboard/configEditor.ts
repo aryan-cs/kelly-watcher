@@ -301,7 +301,7 @@ export const editableConfigFields: EditableConfigField[] = [
     label: 'Heuristic Entry Min',
     kind: 'float',
     description: 'Lower bound of the heuristic entry-price band. The heuristic path only buys when the entry price lands within the configured band. Applies live on the next loop.',
-    defaultValue: '0.45',
+    defaultValue: '0.65',
     liveApplies: true
   },
   {
@@ -309,7 +309,7 @@ export const editableConfigFields: EditableConfigField[] = [
     label: 'Heuristic Entry Max',
     kind: 'float',
     description: 'Upper bound of the heuristic entry-price band. Prices at or above this level are rejected on the heuristic path. Applies live on the next loop.',
-    defaultValue: '0.50',
+    defaultValue: '0.75',
     liveApplies: true
   },
   {

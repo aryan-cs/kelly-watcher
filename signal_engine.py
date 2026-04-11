@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 TRADER_WEIGHT = 0.60
 MARKET_WEIGHT = 0.40
+HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
+HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
 
 
 class SignalEngine:
@@ -151,14 +153,22 @@ class SignalEngine:
         )
         min_entry_price = heuristic_min_entry_price()
         max_entry_price = heuristic_max_entry_price()
+        min_market_score, band_progress = self._heuristic_min_market_score(
+            execution_price,
+            min_entry_price,
+            max_entry_price,
+        )
         passed_confidence = adjusted >= min_floor
         passed_entry_price = execution_price >= min_entry_price and execution_price < max_entry_price
-        passed = passed_confidence and passed_entry_price
+        passed_market_score = market_score >= min_market_score
+        passed = passed_confidence and passed_entry_price and passed_market_score
         if not passed_entry_price:
             reason = (
                 f"heuristic entry price {execution_price:.3f} outside band "
                 f"{min_entry_price:.3f}-{max_entry_price:.3f}"
             )
+        elif not passed_market_score:
+            reason = f"heuristic market score {market_score:.3f} < min {min_market_score:.3f}"
         elif not passed_confidence:
             reason = f"heuristic conf {adjusted:.3f} < min {min_floor:.3f}"
         else:
@@ -174,6 +184,8 @@ class SignalEngine:
             "entry_price": round(execution_price, 4),
             "min_entry_price": round(min_entry_price, 4),
             "max_entry_price": round(max_entry_price, 4),
+            "min_market_score": round(min_market_score, 4),
+            "band_progress": round(band_progress, 4),
             "adaptive_floor": adaptive_floor.as_dict(),
             "passed": passed,
             "reason": reason,
@@ -182,6 +194,26 @@ class SignalEngine:
             "trader": trader_result,
             "market": market_result,
         }
+
+    @staticmethod
+    def _heuristic_min_market_score(
+        execution_price: float,
+        min_entry_price: float,
+        max_entry_price: float,
+    ) -> tuple[float, float]:
+        band_span = max(max_entry_price - min_entry_price, 0.0)
+        if band_span <= 1e-6:
+            return 0.65, 1.0
+
+        band_progress = float(np.clip((execution_price - min_entry_price) / band_span, 0.0, 1.0))
+        required_market_score = float(
+            np.interp(
+                band_progress,
+                [0.0, 1.0],
+                [HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE, HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE],
+            )
+        )
+        return required_market_score, band_progress
 
     def _evaluate_xgb(
         self,

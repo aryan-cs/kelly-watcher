@@ -41,6 +41,22 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: true
   },
   {
+    key: 'HOT_WALLET_COUNT',
+    label: 'Hot Wallet Count',
+    kind: 'int',
+    description: 'How many top-priority wallets stay in the fastest polling tier. Applies live on the next loop.',
+    defaultValue: '12',
+    liveApplies: true
+  },
+  {
+    key: 'WARM_WALLET_COUNT',
+    label: 'Warm Wallet Count',
+    kind: 'int',
+    description: 'How many additional wallets stay in the warm polling tier after the hot set. Applies live on the next loop.',
+    defaultValue: '24',
+    liveApplies: true
+  },
+  {
     key: 'MAX_MARKET_HORIZON',
     label: 'Max Market Horizon',
     kind: 'duration',
@@ -89,6 +105,22 @@ export const editableConfigFields: EditableConfigField[] = [
     kind: 'float',
     description: 'Auto-drop a wallet if its profile average return is at or below this level after the minimum trade count is reached. Applies live on the next loop.',
     defaultValue: '-0.03',
+    liveApplies: true
+  },
+  {
+    key: 'WALLET_UNCOPYABLE_PENALTY_MIN_BUYS',
+    label: 'Uncopy Penalty Min Buys',
+    kind: 'int',
+    description: 'Minimum observed buys before repeated uncopyable behavior starts reducing wallet quality. Applies live on the next loop.',
+    defaultValue: '12',
+    liveApplies: true
+  },
+  {
+    key: 'WALLET_UNCOPYABLE_PENALTY_WEIGHT',
+    label: 'Uncopy Penalty Weight',
+    kind: 'float',
+    description: 'How strongly repeated uncopyable behavior penalizes wallet quality. Applies live on the next loop.',
+    defaultValue: '0.25',
     liveApplies: true
   },
   {
@@ -180,6 +212,22 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: false
   },
   {
+    key: 'MAX_MARKET_EXPOSURE_FRACTION',
+    label: 'Market Exposure Cap',
+    kind: 'float',
+    description: 'Caps deployed capital per market as a percent of bankroll. Enter 0 to disable or any percent from 1 through 100. Applies live on the next loop.',
+    defaultValue: '20',
+    liveApplies: true
+  },
+  {
+    key: 'MAX_TRADER_EXPOSURE_FRACTION',
+    label: 'Trader Exposure Cap',
+    kind: 'float',
+    description: 'Caps deployed capital per copied wallet as a percent of bankroll. Enter 0 to disable or any percent from 1 through 100. Applies live on the next loop.',
+    defaultValue: '30',
+    liveApplies: true
+  },
+  {
     key: 'MAX_TOTAL_OPEN_EXPOSURE_FRACTION',
     label: 'Open Exposure Cap',
     kind: 'float',
@@ -242,6 +290,38 @@ export const editableConfigFields: EditableConfigField[] = [
     description: 'Blocks new entries after this intraday drawdown. Enter 0 to disable the guard or any percent from 1 through 100. Applies live on the next loop.',
     defaultValue: '5',
     liveApplies: true
+  },
+  {
+    key: 'STOP_LOSS_ENABLED',
+    label: 'Stop Loss Enabled',
+    kind: 'bool',
+    description: 'Turns the open-position stop-loss scanner on or off. Applies live on the next loop.',
+    defaultValue: 'true',
+    liveApplies: true
+  },
+  {
+    key: 'STOP_LOSS_MAX_LOSS_PCT',
+    label: 'Stop Loss Max Loss',
+    kind: 'float',
+    description: 'Stop-loss trigger level as a percent loss from entry. Enter 0 to disable effective exits or any percent from 1 through 100. Applies live on the next loop.',
+    defaultValue: '15',
+    liveApplies: true
+  },
+  {
+    key: 'STOP_LOSS_MIN_HOLD',
+    label: 'Stop Loss Min Hold',
+    kind: 'duration',
+    description: 'Minimum hold time before the stop-loss scanner may exit a position. Enter 0s to allow immediate exits. Applies live on the next loop.',
+    defaultValue: '20m',
+    liveApplies: true
+  },
+  {
+    key: 'MAX_LIVE_DRAWDOWN_PCT',
+    label: 'Live DD Limit',
+    kind: 'float',
+    description: 'Account-level live-trading drawdown stop, as a percent from session starting equity. Restart bot to apply.',
+    defaultValue: '15',
+    liveApplies: false
   },
   {
     key: 'RETRAIN_BASE_CADENCE',
@@ -309,6 +389,10 @@ interface DashboardConfigResponse {
 const durationPattern = /^(\d+(\.\d+)?)([smhdw])$/i
 const percentEditableFieldKeys = new Set([
   'MAX_DAILY_LOSS_PCT',
+  'MAX_LIVE_DRAWDOWN_PCT',
+  'STOP_LOSS_MAX_LOSS_PCT',
+  'MAX_MARKET_EXPOSURE_FRACTION',
+  'MAX_TRADER_EXPOSURE_FRACTION',
   'MAX_TOTAL_OPEN_EXPOSURE_FRACTION',
   'EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION'
 ])
@@ -473,16 +557,29 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
 
   if (field.kind === 'duration') {
     const normalized = value.toLowerCase()
-    if (normalized === 'unlimited') {
+    if (normalized === 'unlimited' && field.key !== 'STOP_LOSS_MIN_HOLD') {
       return {ok: true, value: normalized}
     }
     const match = normalized.match(durationPattern)
     if (!match) {
-      return {ok: false, error: `${field.label} must look like 5m, 1h, 24h, 7d, or unlimited.`}
+      return {
+        ok: false,
+        error:
+          field.key === 'STOP_LOSS_MIN_HOLD'
+            ? `${field.label} must look like 0s, 5m, 1h, 24h, or 7d.`
+            : `${field.label} must look like 5m, 1h, 24h, 7d, or unlimited.`
+      }
     }
 
     const numeric = Number(match[1])
-    if (!Number.isFinite(numeric) || numeric <= 0) {
+    if (!Number.isFinite(numeric)) {
+      return {ok: false, error: `${field.label} must be a valid duration.`}
+    }
+    if (field.key === 'STOP_LOSS_MIN_HOLD') {
+      if (numeric < 0) {
+        return {ok: false, error: `${field.label} must be 0 or greater.`}
+      }
+    } else if (numeric <= 0) {
       return {ok: false, error: `${field.label} must be greater than 0.`}
     }
 
@@ -515,6 +612,7 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
     (
       field.key === 'MIN_CONFIDENCE' ||
       field.key === 'MAX_BET_FRACTION' ||
+      field.key === 'WALLET_UNCOPYABLE_PENALTY_WEIGHT' ||
       field.key === 'MODEL_EDGE_MID_CONFIDENCE' ||
       field.key === 'MODEL_EDGE_HIGH_CONFIDENCE' ||
       field.key === 'MODEL_EDGE_MID_THRESHOLD' ||
@@ -536,7 +634,18 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
     return {ok: false, error: `${field.label} must be between 0 and 1.`}
   }
 
-  if (field.key === 'WALLET_PERFORMANCE_DROP_MIN_TRADES' && numeric < 0) {
+  if (field.key === 'HOT_WALLET_COUNT' && numeric < 1) {
+    return {ok: false, error: `${field.label} must be at least 1.`}
+  }
+
+  if (
+    (
+      field.key === 'WARM_WALLET_COUNT' ||
+      field.key === 'WALLET_PERFORMANCE_DROP_MIN_TRADES' ||
+      field.key === 'WALLET_UNCOPYABLE_PENALTY_MIN_BUYS'
+    ) &&
+    numeric < 0
+  ) {
     return {ok: false, error: `${field.label} must be 0 or greater.`}
   }
 
@@ -553,6 +662,10 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
 
   if (
     (field.key === 'MAX_DAILY_LOSS_PCT' ||
+      field.key === 'MAX_LIVE_DRAWDOWN_PCT' ||
+      field.key === 'STOP_LOSS_MAX_LOSS_PCT' ||
+      field.key === 'MAX_MARKET_EXPOSURE_FRACTION' ||
+      field.key === 'MAX_TRADER_EXPOSURE_FRACTION' ||
       field.key === 'MAX_TOTAL_OPEN_EXPOSURE_FRACTION' ||
       field.key === 'EXPOSURE_OVERRIDE_TOTAL_CAP_FRACTION') &&
     (numeric < 0 || numeric > 100)

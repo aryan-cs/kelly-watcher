@@ -76,6 +76,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
+            { label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.' },
             { label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.' },
             { label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.' },
             { label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.' },
@@ -1399,6 +1400,153 @@ function replaySearchFailureSummary(raw, feasible) {
         return 'unknown';
     }
 }
+function replayHeadroomPctPoints(value) {
+    const points = value * 100;
+    if (!Number.isFinite(points))
+        return '-';
+    const absPoints = Math.abs(points);
+    const rounded = absPoints >= 10 ? Math.round(points) : Math.round(points * 10) / 10;
+    const sign = rounded > 0 ? '+' : '';
+    return `${sign}${rounded}pt`;
+}
+function replayHeadroomCount(value) {
+    if (!Number.isFinite(value))
+        return '-';
+    const rounded = Math.round(value);
+    const sign = rounded > 0 ? '+' : '';
+    return `${sign}${rounded}`;
+}
+function replaySearchBestHeadroomSummary(resultRaw, constraintsRaw) {
+    if (!resultRaw || !constraintsRaw)
+        return { summary: '-', hasActiveGuard: false, closestMarginRatio: null, hasFailure: false };
+    try {
+        const resultParsed = JSON.parse(resultRaw);
+        const constraintsParsed = JSON.parse(constraintsRaw);
+        const constraints = constraintsParsed && typeof constraintsParsed === 'object' && !Array.isArray(constraintsParsed)
+            ? constraintsParsed
+            : {};
+        if (!resultParsed || typeof resultParsed !== 'object' || Array.isArray(resultParsed)) {
+            return { summary: '-', hasActiveGuard: false, closestMarginRatio: null, hasFailure: false };
+        }
+        const rawSignalModeSummary = resultParsed.signal_mode_summary;
+        const signalModeSummary = rawSignalModeSummary && typeof rawSignalModeSummary === 'object' && !Array.isArray(rawSignalModeSummary)
+            ? rawSignalModeSummary
+            : {};
+        const acceptedTotal = Object.values(signalModeSummary).reduce((sum, rawValue) => {
+            if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue))
+                return sum;
+            return sum + Number(rawValue.accepted_count || 0);
+        }, 0);
+        const headrooms = [];
+        const pushHeadroom = (group, label, actual, threshold, formatter, direction) => {
+            if (!Number.isFinite(actual) || !Number.isFinite(threshold))
+                return;
+            const margin = direction === 'min' ? actual - threshold : threshold - actual;
+            const denominator = Math.max(Math.abs(threshold), direction === 'max' ? 0.01 : 1);
+            headrooms.push({
+                group,
+                label: `${label} ${formatter(margin)}`,
+                margin,
+                normalizedMargin: margin / denominator
+            });
+        };
+        const globalAccepted = Number(resultParsed.accepted_count || 0);
+        const globalResolved = Number(resultParsed.resolved_count || 0);
+        const globalWinRate = resultParsed.win_rate == null ? null : Number(resultParsed.win_rate);
+        const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0);
+        const globalPositiveWindows = Number(resultParsed.positive_window_count || 0);
+        const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0);
+        const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0);
+        const minAccepted = Number(constraints.min_accepted_count || 0);
+        const minResolved = Number(constraints.min_resolved_count || 0);
+        const minWinRate = Number(constraints.min_win_rate || 0);
+        const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0);
+        const minPositiveWindows = Number(constraints.min_positive_windows || 0);
+        const minWorstWindowPnlUsd = Number(constraints.min_worst_window_pnl_usd ?? -1000000000);
+        const maxWorstWindowDrawdownPct = Number(constraints.max_worst_window_drawdown_pct || 0);
+        if (minAccepted > 0)
+            pushHeadroom('global', 'acc', globalAccepted, minAccepted, replayHeadroomCount, 'min');
+        if (minResolved > 0)
+            pushHeadroom('global', 'res', globalResolved, minResolved, replayHeadroomCount, 'min');
+        if (minWinRate > 0 && globalWinRate != null)
+            pushHeadroom('global', 'win', globalWinRate, minWinRate, replayHeadroomPctPoints, 'min');
+        if (maxDrawdownPct > 0)
+            pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max');
+        if (minPositiveWindows > 0)
+            pushHeadroom('global', 'pos', globalPositiveWindows, minPositiveWindows, replayHeadroomCount, 'min');
+        if (minWorstWindowPnlUsd > -999999999)
+            pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min');
+        if (maxWorstWindowDrawdownPct > 0)
+            pushHeadroom('global', 'worst dd', globalWorstWindowDrawdown, maxWorstWindowDrawdownPct, replayHeadroomPctPoints, 'max');
+        for (const [mode, prefix] of [['heuristic', 'heur'], ['xgboost', 'model']]) {
+            const rawMode = signalModeSummary[mode];
+            const payload = rawMode && typeof rawMode === 'object' && !Array.isArray(rawMode)
+                ? rawMode
+                : {};
+            const acceptedCount = Number(payload.accepted_count || 0);
+            const resolvedCount = Number(payload.resolved_count || 0);
+            const winRate = payload.win_rate == null ? null : Number(payload.win_rate);
+            const totalPnlUsd = Number(payload.total_pnl_usd || 0);
+            const positiveWindowCount = Number(payload.positive_window_count || 0);
+            const worstWindowPnlUsd = Number(payload.worst_window_pnl_usd ?? totalPnlUsd);
+            const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0;
+            const acceptedShare = acceptedTotal > 0 ? acceptedCount / acceptedTotal : 0;
+            const minModeAccepted = Number(constraints[`min_${mode}_accepted_count`] || 0);
+            const minModeResolved = Number(constraints[`min_${mode}_resolved_count`] || 0);
+            const minModeResolvedShare = Number(constraints[`min_${mode}_resolved_share`] || 0);
+            const minModeWinRate = Number(constraints[`min_${mode}_win_rate`] || 0);
+            const minModePnlUsd = Number(constraints[`min_${mode}_pnl_usd`] || 0);
+            const minModeWorstWindowPnlUsd = Number(constraints[`min_${mode}_worst_window_pnl_usd`] ?? -1000000000);
+            const minModePositiveWindows = Number(constraints[`min_${mode}_positive_windows`] || 0);
+            if (minModeAccepted > 0)
+                pushHeadroom(mode, `${prefix} n`, acceptedCount, minModeAccepted, replayHeadroomCount, 'min');
+            if (minModeResolved > 0)
+                pushHeadroom(mode, `${prefix} r`, resolvedCount, minModeResolved, replayHeadroomCount, 'min');
+            if (minModeResolvedShare > 0)
+                pushHeadroom(mode, `${prefix} cov`, resolvedShare, minModeResolvedShare, replayHeadroomPctPoints, 'min');
+            if (minModeWinRate > 0 && winRate != null)
+                pushHeadroom(mode, `${prefix} wr`, winRate, minModeWinRate, replayHeadroomPctPoints, 'min');
+            if (minModePnlUsd !== 0)
+                pushHeadroom(mode, `${prefix} pnl`, totalPnlUsd, minModePnlUsd, formatDollar, 'min');
+            if (minModeWorstWindowPnlUsd > -999999999)
+                pushHeadroom(mode, `${prefix} worst`, worstWindowPnlUsd, minModeWorstWindowPnlUsd, formatDollar, 'min');
+            if (minModePositiveWindows > 0)
+                pushHeadroom(mode, `${prefix} pos`, positiveWindowCount, minModePositiveWindows, replayHeadroomCount, 'min');
+            if (mode === 'heuristic') {
+                const maxShare = Number(constraints.max_heuristic_accepted_share || 0);
+                if (maxShare > 0)
+                    pushHeadroom(mode, `${prefix} mix`, acceptedShare, maxShare, replayHeadroomPctPoints, 'max');
+            }
+            else {
+                const minShare = Number(constraints.min_xgboost_accepted_share || 0);
+                if (minShare > 0)
+                    pushHeadroom(mode, `${prefix} mix`, acceptedShare, minShare, replayHeadroomPctPoints, 'min');
+            }
+        }
+        if (!headrooms.length)
+            return { summary: 'none', hasActiveGuard: false, closestMarginRatio: null, hasFailure: false };
+        const bestByGroup = new Map();
+        for (const headroom of headrooms) {
+            const current = bestByGroup.get(headroom.group);
+            if (!current || headroom.normalizedMargin < current.normalizedMargin) {
+                bestByGroup.set(headroom.group, headroom);
+            }
+        }
+        const ordered = ['global', 'heuristic', 'xgboost']
+            .map((group) => bestByGroup.get(group))
+            .filter((value) => value != null);
+        const closestMarginRatio = ordered.reduce((current, headroom) => current == null ? headroom.normalizedMargin : Math.min(current, headroom.normalizedMargin), null);
+        return {
+            summary: ordered.map((headroom) => headroom.label).join(' | '),
+            hasActiveGuard: true,
+            closestMarginRatio,
+            hasFailure: ordered.some((headroom) => headroom.margin < 0)
+        };
+    }
+    catch {
+        return { summary: '-', hasActiveGuard: false, closestMarginRatio: null, hasFailure: false };
+    }
+}
 function replayConfigRawValue(value) {
     if (value == null)
         return '';
@@ -1846,6 +1994,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const trackerHealthColumns = useMemo(() => splitIntoColumns(trackerHealthStats, 2), [trackerHealthStats]);
     const replaySearchSuggestedConfig = useMemo(() => replaySearchConfigSuggestion(latestReplaySearch?.config_json, settingsValues, configFieldByKey), [configFieldByKey, latestReplaySearch?.config_json, settingsValues]);
     const replaySearchCurrentModeRisk = useMemo(() => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
+    const replaySearchBestHeadroom = useMemo(() => replaySearchBestHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.result_json]);
     const replayLabStats = useMemo(() => [
         {
             label: 'Last replay',
@@ -1960,6 +2109,19 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             color: latestReplaySearch?.constraints_json ? theme.white : theme.dim
         },
         {
+            label: 'Best headroom',
+            value: replaySearchBestHeadroom.summary,
+            color: !latestReplaySearch
+                ? theme.dim
+                : !replaySearchBestHeadroom.hasActiveGuard
+                    ? theme.dim
+                    : replaySearchBestHeadroom.hasFailure
+                        ? theme.red
+                        : replaySearchBestHeadroom.closestMarginRatio != null && replaySearchBestHeadroom.closestMarginRatio < 0.15
+                            ? theme.yellow
+                            : theme.green
+        },
+        {
             label: 'Mode drift',
             value: replaySearchModeDriftSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json),
             color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
@@ -2037,6 +2199,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     ], [
         latestReplay,
         latestReplaySearch,
+        replaySearchBestHeadroom,
         replaySearchCurrentModeRisk,
         replaySearchSuggestedConfig,
         replayBestBand,

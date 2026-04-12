@@ -76,7 +76,21 @@ export function beginShadowRestartBotState() {
         last_retrain_sample_count: 0,
         last_retrain_min_samples: 0,
         last_retrain_trigger: '',
-        last_retrain_deployed: false
+        last_retrain_deployed: false,
+        loaded_scorer: 'heuristic',
+        loaded_model_backend: 'heuristic',
+        model_artifact_exists: false,
+        model_artifact_path: '',
+        model_artifact_backend: '',
+        model_artifact_contract: null,
+        runtime_contract: null,
+        model_artifact_label_mode: '',
+        runtime_label_mode: '',
+        model_runtime_compatible: false,
+        model_fallback_reason: '',
+        model_load_error: '',
+        model_prediction_mode: '',
+        model_loaded_at: 0
     };
 }
 export function isShadowRestartPending() {

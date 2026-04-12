@@ -228,10 +228,11 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     id: 'prediction_quality',
     title: 'Prediction Quality',
     summary: [
-      'This box separates the scorer loaded in the runtime from the model artifact on disk.',
+      'This box separates scorer config, the scorer loaded in the runtime, and the model artifact on disk.',
       'Lower loss numbers grade the model artifact, not the bankroll curve.'
     ],
     rows: [
+      {label: 'Scorer gates', text: 'Which scorer paths are enabled in config. Disabled paths cannot be loaded for new decisions.'},
       {label: 'Loaded scorer', text: 'Which scorer the running bot has loaded right now for new decisions.'},
       {label: 'Model artifact', text: 'The latest deployed model artifact on disk, even if live trading is currently falling back.'},
       {label: 'Contract', text: 'Artifact contract versus runtime contract. A mismatch means the runtime will reject the model.'},
@@ -328,7 +329,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Read / Bias', text: 'Plain-English bias read plus the point gap between prediction and reality.'},
       {label: 'Avg miss', text: 'Average miss per graded bet versus the actual 0/1 outcome. Lower is better.'},
       {label: 'Main band / hit', text: 'The most common confidence range and how often it actually won.'},
-      {label: 'Recent scorer', text: 'Which scorer has driven the most recent accepted trades.'},
+      {label: 'Recent path', text: 'Which scorer has driven the most recent accepted trades. This is historical activity, not the runtime load state.'},
       {label: 'Primary path', text: 'Which decision path has produced the most accepted trades so far.'},
       {label: 'Role', text: 'Whether a path is primary, secondary, or currently idle.'},
       {label: 'Signals / taken', text: 'How many candidate signals flowed through that path, and how many became bets.'},
@@ -1019,7 +1020,7 @@ function modeRoleLabel(mode: string, taken: number, primaryMode: string | null, 
     return normalizedMode === 'veto' ? 'Guardrail idle' : 'Idle'
   }
   if (normalizedMode === primaryMode) {
-    return normalizedMode === activeScorerLabel.trim().toLowerCase() ? 'Primary live path' : 'Primary path'
+    return normalizedMode === activeScorerLabel.trim().toLowerCase() ? 'Primary recent path' : 'Primary path'
   }
   return 'Secondary path'
 }
@@ -1217,6 +1218,7 @@ function modeLabel(mode: string): string {
   if (normalized === 'ml') return 'XGBoost'
   if (normalized === 'hist_gradient_boosting') return 'XGBoost'
   if (normalized === 'heuristic') return 'Heuristic'
+  if (normalized === 'disabled') return 'No scorer'
   if (normalized === 'shadow') return 'Tracker'
   if (normalized === 'live') return 'Live'
   return mode || 'Unknown'
@@ -2860,7 +2862,27 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [confidenceCheckStats]
   )
   const loadedScorerLabel = botState.loaded_scorer ? modeLabel(botState.loaded_scorer) : 'Heuristic'
-  const loadedScorerColor = loadedScorerLabel === 'XGBoost' ? theme.green : theme.yellow
+  const loadedScorerColor = loadedScorerLabel === 'XGBoost'
+    ? theme.green
+    : loadedScorerLabel === 'No scorer'
+      ? theme.red
+      : theme.yellow
+  const scorerConfigLabel = useMemo(() => {
+    const heuristicEnabled = botState.heuristic_enabled
+    const xgboostEnabled = botState.xgboost_enabled
+    if (heuristicEnabled == null || xgboostEnabled == null) return '-'
+    const heuristicLabel = heuristicEnabled ? 'on' : 'off'
+    const xgboostLabel = xgboostEnabled ? 'on' : 'off'
+    return `heur ${heuristicLabel} | xgb ${xgboostLabel}`
+  }, [botState.heuristic_enabled, botState.xgboost_enabled])
+  const scorerConfigColor = useMemo(() => {
+    const heuristicEnabled = botState.heuristic_enabled
+    const xgboostEnabled = botState.xgboost_enabled
+    if (heuristicEnabled == null || xgboostEnabled == null) return theme.dim
+    if (heuristicEnabled === false && xgboostEnabled === false) return theme.red
+    if (heuristicEnabled === true && xgboostEnabled === true) return theme.green
+    return theme.yellow
+  }, [botState.heuristic_enabled, botState.xgboost_enabled, theme.dim, theme.green, theme.red, theme.yellow])
   const deployedModelLabel = botState.model_artifact_exists
     ? modeLabel(botState.model_artifact_backend || 'unknown')
     : '-'
@@ -3064,6 +3086,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const predictionQualityStats = useMemo<CompactStatItem[]>(
     () => [
       {
+        label: 'Scorer gates',
+        value: scorerConfigLabel,
+        color: scorerConfigColor
+      },
+      {
         label: 'Loaded scorer',
         value: loadedScorerLabel,
         color: loadedScorerColor
@@ -3099,6 +3126,8 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       fallbackLabel,
       featureCount,
       latest,
+      scorerConfigColor,
+      scorerConfigLabel,
       loadedScorerColor,
       loadedScorerLabel
     ]
@@ -3205,7 +3234,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSpacer />
         <ModelsSubsectionTitle title="Decision Paths" width={modelsColumnWidths[1]} />
         <DenseModelsRow
-          label="Recent scorer"
+          label="Recent path"
           value={activeScorerLabel}
           color={activeScorerColor}
           width={modelsColumnWidths[1]}

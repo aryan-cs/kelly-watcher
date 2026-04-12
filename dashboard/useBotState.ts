@@ -28,6 +28,8 @@ export interface BotState {
   last_retrain_deployed?: boolean
   loaded_scorer?: string
   loaded_model_backend?: string
+  heuristic_enabled?: boolean
+  xgboost_enabled?: boolean
   model_artifact_exists?: boolean
   model_artifact_path?: string
   model_artifact_backend?: string

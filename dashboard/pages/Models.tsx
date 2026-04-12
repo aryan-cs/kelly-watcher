@@ -117,10 +117,31 @@ interface TrainingProgressRow {
   new_labeled: number | null
 }
 
+interface ExitAuditSummaryRow {
+  audits_7d: number | null
+  exits_7d: number | null
+  holds_7d: number | null
+  hard_exits_7d: number | null
+  avg_estimated_return_pct: number | null
+  avg_exit_return_pct: number | null
+  avg_hold_return_pct: number | null
+  avg_spread_pct: number | null
+  avg_depth_multiple: number | null
+  last_audited_at: number | null
+}
+
+interface ExitAuditRecentRow {
+  audited_at: number
+  decision: string | null
+  estimated_return_pct: number | null
+  reason: string | null
+}
+
 export type ModelPanelId =
   | 'prediction_quality'
   | 'tracker_health'
   | 'confidence_modes'
+  | 'exit_guard'
   | 'how_it_works'
   | 'training_cycle'
 
@@ -207,6 +228,27 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     settingKeys: ['MIN_CONFIDENCE', 'MAX_MARKET_HORIZON']
   },
   {
+    id: 'exit_guard',
+    title: 'Exit Guard',
+    summary: [
+      'This box measures what the stop-loss replacement is actually doing with bad quotes.',
+      'It shows whether the guard is exiting, holding because the quote is unreliable, or hard-exiting on severe breaches.'
+    ],
+    rows: [
+      {label: 'Mode', text: 'Whether these exit audits are coming from shadow or live mode.'},
+      {label: 'Audits 7d', text: 'How many stop-loss breaches were evaluated in the last 7 days.'},
+      {label: 'Exit / hold', text: 'How many breaches became immediate exits versus guarded holds.'},
+      {label: 'Hard exits', text: 'Breaches so severe that the guard exited immediately despite quote-quality checks.'},
+      {label: 'Avg breach', text: 'Average executable return at the moment the guard evaluated the position.'},
+      {label: 'Exit breach', text: 'Average executable return for the subset the guard actually exited.'},
+      {label: 'Hold breach', text: 'Average executable return for the subset the guard held.'},
+      {label: 'Avg spread', text: 'Average quoted spread on audited positions. Lower is better.'},
+      {label: 'Avg depth', text: 'Average visible bid depth relative to the position notional. Higher is better.'},
+      {label: 'Last audit', text: 'How recently the exit guard evaluated a stop-loss breach.'}
+    ],
+    settingKeys: ['STOP_LOSS_ENABLED', 'STOP_LOSS_MAX_LOSS_PCT', 'STOP_LOSS_MIN_HOLD']
+  },
+  {
     id: 'how_it_works',
     title: 'How It Works',
     summary: [
@@ -254,8 +296,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
 
 export const MODEL_PANEL_COLUMN_LAYOUT: number[][] = [
   [0, 1],
-  [2],
-  [3, 4]
+  [2, 3],
+  [4, 5]
 ]
 
 interface ModelsProps {
@@ -521,6 +563,35 @@ FROM trade_log
 WHERE ${RESOLVED_TRAINING_SAMPLE_WHERE}
 `
 
+const EXIT_AUDIT_SUMMARY_SQL = `
+SELECT
+  COUNT(*) AS audits_7d,
+  SUM(CASE WHEN decision='exit' THEN 1 ELSE 0 END) AS exits_7d,
+  SUM(CASE WHEN decision='hold' THEN 1 ELSE 0 END) AS holds_7d,
+  SUM(CASE WHEN LOWER(COALESCE(reason, '')) LIKE 'hard exit%' THEN 1 ELSE 0 END) AS hard_exits_7d,
+  AVG(estimated_return_pct) AS avg_estimated_return_pct,
+  AVG(CASE WHEN decision='exit' THEN estimated_return_pct END) AS avg_exit_return_pct,
+  AVG(CASE WHEN decision='hold' THEN estimated_return_pct END) AS avg_hold_return_pct,
+  AVG(CAST(json_extract(metadata_json, '$.spread_pct') AS REAL)) AS avg_spread_pct,
+  AVG(CAST(json_extract(metadata_json, '$.depth_multiple') AS REAL)) AS avg_depth_multiple,
+  MAX(audited_at) AS last_audited_at
+FROM exit_audits
+WHERE real_money=?
+  AND audited_at >= strftime('%s', 'now', '-7 days')
+`
+
+const EXIT_AUDIT_RECENT_SQL = `
+SELECT
+  audited_at,
+  decision,
+  estimated_return_pct,
+  reason
+FROM exit_audits
+WHERE real_money=?
+ORDER BY audited_at DESC, id DESC
+LIMIT 8
+`
+
 function formatCount(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '0'
   return Math.round(value).toLocaleString()
@@ -604,6 +675,28 @@ function biasColor(value: number | null | undefined): string {
 function dollarColor(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return theme.dim
   return centeredGradientColor(value, 250)
+}
+
+function depthMultipleColor(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return theme.dim
+  return probabilityColor(Math.max(0, Math.min(1, value / 1.25)))
+}
+
+function exitDecisionLabel(decision: string | null | undefined, reason: string | null | undefined): string {
+  const normalized = String(decision || '').trim().toLowerCase()
+  const normalizedReason = String(reason || '').trim().toLowerCase()
+  if (normalizedReason.startsWith('hard exit')) return 'Hard exit'
+  if (normalized === 'exit') return 'Exit'
+  if (normalized === 'hold') return 'Hold'
+  return normalized ? normalized : '-'
+}
+
+function exitDecisionColor(decision: string | null | undefined, reason: string | null | undefined): string {
+  const label = exitDecisionLabel(decision, reason).toLowerCase()
+  if (label === 'hard exit') return theme.red
+  if (label === 'exit') return theme.yellow
+  if (label === 'hold') return theme.blue
+  return theme.dim
 }
 
 function bucketLabel(bucket: number): string {
@@ -967,6 +1060,65 @@ function RecentRunsDataRow({
   )
 }
 
+function recentExitColumnWidths(width: number) {
+  const safeWidth = Math.max(28, width)
+  const actionWidth = 9
+  const returnWidth = 8
+  const timestampWidth = 14
+  const reasonWidth = Math.max(8, safeWidth - actionWidth - returnWidth - timestampWidth - 3)
+  return {safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth}
+}
+
+function RecentExitHeaderRow({width}: {width: number}) {
+  const {safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth} = recentExitColumnWidths(width)
+  return (
+    <InkBox width={safeWidth}>
+      <Text color={theme.accent} bold>{fit('Timestamp', timestampWidth)}</Text>
+      <Text> </Text>
+      <Text color={theme.accent} bold>{fit('Action', actionWidth)}</Text>
+      <Text> </Text>
+      <Text color={theme.accent} bold>{fitRight('Return', returnWidth)}</Text>
+      <Text> </Text>
+      <Text color={theme.accent} bold>{fit('Reason', reasonWidth)}</Text>
+    </InkBox>
+  )
+}
+
+function RecentExitDataRow({
+  width,
+  timestamp,
+  timestampColor,
+  action,
+  actionColor,
+  estimatedReturn,
+  estimatedReturnColor,
+  reason,
+  reasonColor
+}: {
+  width: number
+  timestamp: string
+  timestampColor: string
+  action: string
+  actionColor: string
+  estimatedReturn: string
+  estimatedReturnColor: string
+  reason: string
+  reasonColor: string
+}) {
+  const {safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth} = recentExitColumnWidths(width)
+  return (
+    <InkBox width={safeWidth}>
+      <Text color={timestampColor}>{fit(timestamp, timestampWidth)}</Text>
+      <Text> </Text>
+      <Text color={actionColor}>{fit(action, actionWidth)}</Text>
+      <Text> </Text>
+      <Text color={estimatedReturnColor}>{fitRight(estimatedReturn, returnWidth)}</Text>
+      <Text> </Text>
+      <Text color={reasonColor}>{fit(reason, reasonWidth)}</Text>
+    </InkBox>
+  )
+}
+
 function ModelsSectionTitle({
   title,
   width,
@@ -1023,6 +1175,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const flowRows = useQuery<FlowRow>(FLOW_SQL)
   const trainingSummaryRows = useQuery<TrainingSummaryRow>(TRAINING_SUMMARY_SQL)
   const trainingProgressRows = useQuery<TrainingProgressRow>(TRAINING_PROGRESS_SQL)
+  const exitAuditModeRealMoney = botState.mode === 'live' ? 1 : 0
+  const exitAuditSummaryRows = useQuery<ExitAuditSummaryRow>(EXIT_AUDIT_SUMMARY_SQL, [exitAuditModeRealMoney])
+  const recentExitAuditRows = useQuery<ExitAuditRecentRow>(EXIT_AUDIT_RECENT_SQL, [exitAuditModeRealMoney])
 
   const latest = models[0]
   const tracker = trackerRows[0]
@@ -1031,6 +1186,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const flow = flowRows[0]
   const trainingSummary = trainingSummaryRows[0]
   const trainingProgress = trainingProgressRows[0]
+  const exitAuditSummary = exitAuditSummaryRows[0]
   const latestSharedHoldoutRun = retrainRuns.find((row) => sharedHoldoutComparison(row) != null)
   const latestSharedHoldout = sharedHoldoutComparison(latestSharedHoldoutRun)
   const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0]
@@ -1055,6 +1211,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   )
   const calibrationLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 5
   const historyLimit = terminal.compact ? 4 : terminal.height < 42 ? 5 : terminal.height < 50 ? 7 : 10
+  const exitAuditHistoryLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 6
   const twoColumnPanelContentWidth = stacked
     ? Math.max(46, terminal.width - 12)
     : Math.max(34, Math.floor((terminal.width - 18) / 2))
@@ -1274,6 +1431,56 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       })),
     [trainingCycleStats]
   )
+  const exitGuardStats = useMemo<CompactStatItem[]>(
+    () => [
+      {
+        label: 'Mode',
+        value: botState.mode === 'live' ? 'Live' : 'Shadow',
+        color: botState.mode === 'live' ? theme.red : theme.blue
+      },
+      {label: 'Audits 7d', value: formatCount(exitAuditSummary?.audits_7d)},
+      {
+        label: 'Exit / hold',
+        value: `${formatCount(exitAuditSummary?.exits_7d)} / ${formatCount(exitAuditSummary?.holds_7d)}`,
+        color: theme.white
+      },
+      {
+        label: 'Hard exits',
+        value: formatCount(exitAuditSummary?.hard_exits_7d),
+        color: Number(exitAuditSummary?.hard_exits_7d || 0) > 0 ? theme.red : theme.dim
+      },
+      {
+        label: 'Avg breach',
+        value: formatPct(exitAuditSummary?.avg_estimated_return_pct, 1),
+        color: signedMetricColor(exitAuditSummary?.avg_estimated_return_pct)
+      },
+      {
+        label: 'Exit breach',
+        value: formatPct(exitAuditSummary?.avg_exit_return_pct, 1),
+        color: signedMetricColor(exitAuditSummary?.avg_exit_return_pct)
+      },
+      {
+        label: 'Hold breach',
+        value: formatPct(exitAuditSummary?.avg_hold_return_pct, 1),
+        color: signedMetricColor(exitAuditSummary?.avg_hold_return_pct)
+      },
+      {
+        label: 'Avg spread',
+        value: formatPct(exitAuditSummary?.avg_spread_pct, 1),
+        color: lowerIsBetterColor(exitAuditSummary?.avg_spread_pct, 0.03, 0.06)
+      },
+      {
+        label: 'Avg depth',
+        value: formatNumber(exitAuditSummary?.avg_depth_multiple, 2),
+        color: depthMultipleColor(exitAuditSummary?.avg_depth_multiple)
+      },
+      {
+        label: 'Last audit',
+        value: exitAuditSummary?.last_audited_at ? secondsAgo(exitAuditSummary.last_audited_at) : '-'
+      }
+    ],
+    [botState.mode, exitAuditSummary]
+  )
   const confusionCells = useMemo(
     () => [
       {label: 'TP', value: Math.max(0, Number(confusion?.true_positive || 0)), kind: 'good' as const},
@@ -1461,6 +1668,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const signalModeCardColumns = useMemo(
     () => splitIntoColumns(signalModeCards, combinedPanelsWide && signalModeCards.length > 1 ? 2 : 1),
     [combinedPanelsWide, signalModeCards]
+  )
+  const recentExitAudits = useMemo(
+    () => recentExitAuditRows.slice(0, exitAuditHistoryLimit),
+    [exitAuditHistoryLimit, recentExitAuditRows]
   )
   const baseHeuristicScore = useMemo(
     () => (
@@ -1718,6 +1929,43 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         ) : (
           <Text color={theme.dim}>{fit('No tracker signals yet.', modelsColumnWidths[1])}</Text>
         )}
+        <ModelsSpacer />
+        <ModelsSectionTitle
+          title="Exit Guard"
+          width={modelsColumnWidths[1]}
+          selected={clampedSelectedPanelIndex === 3}
+          backgroundColor={selectedRowBackground}
+        />
+        {exitGuardStats.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[1]}
+            labelWidth={12}
+          />
+        ))}
+        <ModelsSpacer />
+        <RecentExitHeaderRow width={modelsColumnWidths[1]} />
+        {recentExitAudits.length ? (
+          recentExitAudits.map((row, index) => (
+            <RecentExitDataRow
+              key={`${row.audited_at}-${row.decision || 'decision'}-${index}`}
+              width={modelsColumnWidths[1]}
+              timestamp={formatShortDateTime(row.audited_at)}
+              timestampColor={theme.dim}
+              action={exitDecisionLabel(row.decision, row.reason)}
+              actionColor={exitDecisionColor(row.decision, row.reason)}
+              estimatedReturn={formatPct(row.estimated_return_pct, 1)}
+              estimatedReturnColor={signedMetricColor(row.estimated_return_pct)}
+              reason={String(row.reason || '').trim() || '-'}
+              reasonColor={theme.dim}
+            />
+          ))
+        ) : (
+          <Text color={theme.dim}>{fit('No exit audits logged yet.', modelsColumnWidths[1])}</Text>
+        )}
       </InkBox>
 
       <InkBox width={modelsColumnGap} />
@@ -1726,7 +1974,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSectionTitle
           title="How It Works"
           width={modelsColumnWidths[2]}
-          selected={clampedSelectedPanelIndex === 3}
+          selected={clampedSelectedPanelIndex === 4}
           backgroundColor={selectedRowBackground}
         />
         {howItWorksScoreRows.map((item) => (
@@ -1756,7 +2004,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSectionTitle
           title="Training Cycle"
           width={modelsColumnWidths[2]}
-          selected={clampedSelectedPanelIndex === 4}
+          selected={clampedSelectedPanelIndex === 5}
           backgroundColor={selectedRowBackground}
         />
         {trainingCycleDisplayStats.map((item) => (
@@ -1765,7 +2013,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             label={item.label}
             value={item.value}
             color={item.color ?? theme.white}
-            selected={clampedSelectedPanelIndex === 4 && item.label === 'Manual run'}
+            selected={clampedSelectedPanelIndex === 5 && item.label === 'Manual run'}
             backgroundColor={selectedRowBackground}
             width={modelsColumnWidths[2]}
             labelWidth={11}

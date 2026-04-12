@@ -77,6 +77,27 @@ export const MODEL_PANEL_DEFS = [
         settingKeys: ['MIN_CONFIDENCE', 'MAX_MARKET_HORIZON']
     },
     {
+        id: 'exit_guard',
+        title: 'Exit Guard',
+        summary: [
+            'This box measures what the stop-loss replacement is actually doing with bad quotes.',
+            'It shows whether the guard is exiting, holding because the quote is unreliable, or hard-exiting on severe breaches.'
+        ],
+        rows: [
+            { label: 'Mode', text: 'Whether these exit audits are coming from shadow or live mode.' },
+            { label: 'Audits 7d', text: 'How many stop-loss breaches were evaluated in the last 7 days.' },
+            { label: 'Exit / hold', text: 'How many breaches became immediate exits versus guarded holds.' },
+            { label: 'Hard exits', text: 'Breaches so severe that the guard exited immediately despite quote-quality checks.' },
+            { label: 'Avg breach', text: 'Average executable return at the moment the guard evaluated the position.' },
+            { label: 'Exit breach', text: 'Average executable return for the subset the guard actually exited.' },
+            { label: 'Hold breach', text: 'Average executable return for the subset the guard held.' },
+            { label: 'Avg spread', text: 'Average quoted spread on audited positions. Lower is better.' },
+            { label: 'Avg depth', text: 'Average visible bid depth relative to the position notional. Higher is better.' },
+            { label: 'Last audit', text: 'How recently the exit guard evaluated a stop-loss breach.' }
+        ],
+        settingKeys: ['STOP_LOSS_ENABLED', 'STOP_LOSS_MAX_LOSS_PCT', 'STOP_LOSS_MIN_HOLD']
+    },
+    {
         id: 'how_it_works',
         title: 'How It Works',
         summary: [
@@ -123,8 +144,8 @@ export const MODEL_PANEL_DEFS = [
 ];
 export const MODEL_PANEL_COLUMN_LAYOUT = [
     [0, 1],
-    [2],
-    [3, 4]
+    [2, 3],
+    [4, 5]
 ];
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
@@ -340,6 +361,33 @@ SELECT
 FROM trade_log
 WHERE ${RESOLVED_TRAINING_SAMPLE_WHERE}
 `;
+const EXIT_AUDIT_SUMMARY_SQL = `
+SELECT
+  COUNT(*) AS audits_7d,
+  SUM(CASE WHEN decision='exit' THEN 1 ELSE 0 END) AS exits_7d,
+  SUM(CASE WHEN decision='hold' THEN 1 ELSE 0 END) AS holds_7d,
+  SUM(CASE WHEN LOWER(COALESCE(reason, '')) LIKE 'hard exit%' THEN 1 ELSE 0 END) AS hard_exits_7d,
+  AVG(estimated_return_pct) AS avg_estimated_return_pct,
+  AVG(CASE WHEN decision='exit' THEN estimated_return_pct END) AS avg_exit_return_pct,
+  AVG(CASE WHEN decision='hold' THEN estimated_return_pct END) AS avg_hold_return_pct,
+  AVG(CAST(json_extract(metadata_json, '$.spread_pct') AS REAL)) AS avg_spread_pct,
+  AVG(CAST(json_extract(metadata_json, '$.depth_multiple') AS REAL)) AS avg_depth_multiple,
+  MAX(audited_at) AS last_audited_at
+FROM exit_audits
+WHERE real_money=?
+  AND audited_at >= strftime('%s', 'now', '-7 days')
+`;
+const EXIT_AUDIT_RECENT_SQL = `
+SELECT
+  audited_at,
+  decision,
+  estimated_return_pct,
+  reason
+FROM exit_audits
+WHERE real_money=?
+ORDER BY audited_at DESC, id DESC
+LIMIT 8
+`;
 function formatCount(value) {
     if (value == null || Number.isNaN(value))
         return '0';
@@ -412,6 +460,32 @@ function dollarColor(value) {
     if (value == null || Number.isNaN(value))
         return theme.dim;
     return centeredGradientColor(value, 250);
+}
+function depthMultipleColor(value) {
+    if (value == null || Number.isNaN(value))
+        return theme.dim;
+    return probabilityColor(Math.max(0, Math.min(1, value / 1.25)));
+}
+function exitDecisionLabel(decision, reason) {
+    const normalized = String(decision || '').trim().toLowerCase();
+    const normalizedReason = String(reason || '').trim().toLowerCase();
+    if (normalizedReason.startsWith('hard exit'))
+        return 'Hard exit';
+    if (normalized === 'exit')
+        return 'Exit';
+    if (normalized === 'hold')
+        return 'Hold';
+    return normalized ? normalized : '-';
+}
+function exitDecisionColor(decision, reason) {
+    const label = exitDecisionLabel(decision, reason).toLowerCase();
+    if (label === 'hard exit')
+        return theme.red;
+    if (label === 'exit')
+        return theme.yellow;
+    if (label === 'hold')
+        return theme.blue;
+    return theme.dim;
 }
 function bucketLabel(bucket) {
     const lower = bucket * 10;
@@ -723,6 +797,36 @@ function RecentRunsDataRow({ width, timestamp, timestampColor, logLoss, logLossC
         React.createElement(Text, null, " "),
         React.createElement(Text, { color: resultColor }, fitRight(result, resultWidth))));
 }
+function recentExitColumnWidths(width) {
+    const safeWidth = Math.max(28, width);
+    const actionWidth = 9;
+    const returnWidth = 8;
+    const timestampWidth = 14;
+    const reasonWidth = Math.max(8, safeWidth - actionWidth - returnWidth - timestampWidth - 3);
+    return { safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth };
+}
+function RecentExitHeaderRow({ width }) {
+    const { safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth } = recentExitColumnWidths(width);
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Timestamp', timestampWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Action', actionWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Return', returnWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Reason', reasonWidth))));
+}
+function RecentExitDataRow({ width, timestamp, timestampColor, action, actionColor, estimatedReturn, estimatedReturnColor, reason, reasonColor }) {
+    const { safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth } = recentExitColumnWidths(width);
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: timestampColor }, fit(timestamp, timestampWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: actionColor }, fit(action, actionWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: estimatedReturnColor }, fitRight(estimatedReturn, returnWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: reasonColor }, fit(reason, reasonWidth))));
+}
 function ModelsSectionTitle({ title, width, selected, backgroundColor }) {
     const prefix = selected ? '> ' : '';
     return (React.createElement(Text, { color: selected ? theme.accent : theme.white, backgroundColor: selected ? backgroundColor : undefined, bold: true }, fit(`${prefix}${title}`, Math.max(1, width))));
@@ -753,6 +857,9 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const flowRows = useQuery(FLOW_SQL);
     const trainingSummaryRows = useQuery(TRAINING_SUMMARY_SQL);
     const trainingProgressRows = useQuery(TRAINING_PROGRESS_SQL);
+    const exitAuditModeRealMoney = botState.mode === 'live' ? 1 : 0;
+    const exitAuditSummaryRows = useQuery(EXIT_AUDIT_SUMMARY_SQL, [exitAuditModeRealMoney]);
+    const recentExitAuditRows = useQuery(EXIT_AUDIT_RECENT_SQL, [exitAuditModeRealMoney]);
     const latest = models[0];
     const tracker = trackerRows[0];
     const calibration = calibrationSummaryRows[0];
@@ -760,6 +867,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const flow = flowRows[0];
     const trainingSummary = trainingSummaryRows[0];
     const trainingProgress = trainingProgressRows[0];
+    const exitAuditSummary = exitAuditSummaryRows[0];
     const latestSharedHoldoutRun = retrainRuns.find((row) => sharedHoldoutComparison(row) != null);
     const latestSharedHoldout = sharedHoldoutComparison(latestSharedHoldoutRun);
     const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0];
@@ -776,6 +884,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         .filter((gap) => gap != null && gap > 0), [retrainRuns]);
     const calibrationLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 5;
     const historyLimit = terminal.compact ? 4 : terminal.height < 42 ? 5 : terminal.height < 50 ? 7 : 10;
+    const exitAuditHistoryLimit = terminal.compact ? 3 : terminal.height < 42 ? 4 : 6;
     const twoColumnPanelContentWidth = stacked
         ? Math.max(46, terminal.width - 12)
         : Math.max(34, Math.floor((terminal.width - 18) / 2));
@@ -964,6 +1073,53 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         ...item,
         label: trainingCycleDisplayLabel(item.label)
     })), [trainingCycleStats]);
+    const exitGuardStats = useMemo(() => [
+        {
+            label: 'Mode',
+            value: botState.mode === 'live' ? 'Live' : 'Shadow',
+            color: botState.mode === 'live' ? theme.red : theme.blue
+        },
+        { label: 'Audits 7d', value: formatCount(exitAuditSummary?.audits_7d) },
+        {
+            label: 'Exit / hold',
+            value: `${formatCount(exitAuditSummary?.exits_7d)} / ${formatCount(exitAuditSummary?.holds_7d)}`,
+            color: theme.white
+        },
+        {
+            label: 'Hard exits',
+            value: formatCount(exitAuditSummary?.hard_exits_7d),
+            color: Number(exitAuditSummary?.hard_exits_7d || 0) > 0 ? theme.red : theme.dim
+        },
+        {
+            label: 'Avg breach',
+            value: formatPct(exitAuditSummary?.avg_estimated_return_pct, 1),
+            color: signedMetricColor(exitAuditSummary?.avg_estimated_return_pct)
+        },
+        {
+            label: 'Exit breach',
+            value: formatPct(exitAuditSummary?.avg_exit_return_pct, 1),
+            color: signedMetricColor(exitAuditSummary?.avg_exit_return_pct)
+        },
+        {
+            label: 'Hold breach',
+            value: formatPct(exitAuditSummary?.avg_hold_return_pct, 1),
+            color: signedMetricColor(exitAuditSummary?.avg_hold_return_pct)
+        },
+        {
+            label: 'Avg spread',
+            value: formatPct(exitAuditSummary?.avg_spread_pct, 1),
+            color: lowerIsBetterColor(exitAuditSummary?.avg_spread_pct, 0.03, 0.06)
+        },
+        {
+            label: 'Avg depth',
+            value: formatNumber(exitAuditSummary?.avg_depth_multiple, 2),
+            color: depthMultipleColor(exitAuditSummary?.avg_depth_multiple)
+        },
+        {
+            label: 'Last audit',
+            value: exitAuditSummary?.last_audited_at ? secondsAgo(exitAuditSummary.last_audited_at) : '-'
+        }
+    ], [botState.mode, exitAuditSummary]);
     const confusionCells = useMemo(() => [
         { label: 'TP', value: Math.max(0, Number(confusion?.true_positive || 0)), kind: 'good' },
         { label: 'FP', value: Math.max(0, Number(confusion?.false_positive || 0)), kind: 'bad' },
@@ -1079,6 +1235,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         };
     }), [activeScorerLabel, primaryMode, signalModes]);
     const signalModeCardColumns = useMemo(() => splitIntoColumns(signalModeCards, combinedPanelsWide && signalModeCards.length > 1 ? 2 : 1), [combinedPanelsWide, signalModeCards]);
+    const recentExitAudits = useMemo(() => recentExitAuditRows.slice(0, exitAuditHistoryLimit), [exitAuditHistoryLimit, recentExitAuditRows]);
     const baseHeuristicScore = useMemo(() => (flow?.trader_score != null && flow?.market_score != null
         ? (Math.max(flow.trader_score, 0) ** 0.6) * (Math.max(flow.market_score, 0) ** 0.4)
         : null), [flow?.market_score, flow?.trader_score]);
@@ -1197,21 +1354,31 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             React.createElement(ModelsSubsectionTitle, { title: "Decision Paths", width: modelsColumnWidths[1] }),
             React.createElement(DenseModelsRow, { label: "Active scorer", value: activeScorerLabel, color: activeScorerColor, width: modelsColumnWidths[1], labelWidth: 12 }),
             React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[1], labelWidth: 12 }),
-            signalModeCards.length ? (signalModeCards.map((card, index) => (React.createElement(React.Fragment, { key: card.title },
-                React.createElement(ModelsSpacer, null),
-                React.createElement(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[1], color: card.titleColor ?? theme.white }),
-                card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))))))) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1])))),
+            signalModeCards.length
+                ? (signalModeCards.map((card) => (React.createElement(React.Fragment, { key: card.title },
+                    React.createElement(ModelsSpacer, null),
+                    React.createElement(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[1], color: card.titleColor ?? theme.white }),
+                    card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 })))))))
+                : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1]))),
+            React.createElement(ModelsSpacer, null),
+            React.createElement(ModelsSectionTitle, { title: "Exit Guard", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
+            exitGuardStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))),
+            React.createElement(ModelsSpacer, null),
+            React.createElement(RecentExitHeaderRow, { width: modelsColumnWidths[1] }),
+            recentExitAudits.length
+                ? (recentExitAudits.map((row, index) => (React.createElement(RecentExitDataRow, { key: `${row.audited_at}-${row.decision || 'decision'}-${index}`, width: modelsColumnWidths[1], timestamp: formatShortDateTime(row.audited_at), timestampColor: theme.dim, action: exitDecisionLabel(row.decision, row.reason), actionColor: exitDecisionColor(row.decision, row.reason), estimatedReturn: formatPct(row.estimated_return_pct, 1), estimatedReturnColor: signedMetricColor(row.estimated_return_pct), reason: String(row.reason || '').trim() || '-', reasonColor: theme.dim }))))
+                : (React.createElement(Text, { color: theme.dim }, fit('No exit audits logged yet.', modelsColumnWidths[1])))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
-            React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
+            React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
             howItWorksScoreRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 14 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[2] }),
             howItWorksHistoryRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 14 }))),
             React.createElement(ModelsSpacer, null),
-            React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
-            trainingCycleDisplayStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 4 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }))),
+            React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),
+            trainingCycleDisplayStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 5 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }))),
             latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(React.Fragment, null,
                 React.createElement(DenseModelsRow, { label: "Holdout gate", value: sharedHoldoutGateReadCompact(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun), width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }),
                 React.createElement(DenseModelsRow, { label: "Gate run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at), width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }),

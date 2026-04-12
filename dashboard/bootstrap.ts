@@ -2,4 +2,4 @@ import {applyDashboardRuntimePatches} from './runtimePatches.js'
 
 applyDashboardRuntimePatches()
 
-await import('./dashboard.tsx')
+await import('./dashboard.js')

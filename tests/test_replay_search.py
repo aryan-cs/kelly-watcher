@@ -56,6 +56,8 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["candidate_count"], 4)
         self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.65)
         self.assertEqual(payload["ranked"][0]["overrides"]["max_bet_fraction"], 0.02)
+        self.assertEqual(payload["ranked"][0]["config"]["MIN_CONFIDENCE"], 0.65)
+        self.assertEqual(payload["ranked"][0]["config"]["MAX_BET_FRACTION"], 0.02)
         self.assertIn("Replay sweep top candidates:", stderr.getvalue())
         self.assertEqual(len(calls), 4)
 
@@ -105,6 +107,7 @@ class ReplaySearchTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["feasible_count"], 1)
         self.assertEqual(payload["rejected_count"], 1)
+        self.assertEqual(payload["best_feasible_config"]["MIN_CONFIDENCE"], 0.6)
         self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
         self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.65)
         self.assertEqual(payload["ranked"][0]["constraint_failures"], ["accepted_count", "max_drawdown_pct"])
@@ -332,7 +335,7 @@ class ReplaySearchTest(unittest.TestCase):
                 ).fetchone()
                 candidate_rows = conn.execute(
                     """
-                    SELECT candidate_index, feasible, constraint_failures_json, overrides_json, result_json
+                    SELECT candidate_index, feasible, constraint_failures_json, overrides_json, config_json, result_json
                     FROM replay_search_candidates
                     ORDER BY candidate_index ASC
                     """
@@ -344,15 +347,18 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(run_row[:6], ("persist", 2, 1, 1, 1, 60.0))
             self.assertEqual(json.loads(run_row[6]), {"max_drawdown_pct": 0.1, "min_accepted_count": 5, "min_positive_windows": 0, "min_resolved_count": 0, "min_win_rate": 0.0, "min_worst_window_pnl_usd": -1000000000.0, "max_worst_window_drawdown_pct": 0.0})
             self.assertEqual(run_row[7], "persisted run")
+            self.assertEqual(payload["best_feasible_config"]["MIN_CONFIDENCE"], 0.6)
             self.assertEqual(len(candidate_rows), 2)
             self.assertEqual(candidate_rows[0][0:2], (1, 1))
             self.assertEqual(json.loads(candidate_rows[0][2]), [])
             self.assertEqual(json.loads(candidate_rows[0][3]), {"min_confidence": 0.6})
-            self.assertEqual(json.loads(candidate_rows[0][4])["total_pnl_usd"], 60.0)
+            self.assertEqual(json.loads(candidate_rows[0][4])["MIN_CONFIDENCE"], 0.6)
+            self.assertEqual(json.loads(candidate_rows[0][5])["total_pnl_usd"], 60.0)
             self.assertEqual(candidate_rows[1][0:2], (2, 0))
             self.assertEqual(json.loads(candidate_rows[1][2]), ["accepted_count", "max_drawdown_pct"])
             self.assertEqual(json.loads(candidate_rows[1][3]), {"min_confidence": 0.65})
-            self.assertEqual(json.loads(candidate_rows[1][4])["max_drawdown_pct"], 0.18)
+            self.assertEqual(json.loads(candidate_rows[1][4])["MIN_CONFIDENCE"], 0.65)
+            self.assertEqual(json.loads(candidate_rows[1][5])["max_drawdown_pct"], 0.18)
 
     def test_main_backfills_existing_search_tables_before_insert(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -421,7 +427,7 @@ class ReplaySearchTest(unittest.TestCase):
                     """
                 ).fetchone()
                 candidate_row = conn.execute(
-                    "SELECT feasible, constraint_failures_json, result_json FROM replay_search_candidates"
+                    "SELECT feasible, constraint_failures_json, config_json, result_json FROM replay_search_candidates"
                 ).fetchone()
             finally:
                 conn.close()
@@ -429,11 +435,13 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertIn("constraints_json", run_columns)
             self.assertIn("best_feasible_total_pnl_usd", run_columns)
             self.assertIn("feasible", candidate_columns)
+            self.assertIn("config_json", candidate_columns)
             self.assertIn("result_json", candidate_columns)
             self.assertEqual(run_row, (1, 1, 0, -78.0, 42.0))
             self.assertEqual(candidate_row[0], 1)
             self.assertEqual(json.loads(candidate_row[1]), [])
-            self.assertEqual(json.loads(candidate_row[2])["total_pnl_usd"], 42.0)
+            self.assertEqual(json.loads(candidate_row[2])["MIN_CONFIDENCE"], 0.6)
+            self.assertEqual(json.loads(candidate_row[3])["total_pnl_usd"], 42.0)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,22 @@ from runtime_paths import TRADING_DB_PATH
 HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
 HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
 
+REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
+    "initial_bankroll_usd": "SHADOW_BANKROLL_USD",
+    "min_confidence": "MIN_CONFIDENCE",
+    "min_bet_usd": "MIN_BET_USD",
+    "heuristic_min_entry_price": "HEURISTIC_MIN_ENTRY_PRICE",
+    "heuristic_max_entry_price": "HEURISTIC_MAX_ENTRY_PRICE",
+    "model_edge_mid_confidence": "MODEL_EDGE_MID_CONFIDENCE",
+    "model_edge_high_confidence": "MODEL_EDGE_HIGH_CONFIDENCE",
+    "model_edge_mid_threshold": "MODEL_EDGE_MID_THRESHOLD",
+    "model_edge_high_threshold": "MODEL_EDGE_HIGH_THRESHOLD",
+    "max_bet_fraction": "MAX_BET_FRACTION",
+    "max_total_open_exposure_fraction": "MAX_TOTAL_OPEN_EXPOSURE_FRACTION",
+    "max_market_exposure_fraction": "MAX_MARKET_EXPOSURE_FRACTION",
+    "max_trader_exposure_fraction": "MAX_TRADER_EXPOSURE_FRACTION",
+}
+
 
 @dataclass(frozen=True)
 class ReplayPolicy:
@@ -100,6 +116,16 @@ class ReplayPolicy:
     def version(self) -> str:
         payload = json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def policy_to_config_payload(policy: ReplayPolicy | dict[str, Any]) -> dict[str, Any]:
+    resolved = policy if isinstance(policy, ReplayPolicy) else ReplayPolicy.from_payload(policy)
+    payload = resolved.as_dict()
+    return {
+        config_key: payload[policy_key]
+        for policy_key, config_key in REPLAY_POLICY_CONFIG_KEY_MAP.items()
+        if policy_key in payload
+    }
 
 
 def run_replay(

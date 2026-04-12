@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from replay import ReplayPolicy, run_replay
+from replay import ReplayPolicy, policy_to_config_payload, run_replay
 from runtime_paths import TRADING_DB_PATH
 
 
@@ -282,6 +282,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             constraint_failures_json  TEXT NOT NULL DEFAULT '[]',
             overrides_json            TEXT NOT NULL DEFAULT '{}',
             policy_json               TEXT NOT NULL DEFAULT '{}',
+            config_json               TEXT NOT NULL DEFAULT '{}',
             result_json               TEXT NOT NULL DEFAULT '{}',
             total_pnl_usd             REAL NOT NULL DEFAULT 0,
             max_drawdown_pct          REAL,
@@ -331,6 +332,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "constraint_failures_json": "TEXT NOT NULL DEFAULT '[]'",
             "overrides_json": "TEXT NOT NULL DEFAULT '{}'",
             "policy_json": "TEXT NOT NULL DEFAULT '{}'",
+            "config_json": "TEXT NOT NULL DEFAULT '{}'",
             "result_json": "TEXT NOT NULL DEFAULT '{}'",
             "total_pnl_usd": "REAL NOT NULL DEFAULT 0",
             "max_drawdown_pct": "REAL",
@@ -417,6 +419,7 @@ def _persist_search_results(
                     json.dumps(row["constraint_failures"], separators=(",", ":"), default=str),
                     json.dumps(row["overrides"], sort_keys=True, separators=(",", ":"), default=str),
                     json.dumps(row["policy"], sort_keys=True, separators=(",", ":"), default=str),
+                    json.dumps(row["config"], sort_keys=True, separators=(",", ":"), default=str),
                     json.dumps(result, sort_keys=True, separators=(",", ":"), default=str),
                     float(result.get("total_pnl_usd") or 0.0),
                     float(result.get("max_drawdown_pct") or 0.0),
@@ -435,11 +438,11 @@ def _persist_search_results(
                 """
                 INSERT INTO replay_search_candidates (
                     replay_search_run_id, candidate_index, score, feasible,
-                    constraint_failures_json, overrides_json, policy_json, result_json,
+                    constraint_failures_json, overrides_json, policy_json, config_json, result_json,
                     total_pnl_usd, max_drawdown_pct, accepted_count, resolved_count,
                     win_rate, positive_window_count, negative_window_count,
                     worst_window_pnl_usd, worst_window_drawdown_pct, window_pnl_stddev_usd
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 inserts,
             )
@@ -546,6 +549,7 @@ def main() -> None:
                 "score": round(score, 6),
                 "overrides": overrides,
                 "policy": policy.as_dict(),
+                "config": policy_to_config_payload(policy),
                 "result": result,
                 "constraint_failures": constraint_failures,
             }
@@ -605,6 +609,7 @@ def main() -> None:
                 "candidate_count": len(ranked),
                 "feasible_count": len(feasible),
                 "rejected_count": len(rejected),
+                "best_feasible_config": feasible[0]["config"] if feasible else None,
                 "best_feasible": feasible[0] if feasible else None,
                 "ranked": ranked,
             },

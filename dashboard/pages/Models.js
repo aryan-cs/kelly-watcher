@@ -70,6 +70,8 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.' },
             { label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.' },
             { label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.' },
+            { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
+            { label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.' },
             { label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
             { label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
             { label: 'Best band', text: 'Entry-price band with the strongest replay P&L on the latest run.' },
@@ -331,7 +333,7 @@ WITH latest_search AS (
   ORDER BY finished_at DESC, id DESC
   LIMIT 1
 ),
-best_candidate AS (
+  best_candidate AS (
   SELECT
     replay_search_run_id,
     candidate_index,
@@ -341,7 +343,8 @@ best_candidate AS (
     positive_window_count,
     negative_window_count,
     worst_window_pnl_usd,
-    overrides_json
+    overrides_json,
+    config_json
   FROM replay_search_candidates
   WHERE replay_search_run_id=(SELECT id FROM latest_search)
     AND feasible=1
@@ -363,7 +366,8 @@ SELECT
   best_candidate.positive_window_count,
   best_candidate.negative_window_count,
   best_candidate.worst_window_pnl_usd,
-  best_candidate.overrides_json
+  best_candidate.overrides_json,
+  best_candidate.config_json
 FROM latest_search
 LEFT JOIN best_candidate ON best_candidate.replay_search_run_id=latest_search.id
 `;
@@ -978,6 +982,73 @@ function replaySearchOverrideSummary(raw) {
         return '-';
     }
 }
+function replayConfigRawValue(value) {
+    if (value == null)
+        return '';
+    if (typeof value === 'boolean')
+        return value ? 'true' : 'false';
+    if (typeof value === 'number')
+        return Number.isFinite(value) ? String(value) : '';
+    return String(value).trim();
+}
+function replayConfigValuesEqual(field, currentRaw, recommendedRaw) {
+    if (field.kind === 'bool') {
+        return currentRaw.trim().toLowerCase() === recommendedRaw.trim().toLowerCase();
+    }
+    if (field.kind === 'float' || field.kind === 'int') {
+        const currentNumeric = Number(currentRaw);
+        const recommendedNumeric = Number(recommendedRaw);
+        if (Number.isFinite(currentNumeric) && Number.isFinite(recommendedNumeric)) {
+            return Math.abs(currentNumeric - recommendedNumeric) < 1e-9;
+        }
+    }
+    return currentRaw.trim().toLowerCase() === recommendedRaw.trim().toLowerCase();
+}
+function replaySearchConfigSuggestion(rawConfigJson, settingsValues, configFieldByKey) {
+    if (!rawConfigJson)
+        return null;
+    try {
+        const parsed = JSON.parse(rawConfigJson);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+            return null;
+        const entries = Object.entries(parsed);
+        if (!entries.length)
+            return null;
+        const changed = entries
+            .map(([key, value]) => {
+            const field = configFieldByKey.get(key);
+            if (!field)
+                return null;
+            const recommendedRaw = replayConfigRawValue(value);
+            if (!recommendedRaw)
+                return null;
+            const currentRaw = settingsValues[key] || field.defaultValue;
+            if (replayConfigValuesEqual(field, currentRaw, recommendedRaw))
+                return null;
+            return {
+                field,
+                recommendedRaw,
+            };
+        })
+            .filter((value) => value != null);
+        if (!changed.length) {
+            return { diffCount: 0, summary: 'Already aligned', aligned: true };
+        }
+        const preview = changed
+            .slice(0, 2)
+            .map(({ field, recommendedRaw }) => `${field.label}=${formatEditableConfigValue(field, recommendedRaw)}`)
+            .join(', ');
+        const suffix = changed.length > 2 ? ` +${changed.length - 2}` : '';
+        return {
+            diffCount: changed.length,
+            summary: `${preview}${suffix}`,
+            aligned: false,
+        };
+    }
+    catch {
+        return null;
+    }
+}
 function trainingCycleDisplayLabel(label) {
     if (label === 'Next scheduled')
         return 'Next run';
@@ -1312,6 +1383,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         }
     ], [tracker, trackerSnapshot, trackerWinRate, useRate]);
     const trackerHealthColumns = useMemo(() => splitIntoColumns(trackerHealthStats, 2), [trackerHealthStats]);
+    const replaySearchSuggestedConfig = useMemo(() => replaySearchConfigSuggestion(latestReplaySearch?.config_json, settingsValues, configFieldByKey), [configFieldByKey, latestReplaySearch?.config_json, settingsValues]);
     const replayLabStats = useMemo(() => [
         {
             label: 'Last replay',
@@ -1384,6 +1456,28 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             color: dollarColor(latestReplaySearch?.worst_window_pnl_usd)
         },
         {
+            label: 'Cfg drift',
+            value: replaySearchSuggestedConfig
+                ? replaySearchSuggestedConfig.aligned
+                    ? 'Already aligned'
+                    : `${formatCount(replaySearchSuggestedConfig.diffCount)} keys differ`
+                : '-',
+            color: replaySearchSuggestedConfig
+                ? replaySearchSuggestedConfig.aligned
+                    ? theme.green
+                    : theme.yellow
+                : theme.dim
+        },
+        {
+            label: 'Suggest cfg',
+            value: replaySearchSuggestedConfig?.summary || '-',
+            color: replaySearchSuggestedConfig
+                ? replaySearchSuggestedConfig.aligned
+                    ? theme.green
+                    : theme.white
+                : theme.dim
+        },
+        {
             label: 'Best wallet',
             value: replaySegmentValue('trader_address', replayBestWallet),
             color: dollarColor(replayBestWallet?.total_pnl_usd)
@@ -1416,6 +1510,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     ], [
         latestReplay,
         latestReplaySearch,
+        replaySearchSuggestedConfig,
         replayBestBand,
         replayBestHorizon,
         replayBestWallet,

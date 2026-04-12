@@ -284,8 +284,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
-      {label: 'Deploy gap', text: 'Replay-only scorer-path toggles on the latest best feasible candidate that are not expressible through editable runtime config.'},
-      {label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and replay-only scorer-path gates on the latest best feasible replay-search candidate.'},
+      {label: 'Deploy gap', text: 'Recommendation pieces not currently present in the persisted editable-config payload for the latest best feasible candidate. Older search rows may need a rerun after config-surface changes.'},
+      {label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and scorer-path gates on the latest best feasible replay-search candidate.'},
       {label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.'},
       {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.'},
@@ -1312,15 +1312,26 @@ function replaySearchSegmentGateSummary(raw: string | null | undefined): string 
   }
 }
 
-function replaySearchDeployGapSummary(rawPolicy: string | null | undefined): string {
+function replaySearchDeployGapSummary(
+  rawPolicy: string | null | undefined,
+  rawConfig: string | null | undefined
+): string {
   if (!rawPolicy) return '-'
   try {
-    const parsed = JSON.parse(rawPolicy)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '-'
-    const payload = parsed as Record<string, unknown>
+    const parsedPolicy = JSON.parse(rawPolicy)
+    if (!parsedPolicy || typeof parsedPolicy !== 'object' || Array.isArray(parsedPolicy)) return '-'
+    const payload = parsedPolicy as Record<string, unknown>
+    const parsedConfig = rawConfig ? JSON.parse(rawConfig) : null
+    const configPayload = parsedConfig && typeof parsedConfig === 'object' && !Array.isArray(parsedConfig)
+      ? parsedConfig as Record<string, unknown>
+      : {}
     const gaps: string[] = []
-    if (payload.allow_heuristic === false) gaps.push('replay-only: heur off')
-    if (payload.allow_xgboost === false) gaps.push('replay-only: xgb off')
+    if (payload.allow_heuristic === false && !Object.prototype.hasOwnProperty.call(configPayload, 'ALLOW_HEURISTIC')) {
+      gaps.push('rerun: heur cfg')
+    }
+    if (payload.allow_xgboost === false && !Object.prototype.hasOwnProperty.call(configPayload, 'ALLOW_XGBOOST')) {
+      gaps.push('rerun: xgb cfg')
+    }
     return gaps.length ? gaps.join(' | ') : 'none'
   } catch {
     return '-'
@@ -2409,8 +2420,8 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [configFieldByKey, latestReplaySearch?.config_json, settingsValues]
   )
   const replaySearchDeployGap = useMemo(
-    () => replaySearchDeployGapSummary(latestReplaySearch?.policy_json),
-    [latestReplaySearch?.policy_json]
+    () => replaySearchDeployGapSummary(latestReplaySearch?.policy_json, latestReplaySearch?.config_json),
+    [latestReplaySearch?.config_json, latestReplaySearch?.policy_json]
   )
   const replaySearchCurrentModeRisk = useMemo(
     () => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json),

@@ -337,6 +337,14 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: true
   },
   {
+    key: 'ALLOW_HEURISTIC',
+    label: 'Heuristic Enabled',
+    kind: 'bool',
+    description: 'Enable or disable heuristic-driven entries at runtime. Turn this off to require the model path only. Applies live on the next loop.',
+    defaultValue: 'true',
+    liveApplies: true
+  },
+  {
     key: 'HEURISTIC_MIN_ENTRY_PRICE',
     label: 'Heuristic Entry Min',
     kind: 'float',
@@ -366,6 +374,14 @@ export const editableConfigFields: EditableConfigField[] = [
     kind: 'duration',
     description: 'Minimum time remaining to resolution for heuristic entries. Leave at 0s to disable this filter. Applies live on the next loop.',
     defaultValue: '0s',
+    liveApplies: true
+  },
+  {
+    key: 'ALLOW_XGBOOST',
+    label: 'Model Enabled',
+    kind: 'bool',
+    description: 'Enable or disable model-driven entries at runtime. Turn this off to require the heuristic path only. Applies live on the next loop.',
+    defaultValue: 'true',
     liveApplies: true
   },
   {

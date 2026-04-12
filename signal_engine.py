@@ -9,6 +9,8 @@ import numpy as np
 from adaptive_confidence import adaptive_min_confidence_for_signal
 from beliefs import adjust_heuristic_confidence
 from config import (
+    allow_heuristic,
+    allow_xgboost,
     allowed_entry_price_bands,
     allowed_time_to_close_bands,
     entry_price_band_label,
@@ -132,7 +134,11 @@ class SignalEngine:
         self._try_load_xgb()
 
     def sizing_mode(self) -> str:
-        return "xgboost" if self._xgb is not None else "heuristic"
+        if self._xgb is not None and allow_xgboost():
+            return "xgboost"
+        if allow_heuristic():
+            return "heuristic"
+        return "disabled"
 
     def runtime_info(self) -> dict:
         artifact_backend = self._artifact_backend
@@ -141,6 +147,8 @@ class SignalEngine:
         return {
             "loaded_scorer": self.sizing_mode(),
             "loaded_model_backend": self._model_backend,
+            "heuristic_enabled": bool(allow_heuristic()),
+            "xgboost_enabled": bool(allow_xgboost()),
             "model_artifact_exists": bool(self._artifact_exists),
             "model_artifact_path": self._artifact_path,
             "model_artifact_backend": artifact_backend,
@@ -173,15 +181,33 @@ class SignalEngine:
                 "market": market_result,
             }
 
-        if self._xgb is not None:
+        if self._xgb is not None and allow_xgboost():
             return self._evaluate_xgb(trader_features, market_features, order_size_usd)
 
-        return self._evaluate_heuristic(
-            trader_features,
-            market_features,
-            market_result,
-            trader_address=trader_address,
-        )
+        if allow_heuristic():
+            return self._evaluate_heuristic(
+                trader_features,
+                market_features,
+                market_result,
+                trader_address=trader_address,
+            )
+
+        disabled_reason = "all scorers disabled by config"
+        if self._xgb is not None and not allow_xgboost():
+            disabled_reason = "xgboost disabled by config and heuristic disabled"
+        elif self._xgb is None and self._fallback_reason:
+            disabled_reason = f"model unavailable ({self._fallback_reason}) and heuristic disabled"
+        elif self._xgb is None:
+            disabled_reason = "heuristic disabled and no compatible model loaded"
+        return {
+            "confidence": 0.0,
+            "passed": False,
+            "veto": None,
+            "reason": disabled_reason,
+            "mode": "disabled",
+            "trader": {},
+            "market": market_result,
+        }
 
     def _evaluate_heuristic(
         self,
@@ -191,6 +217,16 @@ class SignalEngine:
         *,
         trader_address: str | None = None,
     ) -> dict:
+        if not allow_heuristic():
+            return {
+                "confidence": 0.0,
+                "passed": False,
+                "reason": "heuristic disabled by config",
+                "veto": None,
+                "mode": "heuristic",
+                "trader": {},
+                "market": market_result,
+            }
         trader_result = self.trader_scorer.score(trader_features)
         trader_score = trader_result["score"]
         market_score = market_result["score"]
@@ -331,6 +367,28 @@ class SignalEngine:
         market_features: MarketFeatures,
         _order_size_usd: float,
     ) -> dict:
+        if not allow_xgboost():
+            return {
+                "confidence": 0.0,
+                "raw_confidence": 0.0,
+                "expected_return": None,
+                "edge": 0.0,
+                "entry_price_band": None,
+                "global_allowed_entry_price_bands": [],
+                "allowed_entry_price_bands": [],
+                "edge_threshold": 0.0,
+                "base_edge_threshold": 0.0,
+                "time_to_close_seconds": 0.0,
+                "time_to_close_band": None,
+                "allowed_time_to_close_bands": [],
+                "min_time_to_close_seconds": 0.0,
+                "passed": False,
+                "reason": "xgboost disabled by config",
+                "veto": None,
+                "mode": "xgboost",
+                "trader": {},
+                "market": {},
+            }
         trader_result = self.trader_scorer.score(trader_features)
         market_result = self.market_scorer.score(market_features)
         feature_map = build_feature_map(trader_features, market_features)

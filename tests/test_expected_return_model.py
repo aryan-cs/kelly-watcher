@@ -364,6 +364,24 @@ class ExpectedReturnModelTest(unittest.TestCase):
         self.assertEqual(result["entry_price_band"], "0.60-0.69")
         self.assertEqual(result["reason"], "entry band 0.60-0.69 outside global allowlist >=0.70")
 
+    def test_signal_engine_blocks_heuristic_when_disabled(self) -> None:
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "signal_engine.model_path",
+            return_value="/tmp/kelly-watcher-missing-model.joblib",
+        ):
+            engine = signal_engine.SignalEngine()
+
+        with patch("signal_engine.allow_heuristic", return_value=False):
+            result = engine._evaluate_heuristic(
+                SimpleNamespace(),
+                SimpleNamespace(execution_price=0.70, mid=0.70, days_to_res=0.5),
+                {"score": 0.8, "veto": None},
+            )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "heuristic disabled by config")
+        self.assertEqual(result["mode"], "heuristic")
+
     def test_signal_engine_blocks_model_entries_outside_global_horizon_allowlist(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
@@ -544,6 +562,71 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
             self.assertFalse(result["passed"])
             self.assertEqual(result["reason"], "model time to close 864s < min 3600s")
+
+    def test_signal_engine_blocks_model_when_disabled(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.35)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.01},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            with patch("signal_engine.allow_xgboost", return_value=False):
+                result = engine._evaluate_xgb(
+                    SimpleNamespace(),
+                    SimpleNamespace(execution_price=0.58, mid=0.58, days_to_res=0.5),
+                    10.0,
+                )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "xgboost disabled by config")
+        self.assertEqual(result["mode"], "xgboost")
+
+    def test_signal_engine_evaluate_falls_back_to_heuristic_when_model_disabled(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.35)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.01},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            market_features = SimpleNamespace(execution_price=0.58, mid=0.58, days_to_res=0.5)
+            expected = {"passed": True, "mode": "heuristic", "reason": "fallback"}
+            with patch.object(engine.market_scorer, "score", return_value={"score": 0.7, "veto": None}), patch.object(
+                engine,
+                "_evaluate_heuristic",
+                return_value=expected,
+            ) as heuristic_eval, patch(
+                "signal_engine.allow_xgboost",
+                return_value=False,
+            ), patch(
+                "signal_engine.allow_heuristic",
+                return_value=True,
+            ):
+                result = engine.evaluate(SimpleNamespace(), market_features, 10.0)
+
+        self.assertIs(result, expected)
+        heuristic_eval.assert_called_once()
 
 
 if __name__ == "__main__":

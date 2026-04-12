@@ -239,6 +239,44 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["best_feasible_config"]["ALLOWED_ENTRY_PRICE_BANDS"], ">=0.70")
         self.assertIn("allowed_entry_price_bands=['>=0.70']", stderr.getvalue())
 
+    def test_main_maps_scorer_toggle_overrides_into_config_payload(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+            allow_heuristic = bool(policy.as_dict()["allow_heuristic"])
+            pnl = 75.0 if not allow_heuristic else 20.0
+            return {
+                "run_id": 1,
+                "total_pnl_usd": pnl,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.6,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps(
+                {
+                    "allow_heuristic": [True, False],
+                }
+            ),
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["candidate_count"], 2)
+        self.assertEqual(payload["best_feasible"]["overrides"]["allow_heuristic"], False)
+        self.assertEqual(payload["best_feasible_config"]["ALLOW_HEURISTIC"], False)
+        self.assertIn("allow_heuristic=False", stderr.getvalue())
+
     def test_main_supports_mode_specific_horizon_overrides(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes=""):
             min_horizon = int(policy.as_dict()["heuristic_min_time_to_close_seconds"])

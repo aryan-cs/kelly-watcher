@@ -251,12 +251,20 @@ def heuristic_allowed_entry_price_bands() -> tuple[str, ...]:
     )
 
 
+def allow_heuristic() -> bool:
+    return _get_env_file_bool("ALLOW_HEURISTIC", "true")
+
+
 def xgboost_allowed_entry_price_bands() -> tuple[str, ...]:
     return _get_env_file_csv_choices(
         "XGBOOST_ALLOWED_ENTRY_PRICE_BANDS",
         default="",
         allowed=ENTRY_PRICE_BAND_CHOICES,
     )
+
+
+def allow_xgboost() -> bool:
+    return _get_env_file_bool("ALLOW_XGBOOST", "true")
 
 
 def allowed_entry_price_bands() -> tuple[str, ...]:

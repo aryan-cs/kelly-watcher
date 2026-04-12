@@ -14,6 +14,7 @@ from config import (
     heuristic_max_entry_price,
     heuristic_allowed_entry_price_bands,
     heuristic_min_entry_price,
+    heuristic_min_time_to_close_seconds,
     max_bet_fraction,
     max_market_exposure_fraction,
     max_total_open_exposure_fraction,
@@ -24,6 +25,7 @@ from config import (
     model_edge_high_threshold,
     model_edge_mid_confidence,
     model_edge_mid_threshold,
+    model_min_time_to_close_seconds,
     shadow_bankroll_usd,
     xgboost_allowed_entry_price_bands,
 )
@@ -39,11 +41,13 @@ REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "heuristic_min_entry_price": "HEURISTIC_MIN_ENTRY_PRICE",
     "heuristic_max_entry_price": "HEURISTIC_MAX_ENTRY_PRICE",
     "heuristic_allowed_entry_price_bands": "HEURISTIC_ALLOWED_ENTRY_PRICE_BANDS",
+    "heuristic_min_time_to_close_seconds": "HEURISTIC_MIN_TIME_TO_CLOSE",
     "model_edge_mid_confidence": "MODEL_EDGE_MID_CONFIDENCE",
     "model_edge_high_confidence": "MODEL_EDGE_HIGH_CONFIDENCE",
     "model_edge_mid_threshold": "MODEL_EDGE_MID_THRESHOLD",
     "model_edge_high_threshold": "MODEL_EDGE_HIGH_THRESHOLD",
     "xgboost_allowed_entry_price_bands": "XGBOOST_ALLOWED_ENTRY_PRICE_BANDS",
+    "model_min_time_to_close_seconds": "MODEL_MIN_TIME_TO_CLOSE",
     "max_bet_fraction": "MAX_BET_FRACTION",
     "max_total_open_exposure_fraction": "MAX_TOTAL_OPEN_EXPOSURE_FRACTION",
     "max_market_exposure_fraction": "MAX_MARKET_EXPOSURE_FRACTION",
@@ -79,11 +83,13 @@ class ReplayPolicy:
     heuristic_min_entry_price: float
     heuristic_max_entry_price: float
     heuristic_allowed_entry_price_bands: tuple[str, ...]
+    heuristic_min_time_to_close_seconds: int
     model_edge_mid_confidence: float
     model_edge_high_confidence: float
     model_edge_mid_threshold: float
     model_edge_high_threshold: float
     xgboost_allowed_entry_price_bands: tuple[str, ...]
+    model_min_time_to_close_seconds: int
     max_bet_fraction: float
     max_total_open_exposure_fraction: float
     max_market_exposure_fraction: float
@@ -103,11 +109,13 @@ class ReplayPolicy:
             heuristic_min_entry_price=float(heuristic_min_entry_price()),
             heuristic_max_entry_price=float(heuristic_max_entry_price()),
             heuristic_allowed_entry_price_bands=tuple(heuristic_allowed_entry_price_bands()),
+            heuristic_min_time_to_close_seconds=int(heuristic_min_time_to_close_seconds()),
             model_edge_mid_confidence=float(model_edge_mid_confidence()),
             model_edge_high_confidence=float(model_edge_high_confidence()),
             model_edge_mid_threshold=float(model_edge_mid_threshold()),
             model_edge_high_threshold=float(model_edge_high_threshold()),
             xgboost_allowed_entry_price_bands=tuple(xgboost_allowed_entry_price_bands()),
+            model_min_time_to_close_seconds=int(model_min_time_to_close_seconds()),
             max_bet_fraction=float(max_bet_fraction()),
             max_total_open_exposure_fraction=float(max_total_open_exposure_fraction()),
             max_market_exposure_fraction=float(max_market_exposure_fraction()),
@@ -136,6 +144,10 @@ class ReplayPolicy:
                 allowed_values=ENTRY_PRICE_BAND_CHOICES,
                 field_name="heuristic_allowed_entry_price_bands",
             ),
+            heuristic_min_time_to_close_seconds=_coerce_nonnegative_seconds(
+                base["heuristic_min_time_to_close_seconds"],
+                field_name="heuristic_min_time_to_close_seconds",
+            ),
             model_edge_mid_confidence=_clamp(float(base["model_edge_mid_confidence"]), 0.0, 1.0),
             model_edge_high_confidence=_clamp(float(base["model_edge_high_confidence"]), 0.0, 1.0),
             model_edge_mid_threshold=float(base["model_edge_mid_threshold"]),
@@ -144,6 +156,10 @@ class ReplayPolicy:
                 base["xgboost_allowed_entry_price_bands"],
                 allowed_values=ENTRY_PRICE_BAND_CHOICES,
                 field_name="xgboost_allowed_entry_price_bands",
+            ),
+            model_min_time_to_close_seconds=_coerce_nonnegative_seconds(
+                base["model_min_time_to_close_seconds"],
+                field_name="model_min_time_to_close_seconds",
             ),
             max_bet_fraction=_clamp(float(base["max_bet_fraction"]), 0.0, 1.0),
             max_total_open_exposure_fraction=_clamp(float(base["max_total_open_exposure_fraction"]), 0.0, 1.0),
@@ -175,14 +191,32 @@ def policy_to_config_payload(policy: ReplayPolicy | dict[str, Any]) -> dict[str,
     resolved = policy if isinstance(policy, ReplayPolicy) else ReplayPolicy.from_payload(policy)
     payload = resolved.as_dict()
     return {
-        config_key: (
-            ",".join(payload[policy_key])
-            if isinstance(payload[policy_key], (list, tuple))
-            else payload[policy_key]
-        )
+        config_key: _config_payload_value(policy_key, payload[policy_key])
         for policy_key, config_key in REPLAY_POLICY_CONFIG_KEY_MAP.items()
         if policy_key in payload
     }
+
+
+def _config_payload_value(policy_key: str, value: Any) -> Any:
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(part) for part in value)
+    if policy_key in {"heuristic_min_time_to_close_seconds", "model_min_time_to_close_seconds"}:
+        return _format_duration_seconds(int(value))
+    return value
+
+
+def _format_duration_seconds(seconds: int) -> str:
+    total_seconds = max(int(seconds), 0)
+    if total_seconds == 0:
+        return "0s"
+    for unit_seconds, suffix in (
+        (86400, "d"),
+        (3600, "h"),
+        (60, "m"),
+    ):
+        if total_seconds % unit_seconds == 0:
+            return f"{total_seconds // unit_seconds}{suffix}"
+    return f"{total_seconds}s"
 
 
 def run_replay(
@@ -332,6 +366,7 @@ def _simulate(
             market_score=market_score,
             edge=edge,
             entry_price_band=entry_price_band,
+            time_to_close_seconds=time_to_close_seconds,
             time_to_close_band=time_to_close_band,
             policy=policy,
         )
@@ -638,6 +673,7 @@ def _evaluate_trade(
 ) -> tuple[bool, str, float, dict[str, Any]]:
     metadata = dict(base_metadata)
     entry_price_band = str(metadata.get("entry_price_band") or "")
+    time_to_close_seconds = int(metadata.get("time_to_close_seconds") or 0)
     if available_cash <= 0:
         return False, "bankroll_depleted", 0.0, metadata
     if entry_price is None or not (0.0 < entry_price < 1.0):
@@ -649,6 +685,9 @@ def _evaluate_trade(
         if not policy.allow_xgboost:
             return False, "xgboost_disabled", 0.0, metadata
         metadata["mode_allowed_entry_price_bands"] = list(policy.xgboost_allowed_entry_price_bands)
+        metadata["model_min_time_to_close_seconds"] = int(policy.model_min_time_to_close_seconds)
+        if time_to_close_seconds < policy.model_min_time_to_close_seconds:
+            return False, "model_time_to_close_filter", 0.0, metadata
         if (
             policy.xgboost_allowed_entry_price_bands
             and entry_price_band not in policy.xgboost_allowed_entry_price_bands
@@ -677,6 +716,9 @@ def _evaluate_trade(
     if not policy.allow_heuristic:
         return False, "heuristic_disabled", 0.0, metadata
     metadata["mode_allowed_entry_price_bands"] = list(policy.heuristic_allowed_entry_price_bands)
+    metadata["heuristic_min_time_to_close_seconds"] = int(policy.heuristic_min_time_to_close_seconds)
+    if time_to_close_seconds < policy.heuristic_min_time_to_close_seconds:
+        return False, "heuristic_time_to_close_filter", 0.0, metadata
     if (
         policy.heuristic_allowed_entry_price_bands
         and entry_price_band not in policy.heuristic_allowed_entry_price_bands
@@ -794,6 +836,7 @@ def _base_trade_metadata(
     market_score: float | None,
     edge: float | None,
     entry_price_band: str,
+    time_to_close_seconds: int,
     time_to_close_band: str,
     policy: ReplayPolicy,
 ) -> dict[str, Any]:
@@ -803,6 +846,7 @@ def _base_trade_metadata(
         "market_score": round(market_score, 6) if market_score is not None else None,
         "edge": round(edge, 6) if edge is not None else None,
         "entry_price_band": entry_price_band,
+        "time_to_close_seconds": int(time_to_close_seconds),
         "time_to_close_band": time_to_close_band,
         "allowed_entry_price_bands": list(policy.allowed_entry_price_bands),
         "allowed_time_to_close_bands": list(policy.allowed_time_to_close_bands),
@@ -1127,6 +1171,32 @@ def _normalize_segment_filter(
     if unknown:
         raise ValueError(f"Unknown {field_name} values: {', '.join(unknown)}")
     return tuple(value for value in allowed_values if value in requested)
+
+
+def _coerce_nonnegative_seconds(raw: Any, *, field_name: str) -> int:
+    if raw is None:
+        return 0
+    if isinstance(raw, (int, float)):
+        seconds = float(raw)
+    else:
+        value = str(raw).strip().lower()
+        if not value:
+            return 0
+        try:
+            seconds = float(value)
+        except ValueError:
+            unit = value[-1:]
+            number = value[:-1]
+            unit_seconds = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+            if unit not in unit_seconds or not number:
+                raise ValueError(f"{field_name} must be a non-negative duration or seconds value")
+            try:
+                seconds = float(number) * unit_seconds[unit]
+            except ValueError as exc:
+                raise ValueError(f"{field_name} must be a non-negative duration or seconds value") from exc
+    if seconds < 0:
+        raise ValueError(f"{field_name} must be >= 0")
+    return int(seconds)
 
 
 def _json_dict(raw: Any) -> dict[str, Any]:

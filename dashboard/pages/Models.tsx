@@ -1277,9 +1277,30 @@ function replayConfigRawValue(value: unknown): string {
   return String(value).trim()
 }
 
+function replayDurationSeconds(raw: string): number | null {
+  const value = raw.trim().toLowerCase()
+  if (!value) return null
+  if (value === 'unlimited' || value === 'infinite' || value === 'inf' || value === 'none') return Number.POSITIVE_INFINITY
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return numeric
+  const match = value.match(/^([0-9]+(?:\.[0-9]+)?)([smhdw])$/)
+  if (!match) return null
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount)) return null
+  const unitSeconds: Record<string, number> = {s: 1, m: 60, h: 3600, d: 86400, w: 604800}
+  return amount * unitSeconds[match[2]]
+}
+
 function replayConfigValuesEqual(field: EditableConfigField, currentRaw: string, recommendedRaw: string): boolean {
   if (field.kind === 'bool') {
     return currentRaw.trim().toLowerCase() === recommendedRaw.trim().toLowerCase()
+  }
+  if (field.kind === 'duration') {
+    const currentSeconds = replayDurationSeconds(currentRaw)
+    const recommendedSeconds = replayDurationSeconds(recommendedRaw)
+    if (currentSeconds != null && recommendedSeconds != null) {
+      return Math.abs(currentSeconds - recommendedSeconds) < 1e-9
+    }
   }
   if (field.kind === 'float' || field.kind === 'int') {
     const currentNumeric = Number(currentRaw)

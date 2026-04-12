@@ -1026,9 +1026,34 @@ function replayConfigRawValue(value) {
         return Number.isFinite(value) ? String(value) : '';
     return String(value).trim();
 }
+function replayDurationSeconds(raw) {
+    const value = raw.trim().toLowerCase();
+    if (!value)
+        return null;
+    if (value === 'unlimited' || value === 'infinite' || value === 'inf' || value === 'none')
+        return Number.POSITIVE_INFINITY;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric))
+        return numeric;
+    const match = value.match(/^([0-9]+(?:\.[0-9]+)?)([smhdw])$/);
+    if (!match)
+        return null;
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount))
+        return null;
+    const unitSeconds = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
+    return amount * unitSeconds[match[2]];
+}
 function replayConfigValuesEqual(field, currentRaw, recommendedRaw) {
     if (field.kind === 'bool') {
         return currentRaw.trim().toLowerCase() === recommendedRaw.trim().toLowerCase();
+    }
+    if (field.kind === 'duration') {
+        const currentSeconds = replayDurationSeconds(currentRaw);
+        const recommendedSeconds = replayDurationSeconds(recommendedRaw);
+        if (currentSeconds != null && recommendedSeconds != null) {
+            return Math.abs(currentSeconds - recommendedSeconds) < 1e-9;
+        }
     }
     if (field.kind === 'float' || field.kind === 'int') {
         const currentNumeric = Number(currentRaw);

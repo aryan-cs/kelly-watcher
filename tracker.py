@@ -112,9 +112,10 @@ class PolymarketTracker:
 
     def prime_identities(self, wallet_addresses: list[str] | None = None) -> None:
         targets = self.wallets if wallet_addresses is None else wallet_addresses
-        for wallet in targets:
-            self._touch_activity()
-            resolve_username_for_wallet(wallet, client=self.client, force=True)
+        with self._new_http_client() as client:
+            for wallet in targets:
+                self._touch_activity()
+                resolve_username_for_wallet(wallet, client=client, force=True)
 
     def trade_feed_health(self) -> tuple[int, int]:
         return self.last_trade_poll_ok_at, self.consecutive_trade_poll_failures

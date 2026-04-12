@@ -2452,6 +2452,70 @@ class RuntimeFixesTest(unittest.TestCase):
         output = "\n".join(captured.output)
         self.assertIn("First poll completed in 3.25s: wallets=4 events=0 bankroll=$1000.00", output)
 
+    def test_run_deferred_startup_tasks_continues_after_step_failure(self) -> None:
+        tracker_stub = SimpleNamespace(
+            prime_identities=Mock(side_effect=RuntimeError("identity failure")),
+            seen_ids=set(),
+        )
+        watchlist_stub = SimpleNamespace(
+            refresh=Mock(),
+            state_fields=lambda: {"tracked_wallet_count": 2},
+        )
+        dedup_stub = SimpleNamespace(
+            load_from_db=Mock(),
+            seen_ids={"trade-1", "trade-2"},
+        )
+        run_retrain_job = Mock()
+
+        with (
+            patch("main.refresh_trader_cache") as refresh_cache,
+            patch("main._resolve_trades_and_alert", return_value=[]),
+            patch("main.should_retrain_early", return_value=True),
+        ):
+            persist_state = Mock()
+            main._run_deferred_startup_tasks(
+                startup_wallets=["0xabc"],
+                tracker=tracker_stub,
+                watchlist=watchlist_stub,
+                dedup=dedup_stub,
+                engine=SimpleNamespace(),
+                persist_state=persist_state,
+                run_retrain_job=run_retrain_job,
+            )
+
+        refresh_cache.assert_called_once_with(["0xabc"])
+        watchlist_stub.refresh.assert_called_once_with(run_auto_drop=True)
+        persist_state.assert_called_once_with(tracked_wallet_count=2)
+        dedup_stub.load_from_db.assert_called_once_with(rebuild_shadow_positions=False)
+        self.assertEqual(tracker_stub.seen_ids, {"trade-1", "trade-2"})
+        run_retrain_job.assert_called_once_with("startup")
+
+    def test_prime_identities_uses_fresh_client_not_shared_poll_client(self) -> None:
+        class DummyClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        wallet = "0x" + ("1" * 40)
+        with patch.object(tracker.PolymarketTracker, "_load_wallet_cursors", return_value={}):
+            poller = tracker.PolymarketTracker([wallet])
+        shared_client = poller.client
+        dummy_client = DummyClient()
+        try:
+            with (
+                patch.object(tracker.PolymarketTracker, "_new_http_client", return_value=dummy_client),
+                patch("tracker.resolve_username_for_wallet") as resolve_username,
+            ):
+                poller.prime_identities([wallet])
+
+            resolve_username.assert_called_once()
+            self.assertIs(resolve_username.call_args.kwargs["client"], dummy_client)
+            self.assertIsNot(resolve_username.call_args.kwargs["client"], shared_client)
+        finally:
+            poller.close()
+
     def test_partial_exit_keeps_remaining_shadow_position_and_realized_pnl(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

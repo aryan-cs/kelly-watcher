@@ -497,6 +497,41 @@ def _resolve_trades_and_alert() -> list[dict[str, object]]:
     return resolved_rows
 
 
+def _run_deferred_startup_tasks(
+    *,
+    startup_wallets: list[str],
+    tracker: PolymarketTracker,
+    watchlist: WatchlistManager,
+    dedup: DedupeCache,
+    engine: SignalEngine,
+    persist_state,
+    run_retrain_job,
+) -> None:
+    def _step(label: str, fn):
+        logger.info("Deferred startup warmup: %s", label)
+        try:
+            return fn()
+        except Exception:
+            logger.exception("Deferred startup warmup failed while %s", label)
+            return None
+
+    _step(f"priming {len(startup_wallets)} identities", lambda: tracker.prime_identities(startup_wallets))
+    _step(f"refreshing {len(startup_wallets)} trader profiles", lambda: refresh_trader_cache(startup_wallets))
+    _step(
+        "refreshing watchlist",
+        lambda: (
+            watchlist.refresh(run_auto_drop=True),
+            persist_state(**watchlist.state_fields()),
+        ),
+    )
+    _step("resolving historical trades", _resolve_trades_and_alert)
+    _step("refreshing trade cache", lambda: dedup.load_from_db(rebuild_shadow_positions=False))
+    tracker.seen_ids.update(dedup.seen_ids)
+    if should_retrain_early(engine):
+        _step("running startup retrain", lambda: run_retrain_job("startup"))
+    logger.info("Deferred startup warmup complete")
+
+
 def _format_percent_text(value: str) -> str:
     return f"{float(value) * 100:.1f}%"
 
@@ -2804,8 +2839,6 @@ def main() -> None:
     )
     telegram_command_thread.start()
     startup_wallets = watchlist.startup_wallets()
-    _set_startup_detail(f"priming {len(startup_wallets)} identities")
-    tracker.prime_identities(startup_wallets)
     _set_startup_detail("initializing risk guards")
     live_entry_guard = _init_live_entry_guard(executor)
     daily_loss_guard = _init_daily_loss_guard(executor)
@@ -2822,16 +2855,6 @@ def main() -> None:
     initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
     if use_real_money() and not initial_live_sync_ok:
         raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
-    _set_startup_detail(f"refreshing {len(startup_wallets)} trader profiles")
-    refresh_trader_cache(startup_wallets)
-    _set_startup_detail("refreshing watchlist")
-    watchlist.refresh(run_auto_drop=True)
-    _persist_bot_state(**watchlist.state_fields())
-    _set_startup_detail("resolving historical trades")
-    _resolve_trades_and_alert()
-    _set_startup_detail("refreshing trade cache")
-    dedup.load_from_db(rebuild_shadow_positions=False)
-    tracker.seen_ids.update(dedup.seen_ids)
 
     def _refresh_watchlist() -> None:
         refresh_trader_cache(watchlist.active_wallets())
@@ -2898,13 +2921,25 @@ def main() -> None:
         hour=4,
         id="db_backup",
     )
-    if should_retrain_early(engine):
-        _set_startup_detail("running startup retrain")
-        _run_retrain_job("startup")
     _set_startup_detail("starting scheduler")
     scheduler.start()
     _log_runtime_ready(tracker, watchlist)
     _persist_bot_state(startup_detail="waiting for first poll")
+    startup_warmup_thread = threading.Thread(
+        target=_run_deferred_startup_tasks,
+        kwargs={
+            "startup_wallets": startup_wallets,
+            "tracker": tracker,
+            "watchlist": watchlist,
+            "dedup": dedup,
+            "engine": engine,
+            "persist_state": _persist_bot_state,
+            "run_retrain_job": _run_retrain_job,
+        },
+        name="startup-warmup",
+        daemon=True,
+    )
+    startup_warmup_thread.start()
 
     mode_str = "LIVE" if use_real_money() else "SHADOW"
     tier_state = watchlist.state_fields()

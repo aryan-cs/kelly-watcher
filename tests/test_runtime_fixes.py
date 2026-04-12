@@ -2799,6 +2799,35 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(result, {"0x1": [], "0x2": [], "0x3": [], "0x4": []})
         self.assertLess(elapsed, 0.35)
 
+    def test_tracker_load_wallet_cursors_ignores_malformed_json_bytes(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO wallet_cursors (
+                        wallet_address, last_source_ts, last_trade_ids_json, updated_at
+                    ) VALUES (?, ?, CAST(X'80FF5B22' AS BLOB), ?)
+                    """,
+                    ("0xabc", 123, int(time.time())),
+                )
+                conn.commit()
+                conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xabc"])
+                try:
+                    cursor = tracker_obj.wallet_cursors["0xabc"]
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual(cursor.last_source_ts, 123)
+                self.assertEqual(cursor.last_trade_ids, set())
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_tracker_poll_filters_old_rows_before_metadata_and_skips_price_history_fetch(self) -> None:
         tracker_obj = tracker.PolymarketTracker(["0xabc"])
         now_ts = int(time.time())
@@ -3024,7 +3053,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 executor_obj.execute_exit.assert_called_once()
                 execute_kwargs = executor_obj.execute_exit.call_args.kwargs
                 self.assertTrue(execute_kwargs["trade_id"].startswith("stop-loss-"))
-                self.assertIn("stop-loss triggered", execute_kwargs["reason_override"])
+                self.assertIn("exit confirmed", execute_kwargs["reason_override"])
                 self.assertIn("-24.0%", execute_kwargs["reason_override"])
 
                 emit_mock.assert_called_once()
@@ -3033,6 +3062,21 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertEqual(payload["action"], "sell")
                 self.assertAlmostEqual(payload["estimated_return"], -0.24, places=6)
                 self.assertEqual(payload["size_usd"], 76.0)
+
+                conn = db.get_conn()
+                audit_row = conn.execute(
+                    """
+                    SELECT decision, reason, estimated_return_pct, loss_limit_pct
+                    FROM exit_audits
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+                self.assertEqual(audit_row["decision"], "exit")
+                self.assertIn("exit confirmed", audit_row["reason"])
+                self.assertAlmostEqual(float(audit_row["estimated_return_pct"]), -0.24, places=6)
+                self.assertAlmostEqual(float(audit_row["loss_limit_pct"]), 0.20, places=6)
             finally:
                 db.DB_PATH = original_db_path
 
@@ -3063,6 +3107,264 @@ class RuntimeFixesTest(unittest.TestCase):
                 tracker_obj.get_market_metadata.assert_not_called()
                 tracker_obj.get_orderbook_snapshot.assert_not_called()
                 executor_obj.execute_exit.assert_not_called()
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_stop_loss_checks_hold_when_quote_quality_is_weak(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                _insert_open_position_for_stop_loss_test()
+
+                tracker_obj = Mock()
+                tracker_obj.get_market_metadata.return_value = (
+                    {
+                        "question": "Will the stop loss hold?",
+                        "endDate": "2030-01-01T00:00:00Z",
+                    },
+                    111,
+                )
+                tracker_obj.get_orderbook_snapshot.return_value = (
+                    {
+                        "best_bid": 0.36,
+                        "best_ask": 0.46,
+                        "mid": 0.41,
+                        "bid_depth_usd": 90.0,
+                        "ask_depth_usd": 90.0,
+                    },
+                    {
+                        "bids": [{"price": "0.36", "size": "300"}],
+                        "asks": [{"price": "0.46", "size": "300"}],
+                    },
+                    222,
+                )
+
+                entry = {
+                    "remaining_entry_shares": 200.0,
+                    "remaining_entry_size_usd": 100.0,
+                }
+                executor_obj = Mock()
+                executor_obj._load_open_position_state.return_value = (
+                    {"token_id": "token-stop", "side": "yes", "size_usd": 100.0},
+                    [entry],
+                )
+                executor_obj._entry_open_shares = lambda row: float(row["remaining_entry_shares"])
+                executor_obj._entry_open_size = lambda row: float(row["remaining_entry_size_usd"])
+                executor_obj.estimate_exit_fill.return_value = (
+                    SimulatedFill(spent_usd=72.0, shares=200.0, avg_price=0.36),
+                    None,
+                )
+                executor_obj.estimate_exit_economics.return_value = (
+                    SimpleNamespace(net_proceeds_usd=72.0, effective_exit_price=0.36),
+                    None,
+                )
+                dedup_cache = Mock()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "USE_REAL_MONEY": "false",
+                        "STOP_LOSS_ENABLED": "true",
+                        "STOP_LOSS_MAX_LOSS_PCT": "0.20",
+                        "STOP_LOSS_MIN_HOLD": "20m",
+                    },
+                    clear=False,
+                ), patch.object(main, "_emit_event") as emit_mock:
+                    main._run_stop_loss_checks(tracker_obj, executor_obj, dedup_cache)
+
+                executor_obj.execute_exit.assert_not_called()
+                emit_mock.assert_not_called()
+
+                conn = db.get_conn()
+                audit_row = conn.execute(
+                    """
+                    SELECT decision, reason, metadata_json
+                    FROM exit_audits
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+                self.assertEqual(audit_row["decision"], "hold")
+                self.assertIn("spread is too wide", audit_row["reason"])
+                self.assertIn("spread_pct", str(audit_row["metadata_json"]))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_stop_loss_checks_hold_when_bid_depth_is_too_shallow(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                _insert_open_position_for_stop_loss_test()
+
+                tracker_obj = Mock()
+                tracker_obj.get_market_metadata.return_value = (
+                    {
+                        "question": "Will the stop loss hold for shallow depth?",
+                        "endDate": "2030-01-01T00:00:00Z",
+                    },
+                    111,
+                )
+                tracker_obj.get_orderbook_snapshot.return_value = (
+                    {
+                        "best_bid": 0.38,
+                        "best_ask": 0.39,
+                        "mid": 0.385,
+                        "bid_depth_usd": 50.0,
+                        "ask_depth_usd": 50.0,
+                    },
+                    {
+                        "bids": [{"price": "0.38", "size": "132"}],
+                        "asks": [{"price": "0.39", "size": "132"}],
+                    },
+                    222,
+                )
+
+                entry = {
+                    "remaining_entry_shares": 200.0,
+                    "remaining_entry_size_usd": 100.0,
+                }
+                executor_obj = Mock()
+                executor_obj._load_open_position_state.return_value = (
+                    {"token_id": "token-stop", "side": "yes", "size_usd": 100.0},
+                    [entry],
+                )
+                executor_obj._entry_open_shares = lambda row: float(row["remaining_entry_shares"])
+                executor_obj._entry_open_size = lambda row: float(row["remaining_entry_size_usd"])
+                executor_obj.estimate_exit_fill.return_value = (
+                    SimulatedFill(spent_usd=76.0, shares=200.0, avg_price=0.38),
+                    None,
+                )
+                executor_obj.estimate_exit_economics.return_value = (
+                    SimpleNamespace(net_proceeds_usd=76.0, effective_exit_price=0.38),
+                    None,
+                )
+                dedup_cache = Mock()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "USE_REAL_MONEY": "false",
+                        "STOP_LOSS_ENABLED": "true",
+                        "STOP_LOSS_MAX_LOSS_PCT": "0.20",
+                        "STOP_LOSS_MIN_HOLD": "20m",
+                    },
+                    clear=False,
+                ), patch.object(main, "_emit_event") as emit_mock:
+                    main._run_stop_loss_checks(tracker_obj, executor_obj, dedup_cache)
+
+                executor_obj.execute_exit.assert_not_called()
+                emit_mock.assert_not_called()
+
+                conn = db.get_conn()
+                audit_row = conn.execute(
+                    """
+                    SELECT decision, reason, metadata_json
+                    FROM exit_audits
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+                self.assertEqual(audit_row["decision"], "hold")
+                self.assertIn("visible bid depth", audit_row["reason"])
+                self.assertIn("min_depth_multiple", str(audit_row["metadata_json"]))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_stop_loss_checks_hard_exit_overrides_quote_quality_hold(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                _insert_open_position_for_stop_loss_test()
+
+                tracker_obj = Mock()
+                tracker_obj.get_market_metadata.return_value = (
+                    {
+                        "question": "Will the hard exit trigger?",
+                        "endDate": "2030-01-01T00:00:00Z",
+                    },
+                    111,
+                )
+                tracker_obj.get_orderbook_snapshot.return_value = (
+                    {
+                        "best_bid": 0.34,
+                        "best_ask": 0.46,
+                        "mid": 0.40,
+                        "bid_depth_usd": 90.0,
+                        "ask_depth_usd": 90.0,
+                    },
+                    {
+                        "bids": [{"price": "0.34", "size": "300"}],
+                        "asks": [{"price": "0.46", "size": "300"}],
+                    },
+                    222,
+                )
+
+                entry = {
+                    "remaining_entry_shares": 200.0,
+                    "remaining_entry_size_usd": 100.0,
+                }
+                executor_obj = Mock()
+                executor_obj._load_open_position_state.return_value = (
+                    {"token_id": "token-stop", "side": "yes", "size_usd": 100.0},
+                    [entry],
+                )
+                executor_obj._entry_open_shares = lambda row: float(row["remaining_entry_shares"])
+                executor_obj._entry_open_size = lambda row: float(row["remaining_entry_size_usd"])
+                executor_obj.estimate_exit_fill.return_value = (
+                    SimulatedFill(spent_usd=68.0, shares=200.0, avg_price=0.34),
+                    None,
+                )
+                executor_obj.estimate_exit_economics.return_value = (
+                    SimpleNamespace(net_proceeds_usd=68.0, effective_exit_price=0.34),
+                    None,
+                )
+                executor_obj.execute_exit.return_value = ExecutionResult(
+                    True,
+                    True,
+                    None,
+                    68.0,
+                    "hard exit",
+                    shares=200.0,
+                    pnl_usd=-32.0,
+                    action="exit",
+                )
+                dedup_cache = Mock()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "USE_REAL_MONEY": "false",
+                        "STOP_LOSS_ENABLED": "true",
+                        "STOP_LOSS_MAX_LOSS_PCT": "0.20",
+                        "STOP_LOSS_MIN_HOLD": "20m",
+                    },
+                    clear=False,
+                ):
+                    main._run_stop_loss_checks(tracker_obj, executor_obj, dedup_cache)
+
+                executor_obj.execute_exit.assert_called_once()
+                self.assertIn("hard exit", executor_obj.execute_exit.call_args.kwargs["reason_override"])
+
+                conn = db.get_conn()
+                audit_row = conn.execute(
+                    """
+                    SELECT decision, reason
+                    FROM exit_audits
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+                self.assertEqual(audit_row["decision"], "exit")
+                self.assertIn("hard exit", audit_row["reason"])
             finally:
                 db.DB_PATH = original_db_path
 

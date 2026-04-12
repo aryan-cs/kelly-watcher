@@ -579,6 +579,39 @@ def init_db() -> None:
             updated_at                           INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS exit_audits (
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            audited_at                INTEGER NOT NULL,
+            market_id                 TEXT NOT NULL DEFAULT '',
+            token_id                  TEXT NOT NULL DEFAULT '',
+            side                      TEXT NOT NULL DEFAULT '',
+            real_money                INTEGER NOT NULL DEFAULT 0,
+            trader_address            TEXT NOT NULL DEFAULT '',
+            question                  TEXT NOT NULL DEFAULT '',
+            strategy                  TEXT NOT NULL DEFAULT '',
+            decision                  TEXT NOT NULL DEFAULT '',
+            reason                    TEXT NOT NULL DEFAULT '',
+            estimated_return_pct      REAL,
+            loss_limit_pct            REAL,
+            hard_exit_loss_pct        REAL,
+            open_size_usd             REAL,
+            open_shares               REAL,
+            quoted_price              REAL,
+            best_bid                  REAL,
+            best_ask                  REAL,
+            bid_depth_usd             REAL,
+            ask_depth_usd             REAL,
+            market_score              REAL,
+            market_veto               TEXT,
+            time_to_close_seconds     REAL,
+            avg_entry_price           REAL,
+            avg_entry_confidence      REAL,
+            avg_entry_edge            REAL,
+            avg_entry_market_score    REAL,
+            signal_mode               TEXT,
+            metadata_json             TEXT NOT NULL DEFAULT '{}'
+        );
+
         CREATE TABLE IF NOT EXISTS trade_log_manual_edits (
             trade_log_id INTEGER PRIMARY KEY,
             entry_price  REAL,
@@ -610,6 +643,8 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_belief_updates_applied_at ON belief_updates(applied_at);
         CREATE INDEX IF NOT EXISTS idx_wallet_watch_state_status ON wallet_watch_state(status);
         CREATE INDEX IF NOT EXISTS idx_wallet_policy_metrics_drop_ready ON wallet_policy_metrics(local_drop_ready);
+        CREATE INDEX IF NOT EXISTS idx_exit_audits_audited_at ON exit_audits(audited_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_exit_audits_market_side ON exit_audits(market_id, token_id, side, real_money);
         CREATE INDEX IF NOT EXISTS idx_retrain_runs_finished_at ON retrain_runs(finished_at DESC);
         CREATE INDEX IF NOT EXISTS idx_replay_runs_finished_at ON replay_runs(finished_at DESC);
         CREATE INDEX IF NOT EXISTS idx_replay_trades_run_id ON replay_trades(replay_run_id);

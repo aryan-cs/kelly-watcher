@@ -96,7 +96,7 @@ from kelly_watcher.shadow_reset import (
     reset_shadow_runtime,
     restore_watched_wallets,
 )
-from market_scorer import build_market_features
+from market_scorer import MarketScorer, build_market_features
 from market_urls import market_url_from_metadata
 from signal_engine import SignalEngine
 from telegram_runtime import service_telegram_commands
@@ -326,6 +326,13 @@ class StopLossCandidate:
     trader_name: str
     entered_at: int
     size_usd: float
+
+
+@dataclass(frozen=True)
+class ExitGuardDecision:
+    action: str
+    reason: str
+    metadata: dict[str, Any]
 
 
 @dataclass
@@ -2115,6 +2122,307 @@ def _resolved_shadow_trade_count() -> int:
         conn.close()
 
 
+def _weighted_open_entry_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    total_weight = 0.0
+    confidence_total = 0.0
+    edge_total = 0.0
+    edge_weight = 0.0
+    market_score_total = 0.0
+    market_score_weight = 0.0
+    entry_price_total = 0.0
+    signal_mode_weights: dict[str, float] = {}
+
+    for entry in entries:
+        weight = float(entry.get("remaining_entry_size_usd") or entry.get("actual_entry_size_usd") or entry.get("signal_size_usd") or 0.0)
+        if weight <= 1e-9:
+            weight = 1.0
+        total_weight += weight
+
+        confidence = entry.get("confidence")
+        if confidence is not None:
+            confidence_total += float(confidence) * weight
+
+        entry_price = entry.get("actual_entry_price") or entry.get("price_at_signal")
+        if entry_price is not None:
+            entry_price_total += float(entry_price) * weight
+
+        signal_mode = str(entry.get("signal_mode") or "").strip().lower()
+        if signal_mode:
+            signal_mode_weights[signal_mode] = signal_mode_weights.get(signal_mode, 0.0) + weight
+
+        market_score = entry.get("market_score")
+        if market_score is not None:
+            market_score_total += float(market_score) * weight
+            market_score_weight += weight
+
+        edge = None
+        raw_context = entry.get("decision_context_json")
+        if raw_context:
+            try:
+                context = json.loads(str(raw_context))
+            except Exception:
+                context = None
+            if isinstance(context, dict):
+                edge = context.get("edge")
+                if edge is None:
+                    signal = context.get("signal")
+                    if isinstance(signal, dict):
+                        edge = signal.get("edge")
+                        if market_score is None:
+                            nested_market = signal.get("market")
+                            if isinstance(nested_market, dict) and nested_market.get("score") is not None:
+                                market_score_total += float(nested_market["score"]) * weight
+                                market_score_weight += weight
+        if edge is None and confidence is not None and entry_price is not None:
+            edge = float(confidence) - float(entry_price)
+        if edge is not None:
+            edge_total += float(edge) * weight
+            edge_weight += weight
+
+    dominant_signal_mode = ""
+    if signal_mode_weights:
+        dominant_signal_mode = max(signal_mode_weights.items(), key=lambda item: item[1])[0]
+
+    return {
+        "avg_confidence": (confidence_total / total_weight) if total_weight > 0 else None,
+        "avg_edge": (edge_total / edge_weight) if edge_weight > 0 else None,
+        "avg_market_score": (market_score_total / market_score_weight) if market_score_weight > 0 else None,
+        "avg_entry_price": (entry_price_total / total_weight) if total_weight > 0 else None,
+        "signal_mode": dominant_signal_mode or None,
+    }
+
+
+def _persist_exit_audit(
+    *,
+    candidate: StopLossCandidate,
+    real_money: bool,
+    decision: ExitGuardDecision,
+    estimated_return: float,
+    max_loss_pct: float,
+    hard_exit_loss_pct: float,
+    open_size_usd: float,
+    open_shares: float,
+    quoted_price: float,
+    snapshot: dict[str, Any] | None,
+) -> None:
+    metadata = dict(decision.metadata or {})
+    conn = get_conn()
+    try:
+        conn.execute(
+            """
+            INSERT INTO exit_audits (
+                audited_at, market_id, token_id, side, real_money, trader_address, question,
+                strategy, decision, reason, estimated_return_pct, loss_limit_pct,
+                hard_exit_loss_pct, open_size_usd, open_shares, quoted_price,
+                best_bid, best_ask, bid_depth_usd, ask_depth_usd, market_score, market_veto,
+                time_to_close_seconds, avg_entry_price, avg_entry_confidence, avg_entry_edge,
+                avg_entry_market_score, signal_mode, metadata_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                int(time.time()),
+                candidate.market_id,
+                candidate.token_id,
+                candidate.side,
+                1 if real_money else 0,
+                candidate.trader_address,
+                candidate.question,
+                "stop_loss_v2",
+                decision.action,
+                decision.reason,
+                estimated_return,
+                max_loss_pct,
+                hard_exit_loss_pct,
+                open_size_usd,
+                open_shares,
+                quoted_price,
+                float((snapshot or {}).get("best_bid") or 0.0) or None,
+                float((snapshot or {}).get("best_ask") or 0.0) or None,
+                float((snapshot or {}).get("bid_depth_usd") or 0.0) or None,
+                float((snapshot or {}).get("ask_depth_usd") or 0.0) or None,
+                metadata.get("market_score"),
+                metadata.get("market_veto"),
+                metadata.get("time_to_close_seconds"),
+                metadata.get("avg_entry_price"),
+                metadata.get("avg_entry_confidence"),
+                metadata.get("avg_entry_edge"),
+                metadata.get("avg_entry_market_score"),
+                metadata.get("signal_mode"),
+                json.dumps(metadata, separators=(",", ":"), default=str),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _evaluate_exit_guard(
+    *,
+    candidate: StopLossCandidate,
+    entries: list[dict[str, Any]],
+    snapshot: dict[str, Any] | None,
+    market_meta: dict[str, Any] | None,
+    quoted_price: float,
+    estimated_return: float,
+    max_loss_pct: float,
+    open_size_usd: float,
+    open_shares: float,
+) -> ExitGuardDecision:
+    entry_summary = _weighted_open_entry_summary(entries)
+    hard_exit_loss_pct = max_loss_pct + 0.10
+    if estimated_return <= -hard_exit_loss_pct:
+        metadata = {
+            **entry_summary,
+            "hard_exit_loss_pct": hard_exit_loss_pct,
+            "trigger_loss_pct": max_loss_pct,
+            "market_score": None,
+            "market_veto": None,
+            "time_to_close_seconds": None,
+            "spread_pct": None,
+            "depth_multiple": None,
+        }
+        return ExitGuardDecision(
+            action="exit",
+            reason=(
+                "hard exit because the executable quote fell far beyond the normal stop limit "
+                f"({estimated_return * 100:.1f}% vs limit -{hard_exit_loss_pct * 100:.1f}%)"
+            ),
+            metadata=metadata,
+        )
+
+    close_time = str(
+        (market_meta or {}).get("endDate")
+        or (market_meta or {}).get("closedTime")
+        or (market_meta or {}).get("closeTime")
+        or ""
+    ).strip()
+    market_features = build_market_features(
+        snapshot or {},
+        close_time,
+        open_size_usd,
+        execution_price=quoted_price if quoted_price > 0 else None,
+    )
+    market_result = MarketScorer().score(market_features) if market_features is not None else {"score": None, "veto": "missing_market_features"}
+    market_score = float(market_result["score"]) if market_result.get("score") is not None else None
+    market_veto = str(market_result.get("veto") or "").strip() or None
+    if market_veto and (
+        market_veto.startswith("beyond max horizon")
+        or market_veto.startswith("expires in <")
+    ):
+        market_veto = None
+        market_score = None
+    best_bid = float((snapshot or {}).get("best_bid") or 0.0)
+    best_ask = float((snapshot or {}).get("best_ask") or 0.0)
+    mid = float((snapshot or {}).get("mid") or 0.0)
+    if mid <= 0 and best_bid > 0 and best_ask > 0:
+        mid = (best_bid + best_ask) / 2.0
+    spread_pct = ((best_ask - best_bid) / mid) if mid > 0 and best_ask >= best_bid > 0 else None
+    bid_depth_usd = float((snapshot or {}).get("bid_depth_usd") or 0.0)
+    depth_reference_usd = quoted_price * open_shares if quoted_price > 0 and open_shares > 0 else open_size_usd
+    depth_multiple = (
+        (bid_depth_usd / depth_reference_usd)
+        if depth_reference_usd > 0 and bid_depth_usd > 0
+        else None
+    )
+    time_to_close_seconds = (market_features.days_to_res * 86400.0) if market_features is not None else None
+    min_depth_multiple = 0.85
+
+    signal_mode = str(entry_summary.get("signal_mode") or "").strip().lower()
+    required_market_score = None
+    avg_entry_price = entry_summary.get("avg_entry_price")
+    if signal_mode == "heuristic" and isinstance(avg_entry_price, (float, int)) and 0.0 < float(avg_entry_price) < 1.0:
+        required_market_score, _ = SignalEngine._heuristic_min_market_score(
+            float(avg_entry_price),
+            heuristic_min_entry_price(),
+            heuristic_max_entry_price(),
+        )
+    elif signal_mode:
+        required_market_score = 0.45
+
+    patience_buffer = 0.0
+    avg_entry_edge = entry_summary.get("avg_entry_edge")
+    if isinstance(avg_entry_edge, (float, int)):
+        if float(avg_entry_edge) >= 0.05:
+            patience_buffer += 0.04
+        elif float(avg_entry_edge) >= 0.02:
+            patience_buffer += 0.02
+    avg_entry_confidence = entry_summary.get("avg_entry_confidence")
+    if isinstance(avg_entry_confidence, (float, int)):
+        if float(avg_entry_confidence) >= 0.68:
+            patience_buffer += 0.03
+        elif float(avg_entry_confidence) >= 0.60:
+            patience_buffer += 0.015
+    avg_entry_market_score = entry_summary.get("avg_entry_market_score")
+    if isinstance(avg_entry_market_score, (float, int)) and float(avg_entry_market_score) >= 0.70:
+        patience_buffer += 0.01
+    if signal_mode == "xgboost":
+        patience_buffer += 0.01
+    if isinstance(time_to_close_seconds, (float, int)):
+        if time_to_close_seconds >= 86400:
+            patience_buffer += 0.03
+        elif time_to_close_seconds >= 21600:
+            patience_buffer += 0.015
+
+    trigger_loss_pct = max_loss_pct + patience_buffer
+    metadata = {
+        **entry_summary,
+        "market_score": round(market_score, 6) if market_score is not None else None,
+        "market_veto": market_veto,
+        "required_market_score": round(required_market_score, 6) if required_market_score is not None else None,
+        "time_to_close_seconds": round(time_to_close_seconds, 3) if time_to_close_seconds is not None else None,
+        "spread_pct": round(spread_pct, 6) if spread_pct is not None else None,
+        "depth_multiple": round(depth_multiple, 6) if depth_multiple is not None else None,
+        "min_depth_multiple": round(min_depth_multiple, 6),
+        "trigger_loss_pct": round(trigger_loss_pct, 6),
+        "hard_exit_loss_pct": round(hard_exit_loss_pct, 6),
+    }
+
+    if market_veto:
+        return ExitGuardDecision(
+            action="hold",
+            reason=f"holding because the current market state is not actionable ({market_veto})",
+            metadata=metadata,
+        )
+    if spread_pct is not None and spread_pct > 0.05:
+        return ExitGuardDecision(
+            action="hold",
+            reason=f"holding because the current spread is too wide ({spread_pct * 100:.1f}%) to trust the quote",
+            metadata=metadata,
+        )
+    if depth_multiple is not None and depth_multiple < min_depth_multiple:
+        return ExitGuardDecision(
+            action="hold",
+            reason=f"holding because visible bid depth only covers {depth_multiple:.2f}x of position size",
+            metadata=metadata,
+        )
+    if required_market_score is not None and market_score is not None and market_score < required_market_score:
+        return ExitGuardDecision(
+            action="hold",
+            reason=(
+                "holding because current market quality is below the minimum score "
+                f"({market_score:.2f} < {required_market_score:.2f})"
+            ),
+            metadata=metadata,
+        )
+    if estimated_return > -trigger_loss_pct:
+        return ExitGuardDecision(
+            action="hold",
+            reason=(
+                "holding because the loss breach is not severe enough after accounting for entry quality "
+                f"({estimated_return * 100:.1f}% vs trigger -{trigger_loss_pct * 100:.1f}%)"
+            ),
+            metadata=metadata,
+        )
+    return ExitGuardDecision(
+        action="exit",
+        reason=(
+            "exit confirmed because the executable loss breached the adjusted trigger "
+            f"({estimated_return * 100:.1f}% vs trigger -{trigger_loss_pct * 100:.1f}%)"
+        ),
+        metadata=metadata,
+    )
+
+
 def _load_stop_loss_candidates(*, real_money: bool) -> list[StopLossCandidate]:
     conn = get_conn()
     try:
@@ -2172,6 +2480,50 @@ def _build_stop_loss_reason(*, estimated_return: float, max_loss_pct: float) -> 
     )
 
 
+def _normalize_exit_snapshot(
+    snapshot: dict[str, Any] | None,
+    raw_book: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized = dict(snapshot or {})
+    bids = raw_book.get("bids", []) if isinstance(raw_book, dict) else []
+    asks = raw_book.get("asks", []) if isinstance(raw_book, dict) else []
+
+    if normalized.get("best_bid") in {None, ""} and bids:
+        try:
+            normalized["best_bid"] = float(bids[0].get("price") or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            pass
+    if normalized.get("best_ask") in {None, ""} and asks:
+        try:
+            normalized["best_ask"] = float(asks[0].get("price") or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            pass
+    if normalized.get("mid") in {None, "", 0, 0.0}:
+        try:
+            best_bid = float(normalized.get("best_bid") or 0.0)
+            best_ask = float(normalized.get("best_ask") or 0.0)
+        except (TypeError, ValueError):
+            best_bid = 0.0
+            best_ask = 0.0
+        if best_bid > 0 and best_ask > 0:
+            normalized["mid"] = (best_bid + best_ask) / 2.0
+
+    if normalized.get("bid_depth_usd") in {None, "", 0, 0.0} and bids:
+        normalized["bid_depth_usd"] = sum(
+            float(level.get("size") or 0.0) * float(level.get("price") or 0.0)
+            for level in bids[:5]
+            if isinstance(level, dict)
+        )
+    if normalized.get("ask_depth_usd") in {None, "", 0, 0.0} and asks:
+        normalized["ask_depth_usd"] = sum(
+            float(level.get("size") or 0.0) * float(level.get("price") or 0.0)
+            for level in asks[:5]
+            if isinstance(level, dict)
+        )
+
+    return normalized
+
+
 def _run_stop_loss_checks(
     tracker: PolymarketTracker,
     executor: PolymarketExecutor,
@@ -2187,6 +2539,7 @@ def _run_stop_loss_checks(
 
     now_ts = int(time.time())
     max_loss_pct = stop_loss_max_loss_pct()
+    hard_exit_loss_pct = max_loss_pct + 0.10
     min_hold_seconds = stop_loss_min_hold_seconds()
     candidates = _load_stop_loss_candidates(real_money=real_money)
     for candidate in candidates:
@@ -2246,6 +2599,7 @@ def _run_stop_loss_checks(
             )
             continue
 
+        snapshot = _normalize_exit_snapshot(snapshot, raw_book)
         estimated_return = (float(exit_economics.net_proceeds_usd) / open_size_usd) - 1.0
         if estimated_return > (-max_loss_pct + 1e-9):
             continue
@@ -2263,10 +2617,39 @@ def _run_stop_loss_checks(
         if quoted_price <= 0:
             continue
 
-        reason = _build_stop_loss_reason(
+        decision = _evaluate_exit_guard(
+            candidate=candidate,
+            entries=entries,
+            snapshot=snapshot,
+            market_meta=market_meta,
+            quoted_price=quoted_price,
             estimated_return=estimated_return,
             max_loss_pct=max_loss_pct,
+            open_size_usd=open_size_usd,
+            open_shares=open_shares,
         )
+        _persist_exit_audit(
+            candidate=candidate,
+            real_money=real_money,
+            decision=decision,
+            estimated_return=estimated_return,
+            max_loss_pct=max_loss_pct,
+            hard_exit_loss_pct=hard_exit_loss_pct,
+            open_size_usd=open_size_usd,
+            open_shares=open_shares,
+            quoted_price=quoted_price,
+            snapshot=snapshot,
+        )
+        if decision.action != "exit":
+            logger.info(
+                "Exit guard held %s/%s: %s",
+                candidate.market_id[:12],
+                candidate.side.upper(),
+                decision.reason,
+            )
+            continue
+
+        reason = decision.reason
         trade_id = f"stop-loss-{uuid.uuid4().hex}"
         event = TradeEvent(
             trade_id=trade_id,
@@ -2288,6 +2671,7 @@ def _run_stop_loss_checks(
                 "risk_action": "stop_loss",
                 "estimated_return": estimated_return,
                 "max_loss_pct": max_loss_pct,
+                "exit_guard": decision.metadata,
                 "entered_at": candidate.entered_at,
             },
             raw_market_metadata=market_meta or {},
@@ -2346,6 +2730,8 @@ def _run_stop_loss_checks(
                 "reason": reason,
                 "estimated_return": round(estimated_return, 6),
                 "stop_loss_limit_pct": max_loss_pct,
+                "hard_exit_loss_pct": round(hard_exit_loss_pct, 6),
+                "exit_guard": decision.metadata,
                 "ts": int(time.time()),
             }
         )

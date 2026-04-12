@@ -132,23 +132,37 @@ class PolymarketTracker:
         conn = get_conn()
         try:
             rows = conn.execute(
-                "SELECT wallet_address, last_source_ts, last_trade_ids_json FROM wallet_cursors"
+                """
+                SELECT
+                    CAST(wallet_address AS BLOB) AS wallet_address_blob,
+                    last_source_ts,
+                    CAST(last_trade_ids_json AS BLOB) AS last_trade_ids_blob
+                FROM wallet_cursors
+                """
             ).fetchall()
         finally:
             conn.close()
 
         cursors: dict[str, WalletCursor] = {}
         for row in rows:
-            wallet = str(row["wallet_address"] or "").strip().lower()
+            wallet_raw = row["wallet_address_blob"]
+            if isinstance(wallet_raw, bytes):
+                wallet = wallet_raw.decode("utf-8", errors="ignore").strip().lower()
+            else:
+                wallet = str(wallet_raw or "").strip().lower()
             if not wallet:
                 continue
             try:
+                ids_payload = row["last_trade_ids_blob"]
+                if isinstance(ids_payload, bytes):
+                    ids_payload = ids_payload.decode("utf-8", errors="ignore")
                 ids = {
                     str(value).strip()
-                    for value in json.loads(row["last_trade_ids_json"] or "[]")
+                    for value in json.loads(ids_payload or "[]")
                     if str(value).strip()
                 }
             except Exception:
+                logger.warning("Skipping malformed wallet cursor ids for %s", wallet)
                 ids = set()
             cursors[wallet] = WalletCursor(
                 last_source_ts=int(row["last_source_ts"] or 0),

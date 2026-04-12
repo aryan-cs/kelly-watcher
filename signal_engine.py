@@ -9,13 +9,21 @@ import numpy as np
 from adaptive_confidence import adaptive_min_confidence_for_signal
 from beliefs import adjust_heuristic_confidence
 from config import (
+    allowed_entry_price_bands,
+    allowed_time_to_close_bands,
+    entry_price_band_label,
     heuristic_max_entry_price,
+    heuristic_allowed_entry_price_bands,
     heuristic_min_entry_price,
+    heuristic_min_time_to_close_seconds,
     model_edge_high_confidence,
     model_edge_high_threshold,
     model_edge_mid_confidence,
     model_edge_mid_threshold,
+    model_min_time_to_close_seconds,
     model_path,
+    time_to_close_band_label,
+    xgboost_allowed_entry_price_bands,
 )
 from economic_model import apply_probability_calibrator, expected_return_to_confidence, inverse_return_target
 from features import FEATURE_COLS, build_feature_map
@@ -205,18 +213,59 @@ class SignalEngine:
             if 0.0 < market_features.execution_price < 1.0
             else market_features.mid
         )
+        time_to_close_seconds = max(float(getattr(market_features, "days_to_res", 0.0) or 0.0) * 86400.0, 0.0)
+        time_to_close_band = time_to_close_band_label(int(time_to_close_seconds))
+        min_time_to_close_seconds = float(heuristic_min_time_to_close_seconds())
         min_entry_price = heuristic_min_entry_price()
         max_entry_price = heuristic_max_entry_price()
+        entry_price_band = entry_price_band_label(execution_price)
+        global_allowed_entry_price_bands = allowed_entry_price_bands()
+        global_allowed_time_to_close_bands = allowed_time_to_close_bands()
+        mode_allowed_entry_price_bands = heuristic_allowed_entry_price_bands()
         min_market_score, band_progress = self._heuristic_min_market_score(
             execution_price,
             min_entry_price,
             max_entry_price,
         )
         passed_confidence = adjusted >= min_floor
+        passed_global_band_filter = not global_allowed_entry_price_bands or entry_price_band in global_allowed_entry_price_bands
+        passed_global_horizon_filter = (
+            not global_allowed_time_to_close_bands or time_to_close_band in global_allowed_time_to_close_bands
+        )
+        passed_band_filter = not mode_allowed_entry_price_bands or entry_price_band in mode_allowed_entry_price_bands
         passed_entry_price = execution_price >= min_entry_price and execution_price < max_entry_price
         passed_market_score = market_score >= min_market_score
-        passed = passed_confidence and passed_entry_price and passed_market_score
-        if not passed_entry_price:
+        passed_horizon = time_to_close_seconds >= min_time_to_close_seconds
+        passed = (
+            passed_confidence
+            and passed_global_band_filter
+            and passed_global_horizon_filter
+            and passed_band_filter
+            and passed_entry_price
+            and passed_market_score
+            and passed_horizon
+        )
+        if not passed_global_horizon_filter:
+            reason = (
+                f"time to close band {time_to_close_band} outside allowlist "
+                f"{','.join(global_allowed_time_to_close_bands)}"
+            )
+        elif not passed_horizon:
+            reason = (
+                f"heuristic time to close {time_to_close_seconds:.0f}s "
+                f"< min {min_time_to_close_seconds:.0f}s"
+            )
+        elif not passed_global_band_filter:
+            reason = (
+                f"entry band {entry_price_band} outside global allowlist "
+                f"{','.join(global_allowed_entry_price_bands)}"
+            )
+        elif not passed_band_filter:
+            reason = (
+                f"heuristic entry band {entry_price_band} outside allowlist "
+                f"{','.join(mode_allowed_entry_price_bands)}"
+            )
+        elif not passed_entry_price:
             reason = (
                 f"heuristic entry price {execution_price:.3f} outside band "
                 f"{min_entry_price:.3f}-{max_entry_price:.3f}"
@@ -236,10 +285,17 @@ class SignalEngine:
             "belief_evidence": belief.evidence,
             "min_confidence": min_floor,
             "entry_price": round(execution_price, 4),
+            "entry_price_band": entry_price_band,
+            "global_allowed_entry_price_bands": list(global_allowed_entry_price_bands),
             "min_entry_price": round(min_entry_price, 4),
             "max_entry_price": round(max_entry_price, 4),
+            "allowed_entry_price_bands": list(mode_allowed_entry_price_bands),
             "min_market_score": round(min_market_score, 4),
             "band_progress": round(band_progress, 4),
+            "time_to_close_seconds": round(time_to_close_seconds, 3),
+            "time_to_close_band": time_to_close_band,
+            "allowed_time_to_close_bands": list(global_allowed_time_to_close_bands),
+            "min_time_to_close_seconds": round(min_time_to_close_seconds, 3),
             "adaptive_floor": adaptive_floor.as_dict(),
             "passed": passed,
             "reason": reason,
@@ -291,6 +347,13 @@ class SignalEngine:
             dtype=float,
         )
         execution_price = market_features.execution_price if market_features.execution_price > 0 else market_features.mid
+        time_to_close_seconds = max(float(getattr(market_features, "days_to_res", 0.0) or 0.0) * 86400.0, 0.0)
+        time_to_close_band = time_to_close_band_label(int(time_to_close_seconds))
+        min_time_to_close_seconds = float(model_min_time_to_close_seconds())
+        entry_price_band = entry_price_band_label(execution_price)
+        global_allowed_entry_price_bands = allowed_entry_price_bands()
+        global_allowed_time_to_close_bands = allowed_time_to_close_bands()
+        mode_allowed_entry_price_bands = xgboost_allowed_entry_price_bands()
         if self._xgb_prediction_mode == "expected_return":
             expected_return = float(inverse_return_target(self._xgb.predict(ordered)[0]))
             base_confidence = float(expected_return_to_confidence(expected_return, execution_price))
@@ -311,19 +374,48 @@ class SignalEngine:
             edge_threshold = model_edge_high_threshold()
         elif confidence >= model_edge_mid_confidence():
             edge_threshold = model_edge_mid_threshold()
-        passed = edge >= edge_threshold
-        reason = (
-            "passed model edge threshold"
-            if passed
-            else f"model edge {edge:.3f} < threshold {edge_threshold:.3f}"
+        passed_global_band_filter = not global_allowed_entry_price_bands or entry_price_band in global_allowed_entry_price_bands
+        passed_global_horizon_filter = (
+            not global_allowed_time_to_close_bands or time_to_close_band in global_allowed_time_to_close_bands
         )
+        passed_horizon = time_to_close_seconds >= min_time_to_close_seconds
+        passed_band_filter = not mode_allowed_entry_price_bands or entry_price_band in mode_allowed_entry_price_bands
+        passed = passed_global_horizon_filter and passed_horizon and passed_global_band_filter and passed_band_filter and edge >= edge_threshold
+        if not passed_global_horizon_filter:
+            reason = (
+                f"time to close band {time_to_close_band} outside allowlist "
+                f"{','.join(global_allowed_time_to_close_bands)}"
+            )
+        elif not passed_horizon:
+            reason = f"model time to close {time_to_close_seconds:.0f}s < min {min_time_to_close_seconds:.0f}s"
+        elif not passed_global_band_filter:
+            reason = (
+                f"entry band {entry_price_band} outside global allowlist "
+                f"{','.join(global_allowed_entry_price_bands)}"
+            )
+        elif not passed_band_filter:
+            reason = (
+                f"model entry band {entry_price_band} outside allowlist "
+                f"{','.join(mode_allowed_entry_price_bands)}"
+            )
+        elif passed:
+            reason = "passed model edge threshold"
+        else:
+            reason = f"model edge {edge:.3f} < threshold {edge_threshold:.3f}"
         return {
             "confidence": round(confidence, 4),
             "raw_confidence": round(base_confidence if base_confidence is not None else confidence, 4),
             "expected_return": round(expected_return, 4) if expected_return is not None else None,
             "edge": round(edge, 4),
+            "entry_price_band": entry_price_band,
+            "global_allowed_entry_price_bands": list(global_allowed_entry_price_bands),
+            "allowed_entry_price_bands": list(mode_allowed_entry_price_bands),
             "edge_threshold": round(edge_threshold, 4),
             "base_edge_threshold": round(base_edge_threshold, 4),
+            "time_to_close_seconds": round(time_to_close_seconds, 3),
+            "time_to_close_band": time_to_close_band,
+            "allowed_time_to_close_bands": list(global_allowed_time_to_close_bands),
+            "min_time_to_close_seconds": round(min_time_to_close_seconds, 3),
             "passed": passed,
             "reason": reason,
             "veto": None,

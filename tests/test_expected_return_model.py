@@ -146,6 +146,95 @@ class ExpectedReturnModelTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(result["reason"], "heuristic entry price 0.420 outside band 0.450-0.500")
 
+    def test_signal_engine_blocks_heuristic_entries_outside_allowlisted_band(self) -> None:
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "signal_engine.model_path",
+            return_value="/tmp/kelly-watcher-missing-model.joblib",
+        ):
+            engine = signal_engine.SignalEngine()
+
+        market_features = SimpleNamespace(execution_price=0.66, mid=0.66, days_to_res=0.5)
+        belief = SimpleNamespace(
+            adjusted_confidence=0.7,
+            prior_confidence=0.5,
+            blend=0.0,
+            evidence=0,
+        )
+        adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
+
+        with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
+            "signal_engine.adjust_heuristic_confidence",
+            return_value=belief,
+        ), patch(
+            "signal_engine.adaptive_min_confidence_for_signal",
+            return_value=adaptive_floor,
+        ), patch(
+            "signal_engine.heuristic_min_entry_price",
+            return_value=0.60,
+        ), patch(
+            "signal_engine.heuristic_max_entry_price",
+            return_value=0.75,
+        ), patch(
+            "signal_engine.heuristic_allowed_entry_price_bands",
+            return_value=(">=0.70",),
+        ), patch(
+            "signal_engine.heuristic_min_time_to_close_seconds",
+            return_value=0,
+        ):
+            result = engine._evaluate_heuristic(
+                SimpleNamespace(),
+                market_features,
+                {"score": 0.8, "veto": None},
+            )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["entry_price_band"], "0.60-0.69")
+        self.assertEqual(result["reason"], "heuristic entry band 0.60-0.69 outside allowlist >=0.70")
+
+    def test_signal_engine_blocks_heuristic_entries_below_min_time_to_close(self) -> None:
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "signal_engine.model_path",
+            return_value="/tmp/kelly-watcher-missing-model.joblib",
+        ):
+            engine = signal_engine.SignalEngine()
+
+        market_features = SimpleNamespace(execution_price=0.70, mid=0.70, days_to_res=0.01)
+        belief = SimpleNamespace(
+            adjusted_confidence=0.72,
+            prior_confidence=0.5,
+            blend=0.0,
+            evidence=0,
+        )
+        adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
+
+        with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
+            "signal_engine.adjust_heuristic_confidence",
+            return_value=belief,
+        ), patch(
+            "signal_engine.adaptive_min_confidence_for_signal",
+            return_value=adaptive_floor,
+        ), patch(
+            "signal_engine.heuristic_min_entry_price",
+            return_value=0.65,
+        ), patch(
+            "signal_engine.heuristic_max_entry_price",
+            return_value=0.75,
+        ), patch(
+            "signal_engine.heuristic_allowed_entry_price_bands",
+            return_value=(),
+        ), patch(
+            "signal_engine.heuristic_min_time_to_close_seconds",
+            return_value=3600,
+        ):
+            result = engine._evaluate_heuristic(
+                SimpleNamespace(),
+                market_features,
+                {"score": 0.8, "veto": None},
+            )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "heuristic time to close 864s < min 3600s")
+
     def test_signal_engine_blocks_heuristic_entries_with_weak_market_score_near_lower_band(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
             "signal_engine.model_path",
@@ -224,6 +313,102 @@ class ExpectedReturnModelTest(unittest.TestCase):
         self.assertEqual(result["reason"], "passed heuristic threshold")
         self.assertAlmostEqual(result["min_market_score"], 0.61, places=4)
 
+    def test_signal_engine_blocks_heuristic_entries_outside_global_band_allowlist(self) -> None:
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "signal_engine.model_path",
+            return_value="/tmp/kelly-watcher-missing-model.joblib",
+        ):
+            engine = signal_engine.SignalEngine()
+
+        market_features = SimpleNamespace(execution_price=0.66, mid=0.66, days_to_res=0.5)
+        belief = SimpleNamespace(
+            adjusted_confidence=0.7,
+            prior_confidence=0.5,
+            blend=0.0,
+            evidence=0,
+        )
+        adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
+
+        with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
+            "signal_engine.adjust_heuristic_confidence",
+            return_value=belief,
+        ), patch(
+            "signal_engine.adaptive_min_confidence_for_signal",
+            return_value=adaptive_floor,
+        ), patch(
+            "signal_engine.allowed_entry_price_bands",
+            return_value=(">=0.70",),
+        ), patch(
+            "signal_engine.allowed_time_to_close_bands",
+            return_value=(),
+        ), patch(
+            "signal_engine.heuristic_allowed_entry_price_bands",
+            return_value=(),
+        ), patch(
+            "signal_engine.heuristic_min_entry_price",
+            return_value=0.65,
+        ), patch(
+            "signal_engine.heuristic_max_entry_price",
+            return_value=0.75,
+        ), patch(
+            "signal_engine.heuristic_min_time_to_close_seconds",
+            return_value=0.0,
+        ):
+            result = engine._evaluate_heuristic(
+                SimpleNamespace(),
+                market_features,
+                {"score": 0.8, "veto": None},
+            )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["entry_price_band"], "0.60-0.69")
+        self.assertEqual(result["reason"], "entry band 0.60-0.69 outside global allowlist >=0.70")
+
+    def test_signal_engine_blocks_model_entries_outside_global_horizon_allowlist(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.35)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.01},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            market_features = SimpleNamespace(execution_price=0.4, mid=0.4, days_to_res=0.5)
+            with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch.object(
+                engine.market_scorer,
+                "score",
+                return_value={"score": 0.7, "veto": None},
+            ), patch(
+                "signal_engine.build_feature_map",
+                return_value={column: 0.5 for column in FEATURE_COLS[:3]},
+            ), patch(
+                "signal_engine.allowed_entry_price_bands",
+                return_value=(),
+            ), patch(
+                "signal_engine.allowed_time_to_close_bands",
+                return_value=(">3d",),
+            ), patch(
+                "signal_engine.xgboost_allowed_entry_price_bands",
+                return_value=(),
+            ), patch(
+                "signal_engine.model_min_time_to_close_seconds",
+                return_value=0.0,
+            ):
+                result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["time_to_close_band"], "2h-12h")
+        self.assertEqual(result["reason"], "time to close band 2h-12h outside allowlist >3d")
+
     def test_signal_engine_runtime_info_reports_contract_mismatch(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
@@ -276,6 +461,89 @@ class ExpectedReturnModelTest(unittest.TestCase):
             self.assertTrue(runtime["model_runtime_compatible"])
             self.assertEqual(runtime["model_fallback_reason"], "")
             self.assertGreater(int(runtime["model_loaded_at"] or 0), 0)
+
+    def test_signal_engine_blocks_model_entries_outside_allowlisted_band(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.35)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.01},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            market_features = SimpleNamespace(execution_price=0.58, mid=0.58, days_to_res=0.5)
+            with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch.object(
+                engine.market_scorer,
+                "score",
+                return_value={"score": 0.7, "veto": None},
+            ), patch(
+                "signal_engine.build_feature_map",
+                return_value={column: 0.5 for column in FEATURE_COLS[:3]},
+            ), patch(
+                "signal_engine.expected_return_to_confidence",
+                return_value=0.8,
+            ), patch(
+                "signal_engine.xgboost_allowed_entry_price_bands",
+                return_value=(">=0.70",),
+            ), patch(
+                "signal_engine.model_min_time_to_close_seconds",
+                return_value=0,
+            ):
+                result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
+
+            self.assertFalse(result["passed"])
+            self.assertEqual(result["entry_price_band"], "0.55-0.59")
+            self.assertEqual(result["reason"], "model entry band 0.55-0.59 outside allowlist >=0.70")
+
+    def test_signal_engine_blocks_model_entries_below_min_time_to_close(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.35)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.01},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            market_features = SimpleNamespace(execution_price=0.58, mid=0.58, days_to_res=0.01)
+            with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch.object(
+                engine.market_scorer,
+                "score",
+                return_value={"score": 0.7, "veto": None},
+            ), patch(
+                "signal_engine.build_feature_map",
+                return_value={column: 0.5 for column in FEATURE_COLS[:3]},
+            ), patch(
+                "signal_engine.expected_return_to_confidence",
+                return_value=0.8,
+            ), patch(
+                "signal_engine.xgboost_allowed_entry_price_bands",
+                return_value=(),
+            ), patch(
+                "signal_engine.model_min_time_to_close_seconds",
+                return_value=3600,
+            ):
+                result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
+
+            self.assertFalse(result["passed"])
+            self.assertEqual(result["reason"], "model time to close 864s < min 3600s")
 
 
 if __name__ == "__main__":

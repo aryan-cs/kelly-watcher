@@ -33,7 +33,9 @@ from config import (
     exposure_override_min_skips,
     exposure_override_total_cap_fraction,
     discovery_poll_interval_multiplier,
+    heuristic_allowed_entry_price_bands,
     heuristic_max_entry_price,
+    heuristic_min_time_to_close_seconds,
     hot_wallet_count,
     live_min_shadow_resolved,
     live_require_shadow_history,
@@ -55,6 +57,7 @@ from config import (
     min_execution_window_seconds,
     min_bet_usd,
     min_confidence,
+    model_min_time_to_close_seconds,
     poll_interval,
     private_key,
     retrain_base_cadence,
@@ -82,6 +85,7 @@ from config import (
     warm_poll_interval_multiplier,
     warm_wallet_count,
     watched_wallets,
+    xgboost_allowed_entry_price_bands,
 )
 from dashboard_api import DashboardApiServer, start_dashboard_api_server
 from db import DB_PATH, get_conn, init_db
@@ -2775,6 +2779,10 @@ def _validate_startup() -> None:
         and min_entry_price >= max_entry_price
     ):
         errors.append("HEURISTIC_MIN_ENTRY_PRICE must be smaller than HEURISTIC_MAX_ENTRY_PRICE")
+    _capture_config(heuristic_allowed_entry_price_bands)
+    _capture_config(heuristic_min_time_to_close_seconds)
+    _capture_config(xgboost_allowed_entry_price_bands)
+    _capture_config(model_min_time_to_close_seconds)
     mid_edge_confidence = _capture_config(model_edge_mid_confidence)
     high_edge_confidence = _capture_config(model_edge_high_confidence)
     mid_edge_threshold = _capture_config(model_edge_mid_threshold)

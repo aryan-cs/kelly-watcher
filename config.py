@@ -13,6 +13,13 @@ from env_profile import (
     repo_env_path_for_profile,
 )
 from runtime_paths import MODEL_ARTIFACT_PATH, REPO_ROOT
+from segment_policy import (
+    ENTRY_PRICE_BANDS,
+    TIME_TO_CLOSE_BANDS,
+    entry_price_band as _entry_price_band_label,
+    normalize_segment_filter,
+    time_to_close_band as _time_to_close_band_label,
+)
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
@@ -25,6 +32,15 @@ _DURATION_UNITS = {
     "d": 86400.0,
     "w": 604800.0,
 }
+ENTRY_PRICE_BAND_CHOICES = (
+    "<0.45",
+    "0.45-0.49",
+    "0.50-0.54",
+    "0.55-0.59",
+    "0.60-0.69",
+    ">=0.70",
+)
+TIME_TO_CLOSE_BAND_CHOICES = TIME_TO_CLOSE_BANDS
 
 
 class ConfigError(ValueError):
@@ -140,6 +156,26 @@ def _get_env_file_bounded_float(
     return value
 
 
+def _get_env_file_csv_choices(name: str, *, default: str = "", allowed: tuple[str, ...]) -> tuple[str, ...]:
+    raw = _get_env_file_value(name)
+    if raw is None:
+        raw = _get(name, default)
+    values = [part.strip() for part in str(raw or "").split(",") if part.strip()]
+    invalid = [value for value in values if value not in allowed]
+    if invalid:
+        raise ConfigError(
+            f"{name} has invalid values {invalid!r}; allowed values are {list(allowed)!r}"
+        )
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return tuple(ordered)
+
+
 def use_real_money() -> bool:
     return _get_bool("USE_REAL_MONEY", "false")
 
@@ -204,6 +240,58 @@ def heuristic_max_entry_price() -> float:
         "0.75",
         minimum=0.0,
         maximum=1.0,
+    )
+
+
+def heuristic_allowed_entry_price_bands() -> tuple[str, ...]:
+    return _get_env_file_csv_choices(
+        "HEURISTIC_ALLOWED_ENTRY_PRICE_BANDS",
+        default="",
+        allowed=ENTRY_PRICE_BAND_CHOICES,
+    )
+
+
+def xgboost_allowed_entry_price_bands() -> tuple[str, ...]:
+    return _get_env_file_csv_choices(
+        "XGBOOST_ALLOWED_ENTRY_PRICE_BANDS",
+        default="",
+        allowed=ENTRY_PRICE_BAND_CHOICES,
+    )
+
+
+def allowed_entry_price_bands() -> tuple[str, ...]:
+    raw = _get_env_file_value("ALLOWED_ENTRY_PRICE_BANDS") or _get("ALLOWED_ENTRY_PRICE_BANDS", "")
+    return normalize_segment_filter(
+        raw,
+        allowed_values=ENTRY_PRICE_BANDS,
+        field_name="ALLOWED_ENTRY_PRICE_BANDS",
+    )
+
+
+def allowed_time_to_close_bands() -> tuple[str, ...]:
+    raw = _get_env_file_value("ALLOWED_TIME_TO_CLOSE_BANDS") or _get("ALLOWED_TIME_TO_CLOSE_BANDS", "")
+    return normalize_segment_filter(
+        raw,
+        allowed_values=TIME_TO_CLOSE_BANDS,
+        field_name="ALLOWED_TIME_TO_CLOSE_BANDS",
+    )
+
+
+def heuristic_min_time_to_close_seconds() -> float:
+    return _get_duration_seconds(
+        "HEURISTIC_MIN_TIME_TO_CLOSE",
+        "0s",
+        minimum_seconds=0.0,
+        allow_unlimited=False,
+    )
+
+
+def model_min_time_to_close_seconds() -> float:
+    return _get_duration_seconds(
+        "MODEL_MIN_TIME_TO_CLOSE",
+        "0s",
+        minimum_seconds=0.0,
+        allow_unlimited=False,
     )
 
 
@@ -658,6 +746,14 @@ def retrain_min_samples() -> int:
         return max(int(raw), 1)
     except ValueError:
         return 200
+
+
+def entry_price_band_label(value: float | None) -> str:
+    return _entry_price_band_label(value)
+
+
+def time_to_close_band_label(seconds: int) -> str:
+    return _time_to_close_band_label(seconds)
 
 
 def watched_wallets() -> list[str]:

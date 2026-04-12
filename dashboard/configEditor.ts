@@ -321,6 +321,22 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: false
   },
   {
+    key: 'ALLOWED_ENTRY_PRICE_BANDS',
+    label: 'Global Band Allow',
+    kind: 'text',
+    description: 'Optional comma-separated entry-price bands applied before mode-specific checks, for example 0.60-0.69,>=0.70. Leave blank to allow every band. Applies live on the next loop.',
+    defaultValue: '',
+    liveApplies: true
+  },
+  {
+    key: 'ALLOWED_TIME_TO_CLOSE_BANDS',
+    label: 'Global Horizon Allow',
+    kind: 'text',
+    description: 'Optional comma-separated time-to-close bands applied before mode-specific checks, for example 2h-12h,12h-1d. Leave blank to allow every horizon. Applies live on the next loop.',
+    defaultValue: '',
+    liveApplies: true
+  },
+  {
     key: 'HEURISTIC_MIN_ENTRY_PRICE',
     label: 'Heuristic Entry Min',
     kind: 'float',
@@ -334,6 +350,22 @@ export const editableConfigFields: EditableConfigField[] = [
     kind: 'float',
     description: 'Upper bound of the heuristic entry-price band. Prices at or above this level are rejected on the heuristic path. Applies live on the next loop.',
     defaultValue: '0.75',
+    liveApplies: true
+  },
+  {
+    key: 'HEURISTIC_ALLOWED_ENTRY_PRICE_BANDS',
+    label: 'Heuristic Band Allowlist',
+    kind: 'text',
+    description: 'Optional comma-separated entry-price bands for heuristic trades, for example 0.60-0.69,>=0.70. Leave blank to allow every band inside the heuristic entry range. Applies live on the next loop.',
+    defaultValue: '',
+    liveApplies: true
+  },
+  {
+    key: 'HEURISTIC_MIN_TIME_TO_CLOSE',
+    label: 'Heur Min Horizon',
+    kind: 'duration',
+    description: 'Minimum time remaining to resolution for heuristic entries. Leave at 0s to disable this filter. Applies live on the next loop.',
+    defaultValue: '0s',
     liveApplies: true
   },
   {
@@ -367,6 +399,22 @@ export const editableConfigFields: EditableConfigField[] = [
     description: 'Required model edge once confidence reaches the high-confidence cutoff. Restart bot to apply.',
     defaultValue: '0.0',
     liveApplies: false
+  },
+  {
+    key: 'XGBOOST_ALLOWED_ENTRY_PRICE_BANDS',
+    label: 'Model Band Allowlist',
+    kind: 'text',
+    description: 'Optional comma-separated entry-price bands for model-driven trades, for example 0.55-0.59,0.60-0.69. Leave blank to allow every band. Applies live on the next loop.',
+    defaultValue: '',
+    liveApplies: true
+  },
+  {
+    key: 'MODEL_MIN_TIME_TO_CLOSE',
+    label: 'Model Min Horizon',
+    kind: 'duration',
+    description: 'Minimum time remaining to resolution for model-driven entries. Leave at 0s to disable this filter. Applies live on the next loop.',
+    defaultValue: '0s',
+    liveApplies: true
   },
   {
     key: 'MIN_BET_USD',

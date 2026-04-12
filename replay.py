@@ -1087,19 +1087,7 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
 
 
 def _entry_price_band(value: float | None) -> str:
-    if value is None:
-        return "unknown"
-    if value < 0.45:
-        return ENTRY_PRICE_BANDS[0]
-    if value < 0.50:
-        return ENTRY_PRICE_BANDS[1]
-    if value < 0.55:
-        return ENTRY_PRICE_BANDS[2]
-    if value < 0.60:
-        return ENTRY_PRICE_BANDS[3]
-    if value < 0.70:
-        return ENTRY_PRICE_BANDS[4]
-    return ENTRY_PRICE_BANDS[5]
+    return entry_price_band_label(value)
 
 
 def _time_to_close_band(seconds: int) -> str:

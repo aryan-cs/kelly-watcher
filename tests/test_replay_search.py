@@ -116,6 +116,57 @@ class ReplaySearchTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown replay policy key"):
             replay_search._load_grid(Args())
 
+    def test_main_can_aggregate_multiple_time_windows(self) -> None:
+        calls: list[tuple[int | None, int | None]] = []
+
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            calls.append((start_ts, end_ts))
+            pnl = 20.0 if start_ts == 1 else -5.0
+            return {
+                "run_id": len(calls),
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": pnl,
+                "max_drawdown_pct": 0.04 if pnl > 0 else 0.08,
+                "accepted_count": 6,
+                "resolved_count": 6,
+                "rejected_count": 1,
+                "unresolved_count": 0,
+                "trade_count": 7,
+                "win_rate": 2 / 3 if pnl > 0 else 1 / 3,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--min-positive-windows",
+            "1",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["candidate_count"], 1)
+        self.assertEqual(payload["best_feasible"]["result"]["window_count"], 2)
+        self.assertEqual(payload["best_feasible"]["result"]["positive_window_count"], 1)
+        self.assertEqual(payload["best_feasible"]["result"]["total_pnl_usd"], 15.0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], (1, 2_592_001))
+        self.assertEqual(calls[1], (2_592_001, 5_184_001))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -476,6 +476,8 @@ def init_db() -> None:
             policy_version          TEXT NOT NULL DEFAULT '',
             policy_json             TEXT NOT NULL DEFAULT '{}',
             notes                   TEXT NOT NULL DEFAULT '',
+            window_start_ts         INTEGER,
+            window_end_ts           INTEGER,
             initial_bankroll_usd    REAL NOT NULL DEFAULT 0,
             final_bankroll_usd      REAL NOT NULL DEFAULT 0,
             total_pnl_usd           REAL NOT NULL DEFAULT 0,
@@ -651,6 +653,14 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_replay_trades_trade_log_id ON replay_trades(trade_log_id);
         CREATE INDEX IF NOT EXISTS idx_segment_metrics_run_kind ON segment_metrics(replay_run_id, segment_kind);
         """
+    )
+    _ensure_table_columns(
+        conn,
+        "replay_runs",
+        {
+            "window_start_ts": "INTEGER",
+            "window_end_ts": "INTEGER",
+        },
     )
     _ensure_table_columns(
         conn,

@@ -108,6 +108,8 @@ def run_replay(
     db_path: str | Path | None = None,
     label: str = "",
     notes: str = "",
+    start_ts: int | None = None,
+    end_ts: int | None = None,
 ) -> dict[str, Any]:
     resolved_policy = policy if isinstance(policy, ReplayPolicy) else ReplayPolicy.from_payload(policy)
     path = Path(db_path or TRADING_DB_PATH)
@@ -118,7 +120,15 @@ def run_replay(
     conn.execute("PRAGMA foreign_keys=ON")
     _ensure_replay_schema(conn)
 
-    run_row = _simulate(conn, resolved_policy, label=label, notes=notes, started_at=now)
+    run_row = _simulate(
+        conn,
+        resolved_policy,
+        label=label,
+        notes=notes,
+        started_at=now,
+        start_ts=start_ts,
+        end_ts=end_ts,
+    )
 
     conn.close()
     return run_row
@@ -131,6 +141,8 @@ def _simulate(
     label: str,
     notes: str,
     started_at: int,
+    start_ts: int | None,
+    end_ts: int | None,
 ) -> dict[str, Any]:
     rows = conn.execute(
         """
@@ -157,9 +169,17 @@ def _simulate(
         FROM trade_log
         WHERE COALESCE(source_action, 'buy')='buy'
           AND real_money=?
+          AND (? IS NULL OR placed_at >= ?)
+          AND (? IS NULL OR placed_at < ?)
         ORDER BY placed_at ASC, id ASC
         """,
-        (1 if policy.mode == "live" else 0,),
+        (
+            1 if policy.mode == "live" else 0,
+            start_ts,
+            start_ts,
+            end_ts,
+            end_ts,
+        ),
     ).fetchall()
 
     open_positions: list[dict[str, Any]] = []
@@ -442,6 +462,8 @@ def _simulate(
             "policy_version": policy.version(),
             "policy_json": policy_json,
             "notes": notes.strip(),
+            "window_start_ts": start_ts,
+            "window_end_ts": end_ts,
             "initial_bankroll_usd": round(policy.initial_bankroll_usd, 6),
             "final_bankroll_usd": final_bankroll,
             "total_pnl_usd": round(final_bankroll - policy.initial_bankroll_usd, 6),
@@ -462,6 +484,8 @@ def _simulate(
     return {
         "run_id": run_id,
         "policy_version": policy.version(),
+        "window_start_ts": start_ts,
+        "window_end_ts": end_ts,
         "initial_bankroll_usd": round(policy.initial_bankroll_usd, 6),
         "final_bankroll_usd": final_bankroll,
         "total_pnl_usd": round(final_bankroll - policy.initial_bankroll_usd, 6),
@@ -832,6 +856,8 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
             policy_version          TEXT NOT NULL DEFAULT '',
             policy_json             TEXT NOT NULL DEFAULT '{}',
             notes                   TEXT NOT NULL DEFAULT '',
+            window_start_ts         INTEGER,
+            window_end_ts           INTEGER,
             initial_bankroll_usd    REAL NOT NULL DEFAULT 0,
             final_bankroll_usd      REAL NOT NULL DEFAULT 0,
             total_pnl_usd           REAL NOT NULL DEFAULT 0,
@@ -884,6 +910,11 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_segment_metrics_run_kind ON segment_metrics(replay_run_id, segment_kind);
         """
     )
+    for column_name in ("window_start_ts", "window_end_ts"):
+        try:
+            conn.execute(f"ALTER TABLE replay_runs ADD COLUMN {column_name} INTEGER")
+        except sqlite3.OperationalError:
+            pass
 
 
 def _entry_price_band(value: float | None) -> str:

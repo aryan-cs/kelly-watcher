@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
 
 from replay import ReplayPolicy, run_replay
+from runtime_paths import TRADING_DB_PATH
 
 
 def _load_payload(*, file_path: str, inline_json: str) -> dict[str, Any] | None:
@@ -110,6 +112,88 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         )
 
 
+def _resolve_db_path(raw_path: str) -> Path | None:
+    return Path(raw_path) if raw_path else Path(TRADING_DB_PATH)
+
+
+def _latest_trade_ts(*, db_path: Path | None, mode: str) -> int:
+    target_path = db_path or Path(TRADING_DB_PATH)
+    conn = sqlite3.connect(str(target_path))
+    try:
+        row = conn.execute(
+            """
+            SELECT MAX(placed_at)
+            FROM trade_log
+            WHERE COALESCE(source_action, 'buy')='buy'
+              AND real_money=?
+            """,
+            (1 if mode == "live" else 0,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        raise ValueError("No replayable trades found for the selected mode")
+    return int(row[0])
+
+
+def _build_time_windows(
+    *,
+    db_path: Path | None,
+    mode: str,
+    window_days: int,
+    window_count: int,
+) -> list[tuple[int | None, int | None]]:
+    if window_days <= 0 or window_count <= 1:
+        return [(None, None)]
+
+    window_seconds = max(window_days, 1) * 86400
+    latest_ts = _latest_trade_ts(db_path=db_path, mode=mode)
+    windows: list[tuple[int, int]] = []
+    end_ts = latest_ts + 1
+    for _ in range(max(window_count, 1)):
+        start_ts = max(0, end_ts - window_seconds)
+        windows.append((start_ts, end_ts))
+        end_ts = start_ts
+    windows.reverse()
+    return windows
+
+
+def _aggregate_window_results(
+    window_results: list[dict[str, Any]],
+    *,
+    initial_bankroll_usd: float,
+) -> dict[str, Any]:
+    total_pnl = sum(float(row.get("total_pnl_usd") or 0.0) for row in window_results)
+    accepted_count = sum(int(row.get("accepted_count") or 0) for row in window_results)
+    resolved_count = sum(int(row.get("resolved_count") or 0) for row in window_results)
+    rejected_count = sum(int(row.get("rejected_count") or 0) for row in window_results)
+    unresolved_count = sum(int(row.get("unresolved_count") or 0) for row in window_results)
+    trade_count = sum(int(row.get("trade_count") or 0) for row in window_results)
+    weighted_wins = sum(
+        float(row.get("win_rate") or 0.0) * int(row.get("resolved_count") or 0)
+        for row in window_results
+    )
+    max_drawdown_pct = max((float(row.get("max_drawdown_pct") or 0.0) for row in window_results), default=0.0)
+    positive_window_count = sum(1 for row in window_results if float(row.get("total_pnl_usd") or 0.0) > 0)
+    return {
+        "window_count": len(window_results),
+        "window_results": window_results,
+        "initial_bankroll_usd": initial_bankroll_usd,
+        "final_bankroll_usd": round(initial_bankroll_usd + total_pnl, 6),
+        "total_pnl_usd": round(total_pnl, 6),
+        "max_drawdown_pct": round(max_drawdown_pct, 6),
+        "trade_count": trade_count,
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "unresolved_count": unresolved_count,
+        "resolved_count": resolved_count,
+        "win_rate": round(weighted_wins / resolved_count, 6) if resolved_count else None,
+        "positive_window_count": positive_window_count,
+        "worst_window_pnl_usd": round(min((float(row.get("total_pnl_usd") or 0.0) for row in window_results), default=0.0), 6),
+        "best_window_pnl_usd": round(max((float(row.get("total_pnl_usd") or 0.0) for row in window_results), default=0.0), 6),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a replay policy sweep over a parameter grid.")
     parser.add_argument("--db", default="", help="Path to a trading.db snapshot. Defaults to the runtime DB.")
@@ -127,6 +211,9 @@ def main() -> None:
         help="Penalty multiplier applied to max drawdown in bankroll-dollar terms when ranking candidates.",
     )
     parser.add_argument("--max-combos", type=int, default=256, help="Safety cap on total grid combinations.")
+    parser.add_argument("--window-days", type=int, default=0, help="Replay over rolling windows of this many days instead of the full history.")
+    parser.add_argument("--window-count", type=int, default=1, help="How many most-recent rolling windows to evaluate when --window-days is set.")
+    parser.add_argument("--min-positive-windows", type=int, default=0, help="Minimum count of positive-P&L windows required for feasibility.")
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-count", type=int, default=0, help="Minimum resolved trades required for a candidate to be feasible.")
     parser.add_argument("--min-win-rate", type=float, default=0.0, help="Minimum replay win rate required for a candidate to be feasible.")
@@ -139,22 +226,56 @@ def main() -> None:
     if len(overrides_list) > max(args.max_combos, 1):
         raise ValueError(f"Grid expands to {len(overrides_list)} combinations, above --max-combos={args.max_combos}")
 
+    db_path = _resolve_db_path(args.db)
+    windows = _build_time_windows(
+        db_path=db_path,
+        mode=base_policy.mode,
+        window_days=max(args.window_days, 0),
+        window_count=max(args.window_count, 1),
+    )
     candidates: list[dict[str, Any]] = []
     for index, overrides in enumerate(overrides_list, start=1):
         policy_payload = base_policy.as_dict()
         policy_payload.update(overrides)
         policy = ReplayPolicy.from_payload(policy_payload)
-        result = run_replay(
-            policy=policy,
-            db_path=Path(args.db) if args.db else None,
-            label=f"{args.label_prefix}-{index:03d}",
-            notes=args.notes,
-        )
+        if len(windows) == 1 and windows[0] == (None, None):
+            result = run_replay(
+                policy=policy,
+                db_path=db_path,
+                label=f"{args.label_prefix}-{index:03d}",
+                notes=args.notes,
+            )
+        else:
+            window_results: list[dict[str, Any]] = []
+            for window_index, (start_ts, end_ts) in enumerate(windows, start=1):
+                window_results.append(
+                    run_replay(
+                        policy=policy,
+                        db_path=db_path,
+                        label=f"{args.label_prefix}-{index:03d}-w{window_index:02d}",
+                        notes=args.notes,
+                        start_ts=start_ts,
+                        end_ts=end_ts,
+                    )
+                )
+            result = _aggregate_window_results(
+                window_results,
+                initial_bankroll_usd=policy.initial_bankroll_usd,
+            )
         score = _score_result(
             result,
             initial_bankroll_usd=policy.initial_bankroll_usd,
             drawdown_penalty=max(args.drawdown_penalty, 0.0),
         )
+        constraint_failures = _constraint_failures(
+            result,
+            min_accepted_count=args.min_accepted_count,
+            min_resolved_count=args.min_resolved_count,
+            min_win_rate=max(args.min_win_rate, 0.0),
+            max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
+        )
+        if int(result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
+            constraint_failures.append("positive_window_count")
         candidates.append(
             {
                 "index": index,
@@ -162,13 +283,7 @@ def main() -> None:
                 "overrides": overrides,
                 "policy": policy.as_dict(),
                 "result": result,
-                "constraint_failures": _constraint_failures(
-                    result,
-                    min_accepted_count=args.min_accepted_count,
-                    min_resolved_count=args.min_resolved_count,
-                    min_win_rate=max(args.min_win_rate, 0.0),
-                    max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
-                ),
+                "constraint_failures": constraint_failures,
             }
         )
 
@@ -189,12 +304,14 @@ def main() -> None:
             {
                 "base_policy": base_policy.as_dict(),
                 "grid": grid,
+                "windows": [{"start_ts": start_ts, "end_ts": end_ts} for start_ts, end_ts in windows],
                 "drawdown_penalty": max(args.drawdown_penalty, 0.0),
                 "constraints": {
                     "min_accepted_count": max(args.min_accepted_count, 0),
                     "min_resolved_count": max(args.min_resolved_count, 0),
                     "min_win_rate": max(args.min_win_rate, 0.0),
                     "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
+                    "min_positive_windows": max(args.min_positive_windows, 0),
                 },
                 "candidate_count": len(ranked),
                 "feasible_count": len(feasible),

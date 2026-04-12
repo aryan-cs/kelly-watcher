@@ -69,6 +69,8 @@ def main() -> None:
     parser.add_argument("--notes", default="", help="Optional notes to store with the replay run.")
     parser.add_argument("--policy-file", default="", help="JSON file containing replay policy overrides.")
     parser.add_argument("--policy-json", default="", help="Inline JSON payload containing replay policy overrides.")
+    parser.add_argument("--start-ts", type=int, default=0, help="Optional lower bound on trade placed_at timestamps (inclusive).")
+    parser.add_argument("--end-ts", type=int, default=0, help="Optional upper bound on trade placed_at timestamps (exclusive).")
     args = parser.parse_args()
 
     policy = _load_policy(args)
@@ -77,6 +79,8 @@ def main() -> None:
         db_path=Path(args.db) if args.db else None,
         label=args.label,
         notes=args.notes,
+        start_ts=args.start_ts or None,
+        end_ts=args.end_ts or None,
     )
     print(json.dumps({"policy": policy.as_dict(), "result": result}, indent=2, sort_keys=True))
     print(file=sys.stderr)

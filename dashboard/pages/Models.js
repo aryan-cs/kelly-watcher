@@ -1006,11 +1006,29 @@ function replaySearchSegmentGateSummary(raw) {
         const horizonBands = Array.isArray(payload.allowed_time_to_close_bands)
             ? payload.allowed_time_to_close_bands.map((value) => String(value || '').trim()).filter(Boolean)
             : [];
+        const heuristicBands = Array.isArray(payload.heuristic_allowed_entry_price_bands)
+            ? payload.heuristic_allowed_entry_price_bands.map((value) => String(value || '').trim()).filter(Boolean)
+            : [];
+        const modelBands = Array.isArray(payload.xgboost_allowed_entry_price_bands)
+            ? payload.xgboost_allowed_entry_price_bands.map((value) => String(value || '').trim()).filter(Boolean)
+            : [];
+        const heuristicMinHorizonRaw = payload.heuristic_min_time_to_close_seconds;
+        const modelMinHorizonRaw = payload.model_min_time_to_close_seconds;
+        const heuristicMinHorizon = replayFormatDurationSeconds(typeof heuristicMinHorizonRaw === 'number' ? heuristicMinHorizonRaw : Number(heuristicMinHorizonRaw));
+        const modelMinHorizon = replayFormatDurationSeconds(typeof modelMinHorizonRaw === 'number' ? modelMinHorizonRaw : Number(modelMinHorizonRaw));
         const parts = [];
         if (entryBands.length)
             parts.push(`band ${entryBands.join('|')}`);
         if (horizonBands.length)
             parts.push(`hzn ${horizonBands.join('|')}`);
+        if (heuristicBands.length)
+            parts.push(`heur band ${heuristicBands.join('|')}`);
+        if (heuristicMinHorizon && heuristicMinHorizon !== '0s')
+            parts.push(`heur >=${heuristicMinHorizon}`);
+        if (modelBands.length)
+            parts.push(`model band ${modelBands.join('|')}`);
+        if (modelMinHorizon && modelMinHorizon !== '0s')
+            parts.push(`model >=${modelMinHorizon}`);
         return parts.length ? parts.join(', ') : 'all';
     }
     catch {
@@ -1043,6 +1061,25 @@ function replayDurationSeconds(raw) {
         return null;
     const unitSeconds = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
     return amount * unitSeconds[match[2]];
+}
+function replayFormatDurationSeconds(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0)
+        return '';
+    if (seconds === 0)
+        return '0s';
+    const rounded = Math.round(seconds);
+    const units = [
+        [604800, 'w'],
+        [86400, 'd'],
+        [3600, 'h'],
+        [60, 'm']
+    ];
+    for (const [unitSeconds, suffix] of units) {
+        if (rounded % unitSeconds === 0) {
+            return `${rounded / unitSeconds}${suffix}`;
+        }
+    }
+    return `${rounded}s`;
 }
 function replayConfigValuesEqual(field, currentRaw, recommendedRaw) {
     if (field.kind === 'bool') {

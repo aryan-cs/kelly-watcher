@@ -287,6 +287,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search modes', text: 'Accepted trade mix and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Mode guard', text: 'Per-scorer accepted-count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.'},
       {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.'},
+      {label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
       {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
@@ -1422,6 +1423,110 @@ function replaySearchModeFloorSummary(raw: string | null | undefined): string {
   }
 }
 
+interface ReplaySearchModeRiskSummary {
+  summary: string
+  breachCount: number
+  hasActiveGuard: boolean
+}
+
+function replaySearchCurrentModeRiskSummary(
+  currentRaw: string | null | undefined,
+  constraintsRaw: string | null | undefined
+): ReplaySearchModeRiskSummary {
+  if (!currentRaw || !constraintsRaw) return {summary: '-', breachCount: 0, hasActiveGuard: false}
+  try {
+    const currentParsed = JSON.parse(currentRaw)
+    const constraintsParsed = JSON.parse(constraintsRaw)
+    const rawSummary = currentParsed?.signal_mode_summary
+    if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) {
+      return {summary: '-', breachCount: 0, hasActiveGuard: false}
+    }
+    const constraints = constraintsParsed && typeof constraintsParsed === 'object' && !Array.isArray(constraintsParsed)
+      ? constraintsParsed as Record<string, unknown>
+      : {}
+    const summary = rawSummary as Record<string, unknown>
+    const totalAccepted = Object.values(summary).reduce((sum: number, rawValue: unknown) => {
+      if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) return sum
+      return sum + Number((rawValue as Record<string, unknown>).accepted_count || 0)
+    }, 0)
+
+    const breaches: string[] = []
+    let hasActiveGuard = false
+    const sentinelWorstWindow = -999_999_999
+    for (const [mode, prefix, shareKey, shareDirection] of [
+      ['heuristic', 'heur', 'max_heuristic_accepted_share', 'max'],
+      ['xgboost', 'model', 'min_xgboost_accepted_share', 'min']
+    ] as const) {
+      const rawValue = summary[mode]
+      const payload = rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
+        ? rawValue as Record<string, unknown>
+        : {}
+      const acceptedCount = Number(payload.accepted_count || 0)
+      const resolvedCount = Number(payload.resolved_count || 0)
+      const acceptedShare = totalAccepted > 0 ? acceptedCount / totalAccepted : 0
+      const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0
+      const rawWinRate = payload.win_rate
+      const winRate = rawWinRate == null ? null : Number(rawWinRate)
+      const totalPnlUsd = Number(payload.total_pnl_usd || 0)
+      const rawWorstWindowPnlUsd = payload.worst_window_pnl_usd
+      const worstWindowPnlUsd = rawWorstWindowPnlUsd == null ? totalPnlUsd : Number(rawWorstWindowPnlUsd)
+
+      const minAccepted = Number(constraints[`min_${mode}_accepted_count`] || 0)
+      const minResolved = Number(constraints[`min_${mode}_resolved_count`] || 0)
+      const minResolvedShare = Number(constraints[`min_${mode}_resolved_share`] || 0)
+      const minWinRate = Number(constraints[`min_${mode}_win_rate`] || 0)
+      const minPnlUsd = Number(constraints[`min_${mode}_pnl_usd`] || 0)
+      const minWorstWindowPnlUsd = Number(constraints[`min_${mode}_worst_window_pnl_usd`] ?? sentinelWorstWindow)
+      const shareLimit = Number(constraints[shareKey] || 0)
+
+      if (minAccepted > 0) {
+        hasActiveGuard = true
+        if (acceptedCount < minAccepted) breaches.push(`${prefix} n ${formatCount(acceptedCount)}<${formatCount(minAccepted)}`)
+      }
+      if (minResolved > 0) {
+        hasActiveGuard = true
+        if (resolvedCount < minResolved) breaches.push(`${prefix} r ${formatCount(resolvedCount)}<${formatCount(minResolved)}`)
+      }
+      if (minResolvedShare > 0) {
+        hasActiveGuard = true
+        if (resolvedShare < minResolvedShare) breaches.push(`${prefix} cov ${formatPct(resolvedShare, 0)}<${formatPct(minResolvedShare, 0)}`)
+      }
+      if (minWinRate > 0) {
+        hasActiveGuard = true
+        if (winRate == null || winRate < minWinRate) breaches.push(`${prefix} wr ${formatPct(winRate, 0)}<${formatPct(minWinRate, 0)}`)
+      }
+      if (minPnlUsd !== 0) {
+        hasActiveGuard = true
+        if (totalPnlUsd < minPnlUsd) breaches.push(`${prefix} pnl ${formatDollar(totalPnlUsd)}<${formatDollar(minPnlUsd)}`)
+      }
+      if (minWorstWindowPnlUsd > sentinelWorstWindow) {
+        hasActiveGuard = true
+        if (worstWindowPnlUsd < minWorstWindowPnlUsd) breaches.push(`${prefix} worst ${formatDollar(worstWindowPnlUsd)}<${formatDollar(minWorstWindowPnlUsd)}`)
+      }
+      if (shareLimit > 0) {
+        hasActiveGuard = true
+        if (shareDirection === 'max' && acceptedShare > shareLimit) {
+          breaches.push(`${prefix} mix ${formatPct(acceptedShare, 0)}>${formatPct(shareLimit, 0)}`)
+        }
+        if (shareDirection === 'min' && acceptedShare < shareLimit) {
+          breaches.push(`${prefix} mix ${formatPct(acceptedShare, 0)}<${formatPct(shareLimit, 0)}`)
+        }
+      }
+    }
+    if (!hasActiveGuard) return {summary: 'none', breachCount: 0, hasActiveGuard: false}
+    if (!breaches.length) return {summary: 'clear', breachCount: 0, hasActiveGuard: true}
+    return {
+      summary: breaches.length > 4
+        ? `${breaches.slice(0, 4).join(' | ')} | +${formatCount(breaches.length - 4)} more`
+        : breaches.join(' | '),
+      breachCount: breaches.length,
+      hasActiveGuard: true
+    }
+  } catch {
+    return {summary: '-', breachCount: 0, hasActiveGuard: false}
+  }
+}
+
 interface ReplaySearchConfigSuggestion {
   diffCount: number
   summary: string
@@ -2024,6 +2129,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => replaySearchConfigSuggestion(latestReplaySearch?.config_json, settingsValues, configFieldByKey),
     [configFieldByKey, latestReplaySearch?.config_json, settingsValues]
   )
+  const replaySearchCurrentModeRisk = useMemo(
+    () => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json),
+    [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]
+  )
   const replayLabStats = useMemo<CompactStatItem[]>(
     () => [
       {
@@ -2139,6 +2248,19 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
       },
       {
+        label: 'Cur mode risk',
+        value: replaySearchCurrentModeRisk.summary,
+        color: !latestReplaySearch
+          ? theme.dim
+          : !replaySearchCurrentModeRisk.hasActiveGuard
+            ? theme.dim
+            : replaySearchCurrentModeRisk.breachCount === 0
+              ? theme.green
+              : replaySearchCurrentModeRisk.breachCount >= 3
+                ? theme.red
+                : theme.yellow
+      },
+      {
         label: 'Cur feasible',
         value: latestReplaySearch
           ? `${Number(latestReplaySearch.current_candidate_feasible || 0) > 0 ? 'yes' : 'no'} | ${formatDollar(latestReplaySearch.current_candidate_total_pnl_usd)} / ${formatPct(latestReplaySearch.current_candidate_max_drawdown_pct, 1)}`
@@ -2190,6 +2312,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [
       latestReplay,
       latestReplaySearch,
+      replaySearchCurrentModeRisk,
       replaySearchSuggestedConfig,
       replayBestBand,
       replayBestHorizon,

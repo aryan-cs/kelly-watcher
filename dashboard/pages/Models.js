@@ -80,6 +80,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
             { label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.' },
+            { label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.' },
             { label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.' },
             { label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.' },
             { label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.' },
@@ -1450,7 +1451,7 @@ function replayHeadroomCount(value) {
     const sign = rounded > 0 ? '+' : '';
     return `${sign}${rounded}`;
 }
-function replaySearchBestHeadroomSummary(resultRaw, constraintsRaw) {
+function replaySearchHeadroomSummary(resultRaw, constraintsRaw) {
     if (!resultRaw || !constraintsRaw)
         return { summary: '-', hasActiveGuard: false, closestMarginRatio: null, hasFailure: false };
     try {
@@ -2060,7 +2061,8 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const replaySearchApplyScopeSummary = useMemo(() => replaySearchApplyScope(latestReplaySearch?.config_json, settingsValues, configFieldByKey), [configFieldByKey, latestReplaySearch?.config_json, settingsValues]);
     const replaySearchDeployGap = useMemo(() => replaySearchDeployGapSummary(latestReplaySearch?.policy_json, latestReplaySearch?.config_json), [latestReplaySearch?.config_json, latestReplaySearch?.policy_json]);
     const replaySearchCurrentModeRisk = useMemo(() => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
-    const replaySearchBestHeadroom = useMemo(() => replaySearchBestHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.result_json]);
+    const replaySearchBestHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.result_json]);
+    const replaySearchCurrentHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
     const replayLabStats = useMemo(() => [
         {
             label: 'Last replay',
@@ -2204,6 +2206,19 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                     : replaySearchBestHeadroom.hasFailure
                         ? theme.red
                         : replaySearchBestHeadroom.closestMarginRatio != null && replaySearchBestHeadroom.closestMarginRatio < 0.15
+                        ? theme.yellow
+                        : theme.green
+        },
+        {
+            label: 'Cur headroom',
+            value: replaySearchCurrentHeadroom.summary,
+            color: !latestReplaySearch
+                ? theme.dim
+                : !replaySearchCurrentHeadroom.hasActiveGuard
+                    ? theme.dim
+                    : replaySearchCurrentHeadroom.hasFailure
+                        ? theme.red
+                        : replaySearchCurrentHeadroom.closestMarginRatio != null && replaySearchCurrentHeadroom.closestMarginRatio < 0.15
                             ? theme.yellow
                             : theme.green
         },

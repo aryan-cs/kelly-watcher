@@ -292,6 +292,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.'},
       {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.'},
       {label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.'},
+      {label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.'},
       {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.'},
       {label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.'},
       {label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.'},
@@ -1650,7 +1651,7 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
   }
 }
 
-interface ReplaySearchBestHeadroomSummary {
+interface ReplaySearchHeadroomSummary {
   summary: string
   hasActiveGuard: boolean
   closestMarginRatio: number | null
@@ -1680,10 +1681,10 @@ function replayHeadroomCount(value: number): string {
   return `${sign}${rounded}`
 }
 
-function replaySearchBestHeadroomSummary(
+function replaySearchHeadroomSummary(
   resultRaw: string | null | undefined,
   constraintsRaw: string | null | undefined
-): ReplaySearchBestHeadroomSummary {
+): ReplaySearchHeadroomSummary {
   if (!resultRaw || !constraintsRaw) return {summary: '-', hasActiveGuard: false, closestMarginRatio: null, hasFailure: false}
   try {
     const resultParsed = JSON.parse(resultRaw)
@@ -2485,8 +2486,12 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]
   )
   const replaySearchBestHeadroom = useMemo(
-    () => replaySearchBestHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json),
+    () => replaySearchHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json),
     [latestReplaySearch?.constraints_json, latestReplaySearch?.result_json]
+  )
+  const replaySearchCurrentHeadroom = useMemo(
+    () => replaySearchHeadroomSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json),
+    [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]
   )
   const replayLabStats = useMemo<CompactStatItem[]>(
     () => [
@@ -2632,6 +2637,19 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             : replaySearchBestHeadroom.hasFailure
               ? theme.red
               : replaySearchBestHeadroom.closestMarginRatio != null && replaySearchBestHeadroom.closestMarginRatio < 0.15
+                ? theme.yellow
+                : theme.green
+      },
+      {
+        label: 'Cur headroom',
+        value: replaySearchCurrentHeadroom.summary,
+        color: !latestReplaySearch
+          ? theme.dim
+          : !replaySearchCurrentHeadroom.hasActiveGuard
+            ? theme.dim
+            : replaySearchCurrentHeadroom.hasFailure
+              ? theme.red
+              : replaySearchCurrentHeadroom.closestMarginRatio != null && replaySearchCurrentHeadroom.closestMarginRatio < 0.15
                 ? theme.yellow
                 : theme.green
       },

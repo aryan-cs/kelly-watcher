@@ -158,6 +158,8 @@ def _constraint_failures(
     min_xgboost_win_rate: float,
     min_heuristic_resolved_share: float,
     min_xgboost_resolved_share: float,
+    min_heuristic_pnl_usd: float,
+    min_xgboost_pnl_usd: float,
     max_heuristic_accepted_share: float,
     min_xgboost_accepted_share: float,
 ) -> list[str]:
@@ -201,6 +203,10 @@ def _constraint_failures(
         failures.append("heuristic_resolved_share")
     if min_xgboost_resolved_share > 0 and _resolved_share(signal_mode_summary, "xgboost") < min_xgboost_resolved_share:
         failures.append("xgboost_resolved_share")
+    if float(signal_mode_summary.get("heuristic", {}).get("total_pnl_usd") or 0.0) < min_heuristic_pnl_usd:
+        failures.append("heuristic_total_pnl_usd")
+    if float(signal_mode_summary.get("xgboost", {}).get("total_pnl_usd") or 0.0) < min_xgboost_pnl_usd:
+        failures.append("xgboost_total_pnl_usd")
     heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
     xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
     if max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
@@ -715,6 +721,8 @@ def main() -> None:
     parser.add_argument("--min-xgboost-win-rate", type=float, default=0.0, help="Minimum xgboost win rate required for a candidate to be feasible.")
     parser.add_argument("--min-heuristic-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted heuristic trades that must be resolved.")
     parser.add_argument("--min-xgboost-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted xgboost trades that must be resolved.")
+    parser.add_argument("--min-heuristic-pnl-usd", type=float, default=0.0, help="Minimum replay P&L contribution required from heuristic trades.")
+    parser.add_argument("--min-xgboost-pnl-usd", type=float, default=0.0, help="Minimum replay P&L contribution required from xgboost trades.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
     args = parser.parse_args()
@@ -755,6 +763,8 @@ def main() -> None:
         min_xgboost_win_rate=_clamp_fraction(args.min_xgboost_win_rate),
         min_heuristic_resolved_share=_clamp_fraction(args.min_heuristic_resolved_share),
         min_xgboost_resolved_share=_clamp_fraction(args.min_xgboost_resolved_share),
+        min_heuristic_pnl_usd=float(args.min_heuristic_pnl_usd),
+        min_xgboost_pnl_usd=float(args.min_xgboost_pnl_usd),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
     )
@@ -816,6 +826,8 @@ def main() -> None:
             min_xgboost_win_rate=_clamp_fraction(args.min_xgboost_win_rate),
             min_heuristic_resolved_share=_clamp_fraction(args.min_heuristic_resolved_share),
             min_xgboost_resolved_share=_clamp_fraction(args.min_xgboost_resolved_share),
+            min_heuristic_pnl_usd=float(args.min_heuristic_pnl_usd),
+            min_xgboost_pnl_usd=float(args.min_xgboost_pnl_usd),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         )
@@ -864,6 +876,8 @@ def main() -> None:
         "min_xgboost_win_rate": _clamp_fraction(args.min_xgboost_win_rate),
         "min_heuristic_resolved_share": _clamp_fraction(args.min_heuristic_resolved_share),
         "min_xgboost_resolved_share": _clamp_fraction(args.min_xgboost_resolved_share),
+        "min_heuristic_pnl_usd": float(args.min_heuristic_pnl_usd),
+        "min_xgboost_pnl_usd": float(args.min_xgboost_pnl_usd),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
     }

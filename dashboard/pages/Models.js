@@ -72,7 +72,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.' },
             { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
             { label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.' },
-            { label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.' },
+            { label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and replay-only scorer-path gates on the latest best feasible replay-search candidate.' },
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
@@ -1035,6 +1035,8 @@ function replaySearchSegmentGateSummary(raw) {
             : [];
         const heuristicMinHorizonRaw = payload.heuristic_min_time_to_close_seconds;
         const modelMinHorizonRaw = payload.model_min_time_to_close_seconds;
+        const allowHeuristic = payload.allow_heuristic;
+        const allowXgboost = payload.allow_xgboost;
         const heuristicMinHorizon = replayFormatDurationSeconds(typeof heuristicMinHorizonRaw === 'number' ? heuristicMinHorizonRaw : Number(heuristicMinHorizonRaw));
         const modelMinHorizon = replayFormatDurationSeconds(typeof modelMinHorizonRaw === 'number' ? modelMinHorizonRaw : Number(modelMinHorizonRaw));
         const parts = [];
@@ -1050,6 +1052,10 @@ function replaySearchSegmentGateSummary(raw) {
             parts.push(`model band ${modelBands.join('|')}`);
         if (modelMinHorizon && modelMinHorizon !== '0s')
             parts.push(`model >=${modelMinHorizon}`);
+        if (allowHeuristic === false)
+            parts.push('heur off');
+        if (allowXgboost === false)
+            parts.push('xgb off');
         return parts.length ? parts.join(', ') : 'all';
     }
     catch {

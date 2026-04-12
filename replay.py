@@ -38,6 +38,8 @@ REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "initial_bankroll_usd": "SHADOW_BANKROLL_USD",
     "min_confidence": "MIN_CONFIDENCE",
     "min_bet_usd": "MIN_BET_USD",
+    "allowed_entry_price_bands": "ALLOWED_ENTRY_PRICE_BANDS",
+    "allowed_time_to_close_bands": "ALLOWED_TIME_TO_CLOSE_BANDS",
     "heuristic_min_entry_price": "HEURISTIC_MIN_ENTRY_PRICE",
     "heuristic_max_entry_price": "HEURISTIC_MAX_ENTRY_PRICE",
     "heuristic_allowed_entry_price_bands": "HEURISTIC_ALLOWED_ENTRY_PRICE_BANDS",

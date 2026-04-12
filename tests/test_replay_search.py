@@ -195,7 +195,49 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["candidate_count"], 2)
         self.assertEqual(payload["best_feasible"]["overrides"]["allowed_time_to_close_bands"], ["2h-12h"])
         self.assertEqual(payload["best_feasible"]["result"]["total_pnl_usd"], 70.0)
+        self.assertEqual(payload["best_feasible_config"]["ALLOWED_TIME_TO_CLOSE_BANDS"], "2h-12h")
         self.assertIn("allowed_time_to_close_bands=['2h-12h']", stderr.getvalue())
+
+    def test_main_maps_global_entry_band_overrides_into_config_payload(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+            entry_bands = tuple(policy.as_dict()["allowed_entry_price_bands"])
+            pnl = 80.0 if entry_bands == (">=0.70",) else 25.0
+            return {
+                "run_id": 1,
+                "total_pnl_usd": pnl,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.6,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps(
+                {
+                    "allowed_entry_price_bands": [
+                        ["0.60-0.69"],
+                        [">=0.70"],
+                    ]
+                }
+            ),
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["candidate_count"], 2)
+        self.assertEqual(payload["best_feasible"]["overrides"]["allowed_entry_price_bands"], [">=0.70"])
+        self.assertEqual(payload["best_feasible_config"]["ALLOWED_ENTRY_PRICE_BANDS"], ">=0.70")
+        self.assertIn("allowed_entry_price_bands=['>=0.70']", stderr.getvalue())
 
     def test_main_supports_mode_specific_horizon_overrides(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes=""):

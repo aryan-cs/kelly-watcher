@@ -70,6 +70,11 @@ interface SignalModeRow {
   total_pnl: number | null
 }
 
+interface RecentSignalModeRow {
+  mode: string
+  taken: number
+}
+
 interface CalibrationSummaryRow {
   resolved: number | null
   avg_confidence: number | null
@@ -141,15 +146,16 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     id: 'prediction_quality',
     title: 'Prediction Quality',
     summary: [
-      'This box grades the currently active scorer itself, not the bankroll curve.',
-      'Lower loss numbers mean the probabilities are closer to what actually happened.'
+      'This box separates the live scorer from the latest deployed model artifact.',
+      'Lower loss numbers grade the deployed model artifact, not the bankroll curve.'
     ],
     rows: [
-      {label: 'Active path', text: 'Which scorer is currently making decisions: XGBoost or Heuristic.'},
-      {label: 'Trained', text: 'When the latest deployed model was built.'},
-      {label: 'Model age', text: 'How long the active deployed model has been running without a retrain.'},
-      {label: 'Samples', text: 'How many resolved trades were available to train on.'},
-      {label: 'Features', text: 'How many inputs the deployed model is using.'},
+      {label: 'Live scorer', text: 'Which scorer drove recent accepted trades: XGBoost or Heuristic.'},
+      {label: 'Model artifact', text: 'The latest deployed model artifact on disk, even if live trading is currently falling back.'},
+      {label: 'Trained', text: 'When the latest deployed model artifact was built.'},
+      {label: 'Model age', text: 'How long that deployed model artifact has been sitting without a retrain.'},
+      {label: 'Samples', text: 'How many resolved trades were available to train the deployed model artifact.'},
+      {label: 'Features', text: 'How many inputs the deployed model artifact is using.'},
       {label: 'Brier score', text: 'Average probability error. Lower is better.'},
       {label: 'Log loss', text: 'Penalizes confident wrong calls much harder. Lower is better.'}
     ],
@@ -188,7 +194,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Read / Bias', text: 'Plain-English bias read plus the point gap between prediction and reality.'},
       {label: 'Avg miss', text: 'Average miss per graded bet versus the actual 0/1 outcome. Lower is better.'},
       {label: 'Main band / hit', text: 'The most common confidence range and how often it actually won.'},
-      {label: 'Active scorer', text: 'Which scorer is currently driving accepted trades right now.'},
+      {label: 'Active scorer', text: 'Which scorer has driven the most recent accepted trades.'},
       {label: 'Primary path', text: 'Which decision path has produced the most accepted trades so far.'},
       {label: 'Role', text: 'Whether a path is primary, secondary, or currently idle.'},
       {label: 'Signals / taken', text: 'How many candidate signals flowed through that path, and how many became bets.'},
@@ -397,6 +403,25 @@ WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
 GROUP BY COALESCE(NULLIF(signal_mode, ''), 'heuristic')
 ORDER BY taken DESC, signals DESC
+`
+
+const RECENT_SIGNAL_MODE_SQL = `
+WITH recent_window AS (
+  SELECT COALESCE(MAX(observed_at), 0) - 172800 AS cutoff_ts
+  FROM trade_log
+  WHERE real_money=0
+    AND COALESCE(source_action, 'buy')='buy'
+)
+SELECT
+  COALESCE(NULLIF(signal_mode, ''), 'heuristic') AS mode,
+  COUNT(*) AS taken
+FROM trade_log
+WHERE COALESCE(source_action, 'buy')='buy'
+  AND real_money=0
+  AND actual_entry_size_usd IS NOT NULL
+  AND observed_at >= (SELECT cutoff_ts FROM recent_window)
+GROUP BY COALESCE(NULLIF(signal_mode, ''), 'heuristic')
+ORDER BY taken DESC, mode ASC
 `
 
 const CALIBRATION_SUMMARY_SQL = `
@@ -798,6 +823,7 @@ function useNow(intervalMs = 30000): number {
 function modeLabel(mode: string): string {
   const normalized = mode.trim().toLowerCase()
   if (normalized === 'model') return 'XGBoost'
+  if (normalized === 'xgboost') return 'XGBoost'
   if (normalized === 'heuristic') return 'Heuristic'
   if (normalized === 'shadow') return 'Tracker'
   if (normalized === 'live') return 'Live'
@@ -986,6 +1012,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const trackerRows = useQuery<TrackerRow>(TRACKER_SQL)
   const perfRows = useQuery<PerfRow>(PERF_SQL)
   const signalModes = useQuery<SignalModeRow>(SIGNAL_MODE_SQL)
+  const recentSignalModes = useQuery<RecentSignalModeRow>(RECENT_SIGNAL_MODE_SQL)
   const calibrationSummaryRows = useQuery<CalibrationSummaryRow>(CALIBRATION_SUMMARY_SQL)
   const confusionRows = useQuery<ConfusionMatrixRow>(CONFUSION_SQL)
   const calibrationRows = useQuery<CalibrationRow>(CALIBRATION_SQL)
@@ -1325,7 +1352,21 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => splitIntoColumns(confidenceCheckStats, 2),
     [confidenceCheckStats]
   )
-  const activeScorerLabel = latest?.deployed ? 'XGBoost' : 'Heuristic'
+  const deployedModelLabel = latest?.deployed ? 'XGBoost' : 'Heuristic'
+  const recentActiveMode = useMemo(
+    () =>
+      recentSignalModes.reduce<string | null>(
+        (best, row) => {
+          if (best == null) return row.mode
+          const currentBest = recentSignalModes.find((candidate) => candidate.mode === best)
+          return (currentBest?.taken || 0) >= row.taken ? best : row.mode
+        },
+        null
+      ),
+    [recentSignalModes]
+  )
+  const activeScorerLabel = recentActiveMode ? modeLabel(recentActiveMode) : deployedModelLabel
+  const activeScorerColor = activeScorerLabel === 'XGBoost' ? theme.green : theme.yellow
   const primaryMode = useMemo(
     () =>
       signalModes.reduce<string | null>(
@@ -1478,8 +1519,13 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const predictionQualityStats = useMemo<CompactStatItem[]>(
     () => [
       {
-        label: 'Active path',
-        value: latest?.deployed ? 'XGBoost' : 'Heuristic',
+        label: 'Live scorer',
+        value: activeScorerLabel,
+        color: activeScorerColor
+      },
+      {
+        label: 'Model artifact',
+        value: deployedModelLabel,
         color: latest?.deployed ? theme.green : theme.yellow
       },
       {label: 'Trained', value: latest ? formatShortDateTime(latest.trained_at) : '-'},
@@ -1497,7 +1543,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         color: lowerIsBetterColor(latest?.log_loss, 0.55, 0.69)
       }
     ],
-    [featureCount, latest]
+    [activeScorerColor, activeScorerLabel, deployedModelLabel, featureCount, latest]
   )
   const recentRetrainRuns = useMemo(
     () => retrainRuns.slice(0, historyLimit),
@@ -1586,7 +1632,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <DenseModelsRow
           label="Active scorer"
           value={activeScorerLabel}
-          color={latest?.deployed ? theme.green : theme.yellow}
+          color={activeScorerColor}
           width={modelsColumnWidths[1]}
           labelWidth={12}
         />

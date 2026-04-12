@@ -27,6 +27,7 @@ def _insert_trade(
     shadow_pnl_usd: float | None = None,
     counterfactual_return: float | None = None,
     signal_payload: dict | None = None,
+    real_money: int = 0,
 ) -> None:
     conn.execute(
         """
@@ -54,7 +55,7 @@ def _insert_trade(
             confidence,
             0.1,
             signal_mode,
-            0,
+            real_money,
             1 if skipped else 0,
             "counterfactual only" if skipped else None,
             placed_at,
@@ -533,6 +534,196 @@ class ReplayTest(unittest.TestCase):
                     [
                         ("heur-short", "reject", "heuristic_time_to_close_filter"),
                         ("model-short", "accept", "accepted"),
+                    ],
+                )
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_applies_daily_loss_guard_and_resets_next_day(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                first_ts = 1_700_000_000
+                next_day_ts = first_ts + 90_000
+                _insert_trade(
+                    conn,
+                    trade_id="loss-day-one",
+                    market_id="market-loss",
+                    trader_address="0xloss",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=-60.0,
+                    placed_at=first_ts,
+                    resolved_at=first_ts + 60,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.85}},
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="blocked-same-day",
+                    market_id="market-blocked",
+                    trader_address="0xblock",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=30.0,
+                    placed_at=first_ts + 120,
+                    resolved_at=first_ts + 180,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.85}},
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="reset-next-day",
+                    market_id="market-reset",
+                    trader_address="0xreset",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=30.0,
+                    placed_at=next_day_ts,
+                    resolved_at=next_day_ts + 60,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.85}},
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                            "max_daily_loss_pct": 0.01,
+                            "max_live_drawdown_pct": 0.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                )
+
+                self.assertEqual(result["accepted_count"], 2)
+                self.assertEqual(result["rejected_count"], 1)
+
+                conn = sqlite3.connect(str(test_db_path))
+                rows = conn.execute(
+                    "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
+                ).fetchall()
+                conn.close()
+
+                self.assertEqual(
+                    rows,
+                    [
+                        ("loss-day-one", "accept", "accepted"),
+                        ("blocked-same-day", "reject", "daily_loss_guard"),
+                        ("reset-next-day", "accept", "accepted"),
+                    ],
+                )
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_applies_live_drawdown_guard_in_live_mode(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                first_ts = 1_700_000_000
+                _insert_trade(
+                    conn,
+                    trade_id="live-loss",
+                    market_id="market-live-loss",
+                    trader_address="0xlive1",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=-60.0,
+                    placed_at=first_ts,
+                    resolved_at=first_ts + 60,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.85}},
+                    real_money=1,
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="live-blocked",
+                    market_id="market-live-blocked",
+                    trader_address="0xlive2",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=30.0,
+                    placed_at=first_ts + 120,
+                    resolved_at=first_ts + 180,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.85}},
+                    real_money=1,
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "mode": "live",
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                            "max_daily_loss_pct": 0.0,
+                            "max_live_drawdown_pct": 0.01,
+                        }
+                    ),
+                    db_path=test_db_path,
+                )
+
+                self.assertEqual(result["accepted_count"], 1)
+                self.assertEqual(result["rejected_count"], 1)
+
+                conn = sqlite3.connect(str(test_db_path))
+                rows = conn.execute(
+                    "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
+                ).fetchall()
+                conn.close()
+
+                self.assertEqual(
+                    rows,
+                    [
+                        ("live-loss", "accept", "accepted"),
+                        ("live-blocked", "reject", "live_drawdown_guard"),
                     ],
                 )
             finally:

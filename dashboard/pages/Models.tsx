@@ -285,6 +285,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
+      {label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.'},
       {label: 'Deploy gap', text: 'Recommendation pieces not currently present in the persisted editable-config payload for the latest best feasible candidate. Older search rows may need a rerun after config-surface changes.'},
       {label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and scorer-path gates on the latest best feasible replay-search candidate.'},
       {label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.'},
@@ -1825,8 +1826,21 @@ interface ReplaySearchConfigSuggestion {
   aligned: boolean
 }
 
-function replayConfigRawValue(value: unknown): string {
-  if (value == null) return ''
+interface ReplaySearchConfigDelta {
+  changed: Array<{field: EditableConfigField; recommendedRaw: string}>
+  replayOnlyKeys: string[]
+}
+
+interface ReplaySearchApplyScopeSummary {
+  liveCount: number
+  restartCount: number
+  replayOnlyCount: number
+  summary: string
+  aligned: boolean
+}
+
+function replayConfigRawValue(value: unknown): string | null {
+  if (value == null) return null
   if (typeof value === 'boolean') return value ? 'true' : 'false'
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : ''
   return String(value).trim()
@@ -1885,11 +1899,11 @@ function replayConfigValuesEqual(field: EditableConfigField, currentRaw: string,
   return currentRaw.trim().toLowerCase() === recommendedRaw.trim().toLowerCase()
 }
 
-function replaySearchConfigSuggestion(
+function replaySearchConfigDelta(
   rawConfigJson: string | null | undefined,
   settingsValues: EditableConfigValues,
   configFieldByKey: Map<string, EditableConfigField>
-): ReplaySearchConfigSuggestion | null {
+): ReplaySearchConfigDelta | null {
   if (!rawConfigJson) return null
   try {
     const parsed = JSON.parse(rawConfigJson)
@@ -1897,37 +1911,74 @@ function replaySearchConfigSuggestion(
     const entries = Object.entries(parsed as Record<string, unknown>)
     if (!entries.length) return null
 
-    const changed = entries
-      .map(([key, value]) => {
-        const field = configFieldByKey.get(key)
-        if (!field) return null
-        const recommendedRaw = replayConfigRawValue(value)
-        if (!recommendedRaw) return null
-        const currentRaw = settingsValues[key] || field.defaultValue
-        if (replayConfigValuesEqual(field, currentRaw, recommendedRaw)) return null
-        return {
-          field,
-          recommendedRaw,
-        }
-      })
-      .filter((value): value is {field: EditableConfigField; recommendedRaw: string} => value != null)
-
-    if (!changed.length) {
-      return {diffCount: 0, summary: 'Already aligned', aligned: true}
+    const changed: Array<{field: EditableConfigField; recommendedRaw: string}> = []
+    const replayOnlyKeys: string[] = []
+    for (const [key, value] of entries) {
+      const recommendedRaw = replayConfigRawValue(value)
+      if (recommendedRaw == null) continue
+      const field = configFieldByKey.get(key)
+      if (!field) {
+        replayOnlyKeys.push(key)
+        continue
+      }
+      const currentRaw = Object.prototype.hasOwnProperty.call(settingsValues, key)
+        ? settingsValues[key]
+        : field.defaultValue
+      if (replayConfigValuesEqual(field, currentRaw, recommendedRaw)) continue
+      changed.push({field, recommendedRaw})
     }
 
-    const preview = changed
-      .slice(0, 2)
-      .map(({field, recommendedRaw}) => `${field.label}=${formatEditableConfigValue(field, recommendedRaw)}`)
-      .join(', ')
-    const suffix = changed.length > 2 ? ` +${changed.length - 2}` : ''
-    return {
-      diffCount: changed.length,
-      summary: `${preview}${suffix}`,
-      aligned: false,
-    }
+    return {changed, replayOnlyKeys}
   } catch {
     return null
+  }
+}
+
+function replaySearchConfigSuggestion(
+  rawConfigJson: string | null | undefined,
+  settingsValues: EditableConfigValues,
+  configFieldByKey: Map<string, EditableConfigField>
+): ReplaySearchConfigSuggestion | null {
+  const delta = replaySearchConfigDelta(rawConfigJson, settingsValues, configFieldByKey)
+  if (!delta) return null
+  const changed = delta.changed
+
+  if (!changed.length) {
+    return {diffCount: 0, summary: 'Already aligned', aligned: true}
+  }
+
+  const preview = changed
+    .slice(0, 2)
+    .map(({field, recommendedRaw}) => `${field.label}=${formatEditableConfigValue(field, recommendedRaw)}`)
+    .join(', ')
+  const suffix = changed.length > 2 ? ` +${changed.length - 2}` : ''
+  return {
+    diffCount: changed.length,
+    summary: `${preview}${suffix}`,
+    aligned: false,
+  }
+}
+
+function replaySearchApplyScope(
+  rawConfigJson: string | null | undefined,
+  settingsValues: EditableConfigValues,
+  configFieldByKey: Map<string, EditableConfigField>
+): ReplaySearchApplyScopeSummary | null {
+  const delta = replaySearchConfigDelta(rawConfigJson, settingsValues, configFieldByKey)
+  if (!delta) return null
+  const liveCount = delta.changed.filter(({field}) => field.liveApplies).length
+  const restartCount = delta.changed.filter(({field}) => !field.liveApplies).length
+  const replayOnlyCount = delta.replayOnlyKeys.length
+  const parts: string[] = []
+  if (liveCount > 0) parts.push(`live ${formatCount(liveCount)}`)
+  if (restartCount > 0) parts.push(`restart ${formatCount(restartCount)}`)
+  if (replayOnlyCount > 0) parts.push(`replay-only ${formatCount(replayOnlyCount)}`)
+  return {
+    liveCount,
+    restartCount,
+    replayOnlyCount,
+    summary: parts.length ? parts.join(' | ') : 'none',
+    aligned: parts.length === 0
   }
 }
 
@@ -2421,6 +2472,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => replaySearchConfigSuggestion(latestReplaySearch?.config_json, settingsValues, configFieldByKey),
     [configFieldByKey, latestReplaySearch?.config_json, settingsValues]
   )
+  const replaySearchApplyScopeSummary = useMemo(
+    () => replaySearchApplyScope(latestReplaySearch?.config_json, settingsValues, configFieldByKey),
+    [configFieldByKey, latestReplaySearch?.config_json, settingsValues]
+  )
   const replaySearchDeployGap = useMemo(
     () => replaySearchDeployGapSummary(latestReplaySearch?.policy_json, latestReplaySearch?.config_json),
     [latestReplaySearch?.config_json, latestReplaySearch?.policy_json]
@@ -2526,6 +2581,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             ? theme.green
             : theme.white
           : theme.dim
+      },
+      {
+        label: 'Apply scope',
+        value: replaySearchApplyScopeSummary?.summary || '-',
+        color: !replaySearchApplyScopeSummary
+          ? theme.dim
+          : replaySearchApplyScopeSummary.aligned
+            ? theme.green
+            : replaySearchApplyScopeSummary.replayOnlyCount > 0 || replaySearchApplyScopeSummary.restartCount > 0
+              ? theme.yellow
+              : theme.white
       },
       {
         label: 'Deploy gap',

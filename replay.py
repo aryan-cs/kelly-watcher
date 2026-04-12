@@ -16,6 +16,8 @@ from config import (
     heuristic_min_entry_price,
     heuristic_min_time_to_close_seconds,
     max_bet_fraction,
+    max_daily_loss_pct,
+    max_live_drawdown_pct,
     max_market_exposure_fraction,
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
@@ -56,6 +58,8 @@ REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "max_total_open_exposure_fraction": "MAX_TOTAL_OPEN_EXPOSURE_FRACTION",
     "max_market_exposure_fraction": "MAX_MARKET_EXPOSURE_FRACTION",
     "max_trader_exposure_fraction": "MAX_TRADER_EXPOSURE_FRACTION",
+    "max_daily_loss_pct": "MAX_DAILY_LOSS_PCT",
+    "max_live_drawdown_pct": "MAX_LIVE_DRAWDOWN_PCT",
 }
 
 ENTRY_PRICE_BANDS: tuple[str, ...] = (
@@ -98,6 +102,8 @@ class ReplayPolicy:
     max_total_open_exposure_fraction: float
     max_market_exposure_fraction: float
     max_trader_exposure_fraction: float
+    max_daily_loss_pct: float
+    max_live_drawdown_pct: float
     allowed_entry_price_bands: tuple[str, ...] = ()
     allowed_time_to_close_bands: tuple[str, ...] = ()
     allow_heuristic: bool = True
@@ -124,6 +130,8 @@ class ReplayPolicy:
             max_total_open_exposure_fraction=float(max_total_open_exposure_fraction()),
             max_market_exposure_fraction=float(max_market_exposure_fraction()),
             max_trader_exposure_fraction=float(max_trader_exposure_fraction()),
+            max_daily_loss_pct=float(max_daily_loss_pct()),
+            max_live_drawdown_pct=float(max_live_drawdown_pct()),
             allowed_entry_price_bands=(),
             allowed_time_to_close_bands=(),
         )
@@ -169,6 +177,8 @@ class ReplayPolicy:
             max_total_open_exposure_fraction=_clamp(float(base["max_total_open_exposure_fraction"]), 0.0, 1.0),
             max_market_exposure_fraction=_clamp(float(base["max_market_exposure_fraction"]), 0.0, 1.0),
             max_trader_exposure_fraction=_clamp(float(base["max_trader_exposure_fraction"]), 0.0, 1.0),
+            max_daily_loss_pct=_clamp(float(base["max_daily_loss_pct"]), 0.0, 1.0),
+            max_live_drawdown_pct=_clamp(float(base["max_live_drawdown_pct"]), 0.0, 1.0),
             allowed_entry_price_bands=_normalize_segment_filter(
                 base["allowed_entry_price_bands"],
                 allowed_values=ENTRY_PRICE_BANDS,
@@ -309,6 +319,12 @@ def _simulate(
     max_drawdown_pct = 0.0
     replay_rows: list[dict[str, Any]] = []
     unresolved_count = 0
+    live_guard_triggered = False
+    live_guard_start_equity = max(policy.initial_bankroll_usd, 0.0)
+    live_guard_stop_equity = max(live_guard_start_equity * (1.0 - policy.max_live_drawdown_pct), 0.0)
+    daily_guard_start_equity = max(policy.initial_bankroll_usd, 0.0)
+    daily_guard_day_key = ""
+    daily_guard_locked = False
 
     def account_equity() -> float:
         return max(policy.initial_bankroll_usd + realized_pnl, 0.0)
@@ -338,10 +354,35 @@ def _simulate(
         open_positions[:] = remaining
         update_drawdown()
 
+    def sync_daily_guard(now_ts: int) -> None:
+        nonlocal daily_guard_day_key, daily_guard_locked, daily_guard_start_equity
+        current_day = time.strftime("%Y-%m-%d", time.localtime(now_ts))
+        if current_day != daily_guard_day_key:
+            daily_guard_day_key = current_day
+            daily_guard_locked = False
+        current_equity = account_equity()
+        if not daily_guard_locked and current_equity > 0:
+            daily_guard_start_equity = current_equity
+            daily_guard_locked = True
+
+    def pause_reason(now_ts: int) -> str | None:
+        nonlocal live_guard_triggered
+        current_equity = account_equity()
+        if policy.mode == "live" and policy.max_live_drawdown_pct > 0:
+            if live_guard_triggered or current_equity <= live_guard_stop_equity + 1e-9:
+                live_guard_triggered = True
+                return "live_drawdown_guard"
+        if policy.max_daily_loss_pct > 0 and daily_guard_start_equity > 0:
+            stop_equity = max(daily_guard_start_equity * (1.0 - policy.max_daily_loss_pct), 0.0)
+            if current_equity <= stop_equity + 1e-9:
+                return "daily_loss_guard"
+        return None
+
     close_due_positions(0)
     for row in rows:
         placed_at = int(row["placed_at"] or 0)
         close_due_positions(placed_at)
+        sync_daily_guard(placed_at)
 
         decision_context = _json_dict(row["decision_context_json"])
         signal = decision_context.get("signal") if isinstance(decision_context.get("signal"), dict) else {}
@@ -461,6 +502,34 @@ def _simulate(
                     signal_mode=signal_mode,
                     decision="reject",
                     reason=reason,
+                    source_status=source_status,
+                    entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
+                    requested_size_usd=requested_size_usd,
+                    simulated_size_usd=0.0,
+                    return_pct=return_pct,
+                    pnl_usd=None,
+                    bankroll_after_usd=free_cash(),
+                    open_exposure_after_usd=open_exposure(),
+                    metadata=metadata,
+                )
+            )
+            continue
+
+        entry_pause_reason = pause_reason(placed_at)
+        if entry_pause_reason:
+            replay_rows.append(
+                _replay_trade_row(
+                    replay_run_id=0,
+                    trade_log_id=int(row["id"]),
+                    trade_id=str(row["trade_id"] or ""),
+                    placed_at=placed_at,
+                    market_id=str(row["market_id"] or ""),
+                    trader_address=str(row["trader_address"] or "").lower(),
+                    signal_mode=signal_mode,
+                    decision="reject",
+                    reason=entry_pause_reason,
                     source_status=source_status,
                     entry_price=entry_price,
                     time_to_close_seconds=time_to_close_seconds,

@@ -93,7 +93,12 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Hold breach', text: 'Average executable return for the subset the guard held.' },
             { label: 'Avg spread', text: 'Average quoted spread on audited positions. Lower is better.' },
             { label: 'Avg depth', text: 'Average visible bid depth relative to the position notional. Higher is better.' },
-            { label: 'Last audit', text: 'How recently the exit guard evaluated a stop-loss breach.' }
+            { label: 'Last audit', text: 'How recently the exit guard evaluated a stop-loss breach.' },
+            { label: 'Resolved exits', text: 'Exited trades from the last 30 days that have already fully resolved and can be compared to a no-exit baseline.' },
+            { label: 'Exit alpha', text: 'Dollar delta between realized exit P&L and the hold-to-resolution baseline. Positive means exits helped.' },
+            { label: 'Saved / gave up', text: 'Gross dollars preserved by good exits versus gross dollars forfeited by bad exits.' },
+            { label: 'Helped / hurt', text: 'How many resolved exits beat the hold baseline versus underperformed it.' },
+            { label: 'Avg delta', text: 'Average per-exit dollar delta versus hold-to-resolution on the resolved sample.' }
         ],
         settingKeys: ['STOP_LOSS_ENABLED', 'STOP_LOSS_MAX_LOSS_PCT', 'STOP_LOSS_MIN_HOLD']
     },
@@ -387,6 +392,45 @@ FROM exit_audits
 WHERE real_money=?
 ORDER BY audited_at DESC, id DESC
 LIMIT 8
+`;
+const EXIT_ATTRIBUTION_SQL = `
+WITH exited AS (
+  SELECT
+    COALESCE(shadow_pnl_usd, actual_pnl_usd) AS realized_pnl_usd,
+    (
+      CASE WHEN outcome=1 THEN COALESCE(actual_entry_shares, 0) ELSE 0 END
+      - COALESCE(actual_entry_size_usd, 0)
+      - CASE
+          WHEN outcome=1 AND COALESCE(actual_entry_shares, 0) > 1e-9 THEN ?
+          ELSE 0
+        END
+    ) AS hold_pnl_usd
+  FROM trade_log
+  WHERE real_money=?
+    AND COALESCE(source_action, 'buy')='buy'
+    AND exited_at IS NOT NULL
+    AND resolved_at IS NOT NULL
+    AND actual_entry_size_usd IS NOT NULL
+    AND actual_entry_shares IS NOT NULL
+    AND outcome IS NOT NULL
+    AND resolved_at >= strftime('%s', 'now', '-30 days')
+),
+deltas AS (
+  SELECT
+    realized_pnl_usd,
+    hold_pnl_usd,
+    realized_pnl_usd - hold_pnl_usd AS exit_delta_usd
+  FROM exited
+)
+SELECT
+  COUNT(*) AS resolved_exits_30d,
+  SUM(CASE WHEN exit_delta_usd > 0 THEN 1 ELSE 0 END) AS exit_helped_count,
+  SUM(CASE WHEN exit_delta_usd < 0 THEN 1 ELSE 0 END) AS exit_hurt_count,
+  SUM(exit_delta_usd) AS total_exit_alpha_usd,
+  SUM(CASE WHEN exit_delta_usd > 0 THEN exit_delta_usd ELSE 0 END) AS dollars_saved_usd,
+  SUM(CASE WHEN exit_delta_usd < 0 THEN -exit_delta_usd ELSE 0 END) AS dollars_given_up_usd,
+  AVG(exit_delta_usd) AS avg_exit_delta_usd
+FROM deltas
 `;
 function formatCount(value) {
     if (value == null || Number.isNaN(value))
@@ -841,6 +885,13 @@ function ModelsSpacer() {
 export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues }) {
     const terminal = useTerminalSize();
     const botState = useBotState();
+    const configFieldByKey = useMemo(() => new Map(editableConfigFields.map((field) => [field.key, field])), []);
+    const settlementFixedCostUsd = useMemo(() => {
+        const field = configFieldByKey.get('SETTLEMENT_FIXED_COST_USD');
+        const rawValue = settingsValues['SETTLEMENT_FIXED_COST_USD'] || field?.defaultValue || '0';
+        const parsed = Number.parseFloat(String(rawValue || '').trim());
+        return Number.isFinite(parsed) ? Math.max(parsed, 0) : 0;
+    }, [configFieldByKey, settingsValues]);
     const modalBackground = terminal.backgroundColor || theme.modalBackground;
     const selectedRowBackground = selectionBackgroundColor(modalBackground);
     const nowTs = useNow();
@@ -860,6 +911,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const exitAuditModeRealMoney = botState.mode === 'live' ? 1 : 0;
     const exitAuditSummaryRows = useQuery(EXIT_AUDIT_SUMMARY_SQL, [exitAuditModeRealMoney]);
     const recentExitAuditRows = useQuery(EXIT_AUDIT_RECENT_SQL, [exitAuditModeRealMoney]);
+    const exitAttributionRows = useQuery(EXIT_ATTRIBUTION_SQL, [settlementFixedCostUsd, exitAuditModeRealMoney]);
     const latest = models[0];
     const tracker = trackerRows[0];
     const calibration = calibrationSummaryRows[0];
@@ -868,10 +920,10 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const trainingSummary = trainingSummaryRows[0];
     const trainingProgress = trainingProgressRows[0];
     const exitAuditSummary = exitAuditSummaryRows[0];
+    const exitAttribution = exitAttributionRows[0];
     const latestSharedHoldoutRun = retrainRuns.find((row) => sharedHoldoutComparison(row) != null);
     const latestSharedHoldout = sharedHoldoutComparison(latestSharedHoldoutRun);
     const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0];
-    const configFieldByKey = useMemo(() => new Map(editableConfigFields.map((field) => [field.key, field])), []);
     const featureCount = useMemo(() => parseFeatureCount(latest?.feature_cols), [latest?.feature_cols]);
     const useRate = ratio(tracker?.taken, tracker?.signals);
     const trackerWinRate = ratio(tracker?.wins, tracker?.resolved);
@@ -1118,8 +1170,32 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         {
             label: 'Last audit',
             value: exitAuditSummary?.last_audited_at ? secondsAgo(exitAuditSummary.last_audited_at) : '-'
+        },
+        {
+            label: 'Resolved exits',
+            value: formatCount(exitAttribution?.resolved_exits_30d)
+        },
+        {
+            label: 'Exit alpha',
+            value: formatDollar(exitAttribution?.total_exit_alpha_usd),
+            color: dollarColor(exitAttribution?.total_exit_alpha_usd)
+        },
+        {
+            label: 'Saved / gave up',
+            value: `${formatDollar(exitAttribution?.dollars_saved_usd)} / ${formatDollar(exitAttribution?.dollars_given_up_usd)}`,
+            color: theme.white
+        },
+        {
+            label: 'Helped / hurt',
+            value: `${formatCount(exitAttribution?.exit_helped_count)} / ${formatCount(exitAttribution?.exit_hurt_count)}`,
+            color: theme.white
+        },
+        {
+            label: 'Avg delta',
+            value: formatDollar(exitAttribution?.avg_exit_delta_usd),
+            color: dollarColor(exitAttribution?.avg_exit_delta_usd)
         }
-    ], [botState.mode, exitAuditSummary]);
+    ], [botState.mode, exitAttribution, exitAuditSummary]);
     const confusionCells = useMemo(() => [
         { label: 'TP', value: Math.max(0, Number(confusion?.true_positive || 0)), kind: 'good' },
         { label: 'FP', value: Math.max(0, Number(confusion?.false_positive || 0)), kind: 'bad' },

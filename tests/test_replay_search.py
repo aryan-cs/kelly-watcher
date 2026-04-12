@@ -167,6 +167,101 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(calls[0], (1, 2_592_001))
         self.assertEqual(calls[1], (2_592_001, 5_184_001))
 
+    def test_main_can_penalize_window_instability(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                pnl = 100.0 if start_ts == 1 else -20.0
+            else:
+                pnl = 40.0 if start_ts == 1 else 35.0
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": pnl,
+                "max_drawdown_pct": 0.06,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--window-stddev-penalty",
+            "1.0",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.6)
+        self.assertIn("windows 2/2+", stderr.getvalue())
+
+    def test_main_can_reject_bad_worst_window(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            pnl = -25.0 if min_conf >= 0.65 and start_ts != 1 else 20.0
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": pnl,
+                "max_drawdown_pct": 0.05 if pnl > 0 else 0.14,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--min-worst-window-pnl-usd",
+            "-10",
+            "--max-worst-window-drawdown-pct",
+            "0.10",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        self.assertEqual(rejected["constraint_failures"], ["worst_window_pnl_usd", "worst_window_drawdown_pct"])
+        self.assertIn("reject worst_window_pnl_usd,worst_window_drawdown_pct", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

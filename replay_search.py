@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import sqlite3
 import sys
 from pathlib import Path
@@ -57,10 +58,25 @@ def _iter_policy_overrides(grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _score_result(result: dict[str, Any], *, initial_bankroll_usd: float, drawdown_penalty: float) -> float:
+def _score_result(
+    result: dict[str, Any],
+    *,
+    initial_bankroll_usd: float,
+    drawdown_penalty: float,
+    window_stddev_penalty: float,
+    worst_window_penalty: float,
+) -> float:
     pnl = float(result.get("total_pnl_usd") or 0.0)
     max_drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
-    return pnl - (initial_bankroll_usd * drawdown_penalty * max_drawdown_pct)
+    window_pnl_stddev_usd = float(result.get("window_pnl_stddev_usd") or 0.0)
+    worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
+    worst_window_loss_usd = max(-worst_window_pnl_usd, 0.0)
+    return (
+        pnl
+        - (initial_bankroll_usd * drawdown_penalty * max_drawdown_pct)
+        - (window_stddev_penalty * window_pnl_stddev_usd)
+        - (worst_window_penalty * worst_window_loss_usd)
+    )
 
 
 def _constraint_failures(
@@ -70,6 +86,8 @@ def _constraint_failures(
     min_resolved_count: int,
     min_win_rate: float,
     max_drawdown_pct: float,
+    min_worst_window_pnl_usd: float,
+    max_worst_window_drawdown_pct: float,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
@@ -77,6 +95,8 @@ def _constraint_failures(
     raw_win_rate = result.get("win_rate")
     win_rate = float(raw_win_rate) if raw_win_rate is not None else None
     drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
+    worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
+    worst_window_drawdown_pct = float(result.get("worst_window_drawdown_pct") or 0.0)
 
     if accepted_count < max(min_accepted_count, 0):
         failures.append("accepted_count")
@@ -86,6 +106,10 @@ def _constraint_failures(
         failures.append("win_rate")
     if max_drawdown_pct > 0 and drawdown_pct > max_drawdown_pct:
         failures.append("max_drawdown_pct")
+    if worst_window_pnl_usd < min_worst_window_pnl_usd:
+        failures.append("worst_window_pnl_usd")
+    if max_worst_window_drawdown_pct > 0 and worst_window_drawdown_pct > max_worst_window_drawdown_pct:
+        failures.append("worst_window_drawdown_pct")
     return failures
 
 
@@ -101,13 +125,19 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
     for index, row in enumerate(results[:top], start=1):
         failures = row.get("constraint_failures") or []
         feasibility_suffix = "" if not failures else f" | reject {','.join(str(value) for value in failures)}"
+        window_count = int(row["result"].get("window_count") or 0)
+        window_suffix = ""
+        if window_count > 1:
+            positive_window_count = int(row["result"].get("positive_window_count") or 0)
+            worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
+            window_suffix = f" | windows {positive_window_count}/{window_count}+ | worst {worst_window_pnl_usd:+.2f}"
         print(
             "  "
             f"{index}. score {row['score']:+.2f} | pnl {row['result']['total_pnl_usd']:+.2f} | "
             f"dd {float(row['result'].get('max_drawdown_pct') or 0.0) * 100:.1f}% | "
             f"acc {int(row['result'].get('accepted_count') or 0)} | "
             f"win {float(row['result'].get('win_rate') or 0.0) * 100:.1f}% | "
-            f"{_compact_override_summary(row['overrides'])}{feasibility_suffix}",
+            f"{_compact_override_summary(row['overrides'])}{window_suffix}{feasibility_suffix}",
             file=sys.stderr,
         )
 
@@ -163,6 +193,8 @@ def _aggregate_window_results(
     *,
     initial_bankroll_usd: float,
 ) -> dict[str, Any]:
+    pnl_values = [float(row.get("total_pnl_usd") or 0.0) for row in window_results]
+    drawdown_values = [float(row.get("max_drawdown_pct") or 0.0) for row in window_results]
     total_pnl = sum(float(row.get("total_pnl_usd") or 0.0) for row in window_results)
     accepted_count = sum(int(row.get("accepted_count") or 0) for row in window_results)
     resolved_count = sum(int(row.get("resolved_count") or 0) for row in window_results)
@@ -173,8 +205,15 @@ def _aggregate_window_results(
         float(row.get("win_rate") or 0.0) * int(row.get("resolved_count") or 0)
         for row in window_results
     )
-    max_drawdown_pct = max((float(row.get("max_drawdown_pct") or 0.0) for row in window_results), default=0.0)
-    positive_window_count = sum(1 for row in window_results if float(row.get("total_pnl_usd") or 0.0) > 0)
+    max_drawdown_pct = max(drawdown_values, default=0.0)
+    positive_window_count = sum(1 for pnl in pnl_values if pnl > 0)
+    negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
+    window_avg_pnl_usd = sum(pnl_values) / len(pnl_values) if pnl_values else 0.0
+    window_pnl_stddev_usd = (
+        math.sqrt(sum((value - window_avg_pnl_usd) ** 2 for value in pnl_values) / len(pnl_values))
+        if pnl_values
+        else 0.0
+    )
     return {
         "window_count": len(window_results),
         "window_results": window_results,
@@ -189,8 +228,12 @@ def _aggregate_window_results(
         "resolved_count": resolved_count,
         "win_rate": round(weighted_wins / resolved_count, 6) if resolved_count else None,
         "positive_window_count": positive_window_count,
-        "worst_window_pnl_usd": round(min((float(row.get("total_pnl_usd") or 0.0) for row in window_results), default=0.0), 6),
-        "best_window_pnl_usd": round(max((float(row.get("total_pnl_usd") or 0.0) for row in window_results), default=0.0), 6),
+        "negative_window_count": negative_window_count,
+        "window_avg_pnl_usd": round(window_avg_pnl_usd, 6),
+        "window_pnl_stddev_usd": round(window_pnl_stddev_usd, 6),
+        "worst_window_pnl_usd": round(min(pnl_values, default=0.0), 6),
+        "best_window_pnl_usd": round(max(pnl_values, default=0.0), 6),
+        "worst_window_drawdown_pct": round(max(drawdown_values, default=0.0), 6),
     }
 
 
@@ -210,6 +253,8 @@ def main() -> None:
         default=1.0,
         help="Penalty multiplier applied to max drawdown in bankroll-dollar terms when ranking candidates.",
     )
+    parser.add_argument("--window-stddev-penalty", type=float, default=0.0, help="Penalty per dollar of cross-window P&L standard deviation.")
+    parser.add_argument("--worst-window-penalty", type=float, default=0.0, help="Penalty per dollar of worst-window loss magnitude.")
     parser.add_argument("--max-combos", type=int, default=256, help="Safety cap on total grid combinations.")
     parser.add_argument("--window-days", type=int, default=0, help="Replay over rolling windows of this many days instead of the full history.")
     parser.add_argument("--window-count", type=int, default=1, help="How many most-recent rolling windows to evaluate when --window-days is set.")
@@ -218,6 +263,8 @@ def main() -> None:
     parser.add_argument("--min-resolved-count", type=int, default=0, help="Minimum resolved trades required for a candidate to be feasible.")
     parser.add_argument("--min-win-rate", type=float, default=0.0, help="Minimum replay win rate required for a candidate to be feasible.")
     parser.add_argument("--max-drawdown-pct", type=float, default=0.0, help="Maximum replay drawdown allowed for a candidate to be feasible.")
+    parser.add_argument("--min-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed P&L for the worst replay window.")
+    parser.add_argument("--max-worst-window-drawdown-pct", type=float, default=0.0, help="Maximum allowed drawdown for the worst replay window.")
     args = parser.parse_args()
 
     base_policy = _load_base_policy(args)
@@ -266,6 +313,8 @@ def main() -> None:
             result,
             initial_bankroll_usd=policy.initial_bankroll_usd,
             drawdown_penalty=max(args.drawdown_penalty, 0.0),
+            window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
+            worst_window_penalty=max(args.worst_window_penalty, 0.0),
         )
         constraint_failures = _constraint_failures(
             result,
@@ -273,6 +322,8 @@ def main() -> None:
             min_resolved_count=args.min_resolved_count,
             min_win_rate=max(args.min_win_rate, 0.0),
             max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
+            min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
+            max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
         )
         if int(result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
             constraint_failures.append("positive_window_count")
@@ -306,12 +357,16 @@ def main() -> None:
                 "grid": grid,
                 "windows": [{"start_ts": start_ts, "end_ts": end_ts} for start_ts, end_ts in windows],
                 "drawdown_penalty": max(args.drawdown_penalty, 0.0),
+                "window_stddev_penalty": max(args.window_stddev_penalty, 0.0),
+                "worst_window_penalty": max(args.worst_window_penalty, 0.0),
                 "constraints": {
                     "min_accepted_count": max(args.min_accepted_count, 0),
                     "min_resolved_count": max(args.min_resolved_count, 0),
                     "min_win_rate": max(args.min_win_rate, 0.0),
                     "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
                     "min_positive_windows": max(args.min_positive_windows, 0),
+                    "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
+                    "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
                 },
                 "candidate_count": len(ranked),
                 "feasible_count": len(feasible),

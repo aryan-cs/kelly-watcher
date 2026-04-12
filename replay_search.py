@@ -130,6 +130,13 @@ def _accepted_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -
     return float(int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)) / float(total_accepted)
 
 
+def _resolved_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
+    accepted_count = int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)
+    if accepted_count <= 0:
+        return 0.0
+    return float(int(signal_mode_summary.get(mode, {}).get("resolved_count") or 0)) / float(accepted_count)
+
+
 def _clamp_fraction(raw: float) -> float:
     return min(max(float(raw), 0.0), 1.0)
 
@@ -149,6 +156,8 @@ def _constraint_failures(
     min_xgboost_resolved_count: int,
     min_heuristic_win_rate: float,
     min_xgboost_win_rate: float,
+    min_heuristic_resolved_share: float,
+    min_xgboost_resolved_share: float,
     max_heuristic_accepted_share: float,
     min_xgboost_accepted_share: float,
 ) -> list[str]:
@@ -188,6 +197,10 @@ def _constraint_failures(
         failures.append("heuristic_win_rate")
     if min_xgboost_win_rate > 0 and (xgboost_win_rate is None or float(xgboost_win_rate) < min_xgboost_win_rate):
         failures.append("xgboost_win_rate")
+    if min_heuristic_resolved_share > 0 and _resolved_share(signal_mode_summary, "heuristic") < min_heuristic_resolved_share:
+        failures.append("heuristic_resolved_share")
+    if min_xgboost_resolved_share > 0 and _resolved_share(signal_mode_summary, "xgboost") < min_xgboost_resolved_share:
+        failures.append("xgboost_resolved_share")
     heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
     xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
     if max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
@@ -700,6 +713,8 @@ def main() -> None:
     parser.add_argument("--min-xgboost-resolved-count", type=int, default=0, help="Minimum resolved xgboost trades required for a candidate to be feasible.")
     parser.add_argument("--min-heuristic-win-rate", type=float, default=0.0, help="Minimum heuristic win rate required for a candidate to be feasible.")
     parser.add_argument("--min-xgboost-win-rate", type=float, default=0.0, help="Minimum xgboost win rate required for a candidate to be feasible.")
+    parser.add_argument("--min-heuristic-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted heuristic trades that must be resolved.")
+    parser.add_argument("--min-xgboost-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted xgboost trades that must be resolved.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
     args = parser.parse_args()
@@ -738,6 +753,8 @@ def main() -> None:
         min_xgboost_resolved_count=max(args.min_xgboost_resolved_count, 0),
         min_heuristic_win_rate=_clamp_fraction(args.min_heuristic_win_rate),
         min_xgboost_win_rate=_clamp_fraction(args.min_xgboost_win_rate),
+        min_heuristic_resolved_share=_clamp_fraction(args.min_heuristic_resolved_share),
+        min_xgboost_resolved_share=_clamp_fraction(args.min_xgboost_resolved_share),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
     )
@@ -797,6 +814,8 @@ def main() -> None:
             min_xgboost_resolved_count=max(args.min_xgboost_resolved_count, 0),
             min_heuristic_win_rate=_clamp_fraction(args.min_heuristic_win_rate),
             min_xgboost_win_rate=_clamp_fraction(args.min_xgboost_win_rate),
+            min_heuristic_resolved_share=_clamp_fraction(args.min_heuristic_resolved_share),
+            min_xgboost_resolved_share=_clamp_fraction(args.min_xgboost_resolved_share),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         )
@@ -843,6 +862,8 @@ def main() -> None:
         "min_xgboost_resolved_count": max(args.min_xgboost_resolved_count, 0),
         "min_heuristic_win_rate": _clamp_fraction(args.min_heuristic_win_rate),
         "min_xgboost_win_rate": _clamp_fraction(args.min_xgboost_win_rate),
+        "min_heuristic_resolved_share": _clamp_fraction(args.min_heuristic_resolved_share),
+        "min_xgboost_resolved_share": _clamp_fraction(args.min_xgboost_resolved_share),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
     }

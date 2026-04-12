@@ -74,7 +74,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.' },
             { label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.' },
             { label: 'Search modes', text: 'Accepted trade mix and replay P&L by scorer on the latest best feasible replay-search candidate.' },
-            { label: 'Mode guard', text: 'Per-scorer accepted-count and share guardrails from the latest replay search, if any.' },
+            { label: 'Mode guard', text: 'Per-scorer accepted-count, resolved-count, win-rate, and share guardrails from the latest replay search, if any.' },
             { label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.' },
             { label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.' },
             { label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.' },
@@ -1154,6 +1154,8 @@ function replaySearchModeFloorSummary(raw) {
         const minXgboostAccepted = Number(payload.min_xgboost_accepted_count || 0);
         const minHeuristicResolved = Number(payload.min_heuristic_resolved_count || 0);
         const minXgboostResolved = Number(payload.min_xgboost_resolved_count || 0);
+        const minHeuristicResolvedShare = Number(payload.min_heuristic_resolved_share || 0);
+        const minXgboostResolvedShare = Number(payload.min_xgboost_resolved_share || 0);
         const minHeuristicWinRate = Number(payload.min_heuristic_win_rate || 0);
         const minXgboostWinRate = Number(payload.min_xgboost_win_rate || 0);
         const maxHeuristicAcceptedShare = Number(payload.max_heuristic_accepted_share || 0);
@@ -1166,6 +1168,10 @@ function replaySearchModeFloorSummary(raw) {
             parts.push(`heur r>=${formatCount(minHeuristicResolved)}`);
         if (minXgboostResolved > 0)
             parts.push(`model r>=${formatCount(minXgboostResolved)}`);
+        if (minHeuristicResolvedShare > 0)
+            parts.push(`heur cov>=${formatPct(minHeuristicResolvedShare, 0)}`);
+        if (minXgboostResolvedShare > 0)
+            parts.push(`model cov>=${formatPct(minXgboostResolvedShare, 0)}`);
         if (minHeuristicWinRate > 0)
             parts.push(`heur wr>=${formatPct(minHeuristicWinRate, 0)}`);
         if (minXgboostWinRate > 0)

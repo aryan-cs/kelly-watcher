@@ -67,6 +67,20 @@ def _insert_trade(
 
 
 class ReplayTest(unittest.TestCase):
+    def test_replay_policy_normalizes_segment_filters(self) -> None:
+        policy = ReplayPolicy.from_payload(
+            {
+                "allowed_entry_price_bands": [">=0.70", "0.60-0.69", ">=0.70"],
+                "allowed_time_to_close_bands": "2h-12h,<=5m",
+            }
+        )
+
+        self.assertEqual(policy.allowed_entry_price_bands, ("0.60-0.69", ">=0.70"))
+        self.assertEqual(policy.allowed_time_to_close_bands, ("<=5m", "2h-12h"))
+
+        with self.assertRaisesRegex(ValueError, "Unknown allowed_entry_price_bands values"):
+            ReplayPolicy.from_payload({"allowed_entry_price_bands": ["bad-band"]})
+
     def test_run_replay_persists_summary_and_trade_decisions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -328,6 +342,106 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(result["accepted_count"], 1)
                 self.assertEqual(result["window_start_ts"], 1_700_050_000)
                 self.assertEqual(result["window_end_ts"], 1_700_200_000)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_can_filter_by_entry_band_and_horizon_band(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="accept-band-horizon",
+                    market_id="market-a",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.72,
+                    actual_entry_price=0.72,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=18.0,
+                    placed_at=1_700_000_000,
+                    resolved_at=1_700_010_800,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.82}},
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="reject-entry-band",
+                    market_id="market-b",
+                    trader_address="0xbbb",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.64,
+                    actual_entry_price=0.64,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=18.0,
+                    placed_at=1_700_000_010,
+                    resolved_at=1_700_010_810,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.82}},
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="reject-horizon-band",
+                    market_id="market-c",
+                    trader_address="0xccc",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.72,
+                    actual_entry_price=0.72,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=18.0,
+                    placed_at=1_700_000_020,
+                    resolved_at=1_700_000_200,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.82}},
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.60,
+                            "heuristic_max_entry_price": 0.80,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                            "allowed_entry_price_bands": [">=0.70"],
+                            "allowed_time_to_close_bands": ["2h-12h"],
+                        }
+                    ),
+                    db_path=test_db_path,
+                )
+
+                self.assertEqual(result["accepted_count"], 1)
+                self.assertEqual(result["rejected_count"], 2)
+
+                conn = sqlite3.connect(str(test_db_path))
+                rows = conn.execute(
+                    "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
+                ).fetchall()
+                conn.close()
+
+                self.assertEqual(
+                    rows,
+                    [
+                        ("accept-band-horizon", "accept", "accepted"),
+                        ("reject-entry-band", "reject", "entry_price_band_filter"),
+                        ("reject-horizon-band", "reject", "time_to_close_band_filter"),
+                    ],
+                )
             finally:
                 db.DB_PATH = original_db_path
 

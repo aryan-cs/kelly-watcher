@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from config import (
+    ENTRY_PRICE_BAND_CHOICES,
+    entry_price_band_label,
     heuristic_max_entry_price,
+    heuristic_allowed_entry_price_bands,
     heuristic_min_entry_price,
     max_bet_fraction,
     max_market_exposure_fraction,
@@ -22,6 +25,7 @@ from config import (
     model_edge_mid_confidence,
     model_edge_mid_threshold,
     shadow_bankroll_usd,
+    xgboost_allowed_entry_price_bands,
 )
 from runtime_paths import TRADING_DB_PATH
 
@@ -34,15 +38,36 @@ REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "min_bet_usd": "MIN_BET_USD",
     "heuristic_min_entry_price": "HEURISTIC_MIN_ENTRY_PRICE",
     "heuristic_max_entry_price": "HEURISTIC_MAX_ENTRY_PRICE",
+    "heuristic_allowed_entry_price_bands": "HEURISTIC_ALLOWED_ENTRY_PRICE_BANDS",
     "model_edge_mid_confidence": "MODEL_EDGE_MID_CONFIDENCE",
     "model_edge_high_confidence": "MODEL_EDGE_HIGH_CONFIDENCE",
     "model_edge_mid_threshold": "MODEL_EDGE_MID_THRESHOLD",
     "model_edge_high_threshold": "MODEL_EDGE_HIGH_THRESHOLD",
+    "xgboost_allowed_entry_price_bands": "XGBOOST_ALLOWED_ENTRY_PRICE_BANDS",
     "max_bet_fraction": "MAX_BET_FRACTION",
     "max_total_open_exposure_fraction": "MAX_TOTAL_OPEN_EXPOSURE_FRACTION",
     "max_market_exposure_fraction": "MAX_MARKET_EXPOSURE_FRACTION",
     "max_trader_exposure_fraction": "MAX_TRADER_EXPOSURE_FRACTION",
 }
+
+ENTRY_PRICE_BANDS: tuple[str, ...] = (
+    "<0.45",
+    "0.45-0.49",
+    "0.50-0.54",
+    "0.55-0.59",
+    "0.60-0.69",
+    ">=0.70",
+)
+
+TIME_TO_CLOSE_BANDS: tuple[str, ...] = (
+    "<=5m",
+    "5-30m",
+    "30m-2h",
+    "2h-12h",
+    "12h-1d",
+    "1-3d",
+    ">3d",
+)
 
 
 @dataclass(frozen=True)
@@ -53,14 +78,18 @@ class ReplayPolicy:
     min_bet_usd: float
     heuristic_min_entry_price: float
     heuristic_max_entry_price: float
+    heuristic_allowed_entry_price_bands: tuple[str, ...]
     model_edge_mid_confidence: float
     model_edge_high_confidence: float
     model_edge_mid_threshold: float
     model_edge_high_threshold: float
+    xgboost_allowed_entry_price_bands: tuple[str, ...]
     max_bet_fraction: float
     max_total_open_exposure_fraction: float
     max_market_exposure_fraction: float
     max_trader_exposure_fraction: float
+    allowed_entry_price_bands: tuple[str, ...] = ()
+    allowed_time_to_close_bands: tuple[str, ...] = ()
     allow_heuristic: bool = True
     allow_xgboost: bool = True
 
@@ -73,14 +102,18 @@ class ReplayPolicy:
             min_bet_usd=float(min_bet_usd()),
             heuristic_min_entry_price=float(heuristic_min_entry_price()),
             heuristic_max_entry_price=float(heuristic_max_entry_price()),
+            heuristic_allowed_entry_price_bands=tuple(heuristic_allowed_entry_price_bands()),
             model_edge_mid_confidence=float(model_edge_mid_confidence()),
             model_edge_high_confidence=float(model_edge_high_confidence()),
             model_edge_mid_threshold=float(model_edge_mid_threshold()),
             model_edge_high_threshold=float(model_edge_high_threshold()),
+            xgboost_allowed_entry_price_bands=tuple(xgboost_allowed_entry_price_bands()),
             max_bet_fraction=float(max_bet_fraction()),
             max_total_open_exposure_fraction=float(max_total_open_exposure_fraction()),
             max_market_exposure_fraction=float(max_market_exposure_fraction()),
             max_trader_exposure_fraction=float(max_trader_exposure_fraction()),
+            allowed_entry_price_bands=(),
+            allowed_time_to_close_bands=(),
         )
 
     @classmethod
@@ -98,14 +131,34 @@ class ReplayPolicy:
             min_bet_usd=max(float(base["min_bet_usd"]), 0.0),
             heuristic_min_entry_price=_clamp(float(base["heuristic_min_entry_price"]), 0.0, 1.0),
             heuristic_max_entry_price=_clamp(float(base["heuristic_max_entry_price"]), 0.0, 1.0),
+            heuristic_allowed_entry_price_bands=_normalize_segment_filter(
+                base["heuristic_allowed_entry_price_bands"],
+                allowed_values=ENTRY_PRICE_BAND_CHOICES,
+                field_name="heuristic_allowed_entry_price_bands",
+            ),
             model_edge_mid_confidence=_clamp(float(base["model_edge_mid_confidence"]), 0.0, 1.0),
             model_edge_high_confidence=_clamp(float(base["model_edge_high_confidence"]), 0.0, 1.0),
             model_edge_mid_threshold=float(base["model_edge_mid_threshold"]),
             model_edge_high_threshold=float(base["model_edge_high_threshold"]),
+            xgboost_allowed_entry_price_bands=_normalize_segment_filter(
+                base["xgboost_allowed_entry_price_bands"],
+                allowed_values=ENTRY_PRICE_BAND_CHOICES,
+                field_name="xgboost_allowed_entry_price_bands",
+            ),
             max_bet_fraction=_clamp(float(base["max_bet_fraction"]), 0.0, 1.0),
             max_total_open_exposure_fraction=_clamp(float(base["max_total_open_exposure_fraction"]), 0.0, 1.0),
             max_market_exposure_fraction=_clamp(float(base["max_market_exposure_fraction"]), 0.0, 1.0),
             max_trader_exposure_fraction=_clamp(float(base["max_trader_exposure_fraction"]), 0.0, 1.0),
+            allowed_entry_price_bands=_normalize_segment_filter(
+                base["allowed_entry_price_bands"],
+                allowed_values=ENTRY_PRICE_BANDS,
+                field_name="allowed_entry_price_bands",
+            ),
+            allowed_time_to_close_bands=_normalize_segment_filter(
+                base["allowed_time_to_close_bands"],
+                allowed_values=TIME_TO_CLOSE_BANDS,
+                field_name="allowed_time_to_close_bands",
+            ),
             allow_heuristic=bool(base["allow_heuristic"]),
             allow_xgboost=bool(base["allow_xgboost"]),
         )
@@ -122,7 +175,11 @@ def policy_to_config_payload(policy: ReplayPolicy | dict[str, Any]) -> dict[str,
     resolved = policy if isinstance(policy, ReplayPolicy) else ReplayPolicy.from_payload(policy)
     payload = resolved.as_dict()
     return {
-        config_key: payload[policy_key]
+        config_key: (
+            ",".join(payload[policy_key])
+            if isinstance(payload[policy_key], (list, tuple))
+            else payload[policy_key]
+        )
         for policy_key, config_key in REPLAY_POLICY_CONFIG_KEY_MAP.items()
         if policy_key in payload
     }
@@ -259,6 +316,7 @@ def _simulate(
             signal.get("entry_price"),
             row["price_at_signal"],
         )
+        entry_price_band = _entry_price_band(entry_price)
         confidence = _coalesce_float(signal.get("confidence"), row["confidence"]) or 0.0
         market_score = _coalesce_float(signal.get("market", {}).get("score"))
         edge = _coalesce_float(signal.get("edge"))
@@ -268,6 +326,47 @@ def _simulate(
             policy.min_confidence,
             _coalesce_float(signal.get("min_confidence")) or 0.0,
         )
+        base_metadata = _base_trade_metadata(
+            confidence=confidence,
+            effective_min_confidence=effective_min_confidence,
+            market_score=market_score,
+            edge=edge,
+            entry_price_band=entry_price_band,
+            time_to_close_band=time_to_close_band,
+            policy=policy,
+        )
+
+        segment_filter_reason = _segment_filter_reason(
+            policy=policy,
+            entry_price_band=entry_price_band,
+            time_to_close_band=time_to_close_band,
+        )
+        if segment_filter_reason:
+            replay_rows.append(
+                _replay_trade_row(
+                    replay_run_id=0,
+                    trade_log_id=int(row["id"]),
+                    trade_id=str(row["trade_id"] or ""),
+                    placed_at=placed_at,
+                    market_id=str(row["market_id"] or ""),
+                    trader_address=str(row["trader_address"] or "").lower(),
+                    signal_mode=signal_mode,
+                    decision="reject",
+                    reason=segment_filter_reason,
+                    source_status="filtered",
+                    entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
+                    requested_size_usd=0.0,
+                    simulated_size_usd=0.0,
+                    return_pct=None,
+                    pnl_usd=None,
+                    bankroll_after_usd=free_cash(),
+                    open_exposure_after_usd=open_exposure(),
+                    metadata=base_metadata,
+                )
+            )
+            continue
 
         return_pct, source_status = _resolve_return_pct(row)
         if return_pct is None:
@@ -293,10 +392,7 @@ def _simulate(
                     pnl_usd=None,
                     bankroll_after_usd=free_cash(),
                     open_exposure_after_usd=open_exposure(),
-                    metadata={
-                        "confidence": round(confidence, 6),
-                        "effective_min_confidence": round(effective_min_confidence, 6),
-                    },
+                    metadata=base_metadata,
                 )
             )
             continue
@@ -311,6 +407,7 @@ def _simulate(
             market_score=market_score,
             edge=edge,
             available_cash=free_cash(),
+            base_metadata=base_metadata,
         )
         metadata["return_pct"] = round(return_pct, 6)
         if not accepted or requested_size_usd <= 0:
@@ -537,13 +634,10 @@ def _evaluate_trade(
     market_score: float | None,
     edge: float | None,
     available_cash: float,
+    base_metadata: dict[str, Any],
 ) -> tuple[bool, str, float, dict[str, Any]]:
-    metadata: dict[str, Any] = {
-        "confidence": round(confidence, 6),
-        "effective_min_confidence": round(effective_min_confidence, 6),
-        "market_score": round(market_score, 6) if market_score is not None else None,
-        "edge": round(edge, 6) if edge is not None else None,
-    }
+    metadata = dict(base_metadata)
+    entry_price_band = str(metadata.get("entry_price_band") or "")
     if available_cash <= 0:
         return False, "bankroll_depleted", 0.0, metadata
     if entry_price is None or not (0.0 < entry_price < 1.0):
@@ -554,6 +648,12 @@ def _evaluate_trade(
     if signal_mode == "xgboost":
         if not policy.allow_xgboost:
             return False, "xgboost_disabled", 0.0, metadata
+        metadata["mode_allowed_entry_price_bands"] = list(policy.xgboost_allowed_entry_price_bands)
+        if (
+            policy.xgboost_allowed_entry_price_bands
+            and entry_price_band not in policy.xgboost_allowed_entry_price_bands
+        ):
+            return False, "xgboost_entry_price_band_filter", 0.0, metadata
         edge_threshold = policy.model_edge_mid_threshold
         if confidence >= policy.model_edge_high_confidence:
             edge_threshold = policy.model_edge_high_threshold
@@ -576,6 +676,12 @@ def _evaluate_trade(
 
     if not policy.allow_heuristic:
         return False, "heuristic_disabled", 0.0, metadata
+    metadata["mode_allowed_entry_price_bands"] = list(policy.heuristic_allowed_entry_price_bands)
+    if (
+        policy.heuristic_allowed_entry_price_bands
+        and entry_price_band not in policy.heuristic_allowed_entry_price_bands
+    ):
+        return False, "heuristic_entry_price_band_filter", 0.0, metadata
     if not (policy.heuristic_min_entry_price <= entry_price < policy.heuristic_max_entry_price):
         return False, "heuristic_entry_band", 0.0, metadata
     min_market_score = _heuristic_min_market_score(
@@ -679,6 +785,43 @@ def _heuristic_min_market_score(*, entry_price: float, min_entry_price: float, m
             [HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE, HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE],
         )
     )
+
+
+def _base_trade_metadata(
+    *,
+    confidence: float,
+    effective_min_confidence: float,
+    market_score: float | None,
+    edge: float | None,
+    entry_price_band: str,
+    time_to_close_band: str,
+    policy: ReplayPolicy,
+) -> dict[str, Any]:
+    return {
+        "confidence": round(confidence, 6),
+        "effective_min_confidence": round(effective_min_confidence, 6),
+        "market_score": round(market_score, 6) if market_score is not None else None,
+        "edge": round(edge, 6) if edge is not None else None,
+        "entry_price_band": entry_price_band,
+        "time_to_close_band": time_to_close_band,
+        "allowed_entry_price_bands": list(policy.allowed_entry_price_bands),
+        "allowed_time_to_close_bands": list(policy.allowed_time_to_close_bands),
+        "heuristic_allowed_entry_price_bands": list(policy.heuristic_allowed_entry_price_bands),
+        "xgboost_allowed_entry_price_bands": list(policy.xgboost_allowed_entry_price_bands),
+    }
+
+
+def _segment_filter_reason(
+    *,
+    policy: ReplayPolicy,
+    entry_price_band: str,
+    time_to_close_band: str,
+) -> str | None:
+    if policy.allowed_entry_price_bands and entry_price_band not in policy.allowed_entry_price_bands:
+        return "entry_price_band_filter"
+    if policy.allowed_time_to_close_bands and time_to_close_band not in policy.allowed_time_to_close_bands:
+        return "time_to_close_band_filter"
+    return None
 
 
 def _replay_trade_row(
@@ -947,32 +1090,55 @@ def _entry_price_band(value: float | None) -> str:
     if value is None:
         return "unknown"
     if value < 0.45:
-        return "<0.45"
+        return ENTRY_PRICE_BANDS[0]
     if value < 0.50:
-        return "0.45-0.49"
+        return ENTRY_PRICE_BANDS[1]
     if value < 0.55:
-        return "0.50-0.54"
+        return ENTRY_PRICE_BANDS[2]
     if value < 0.60:
-        return "0.55-0.59"
+        return ENTRY_PRICE_BANDS[3]
     if value < 0.70:
-        return "0.60-0.69"
-    return ">=0.70"
+        return ENTRY_PRICE_BANDS[4]
+    return ENTRY_PRICE_BANDS[5]
 
 
 def _time_to_close_band(seconds: int) -> str:
     if seconds <= 300:
-        return "<=5m"
+        return TIME_TO_CLOSE_BANDS[0]
     if seconds <= 1800:
-        return "5-30m"
+        return TIME_TO_CLOSE_BANDS[1]
     if seconds <= 7200:
-        return "30m-2h"
+        return TIME_TO_CLOSE_BANDS[2]
     if seconds <= 43200:
-        return "2h-12h"
+        return TIME_TO_CLOSE_BANDS[3]
     if seconds <= 86400:
-        return "12h-1d"
+        return TIME_TO_CLOSE_BANDS[4]
     if seconds <= 259200:
-        return "1-3d"
-    return ">3d"
+        return TIME_TO_CLOSE_BANDS[5]
+    return TIME_TO_CLOSE_BANDS[6]
+
+
+def _normalize_segment_filter(
+    raw: Any,
+    *,
+    allowed_values: tuple[str, ...],
+    field_name: str,
+) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple, set)):
+        values = [str(part).strip() for part in raw]
+    else:
+        values = [str(raw).strip()]
+    requested = {value for value in values if value}
+    if not requested:
+        return ()
+    unknown = sorted(requested.difference(allowed_values))
+    if unknown:
+        raise ValueError(f"Unknown {field_name} values: {', '.join(unknown)}")
+    return tuple(value for value in allowed_values if value in requested)
 
 
 def _json_dict(raw: Any) -> dict[str, Any]:

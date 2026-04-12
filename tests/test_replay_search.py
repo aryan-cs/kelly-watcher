@@ -135,6 +135,47 @@ class ReplaySearchTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown replay policy key"):
             replay_search._load_grid(Args())
 
+    def test_main_supports_list_valued_segment_filter_overrides(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+            horizon_bands = tuple(policy.as_dict()["allowed_time_to_close_bands"])
+            pnl = 70.0 if horizon_bands == ("2h-12h",) else 30.0
+            return {
+                "run_id": 1,
+                "total_pnl_usd": pnl,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.6,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps(
+                {
+                    "allowed_time_to_close_bands": [
+                        ["<=5m"],
+                        ["2h-12h"],
+                    ]
+                }
+            ),
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["candidate_count"], 2)
+        self.assertEqual(payload["best_feasible"]["overrides"]["allowed_time_to_close_bands"], ["2h-12h"])
+        self.assertEqual(payload["best_feasible"]["result"]["total_pnl_usd"], 70.0)
+        self.assertIn("allowed_time_to_close_bands=['2h-12h']", stderr.getvalue())
+
     def test_main_can_aggregate_multiple_time_windows(self) -> None:
         calls: list[tuple[int | None, int | None]] = []
 

@@ -189,6 +189,7 @@ interface ReplaySearchSummaryRow {
   negative_window_count: number | null
   worst_window_pnl_usd: number | null
   overrides_json: string | null
+  policy_json: string | null
   config_json: string | null
 }
 
@@ -279,6 +280,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
+      {label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
       {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
@@ -603,6 +605,7 @@ best_candidate AS (
     negative_window_count,
     worst_window_pnl_usd,
     overrides_json,
+    policy_json,
     config_json
   FROM replay_search_candidates
   WHERE replay_search_run_id=(SELECT id FROM latest_search)
@@ -625,6 +628,7 @@ SELECT
   best_candidate.negative_window_count,
   best_candidate.worst_window_pnl_usd,
   best_candidate.overrides_json,
+  best_candidate.policy_json,
   best_candidate.config_json
 FROM latest_search
 LEFT JOIN best_candidate ON best_candidate.replay_search_run_id=latest_search.id
@@ -1236,6 +1240,27 @@ function replaySearchOverrideSummary(raw: string | null | undefined): string {
     return fallbackKeys.length ? fallbackKeys.map((key) => `${key}=${String(payload[key])}`).join(', ') : '-'
   } catch {
     return '-'
+  }
+}
+
+function replaySearchSegmentGateSummary(raw: string | null | undefined): string {
+  if (!raw) return 'all'
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'all'
+    const payload = parsed as Record<string, unknown>
+    const entryBands = Array.isArray(payload.allowed_entry_price_bands)
+      ? payload.allowed_entry_price_bands.map((value) => String(value || '').trim()).filter(Boolean)
+      : []
+    const horizonBands = Array.isArray(payload.allowed_time_to_close_bands)
+      ? payload.allowed_time_to_close_bands.map((value) => String(value || '').trim()).filter(Boolean)
+      : []
+    const parts: string[] = []
+    if (entryBands.length) parts.push(`band ${entryBands.join('|')}`)
+    if (horizonBands.length) parts.push(`hzn ${horizonBands.join('|')}`)
+    return parts.length ? parts.join(', ') : 'all'
+  } catch {
+    return 'all'
   }
 }
 
@@ -1895,6 +1920,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             ? theme.green
             : theme.white
           : theme.dim
+      },
+      {
+        label: 'Seg gates',
+        value: replaySearchSegmentGateSummary(latestReplaySearch?.policy_json),
+        color: latestReplaySearch?.policy_json ? theme.white : theme.dim
       },
       {
         label: 'Cur feasible',

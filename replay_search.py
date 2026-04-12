@@ -522,6 +522,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             current_candidate_feasible    INTEGER NOT NULL DEFAULT 0,
             current_candidate_total_pnl_usd REAL,
             current_candidate_max_drawdown_pct REAL,
+            current_candidate_constraint_failures_json TEXT NOT NULL DEFAULT '[]',
             current_candidate_result_json TEXT NOT NULL DEFAULT '{}',
             best_vs_current_pnl_usd       REAL,
             best_vs_current_score         REAL,
@@ -580,6 +581,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "current_candidate_feasible": "INTEGER NOT NULL DEFAULT 0",
             "current_candidate_total_pnl_usd": "REAL",
             "current_candidate_max_drawdown_pct": "REAL",
+            "current_candidate_constraint_failures_json": "TEXT NOT NULL DEFAULT '[]'",
             "current_candidate_result_json": "TEXT NOT NULL DEFAULT '{}'",
             "best_vs_current_pnl_usd": "REAL",
             "best_vs_current_score": "REAL",
@@ -648,11 +650,11 @@ def _persist_search_results(
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
                 window_stddev_penalty, worst_window_penalty, candidate_count, feasible_count,
                 rejected_count, current_candidate_score, current_candidate_feasible,
-                current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_result_json,
+                current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
                 best_vs_current_pnl_usd, best_vs_current_score,
                 best_feasible_candidate_index, best_feasible_score,
                 best_feasible_total_pnl_usd, best_feasible_max_drawdown_pct
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 started_at,
@@ -675,6 +677,7 @@ def _persist_search_results(
                 0 if current_candidate and current_candidate["constraint_failures"] else 1 if current_candidate else 0,
                 float(current_candidate["result"].get("total_pnl_usd") or 0.0) if current_candidate else None,
                 float(current_candidate["result"].get("max_drawdown_pct") or 0.0) if current_candidate else None,
+                json.dumps(current_candidate["constraint_failures"], separators=(",", ":"), default=str) if current_candidate else "[]",
                 json.dumps(current_candidate["result"], sort_keys=True, separators=(",", ":"), default=str) if current_candidate else "{}",
                 (
                     float(best_feasible["result"].get("total_pnl_usd") or 0.0)

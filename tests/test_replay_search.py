@@ -9,10 +9,31 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import db
 import replay_search
 
 
 class ReplaySearchTest(unittest.TestCase):
+    def test_db_init_db_backfills_replay_search_run_columns_for_dashboard_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    columns = {
+                        str(row["name"])
+                        for row in conn.execute("PRAGMA table_info(replay_search_runs)").fetchall()
+                    }
+                finally:
+                    conn.close()
+            finally:
+                db.DB_PATH = original_db_path
+
+        self.assertIn("current_candidate_constraint_failures_json", columns)
+        self.assertIn("current_candidate_result_json", columns)
+
     def test_main_ranks_grid_candidates_and_keeps_json_on_stdout(self) -> None:
         calls: list[dict[str, object]] = []
 
@@ -854,7 +875,7 @@ class ReplaySearchTest(unittest.TestCase):
                            current_candidate_score, current_candidate_feasible,
                            current_candidate_total_pnl_usd, best_vs_current_pnl_usd,
                            best_feasible_candidate_index, best_feasible_total_pnl_usd,
-                           current_candidate_result_json,
+                           current_candidate_constraint_failures_json, current_candidate_result_json,
                            constraints_json, notes
                     FROM replay_search_runs
                     """
@@ -877,9 +898,10 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(run_row[7], 20.0)
             self.assertEqual(run_row[8], 1)
             self.assertEqual(run_row[9], 60.0)
-            self.assertEqual(json.loads(run_row[10])["signal_mode_summary"]["heuristic"]["accepted_count"], 12)
+            self.assertEqual(json.loads(run_row[10]), [])
+            self.assertEqual(json.loads(run_row[11])["signal_mode_summary"]["heuristic"]["accepted_count"], 12)
             self.assertEqual(
-                json.loads(run_row[11]),
+                json.loads(run_row[12]),
                 {
                     "max_drawdown_pct": 0.1,
                     "max_heuristic_accepted_share": 0.0,
@@ -906,7 +928,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "min_xgboost_worst_window_pnl_usd": -1000000000.0,
                 },
             )
-            self.assertEqual(run_row[12], "persisted run")
+            self.assertEqual(run_row[13], "persisted run")
             self.assertEqual(payload["best_feasible_config"]["MIN_CONFIDENCE"], 0.6)
             self.assertEqual(len(candidate_rows), 3)
             self.assertEqual(candidate_rows[0][0:3], (0, 1, 1))

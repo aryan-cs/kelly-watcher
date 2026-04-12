@@ -178,6 +178,7 @@ interface ReplaySearchSummaryRow {
   current_candidate_feasible: number | null
   current_candidate_total_pnl_usd: number | null
   current_candidate_max_drawdown_pct: number | null
+  current_candidate_constraint_failures_json: string | null
   current_candidate_result_json: string | null
   best_vs_current_pnl_usd: number | null
   best_vs_current_score: number | null
@@ -289,6 +290,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.'},
       {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.'},
       {label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.'},
+      {label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
       {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
@@ -596,6 +598,7 @@ WITH latest_search AS (
     current_candidate_feasible,
     current_candidate_total_pnl_usd,
     current_candidate_max_drawdown_pct,
+    current_candidate_constraint_failures_json,
     current_candidate_result_json,
     best_vs_current_pnl_usd,
     best_vs_current_score,
@@ -635,6 +638,7 @@ SELECT
   latest_search.current_candidate_feasible,
   latest_search.current_candidate_total_pnl_usd,
   latest_search.current_candidate_max_drawdown_pct,
+  latest_search.current_candidate_constraint_failures_json,
   latest_search.current_candidate_result_json,
   latest_search.best_vs_current_pnl_usd,
   latest_search.best_vs_current_score,
@@ -1573,6 +1577,44 @@ function replaySearchCurrentModeRiskSummary(
   }
 }
 
+function replaySearchFailureSummary(raw: string | null | undefined, feasible: number | null | undefined): string {
+  if (Number(feasible || 0) > 0) return '-'
+  if (!raw) return 'unknown'
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return 'unknown'
+    const failures = parsed
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+    if (!failures.length) return 'unknown'
+    const labels = failures.map((failure) => {
+      switch (failure) {
+        case 'accepted_count':
+          return 'accepted'
+        case 'resolved_count':
+          return 'resolved'
+        case 'win_rate':
+          return 'win rate'
+        case 'max_drawdown_pct':
+          return 'drawdown'
+        case 'worst_window_pnl_usd':
+          return 'worst pnl'
+        case 'worst_window_drawdown_pct':
+          return 'worst dd'
+        case 'positive_window_count':
+          return 'positive windows'
+        default:
+          return failure.replaceAll('_', ' ')
+      }
+    })
+    return labels.length > 4
+      ? `${labels.slice(0, 4).join(' | ')} | +${formatCount(labels.length - 4)} more`
+      : labels.join(' | ')
+  } catch {
+    return 'unknown'
+  }
+}
+
 interface ReplaySearchConfigSuggestion {
   diffCount: number
   summary: string
@@ -2321,6 +2363,18 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             ? dollarColor(latestReplaySearch.current_candidate_total_pnl_usd)
             : theme.yellow
           : theme.dim
+      },
+      {
+        label: 'Cur fails',
+        value: replaySearchFailureSummary(
+          latestReplaySearch?.current_candidate_constraint_failures_json,
+          latestReplaySearch?.current_candidate_feasible
+        ),
+        color: !latestReplaySearch
+          ? theme.dim
+          : Number(latestReplaySearch.current_candidate_feasible || 0) > 0
+            ? theme.dim
+            : theme.yellow
       },
       {
         label: 'Cur regret',

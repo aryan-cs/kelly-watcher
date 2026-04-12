@@ -1390,10 +1390,18 @@ function replaySearchModeFloorSummary(raw: string | null | undefined): string {
     const parts: string[] = []
     const minHeuristicAccepted = Number(payload.min_heuristic_accepted_count || 0)
     const minXgboostAccepted = Number(payload.min_xgboost_accepted_count || 0)
+    const minHeuristicResolved = Number(payload.min_heuristic_resolved_count || 0)
+    const minXgboostResolved = Number(payload.min_xgboost_resolved_count || 0)
+    const minHeuristicWinRate = Number(payload.min_heuristic_win_rate || 0)
+    const minXgboostWinRate = Number(payload.min_xgboost_win_rate || 0)
     const maxHeuristicAcceptedShare = Number(payload.max_heuristic_accepted_share || 0)
     const minXgboostAcceptedShare = Number(payload.min_xgboost_accepted_share || 0)
     if (minHeuristicAccepted > 0) parts.push(`heur >=${formatCount(minHeuristicAccepted)}`)
     if (minXgboostAccepted > 0) parts.push(`model >=${formatCount(minXgboostAccepted)}`)
+    if (minHeuristicResolved > 0) parts.push(`heur r>=${formatCount(minHeuristicResolved)}`)
+    if (minXgboostResolved > 0) parts.push(`model r>=${formatCount(minXgboostResolved)}`)
+    if (minHeuristicWinRate > 0) parts.push(`heur wr>=${formatPct(minHeuristicWinRate, 0)}`)
+    if (minXgboostWinRate > 0) parts.push(`model wr>=${formatPct(minXgboostWinRate, 0)}`)
     if (maxHeuristicAcceptedShare > 0) parts.push(`heur <=${formatPct(maxHeuristicAcceptedShare, 0)}`)
     if (minXgboostAcceptedShare > 0) parts.push(`model >=${formatPct(minXgboostAcceptedShare, 0)}`)
     return parts.length ? parts.join(', ') : 'none'

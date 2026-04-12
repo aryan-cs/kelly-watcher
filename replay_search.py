@@ -145,6 +145,10 @@ def _constraint_failures(
     max_worst_window_drawdown_pct: float,
     min_heuristic_accepted_count: int,
     min_xgboost_accepted_count: int,
+    min_heuristic_resolved_count: int,
+    min_xgboost_resolved_count: int,
+    min_heuristic_win_rate: float,
+    min_xgboost_win_rate: float,
     max_heuristic_accepted_share: float,
     min_xgboost_accepted_share: float,
 ) -> list[str]:
@@ -174,6 +178,16 @@ def _constraint_failures(
         failures.append("heuristic_accepted_count")
     if int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) < max(min_xgboost_accepted_count, 0):
         failures.append("xgboost_accepted_count")
+    if int(signal_mode_summary.get("heuristic", {}).get("resolved_count") or 0) < max(min_heuristic_resolved_count, 0):
+        failures.append("heuristic_resolved_count")
+    if int(signal_mode_summary.get("xgboost", {}).get("resolved_count") or 0) < max(min_xgboost_resolved_count, 0):
+        failures.append("xgboost_resolved_count")
+    heuristic_win_rate = signal_mode_summary.get("heuristic", {}).get("win_rate")
+    xgboost_win_rate = signal_mode_summary.get("xgboost", {}).get("win_rate")
+    if min_heuristic_win_rate > 0 and (heuristic_win_rate is None or float(heuristic_win_rate) < min_heuristic_win_rate):
+        failures.append("heuristic_win_rate")
+    if min_xgboost_win_rate > 0 and (xgboost_win_rate is None or float(xgboost_win_rate) < min_xgboost_win_rate):
+        failures.append("xgboost_win_rate")
     heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
     xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
     if max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
@@ -682,6 +696,10 @@ def main() -> None:
     parser.add_argument("--max-worst-window-drawdown-pct", type=float, default=0.0, help="Maximum allowed drawdown for the worst replay window.")
     parser.add_argument("--min-heuristic-accepted-count", type=int, default=0, help="Minimum accepted heuristic trades required for a candidate to be feasible.")
     parser.add_argument("--min-xgboost-accepted-count", type=int, default=0, help="Minimum accepted xgboost trades required for a candidate to be feasible.")
+    parser.add_argument("--min-heuristic-resolved-count", type=int, default=0, help="Minimum resolved heuristic trades required for a candidate to be feasible.")
+    parser.add_argument("--min-xgboost-resolved-count", type=int, default=0, help="Minimum resolved xgboost trades required for a candidate to be feasible.")
+    parser.add_argument("--min-heuristic-win-rate", type=float, default=0.0, help="Minimum heuristic win rate required for a candidate to be feasible.")
+    parser.add_argument("--min-xgboost-win-rate", type=float, default=0.0, help="Minimum xgboost win rate required for a candidate to be feasible.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
     args = parser.parse_args()
@@ -716,6 +734,10 @@ def main() -> None:
         max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
         min_heuristic_accepted_count=max(args.min_heuristic_accepted_count, 0),
         min_xgboost_accepted_count=max(args.min_xgboost_accepted_count, 0),
+        min_heuristic_resolved_count=max(args.min_heuristic_resolved_count, 0),
+        min_xgboost_resolved_count=max(args.min_xgboost_resolved_count, 0),
+        min_heuristic_win_rate=_clamp_fraction(args.min_heuristic_win_rate),
+        min_xgboost_win_rate=_clamp_fraction(args.min_xgboost_win_rate),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
     )
@@ -771,6 +793,10 @@ def main() -> None:
             max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
             min_heuristic_accepted_count=max(args.min_heuristic_accepted_count, 0),
             min_xgboost_accepted_count=max(args.min_xgboost_accepted_count, 0),
+            min_heuristic_resolved_count=max(args.min_heuristic_resolved_count, 0),
+            min_xgboost_resolved_count=max(args.min_xgboost_resolved_count, 0),
+            min_heuristic_win_rate=_clamp_fraction(args.min_heuristic_win_rate),
+            min_xgboost_win_rate=_clamp_fraction(args.min_xgboost_win_rate),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         )
@@ -813,6 +839,10 @@ def main() -> None:
         "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
         "min_heuristic_accepted_count": max(args.min_heuristic_accepted_count, 0),
         "min_xgboost_accepted_count": max(args.min_xgboost_accepted_count, 0),
+        "min_heuristic_resolved_count": max(args.min_heuristic_resolved_count, 0),
+        "min_xgboost_resolved_count": max(args.min_xgboost_resolved_count, 0),
+        "min_heuristic_win_rate": _clamp_fraction(args.min_heuristic_win_rate),
+        "min_xgboost_win_rate": _clamp_fraction(args.min_xgboost_win_rate),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
     }

@@ -398,6 +398,67 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_xgboost_accepted_share"], 0.4)
         self.assertIn("modes heur 4 (40%) / xgb 6 (60%)", stderr.getvalue())
 
+    def test_main_can_require_mode_specific_resolved_counts_and_win_rates(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 66.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "win_rate": 0.7,
+                    "signal_mode_summary": {
+                        "heuristic": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 12.0, "win_count": 2, "win_rate": 0.5},
+                        "xgboost": {"accepted_count": 6, "resolved_count": 6, "trade_count": 6, "total_pnl_usd": 54.0, "win_count": 4, "win_rate": 2 / 3},
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 72.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 8,
+                "win_rate": 0.625,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 5, "resolved_count": 5, "trade_count": 5, "total_pnl_usd": 28.0, "win_count": 3, "win_rate": 0.6},
+                    "xgboost": {"accepted_count": 5, "resolved_count": 3, "trade_count": 5, "total_pnl_usd": 44.0, "win_count": 1, "win_rate": 1 / 3},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--min-heuristic-resolved-count",
+            "4",
+            "--min-xgboost-resolved-count",
+            "4",
+            "--min-heuristic-win-rate",
+            "0.5",
+            "--min-xgboost-win-rate",
+            "0.5",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["xgboost_resolved_count", "xgboost_win_rate"])
+        self.assertEqual(payload["constraints"]["min_heuristic_resolved_count"], 4)
+        self.assertEqual(payload["constraints"]["min_xgboost_resolved_count"], 4)
+        self.assertEqual(payload["constraints"]["min_heuristic_win_rate"], 0.5)
+        self.assertEqual(payload["constraints"]["min_xgboost_win_rate"], 0.5)
+
     def test_main_can_penalize_window_instability(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -603,12 +664,16 @@ class ReplaySearchTest(unittest.TestCase):
                     "max_worst_window_drawdown_pct": 0.0,
                     "min_accepted_count": 5,
                     "min_heuristic_accepted_count": 0,
+                    "min_heuristic_resolved_count": 0,
+                    "min_heuristic_win_rate": 0.0,
                     "min_positive_windows": 0,
                     "min_resolved_count": 0,
                     "min_win_rate": 0.0,
                     "min_worst_window_pnl_usd": -1000000000.0,
                     "min_xgboost_accepted_share": 0.0,
                     "min_xgboost_accepted_count": 0,
+                    "min_xgboost_resolved_count": 0,
+                    "min_xgboost_win_rate": 0.0,
                 },
             )
             self.assertEqual(run_row[12], "persisted run")

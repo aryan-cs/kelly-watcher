@@ -286,7 +286,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.'},
       {label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.'},
-      {label: 'Mode guard', text: 'Per-scorer accepted-count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.'},
+      {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.'},
       {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.'},
       {label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
@@ -1443,6 +1443,8 @@ function replaySearchModeFloorSummary(raw: string | null | undefined): string {
     const minXgboostPnlUsd = Number(payload.min_xgboost_pnl_usd || 0)
     const minHeuristicWorstWindowPnlUsd = Number(payload.min_heuristic_worst_window_pnl_usd ?? -1_000_000_000)
     const minXgboostWorstWindowPnlUsd = Number(payload.min_xgboost_worst_window_pnl_usd ?? -1_000_000_000)
+    const minHeuristicPositiveWindows = Number(payload.min_heuristic_positive_windows || 0)
+    const minXgboostPositiveWindows = Number(payload.min_xgboost_positive_windows || 0)
     const maxHeuristicAcceptedShare = Number(payload.max_heuristic_accepted_share || 0)
     const minXgboostAcceptedShare = Number(payload.min_xgboost_accepted_share || 0)
     if (minHeuristicAccepted > 0) parts.push(`heur >=${formatCount(minHeuristicAccepted)}`)
@@ -1457,6 +1459,8 @@ function replaySearchModeFloorSummary(raw: string | null | undefined): string {
     if (minXgboostPnlUsd !== 0) parts.push(`model pnl>=${formatDollar(minXgboostPnlUsd)}`)
     if (minHeuristicWorstWindowPnlUsd > -999_999_999) parts.push(`heur worst>=${formatDollar(minHeuristicWorstWindowPnlUsd)}`)
     if (minXgboostWorstWindowPnlUsd > -999_999_999) parts.push(`model worst>=${formatDollar(minXgboostWorstWindowPnlUsd)}`)
+    if (minHeuristicPositiveWindows > 0) parts.push(`heur pos>=${formatCount(minHeuristicPositiveWindows)}`)
+    if (minXgboostPositiveWindows > 0) parts.push(`model pos>=${formatCount(minXgboostPositiveWindows)}`)
     if (maxHeuristicAcceptedShare > 0) parts.push(`heur mix<=${formatPct(maxHeuristicAcceptedShare, 0)}`)
     if (minXgboostAcceptedShare > 0) parts.push(`model mix>=${formatPct(minXgboostAcceptedShare, 0)}`)
     return parts.length ? parts.join(', ') : 'none'

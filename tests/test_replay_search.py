@@ -507,6 +507,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "unresolved_count": 0,
                     "trade_count": 4,
                     "win_rate": 0.80,
+                    "signal_mode_summary": {"xgboost": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 80.0, "win_count": 3}},
                 }
             if min_conf >= 0.60:
                 return {
@@ -519,6 +520,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "unresolved_count": 0,
                     "trade_count": 12,
                     "win_rate": 0.62,
+                    "signal_mode_summary": {"heuristic": {"accepted_count": 6, "resolved_count": 12, "trade_count": 12, "total_pnl_usd": 60.0, "win_count": 7}, "xgboost": {"accepted_count": 6, "resolved_count": 0, "trade_count": 0, "total_pnl_usd": 0.0, "win_count": 0}},
                 }
             return {
                 "run_id": 0,
@@ -530,6 +532,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "unresolved_count": 0,
                 "trade_count": 12,
                 "win_rate": 0.62,
+                "signal_mode_summary": {"heuristic": {"accepted_count": 12, "resolved_count": 12, "trade_count": 12, "total_pnl_usd": 40.0, "win_count": 7}},
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -568,6 +571,7 @@ class ReplaySearchTest(unittest.TestCase):
                            current_candidate_score, current_candidate_feasible,
                            current_candidate_total_pnl_usd, best_vs_current_pnl_usd,
                            best_feasible_candidate_index, best_feasible_total_pnl_usd,
+                           current_candidate_result_json,
                            constraints_json, notes
                     FROM replay_search_runs
                     """
@@ -590,8 +594,9 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(run_row[7], 20.0)
             self.assertEqual(run_row[8], 1)
             self.assertEqual(run_row[9], 60.0)
+            self.assertEqual(json.loads(run_row[10])["signal_mode_summary"]["heuristic"]["accepted_count"], 12)
             self.assertEqual(
-                json.loads(run_row[10]),
+                json.loads(run_row[11]),
                 {
                     "max_drawdown_pct": 0.1,
                     "max_heuristic_accepted_share": 0.0,
@@ -606,7 +611,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "min_xgboost_accepted_count": 0,
                 },
             )
-            self.assertEqual(run_row[11], "persisted run")
+            self.assertEqual(run_row[12], "persisted run")
             self.assertEqual(payload["best_feasible_config"]["MIN_CONFIDENCE"], 0.6)
             self.assertEqual(len(candidate_rows), 3)
             self.assertEqual(candidate_rows[0][0:3], (0, 1, 1))
@@ -637,6 +642,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "unresolved_count": 0,
                 "trade_count": 8,
                 "win_rate": 0.625,
+                "signal_mode_summary": {"heuristic": {"accepted_count": 8, "resolved_count": 8, "trade_count": 8, "total_pnl_usd": 42.0, "win_count": 5}},
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -688,7 +694,8 @@ class ReplaySearchTest(unittest.TestCase):
                     """
                     SELECT candidate_count, feasible_count, rejected_count,
                            current_candidate_score, current_candidate_feasible,
-                           current_candidate_total_pnl_usd, best_feasible_score, best_feasible_total_pnl_usd
+                           current_candidate_total_pnl_usd, current_candidate_result_json,
+                           best_feasible_score, best_feasible_total_pnl_usd
                     FROM replay_search_runs
                     """
                 ).fetchone()
@@ -703,11 +710,14 @@ class ReplaySearchTest(unittest.TestCase):
                 conn.close()
 
             self.assertIn("constraints_json", run_columns)
+            self.assertIn("current_candidate_result_json", run_columns)
             self.assertIn("best_feasible_total_pnl_usd", run_columns)
             self.assertIn("feasible", candidate_columns)
             self.assertIn("config_json", candidate_columns)
             self.assertIn("result_json", candidate_columns)
-            self.assertEqual(run_row, (1, 1, 0, -78.0, 1, 42.0, -78.0, 42.0))
+            self.assertEqual(run_row[0:6], (1, 1, 0, -78.0, 1, 42.0))
+            self.assertEqual(json.loads(run_row[6])["signal_mode_summary"]["heuristic"]["accepted_count"], 8)
+            self.assertEqual(run_row[7:9], (-78.0, 42.0))
             self.assertEqual(candidate_row[0], 1)
             self.assertEqual(candidate_row[1], 1)
             self.assertEqual(json.loads(candidate_row[2]), [])
@@ -730,6 +740,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "unresolved_count": 0,
                 "trade_count": 9,
                 "win_rate": 2 / 3,
+                "signal_mode_summary": {"xgboost": {"accepted_count": 9, "resolved_count": 9, "trade_count": 9, "total_pnl_usd": 50.0, "win_count": 6}},
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -759,7 +770,7 @@ class ReplaySearchTest(unittest.TestCase):
                 run_row = conn.execute(
                     """
                     SELECT candidate_count, feasible_count, rejected_count,
-                           current_candidate_total_pnl_usd, best_vs_current_pnl_usd,
+                           current_candidate_total_pnl_usd, current_candidate_result_json, best_vs_current_pnl_usd,
                            best_feasible_candidate_index
                     FROM replay_search_runs
                     """
@@ -776,7 +787,9 @@ class ReplaySearchTest(unittest.TestCase):
 
             self.assertTrue(payload["current_candidate_matches_grid"])
             self.assertEqual(len(calls), 1)
-            self.assertEqual(run_row, (1, 1, 0, 50.0, 0.0, 1))
+            self.assertEqual(run_row[0:4], (1, 1, 0, 50.0))
+            self.assertEqual(json.loads(run_row[4])["signal_mode_summary"]["xgboost"]["accepted_count"], 9)
+            self.assertEqual(run_row[5:7], (0.0, 1))
             self.assertEqual(candidate_rows, [(1, 1, 0)])
 
 

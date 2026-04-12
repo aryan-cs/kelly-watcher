@@ -178,6 +178,7 @@ interface ReplaySearchSummaryRow {
   current_candidate_feasible: number | null
   current_candidate_total_pnl_usd: number | null
   current_candidate_max_drawdown_pct: number | null
+  current_candidate_result_json: string | null
   best_vs_current_pnl_usd: number | null
   best_vs_current_score: number | null
   best_feasible_score: number | null
@@ -285,6 +286,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.'},
       {label: 'Search modes', text: 'Accepted trade mix and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Mode guard', text: 'Per-scorer accepted-count and share guardrails from the latest replay search, if any.'},
+      {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
       {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
@@ -592,6 +594,7 @@ WITH latest_search AS (
     current_candidate_feasible,
     current_candidate_total_pnl_usd,
     current_candidate_max_drawdown_pct,
+    current_candidate_result_json,
     best_vs_current_pnl_usd,
     best_vs_current_score,
     best_feasible_score
@@ -630,6 +633,7 @@ SELECT
   latest_search.current_candidate_feasible,
   latest_search.current_candidate_total_pnl_usd,
   latest_search.current_candidate_max_drawdown_pct,
+  latest_search.current_candidate_result_json,
   latest_search.best_vs_current_pnl_usd,
   latest_search.best_vs_current_score,
   latest_search.best_feasible_score,
@@ -1331,6 +1335,50 @@ function replaySearchModeMixSummary(raw: string | null | undefined): string {
   } catch {
     return '-'
   }
+}
+
+function replaySearchModeShares(raw: string | null | undefined): Map<string, number> {
+  const shares = new Map<string, number>()
+  if (!raw) return shares
+  try {
+    const parsed = JSON.parse(raw)
+    const rawSummary = parsed?.signal_mode_summary
+    if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return shares
+    const entries = Object.entries(rawSummary as Record<string, unknown>)
+      .map(([mode, value]) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+        const payload = value as Record<string, unknown>
+        return {
+          mode: String(mode || '').trim(),
+          acceptedCount: Number(payload.accepted_count || 0)
+        }
+      })
+      .filter((entry): entry is {mode: string; acceptedCount: number} => Boolean(entry))
+      .filter((entry) => entry.acceptedCount > 0)
+    const totalAccepted = entries.reduce((sum, entry) => sum + entry.acceptedCount, 0)
+    if (totalAccepted <= 0) return shares
+    for (const entry of entries) {
+      shares.set(entry.mode, entry.acceptedCount / totalAccepted)
+    }
+  } catch {
+    return shares
+  }
+  return shares
+}
+
+function replaySearchModeDriftSummary(bestRaw: string | null | undefined, currentRaw: string | null | undefined): string {
+  const bestShares = replaySearchModeShares(bestRaw)
+  const currentShares = replaySearchModeShares(currentRaw)
+  if (!bestShares.size || !currentShares.size) return '-'
+  const parts: string[] = []
+  for (const mode of ['heuristic', 'xgboost']) {
+    if (!bestShares.has(mode) && !currentShares.has(mode)) continue
+    const driftPctPoints = ((bestShares.get(mode) || 0) - (currentShares.get(mode) || 0)) * 100
+    const rounded = Math.round(driftPctPoints)
+    const sign = rounded > 0 ? '+' : ''
+    parts.push(`${modeLabel(mode)} ${sign}${rounded}pt`)
+  }
+  return parts.length ? parts.join(' | ') : '-'
 }
 
 function replaySearchModeFloorSummary(raw: string | null | undefined): string {
@@ -2064,6 +2112,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         label: 'Mode guard',
         value: replaySearchModeFloorSummary(latestReplaySearch?.constraints_json),
         color: latestReplaySearch?.constraints_json ? theme.white : theme.dim
+      },
+      {
+        label: 'Mode drift',
+        value: replaySearchModeDriftSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json),
+        color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
       },
       {
         label: 'Cur feasible',

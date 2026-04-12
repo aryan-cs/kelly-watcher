@@ -74,7 +74,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.' },
             { label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.' },
             { label: 'Search modes', text: 'Accepted trade mix and replay P&L by scorer on the latest best feasible replay-search candidate.' },
-            { label: 'Mode guard', text: 'Per-scorer accepted-count, resolved-count, win-rate, P&L, and accepted-share guardrails from the latest replay search, if any.' },
+            { label: 'Mode guard', text: 'Per-scorer accepted-count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
             { label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.' },
             { label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.' },
             { label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.' },
@@ -1160,6 +1160,8 @@ function replaySearchModeFloorSummary(raw) {
         const minXgboostWinRate = Number(payload.min_xgboost_win_rate || 0);
         const minHeuristicPnlUsd = Number(payload.min_heuristic_pnl_usd || 0);
         const minXgboostPnlUsd = Number(payload.min_xgboost_pnl_usd || 0);
+        const minHeuristicWorstWindowPnlUsd = Number(payload.min_heuristic_worst_window_pnl_usd ?? -1000000000);
+        const minXgboostWorstWindowPnlUsd = Number(payload.min_xgboost_worst_window_pnl_usd ?? -1000000000);
         const maxHeuristicAcceptedShare = Number(payload.max_heuristic_accepted_share || 0);
         const minXgboostAcceptedShare = Number(payload.min_xgboost_accepted_share || 0);
         if (minHeuristicAccepted > 0)
@@ -1182,6 +1184,10 @@ function replaySearchModeFloorSummary(raw) {
             parts.push(`heur pnl>=${formatDollar(minHeuristicPnlUsd)}`);
         if (minXgboostPnlUsd !== 0)
             parts.push(`model pnl>=${formatDollar(minXgboostPnlUsd)}`);
+        if (minHeuristicWorstWindowPnlUsd > -999999999)
+            parts.push(`heur worst>=${formatDollar(minHeuristicWorstWindowPnlUsd)}`);
+        if (minXgboostWorstWindowPnlUsd > -999999999)
+            parts.push(`model worst>=${formatDollar(minXgboostWorstWindowPnlUsd)}`);
         if (maxHeuristicAcceptedShare > 0)
             parts.push(`heur mix<=${formatPct(maxHeuristicAcceptedShare, 0)}`);
         if (minXgboostAcceptedShare > 0)

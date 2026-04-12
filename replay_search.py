@@ -96,19 +96,54 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "accepted_count": 0,
                 "resolved_count": 0,
                 "total_pnl_usd": 0.0,
+                "worst_window_pnl_usd": None,
+                "best_window_pnl_usd": None,
                 "win_count": 0,
                 "win_rate": None,
             },
         )
+        raw_total_pnl_usd = float(raw_values.get("total_pnl_usd") or 0.0)
+        raw_worst_window_pnl_usd = raw_values.get("worst_window_pnl_usd")
+        raw_best_window_pnl_usd = raw_values.get("best_window_pnl_usd")
+        resolved_worst_window_pnl_usd = (
+            float(raw_worst_window_pnl_usd)
+            if raw_worst_window_pnl_usd is not None
+            else raw_total_pnl_usd
+        )
+        resolved_best_window_pnl_usd = (
+            float(raw_best_window_pnl_usd)
+            if raw_best_window_pnl_usd is not None
+            else raw_total_pnl_usd
+        )
         bucket["trade_count"] += int(raw_values.get("trade_count") or 0)
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
         bucket["resolved_count"] += int(raw_values.get("resolved_count") or 0)
-        bucket["total_pnl_usd"] += float(raw_values.get("total_pnl_usd") or 0.0)
+        bucket["total_pnl_usd"] += raw_total_pnl_usd
+        bucket["worst_window_pnl_usd"] = (
+            resolved_worst_window_pnl_usd
+            if bucket["worst_window_pnl_usd"] is None
+            else min(float(bucket["worst_window_pnl_usd"]), resolved_worst_window_pnl_usd)
+        )
+        bucket["best_window_pnl_usd"] = (
+            resolved_best_window_pnl_usd
+            if bucket["best_window_pnl_usd"] is None
+            else max(float(bucket["best_window_pnl_usd"]), resolved_best_window_pnl_usd)
+        )
         bucket["win_count"] += int(raw_values.get("win_count") or 0)
     for mode, values in summary.items():
         values["win_rate"] = (
             float(values["win_count"]) / float(values["resolved_count"])
             if int(values["resolved_count"] or 0) > 0
+            else None
+        )
+        values["worst_window_pnl_usd"] = (
+            round(float(values["worst_window_pnl_usd"]), 6)
+            if values["worst_window_pnl_usd"] is not None
+            else None
+        )
+        values["best_window_pnl_usd"] = (
+            round(float(values["best_window_pnl_usd"]), 6)
+            if values["best_window_pnl_usd"] is not None
             else None
         )
     return summary
@@ -137,6 +172,13 @@ def _resolved_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -
     return float(int(signal_mode_summary.get(mode, {}).get("resolved_count") or 0)) / float(accepted_count)
 
 
+def _worst_window_pnl(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
+    raw_value = signal_mode_summary.get(mode, {}).get("worst_window_pnl_usd")
+    if raw_value is None:
+        return 0.0
+    return float(raw_value)
+
+
 def _clamp_fraction(raw: float) -> float:
     return min(max(float(raw), 0.0), 1.0)
 
@@ -160,6 +202,8 @@ def _constraint_failures(
     min_xgboost_resolved_share: float,
     min_heuristic_pnl_usd: float,
     min_xgboost_pnl_usd: float,
+    min_heuristic_worst_window_pnl_usd: float,
+    min_xgboost_worst_window_pnl_usd: float,
     max_heuristic_accepted_share: float,
     min_xgboost_accepted_share: float,
 ) -> list[str]:
@@ -207,6 +251,10 @@ def _constraint_failures(
         failures.append("heuristic_total_pnl_usd")
     if float(signal_mode_summary.get("xgboost", {}).get("total_pnl_usd") or 0.0) < min_xgboost_pnl_usd:
         failures.append("xgboost_total_pnl_usd")
+    if _worst_window_pnl(signal_mode_summary, "heuristic") < min_heuristic_worst_window_pnl_usd:
+        failures.append("heuristic_worst_window_pnl_usd")
+    if _worst_window_pnl(signal_mode_summary, "xgboost") < min_xgboost_worst_window_pnl_usd:
+        failures.append("xgboost_worst_window_pnl_usd")
     heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
     xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
     if max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
@@ -368,6 +416,7 @@ def _aggregate_window_results(
                     "accepted_count": 0.0,
                     "resolved_count": 0.0,
                     "total_pnl_usd": 0.0,
+                    "window_pnls": [],
                     "win_count": 0.0,
                 },
             )
@@ -375,6 +424,7 @@ def _aggregate_window_results(
             bucket["accepted_count"] += int(values.get("accepted_count") or 0)
             bucket["resolved_count"] += int(values.get("resolved_count") or 0)
             bucket["total_pnl_usd"] += float(values.get("total_pnl_usd") or 0.0)
+            bucket["window_pnls"].append(float(values.get("total_pnl_usd") or 0.0))
             bucket["win_count"] += int(values.get("win_count") or 0)
     signal_mode_summary = {
         mode: {
@@ -382,6 +432,8 @@ def _aggregate_window_results(
             "accepted_count": int(values["accepted_count"]),
             "resolved_count": int(values["resolved_count"]),
             "total_pnl_usd": round(values["total_pnl_usd"], 6),
+            "worst_window_pnl_usd": round(min(values["window_pnls"]), 6) if values["window_pnls"] else None,
+            "best_window_pnl_usd": round(max(values["window_pnls"]), 6) if values["window_pnls"] else None,
             "win_count": int(values["win_count"]),
             "win_rate": round(values["win_count"] / values["resolved_count"], 6) if values["resolved_count"] > 0 else None,
         }
@@ -723,6 +775,8 @@ def main() -> None:
     parser.add_argument("--min-xgboost-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted xgboost trades that must be resolved.")
     parser.add_argument("--min-heuristic-pnl-usd", type=float, default=0.0, help="Minimum replay P&L contribution required from heuristic trades.")
     parser.add_argument("--min-xgboost-pnl-usd", type=float, default=0.0, help="Minimum replay P&L contribution required from xgboost trades.")
+    parser.add_argument("--min-heuristic-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed heuristic P&L in the worst replay window for that scorer path.")
+    parser.add_argument("--min-xgboost-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed xgboost P&L in the worst replay window for that scorer path.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
     args = parser.parse_args()
@@ -765,6 +819,8 @@ def main() -> None:
         min_xgboost_resolved_share=_clamp_fraction(args.min_xgboost_resolved_share),
         min_heuristic_pnl_usd=float(args.min_heuristic_pnl_usd),
         min_xgboost_pnl_usd=float(args.min_xgboost_pnl_usd),
+        min_heuristic_worst_window_pnl_usd=float(args.min_heuristic_worst_window_pnl_usd),
+        min_xgboost_worst_window_pnl_usd=float(args.min_xgboost_worst_window_pnl_usd),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
     )
@@ -828,6 +884,8 @@ def main() -> None:
             min_xgboost_resolved_share=_clamp_fraction(args.min_xgboost_resolved_share),
             min_heuristic_pnl_usd=float(args.min_heuristic_pnl_usd),
             min_xgboost_pnl_usd=float(args.min_xgboost_pnl_usd),
+            min_heuristic_worst_window_pnl_usd=float(args.min_heuristic_worst_window_pnl_usd),
+            min_xgboost_worst_window_pnl_usd=float(args.min_xgboost_worst_window_pnl_usd),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         )
@@ -878,6 +936,8 @@ def main() -> None:
         "min_xgboost_resolved_share": _clamp_fraction(args.min_xgboost_resolved_share),
         "min_heuristic_pnl_usd": float(args.min_heuristic_pnl_usd),
         "min_xgboost_pnl_usd": float(args.min_xgboost_pnl_usd),
+        "min_heuristic_worst_window_pnl_usd": float(args.min_heuristic_worst_window_pnl_usd),
+        "min_xgboost_worst_window_pnl_usd": float(args.min_xgboost_worst_window_pnl_usd),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
     }

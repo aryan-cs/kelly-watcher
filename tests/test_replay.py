@@ -139,7 +139,7 @@ class ReplayTest(unittest.TestCase):
                     trade_id="model-edge-reject",
                     market_id="market-3",
                     trader_address="0xccc",
-                    signal_mode="xgboost",
+                    signal_mode="model",
                     confidence=0.60,
                     price_at_signal=0.58,
                     actual_entry_price=0.58,
@@ -181,6 +181,9 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(result["accepted_count"], 1)
                 self.assertEqual(result["rejected_count"], 2)
                 self.assertAlmostEqual(result["final_bankroll_usd"], 1011.548, places=3)
+                self.assertEqual(result["signal_mode_summary"]["heuristic"]["accepted_count"], 1)
+                self.assertEqual(result["signal_mode_summary"]["heuristic"]["win_count"], 1)
+                self.assertEqual(result["signal_mode_summary"]["xgboost"]["accepted_count"], 0)
 
                 conn = sqlite3.connect(str(test_db_path))
                 conn.row_factory = sqlite3.Row

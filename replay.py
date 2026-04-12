@@ -341,7 +341,7 @@ def _simulate(
 
         decision_context = _json_dict(row["decision_context_json"])
         signal = decision_context.get("signal") if isinstance(decision_context.get("signal"), dict) else {}
-        signal_mode = str(row["signal_mode"] or signal.get("mode") or "heuristic").strip().lower()
+        signal_mode = _canonical_signal_mode(row["signal_mode"] or signal.get("mode") or "heuristic")
         close_ts = int(row["close_ts"] or placed_at)
         time_to_close_seconds = max(0, close_ts - placed_at)
         time_to_close_band = _time_to_close_band(time_to_close_seconds)
@@ -636,6 +636,7 @@ def _simulate(
     )
     _insert_replay_trades(conn, run_id, replay_rows)
     segment_metric_rows = _build_segment_metric_rows(replay_rows)
+    signal_mode_summary = _segment_summary(segment_metric_rows, segment_kind="signal_mode")
     _insert_segment_metrics(conn, run_id, segment_metric_rows)
     conn.commit()
 
@@ -655,6 +656,7 @@ def _simulate(
         "resolved_count": len(resolved_rows),
         "win_rate": round(wins / len(resolved_rows), 6) if resolved_rows else None,
         "segment_leaders": _segment_leaders(segment_metric_rows),
+        "signal_mode_summary": signal_mode_summary,
     }
 
 
@@ -1001,6 +1003,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
                 "accepted_count": int(values["accepted_count"]),
                 "resolved_count": resolved_count,
                 "total_pnl_usd": round(values["total_pnl_usd"], 6),
+                "win_count": int(values["wins"]),
                 "win_rate": round(values["wins"] / resolved_count, 6) if resolved_count else None,
                 "avg_return_pct": round(values["return_sum"] / resolved_count, 6) if resolved_count else None,
             }
@@ -1053,6 +1056,26 @@ def _segment_leaders(rows: list[dict[str, Any]]) -> dict[str, dict[str, dict[str
             ),
         )
         summary[segment_kind] = {"worst": ordered[0], "best": ordered[-1]}
+    return summary
+
+
+def _segment_summary(rows: list[dict[str, Any]], *, segment_kind: str) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if str(row["segment_kind"]) != segment_kind:
+            continue
+        segment_value = str(row["segment_value"] or "")
+        if not segment_value:
+            continue
+        summary[segment_value] = {
+            "trade_count": int(row["trade_count"]),
+            "accepted_count": int(row["accepted_count"]),
+            "resolved_count": int(row["resolved_count"]),
+            "total_pnl_usd": round(float(row["total_pnl_usd"] or 0.0), 6),
+            "win_count": int(row.get("win_count") or 0),
+            "win_rate": round(float(row["win_rate"]), 6) if row.get("win_rate") is not None else None,
+            "avg_return_pct": round(float(row["avg_return_pct"]), 6) if row.get("avg_return_pct") is not None else None,
+        }
     return summary
 
 
@@ -1148,6 +1171,15 @@ def _time_to_close_band(seconds: int) -> str:
     if seconds <= 259200:
         return TIME_TO_CLOSE_BANDS[5]
     return TIME_TO_CLOSE_BANDS[6]
+
+
+def _canonical_signal_mode(raw: Any) -> str:
+    normalized = str(raw or "").strip().lower()
+    if normalized in {"model", "ml", "hist_gradient_boosting", "xgboost"}:
+        return "xgboost"
+    if not normalized:
+        return "heuristic"
+    return normalized
 
 
 def _normalize_segment_filter(

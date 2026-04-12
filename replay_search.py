@@ -80,6 +80,49 @@ def _score_result(
     )
 
 
+def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = result.get("signal_mode_summary")
+    if not isinstance(raw, dict):
+        return {}
+    summary: dict[str, dict[str, Any]] = {}
+    for raw_mode, raw_values in raw.items():
+        mode = _canonical_signal_mode(raw_mode)
+        if not mode or not isinstance(raw_values, dict):
+            continue
+        bucket = summary.setdefault(
+            mode,
+            {
+                "trade_count": 0,
+                "accepted_count": 0,
+                "resolved_count": 0,
+                "total_pnl_usd": 0.0,
+                "win_count": 0,
+                "win_rate": None,
+            },
+        )
+        bucket["trade_count"] += int(raw_values.get("trade_count") or 0)
+        bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
+        bucket["resolved_count"] += int(raw_values.get("resolved_count") or 0)
+        bucket["total_pnl_usd"] += float(raw_values.get("total_pnl_usd") or 0.0)
+        bucket["win_count"] += int(raw_values.get("win_count") or 0)
+    for mode, values in summary.items():
+        values["win_rate"] = (
+            float(values["win_count"]) / float(values["resolved_count"])
+            if int(values["resolved_count"] or 0) > 0
+            else None
+        )
+    return summary
+
+
+def _canonical_signal_mode(raw: Any) -> str:
+    normalized = str(raw or "").strip().lower()
+    if normalized in {"model", "ml", "hist_gradient_boosting", "xgboost"}:
+        return "xgboost"
+    if not normalized:
+        return "heuristic"
+    return normalized
+
+
 def _constraint_failures(
     result: dict[str, Any],
     *,
@@ -89,10 +132,13 @@ def _constraint_failures(
     max_drawdown_pct: float,
     min_worst_window_pnl_usd: float,
     max_worst_window_drawdown_pct: float,
+    min_heuristic_accepted_count: int,
+    min_xgboost_accepted_count: int,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
     resolved_count = int(result.get("resolved_count") or 0)
+    signal_mode_summary = _signal_mode_summary(result)
     raw_win_rate = result.get("win_rate")
     win_rate = float(raw_win_rate) if raw_win_rate is not None else None
     drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
@@ -111,6 +157,10 @@ def _constraint_failures(
         failures.append("worst_window_pnl_usd")
     if max_worst_window_drawdown_pct > 0 and worst_window_drawdown_pct > max_worst_window_drawdown_pct:
         failures.append("worst_window_drawdown_pct")
+    if int(signal_mode_summary.get("heuristic", {}).get("accepted_count") or 0) < max(min_heuristic_accepted_count, 0):
+        failures.append("heuristic_accepted_count")
+    if int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) < max(min_xgboost_accepted_count, 0):
+        failures.append("xgboost_accepted_count")
     return failures
 
 
@@ -126,6 +176,13 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
     for index, row in enumerate(results[:top], start=1):
         failures = row.get("constraint_failures") or []
         feasibility_suffix = "" if not failures else f" | reject {','.join(str(value) for value in failures)}"
+        signal_mode_summary = _signal_mode_summary(row["result"])
+        mode_parts: list[str] = []
+        for mode, label in (("heuristic", "heur"), ("xgboost", "xgb")):
+            accepted_count = int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)
+            if accepted_count > 0:
+                mode_parts.append(f"{label} {accepted_count}")
+        mode_suffix = f" | modes {' / '.join(mode_parts)}" if mode_parts else ""
         window_count = int(row["result"].get("window_count") or 0)
         window_suffix = ""
         if window_count > 1:
@@ -138,7 +195,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             f"dd {float(row['result'].get('max_drawdown_pct') or 0.0) * 100:.1f}% | "
             f"acc {int(row['result'].get('accepted_count') or 0)} | "
             f"win {float(row['result'].get('win_rate') or 0.0) * 100:.1f}% | "
-            f"{_compact_override_summary(row['overrides'])}{window_suffix}{feasibility_suffix}",
+            f"{_compact_override_summary(row['overrides'])}{mode_suffix}{window_suffix}{feasibility_suffix}",
             file=sys.stderr,
         )
 
@@ -249,6 +306,35 @@ def _aggregate_window_results(
         if pnl_values
         else 0.0
     )
+    signal_mode_totals: dict[str, dict[str, float]] = {}
+    for window_result in window_results:
+        for mode, values in _signal_mode_summary(window_result).items():
+            bucket = signal_mode_totals.setdefault(
+                mode,
+                {
+                    "trade_count": 0.0,
+                    "accepted_count": 0.0,
+                    "resolved_count": 0.0,
+                    "total_pnl_usd": 0.0,
+                    "win_count": 0.0,
+                },
+            )
+            bucket["trade_count"] += int(values.get("trade_count") or 0)
+            bucket["accepted_count"] += int(values.get("accepted_count") or 0)
+            bucket["resolved_count"] += int(values.get("resolved_count") or 0)
+            bucket["total_pnl_usd"] += float(values.get("total_pnl_usd") or 0.0)
+            bucket["win_count"] += int(values.get("win_count") or 0)
+    signal_mode_summary = {
+        mode: {
+            "trade_count": int(values["trade_count"]),
+            "accepted_count": int(values["accepted_count"]),
+            "resolved_count": int(values["resolved_count"]),
+            "total_pnl_usd": round(values["total_pnl_usd"], 6),
+            "win_count": int(values["win_count"]),
+            "win_rate": round(values["win_count"] / values["resolved_count"], 6) if values["resolved_count"] > 0 else None,
+        }
+        for mode, values in signal_mode_totals.items()
+    }
     return {
         "window_count": len(window_results),
         "window_results": window_results,
@@ -269,6 +355,7 @@ def _aggregate_window_results(
         "worst_window_pnl_usd": round(min(pnl_values, default=0.0), 6),
         "best_window_pnl_usd": round(max(pnl_values, default=0.0), 6),
         "worst_window_drawdown_pct": round(max(drawdown_values, default=0.0), 6),
+        "signal_mode_summary": signal_mode_summary,
     }
 
 
@@ -571,6 +658,8 @@ def main() -> None:
     parser.add_argument("--max-drawdown-pct", type=float, default=0.0, help="Maximum replay drawdown allowed for a candidate to be feasible.")
     parser.add_argument("--min-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed P&L for the worst replay window.")
     parser.add_argument("--max-worst-window-drawdown-pct", type=float, default=0.0, help="Maximum allowed drawdown for the worst replay window.")
+    parser.add_argument("--min-heuristic-accepted-count", type=int, default=0, help="Minimum accepted heuristic trades required for a candidate to be feasible.")
+    parser.add_argument("--min-xgboost-accepted-count", type=int, default=0, help="Minimum accepted xgboost trades required for a candidate to be feasible.")
     args = parser.parse_args()
 
     base_policy = _load_base_policy(args)
@@ -601,6 +690,8 @@ def main() -> None:
         max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
         min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
         max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
+        min_heuristic_accepted_count=max(args.min_heuristic_accepted_count, 0),
+        min_xgboost_accepted_count=max(args.min_xgboost_accepted_count, 0),
     )
     if int(current_result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
         current_constraint_failures.append("positive_window_count")
@@ -652,6 +743,8 @@ def main() -> None:
             max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
             min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
             max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
+            min_heuristic_accepted_count=max(args.min_heuristic_accepted_count, 0),
+            min_xgboost_accepted_count=max(args.min_xgboost_accepted_count, 0),
         )
         if int(result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
             constraint_failures.append("positive_window_count")
@@ -690,6 +783,8 @@ def main() -> None:
         "min_positive_windows": max(args.min_positive_windows, 0),
         "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
         "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
+        "min_heuristic_accepted_count": max(args.min_heuristic_accepted_count, 0),
+        "min_xgboost_accepted_count": max(args.min_xgboost_accepted_count, 0),
     }
     finished_at = int(time.time())
     search_run_id = _persist_search_results(

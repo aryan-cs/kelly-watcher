@@ -188,9 +188,11 @@ interface ReplaySearchSummaryRow {
   positive_window_count: number | null
   negative_window_count: number | null
   worst_window_pnl_usd: number | null
+  constraints_json: string | null
   overrides_json: string | null
   policy_json: string | null
   config_json: string | null
+  result_json: string | null
 }
 
 export type ModelPanelId =
@@ -281,6 +283,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
       {label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.'},
+      {label: 'Search modes', text: 'Accepted trade mix and replay P&L by scorer on the latest best feasible replay-search candidate.'},
+      {label: 'Mode floors', text: 'Per-scorer minimum accepted-trade floors from the latest replay search, if any.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
       {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
@@ -583,6 +587,7 @@ WITH latest_search AS (
     candidate_count,
     feasible_count,
     rejected_count,
+    constraints_json,
     current_candidate_score,
     current_candidate_feasible,
     current_candidate_total_pnl_usd,
@@ -604,6 +609,7 @@ best_candidate AS (
     positive_window_count,
     negative_window_count,
     worst_window_pnl_usd,
+    result_json,
     overrides_json,
     policy_json,
     config_json
@@ -619,6 +625,13 @@ SELECT
   latest_search.candidate_count,
   latest_search.feasible_count,
   latest_search.rejected_count,
+  latest_search.constraints_json,
+  latest_search.current_candidate_score,
+  latest_search.current_candidate_feasible,
+  latest_search.current_candidate_total_pnl_usd,
+  latest_search.current_candidate_max_drawdown_pct,
+  latest_search.best_vs_current_pnl_usd,
+  latest_search.best_vs_current_score,
   latest_search.best_feasible_score,
   best_candidate.candidate_index,
   best_candidate.score,
@@ -627,6 +640,7 @@ SELECT
   best_candidate.positive_window_count,
   best_candidate.negative_window_count,
   best_candidate.worst_window_pnl_usd,
+  best_candidate.result_json,
   best_candidate.overrides_json,
   best_candidate.policy_json,
   best_candidate.config_json
@@ -1279,6 +1293,56 @@ function replaySearchSegmentGateSummary(raw: string | null | undefined): string 
     return parts.length ? parts.join(', ') : 'all'
   } catch {
     return 'all'
+  }
+}
+
+function replaySearchModeMixSummary(raw: string | null | undefined): string {
+  if (!raw) return '-'
+  try {
+    const parsed = JSON.parse(raw)
+    const rawSummary = parsed?.signal_mode_summary
+    if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return '-'
+    const entries = Object.entries(rawSummary as Record<string, unknown>)
+      .map(([mode, value]) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+        const payload = value as Record<string, unknown>
+        return {
+          mode,
+          acceptedCount: Number(payload.accepted_count || 0),
+          totalPnlUsd: Number(payload.total_pnl_usd || 0)
+        }
+      })
+      .filter((entry): entry is {mode: string; acceptedCount: number; totalPnlUsd: number} => Boolean(entry))
+      .filter((entry) => entry.acceptedCount > 0)
+      .sort((left, right) => {
+        const leftPriority = left.mode === 'heuristic' ? 0 : left.mode === 'xgboost' ? 1 : 2
+        const rightPriority = right.mode === 'heuristic' ? 0 : right.mode === 'xgboost' ? 1 : 2
+        if (leftPriority !== rightPriority) return leftPriority - rightPriority
+        return left.mode.localeCompare(right.mode)
+      })
+    if (!entries.length) return '-'
+    return entries
+      .map((entry) => `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${formatDollar(entry.totalPnlUsd)}`)
+      .join(' | ')
+  } catch {
+    return '-'
+  }
+}
+
+function replaySearchModeFloorSummary(raw: string | null | undefined): string {
+  if (!raw) return 'none'
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'none'
+    const payload = parsed as Record<string, unknown>
+    const parts: string[] = []
+    const minHeuristicAccepted = Number(payload.min_heuristic_accepted_count || 0)
+    const minXgboostAccepted = Number(payload.min_xgboost_accepted_count || 0)
+    if (minHeuristicAccepted > 0) parts.push(`heur >=${formatCount(minHeuristicAccepted)}`)
+    if (minXgboostAccepted > 0) parts.push(`model >=${formatCount(minXgboostAccepted)}`)
+    return parts.length ? parts.join(', ') : 'none'
+  } catch {
+    return 'none'
   }
 }
 
@@ -1982,6 +2046,16 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         label: 'Seg gates',
         value: replaySearchSegmentGateSummary(latestReplaySearch?.policy_json),
         color: latestReplaySearch?.policy_json ? theme.white : theme.dim
+      },
+      {
+        label: 'Search modes',
+        value: replaySearchModeMixSummary(latestReplaySearch?.result_json),
+        color: latestReplaySearch?.result_json ? theme.white : theme.dim
+      },
+      {
+        label: 'Mode floors',
+        value: replaySearchModeFloorSummary(latestReplaySearch?.constraints_json),
+        color: latestReplaySearch?.constraints_json ? theme.white : theme.dim
       },
       {
         label: 'Cur feasible',

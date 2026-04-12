@@ -205,6 +205,9 @@ def _simulate(
         decision_context = _json_dict(row["decision_context_json"])
         signal = decision_context.get("signal") if isinstance(decision_context.get("signal"), dict) else {}
         signal_mode = str(row["signal_mode"] or signal.get("mode") or "heuristic").strip().lower()
+        close_ts = int(row["close_ts"] or placed_at)
+        time_to_close_seconds = max(0, close_ts - placed_at)
+        time_to_close_band = _time_to_close_band(time_to_close_seconds)
         entry_price = _coalesce_float(
             row["actual_entry_price"],
             signal.get("entry_price"),
@@ -236,6 +239,8 @@ def _simulate(
                     reason="unresolved_outcome",
                     source_status=source_status,
                     entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
                     requested_size_usd=0.0,
                     simulated_size_usd=0.0,
                     return_pct=None,
@@ -276,6 +281,8 @@ def _simulate(
                     reason=reason,
                     source_status=source_status,
                     entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
                     simulated_size_usd=0.0,
                     return_pct=return_pct,
@@ -313,6 +320,8 @@ def _simulate(
                     reason="total_exposure_cap",
                     source_status=source_status,
                     entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
                     simulated_size_usd=0.0,
                     return_pct=return_pct,
@@ -337,6 +346,8 @@ def _simulate(
                     reason="market_exposure_cap",
                     source_status=source_status,
                     entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
                     simulated_size_usd=0.0,
                     return_pct=return_pct,
@@ -361,6 +372,8 @@ def _simulate(
                     reason="trader_exposure_cap",
                     source_status=source_status,
                     entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
                     simulated_size_usd=0.0,
                     return_pct=return_pct,
@@ -373,7 +386,6 @@ def _simulate(
             continue
 
         pnl_usd = requested_size_usd * return_pct
-        close_ts = int(row["close_ts"] or placed_at)
         if close_ts <= placed_at:
             realized_pnl += pnl_usd
             update_drawdown()
@@ -400,6 +412,8 @@ def _simulate(
                 reason="accepted",
                 source_status=source_status,
                 entry_price=entry_price,
+                time_to_close_seconds=time_to_close_seconds,
+                time_to_close_band=time_to_close_band,
                 requested_size_usd=requested_size_usd,
                 simulated_size_usd=requested_size_usd,
                 return_pct=return_pct,
@@ -441,7 +455,8 @@ def _simulate(
         },
     )
     _insert_replay_trades(conn, run_id, replay_rows)
-    _insert_segment_metrics(conn, run_id, replay_rows)
+    segment_metric_rows = _build_segment_metric_rows(replay_rows)
+    _insert_segment_metrics(conn, run_id, segment_metric_rows)
     conn.commit()
 
     return {
@@ -457,6 +472,7 @@ def _simulate(
         "unresolved_count": unresolved_count,
         "resolved_count": len(resolved_rows),
         "win_rate": round(wins / len(resolved_rows), 6) if resolved_rows else None,
+        "segment_leaders": _segment_leaders(segment_metric_rows),
     }
 
 
@@ -628,6 +644,8 @@ def _replay_trade_row(
     reason: str,
     source_status: str,
     entry_price: float | None,
+    time_to_close_seconds: int,
+    time_to_close_band: str,
     requested_size_usd: float,
     simulated_size_usd: float,
     return_pct: float | None,
@@ -636,6 +654,9 @@ def _replay_trade_row(
     open_exposure_after_usd: float,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
+    payload_metadata = dict(metadata)
+    payload_metadata.setdefault("time_to_close_seconds", time_to_close_seconds)
+    payload_metadata.setdefault("time_to_close_band", time_to_close_band)
     return {
         "replay_run_id": replay_run_id,
         "trade_log_id": trade_log_id,
@@ -648,13 +669,15 @@ def _replay_trade_row(
         "reason": reason,
         "source_status": source_status,
         "entry_price": entry_price,
+        "time_to_close_seconds": time_to_close_seconds,
+        "time_to_close_band": time_to_close_band,
         "requested_size_usd": round(requested_size_usd, 6),
         "simulated_size_usd": round(simulated_size_usd, 6),
         "return_pct": round(return_pct, 6) if return_pct is not None else None,
         "pnl_usd": round(pnl_usd, 6) if pnl_usd is not None else None,
         "bankroll_after_usd": round(bankroll_after_usd, 6),
         "open_exposure_after_usd": round(open_exposure_after_usd, 6),
-        "metadata_json": json.dumps(metadata, sort_keys=True, separators=(",", ":"), default=str),
+        "metadata_json": json.dumps(payload_metadata, sort_keys=True, separators=(",", ":"), default=str),
     }
 
 
@@ -698,7 +721,7 @@ def _insert_replay_trades(conn: sqlite3.Connection, replay_run_id: int, rows: li
     )
 
 
-def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: list[dict[str, Any]]) -> None:
+def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     buckets: dict[tuple[str, str], dict[str, float]] = {}
     for row in rows:
         segment_values = {
@@ -706,6 +729,7 @@ def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: 
             "trader_address": str(row["trader_address"] or ""),
             "entry_price_band": _entry_price_band(_coalesce_float(row["entry_price"])),
             "source_status": str(row["source_status"] or ""),
+            "time_to_close_band": str(row.get("time_to_close_band") or ""),
         }
         for segment_kind, segment_value in segment_values.items():
             bucket = buckets.setdefault(
@@ -729,22 +753,39 @@ def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: 
                 if float(row["pnl_usd"] or 0.0) > 0:
                     bucket["wins"] += 1
 
-    inserts = []
+    metric_rows: list[dict[str, Any]] = []
     for (segment_kind, segment_value), values in buckets.items():
         resolved_count = int(values["resolved_count"])
-        inserts.append(
-            (
-                replay_run_id,
-                segment_kind,
-                segment_value,
-                int(values["trade_count"]),
-                int(values["accepted_count"]),
-                resolved_count,
-                round(values["total_pnl_usd"], 6),
-                round(values["wins"] / resolved_count, 6) if resolved_count else None,
-                round(values["return_sum"] / resolved_count, 6) if resolved_count else None,
-            )
+        metric_rows.append(
+            {
+                "segment_kind": segment_kind,
+                "segment_value": segment_value,
+                "trade_count": int(values["trade_count"]),
+                "accepted_count": int(values["accepted_count"]),
+                "resolved_count": resolved_count,
+                "total_pnl_usd": round(values["total_pnl_usd"], 6),
+                "win_rate": round(values["wins"] / resolved_count, 6) if resolved_count else None,
+                "avg_return_pct": round(values["return_sum"] / resolved_count, 6) if resolved_count else None,
+            }
         )
+    return metric_rows
+
+
+def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: list[dict[str, Any]]) -> None:
+    inserts = [
+        (
+            replay_run_id,
+            row["segment_kind"],
+            row["segment_value"],
+            row["trade_count"],
+            row["accepted_count"],
+            row["resolved_count"],
+            row["total_pnl_usd"],
+            row["win_rate"],
+            row["avg_return_pct"],
+        )
+        for row in rows
+    ]
     if inserts:
         conn.executemany(
             """
@@ -755,6 +796,27 @@ def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: 
             """,
             inserts,
         )
+
+
+def _segment_leaders(rows: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if int(row["accepted_count"]) <= 0 or int(row["resolved_count"]) <= 0:
+            continue
+        grouped.setdefault(str(row["segment_kind"]), []).append(row)
+
+    summary: dict[str, dict[str, dict[str, Any]]] = {}
+    for segment_kind, segment_rows in grouped.items():
+        ordered = sorted(
+            segment_rows,
+            key=lambda row: (
+                float(row["total_pnl_usd"]),
+                int(row["resolved_count"]),
+                int(row["accepted_count"]),
+            ),
+        )
+        summary[segment_kind] = {"worst": ordered[0], "best": ordered[-1]}
+    return summary
 
 
 def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
@@ -838,6 +900,22 @@ def _entry_price_band(value: float | None) -> str:
     if value < 0.70:
         return "0.60-0.69"
     return ">=0.70"
+
+
+def _time_to_close_band(seconds: int) -> str:
+    if seconds <= 300:
+        return "<=5m"
+    if seconds <= 1800:
+        return "5-30m"
+    if seconds <= 7200:
+        return "30m-2h"
+    if seconds <= 43200:
+        return "2h-12h"
+    if seconds <= 86400:
+        return "12h-1d"
+    if seconds <= 259200:
+        return "1-3d"
+    return ">3d"
 
 
 def _json_dict(raw: Any) -> dict[str, Any]:

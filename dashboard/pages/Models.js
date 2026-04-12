@@ -18,12 +18,14 @@ export const MODEL_PANEL_DEFS = [
         id: 'prediction_quality',
         title: 'Prediction Quality',
         summary: [
-            'This box separates the live scorer from the latest deployed model artifact.',
+            'This box separates the scorer loaded in the runtime from the model artifact on disk.',
             'Lower loss numbers grade the deployed model artifact, not the bankroll curve.'
         ],
         rows: [
-            { label: 'Live scorer', text: 'Which scorer drove recent accepted trades: XGBoost or Heuristic.' },
+            { label: 'Loaded scorer', text: 'Which scorer the running bot has loaded right now for new decisions.' },
             { label: 'Model artifact', text: 'The latest deployed model artifact on disk, even if live trading is currently falling back.' },
+            { label: 'Contract', text: 'Artifact contract versus runtime contract. A mismatch means the runtime will reject the model.' },
+            { label: 'Fallback', text: 'Why the runtime is using heuristics instead of the model, if it is degraded.' },
             { label: 'Trained', text: 'When the latest deployed model artifact was built.' },
             { label: 'Model age', text: 'How long that deployed model artifact has been sitting without a retrain.' },
             { label: 'Samples', text: 'How many resolved trades were available to train the deployed model artifact.' },
@@ -66,7 +68,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Read / Bias', text: 'Plain-English bias read plus the point gap between prediction and reality.' },
             { label: 'Avg miss', text: 'Average miss per graded bet versus the actual 0/1 outcome. Lower is better.' },
             { label: 'Main band / hit', text: 'The most common confidence range and how often it actually won.' },
-            { label: 'Active scorer', text: 'Which scorer has driven the most recent accepted trades.' },
+            { label: 'Recent scorer', text: 'Which scorer has driven the most recent accepted trades.' },
             { label: 'Primary path', text: 'Which decision path has produced the most accepted trades so far.' },
             { label: 'Role', text: 'Whether a path is primary, secondary, or currently idle.' },
             { label: 'Signals / taken', text: 'How many candidate signals flowed through that path, and how many became bets.' },
@@ -921,6 +923,13 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const trainingProgress = trainingProgressRows[0];
     const exitAuditSummary = exitAuditSummaryRows[0];
     const exitAttribution = exitAttributionRows[0];
+    const latestReplay = replayLatestRuns[0];
+    const replayBestWallet = replayBestWalletRows[0];
+    const replayWorstWallet = replayWorstWalletRows[0];
+    const replayBestBand = replayBestBandRows[0];
+    const replayWorstBand = replayWorstBandRows[0];
+    const replayBestHorizon = replayBestHorizonRows[0];
+    const replayWorstHorizon = replayWorstHorizonRows[0];
     const latestSharedHoldoutRun = retrainRuns.find((row) => sharedHoldoutComparison(row) != null);
     const latestSharedHoldout = sharedHoldoutComparison(latestSharedHoldoutRun);
     const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0];
@@ -1093,6 +1102,74 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         }
     ], [tracker, trackerSnapshot, trackerWinRate, useRate]);
     const trackerHealthColumns = useMemo(() => splitIntoColumns(trackerHealthStats, 2), [trackerHealthStats]);
+    const replayLabStats = useMemo(() => [
+        {
+            label: 'Last replay',
+            value: latestReplay?.finished_at ? secondsAgo(latestReplay.finished_at) : '-'
+        },
+        {
+            label: 'Policy',
+            value: latestReplay
+                ? `${String(latestReplay.label || '').trim() || 'latest'} ${String(latestReplay.policy_version || '').slice(0, 8)}`.trim()
+                : '-',
+            color: latestReplay ? theme.white : theme.dim
+        },
+        {
+            label: 'Replay P&L',
+            value: formatDollar(latestReplay?.total_pnl_usd),
+            color: dollarColor(latestReplay?.total_pnl_usd)
+        },
+        {
+            label: 'Max DD',
+            value: formatPct(latestReplay?.max_drawdown_pct, 1),
+            color: lowerIsBetterColor(latestReplay?.max_drawdown_pct, 0.05, 0.12)
+        },
+        {
+            label: 'Accept / win',
+            value: latestReplay
+                ? `${formatCount(latestReplay.accepted_count)} / ${formatPct(latestReplay.win_rate, 1)}`
+                : '-',
+            color: latestReplay?.win_rate != null ? probabilityColor(latestReplay.win_rate) : theme.dim
+        },
+        {
+            label: 'Best wallet',
+            value: replaySegmentValue('trader_address', replayBestWallet),
+            color: dollarColor(replayBestWallet?.total_pnl_usd)
+        },
+        {
+            label: 'Worst wallet',
+            value: replaySegmentValue('trader_address', replayWorstWallet),
+            color: dollarColor(replayWorstWallet?.total_pnl_usd)
+        },
+        {
+            label: 'Best band',
+            value: replaySegmentValue('entry_price_band', replayBestBand),
+            color: dollarColor(replayBestBand?.total_pnl_usd)
+        },
+        {
+            label: 'Worst band',
+            value: replaySegmentValue('entry_price_band', replayWorstBand),
+            color: dollarColor(replayWorstBand?.total_pnl_usd)
+        },
+        {
+            label: 'Best horizon',
+            value: replaySegmentValue('time_to_close_band', replayBestHorizon),
+            color: dollarColor(replayBestHorizon?.total_pnl_usd)
+        },
+        {
+            label: 'Worst horizon',
+            value: replaySegmentValue('time_to_close_band', replayWorstHorizon),
+            color: dollarColor(replayWorstHorizon?.total_pnl_usd)
+        }
+    ], [
+        latestReplay,
+        replayBestBand,
+        replayBestHorizon,
+        replayBestWallet,
+        replayWorstBand,
+        replayWorstHorizon,
+        replayWorstWallet
+    ]);
     const trainingCycleStats = useMemo(() => [
         { label: 'Update style', value: 'Full retrain' },
         { label: 'Base cadence', value: baseCadenceValue },
@@ -1258,14 +1335,52 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         mainCalibrationBucket
     ]);
     const confidenceCheckColumns = useMemo(() => splitIntoColumns(confidenceCheckStats, 2), [confidenceCheckStats]);
-    const deployedModelLabel = latest?.deployed ? 'XGBoost' : 'Heuristic';
+    const loadedScorerLabel = botState.loaded_scorer ? modeLabel(botState.loaded_scorer) : 'Heuristic';
+    const loadedScorerColor = loadedScorerLabel === 'XGBoost' ? theme.green : theme.yellow;
+    const deployedModelLabel = botState.model_artifact_exists
+        ? modeLabel(botState.model_artifact_backend || 'unknown')
+        : '-';
+    const deployedModelColor = !botState.model_artifact_exists
+        ? theme.dim
+        : botState.model_runtime_compatible
+            ? theme.green
+            : theme.yellow;
+    const contractLabel = (botState.model_artifact_contract != null && botState.runtime_contract != null
+        ? `${botState.model_artifact_contract} / ${botState.runtime_contract}`
+        : '-');
+    const contractColor = !botState.model_artifact_exists
+        ? theme.dim
+        : botState.model_runtime_compatible
+            ? theme.green
+            : theme.red;
+    const fallbackLabel = useMemo(() => {
+        const reason = String(botState.model_fallback_reason || '').trim().toLowerCase();
+        if (!reason)
+            return '-';
+        if (reason === 'missing_artifact')
+            return 'No artifact';
+        if (reason === 'contract_mismatch')
+            return 'Contract mismatch';
+        if (reason === 'label_mode_mismatch')
+            return 'Label mismatch';
+        if (reason === 'legacy_artifact_type')
+            return 'Legacy artifact';
+        if (reason === 'load_failed')
+            return 'Load failed';
+        return reason.replace(/_/g, ' ');
+    }, [botState.model_fallback_reason]);
+    const fallbackColor = fallbackLabel === '-'
+        ? theme.dim
+        : fallbackLabel === 'No artifact'
+            ? theme.yellow
+            : theme.red;
     const recentActiveMode = useMemo(() => recentSignalModes.reduce((best, row) => {
         if (best == null)
             return row.mode;
         const currentBest = recentSignalModes.find((candidate) => candidate.mode === best);
         return (currentBest?.taken || 0) >= row.taken ? best : row.mode;
     }, null), [recentSignalModes]);
-    const activeScorerLabel = recentActiveMode ? modeLabel(recentActiveMode) : deployedModelLabel;
+    const activeScorerLabel = recentActiveMode ? modeLabel(recentActiveMode) : loadedScorerLabel;
     const activeScorerColor = activeScorerLabel === 'XGBoost' ? theme.green : theme.yellow;
     const primaryMode = useMemo(() => signalModes.reduce((best, row) => {
         if (best == null)
@@ -1385,15 +1500,17 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     ];
     const predictionQualityStats = useMemo(() => [
         {
-            label: 'Live scorer',
-            value: activeScorerLabel,
-            color: activeScorerColor
+            label: 'Loaded scorer',
+            value: loadedScorerLabel,
+            color: loadedScorerColor
         },
         {
             label: 'Model artifact',
             value: deployedModelLabel,
-            color: latest?.deployed ? theme.green : theme.yellow
+            color: deployedModelColor
         },
+        { label: 'Contract', value: contractLabel, color: contractColor },
+        { label: 'Fallback', value: fallbackLabel, color: fallbackColor },
         { label: 'Trained', value: latest ? formatShortDateTime(latest.trained_at) : '-' },
         { label: 'Model age', value: latest ? secondsAgo(latest.trained_at) : '-' },
         { label: 'Samples', value: formatCount(latest?.n_samples) },
@@ -1408,7 +1525,18 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             value: formatNumber(latest?.log_loss, 4),
             color: lowerIsBetterColor(latest?.log_loss, 0.55, 0.69)
         }
-    ], [activeScorerColor, activeScorerLabel, deployedModelLabel, featureCount, latest]);
+    ], [
+        contractColor,
+        contractLabel,
+        deployedModelColor,
+        deployedModelLabel,
+        fallbackColor,
+        fallbackLabel,
+        featureCount,
+        latest,
+        loadedScorerColor,
+        loadedScorerLabel
+    ]);
     const recentRetrainRuns = useMemo(() => retrainRuns.slice(0, historyLimit), [historyLimit, retrainRuns]);
     const howItWorksScoreRows = useMemo(() => scoringMixStats.slice(0, 4), [scoringMixStats]);
     const howItWorksHistoryRows = useMemo(() => scoringMixStats.slice(4), [scoringMixStats]);
@@ -1419,16 +1547,19 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
             trackerHealthStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 })))),
+            React.createElement(ModelsSpacer, null),
+            React.createElement(ModelsSectionTitle, { title: "Replay Lab", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
+            replayLabStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 }))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[1], flexDirection: "column" },
-            React.createElement(ModelsSectionTitle, { title: "Confidence + Modes", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
+            React.createElement(ModelsSectionTitle, { title: "Confidence + Modes", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
             confusionCells.map((cell) => (React.createElement(DenseModelsRow, { key: cell.label, label: cell.label, value: formatCount(cell.value), color: confusionHeatColor(cell.value, confusionScale, cell.kind), width: modelsColumnWidths[1], labelWidth: 12 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "Calibration", width: modelsColumnWidths[1] }),
             confidenceCheckStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "Decision Paths", width: modelsColumnWidths[1] }),
-            React.createElement(DenseModelsRow, { label: "Active scorer", value: activeScorerLabel, color: activeScorerColor, width: modelsColumnWidths[1], labelWidth: 12 }),
+            React.createElement(DenseModelsRow, { label: "Recent scorer", value: activeScorerLabel, color: activeScorerColor, width: modelsColumnWidths[1], labelWidth: 12 }),
             React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[1], labelWidth: 12 }),
             signalModeCards.length
                 ? (signalModeCards.map((card) => (React.createElement(React.Fragment, { key: card.title },
@@ -1437,7 +1568,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                     card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 })))))))
                 : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1]))),
             React.createElement(ModelsSpacer, null),
-            React.createElement(ModelsSectionTitle, { title: "Exit Guard", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
+            React.createElement(ModelsSectionTitle, { title: "Exit Guard", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
             exitGuardStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(RecentExitHeaderRow, { width: modelsColumnWidths[1] }),
@@ -1446,15 +1577,15 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                 : (React.createElement(Text, { color: theme.dim }, fit('No exit audits logged yet.', modelsColumnWidths[1])))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
-            React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
+            React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),
             howItWorksScoreRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 14 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[2] }),
             howItWorksHistoryRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[2], labelWidth: 14 }))),
             React.createElement(ModelsSpacer, null),
-            React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),
-            trainingCycleDisplayStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 5 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }))),
+            React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 6, backgroundColor: selectedRowBackground }),
+            trainingCycleDisplayStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 6 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }))),
             latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(React.Fragment, null,
                 React.createElement(DenseModelsRow, { label: "Holdout gate", value: sharedHoldoutGateReadCompact(latestSharedHoldoutRun), color: sharedHoldoutGateReadColor(latestSharedHoldoutRun), width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }),
                 React.createElement(DenseModelsRow, { label: "Gate run", value: formatShortDateTime(latestSharedHoldoutRun.finished_at), width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }),

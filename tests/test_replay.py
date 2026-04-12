@@ -176,6 +176,14 @@ class ReplayTest(unittest.TestCase):
                     ORDER BY segment_value ASC
                     """
                 ).fetchall()
+                horizon_segment = conn.execute(
+                    """
+                    SELECT segment_value, accepted_count, total_pnl_usd
+                    FROM segment_metrics
+                    WHERE segment_kind='time_to_close_band'
+                    ORDER BY segment_value ASC
+                    """
+                ).fetchall()
                 conn.close()
 
                 self.assertEqual(run_row["label"], "unit-test")
@@ -189,6 +197,9 @@ class ReplayTest(unittest.TestCase):
                     ],
                 )
                 self.assertIn(("heuristic", 1, 11.548), [(row["segment_value"], row["accepted_count"], round(float(row["total_pnl_usd"]), 3)) for row in mode_segment])
+                self.assertIn(("<=5m", 1, 11.548), [(row["segment_value"], row["accepted_count"], round(float(row["total_pnl_usd"]), 3)) for row in horizon_segment])
+                self.assertEqual(result["segment_leaders"]["signal_mode"]["best"]["segment_value"], "heuristic")
+                self.assertEqual(result["segment_leaders"]["time_to_close_band"]["best"]["segment_value"], "<=5m")
             finally:
                 db.DB_PATH = original_db_path
 

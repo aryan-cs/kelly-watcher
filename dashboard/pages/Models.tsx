@@ -147,9 +147,30 @@ interface ExitAttributionRow {
   avg_exit_delta_usd: number | null
 }
 
+interface ReplayRunRow {
+  id: number
+  finished_at: number
+  label: string | null
+  policy_version: string | null
+  total_pnl_usd: number | null
+  max_drawdown_pct: number | null
+  accepted_count: number | null
+  resolved_count: number | null
+  win_rate: number | null
+}
+
+interface ReplaySegmentRow {
+  segment_value: string | null
+  accepted_count: number | null
+  resolved_count: number | null
+  total_pnl_usd: number | null
+  win_rate: number | null
+}
+
 export type ModelPanelId =
   | 'prediction_quality'
   | 'tracker_health'
+  | 'replay_lab'
   | 'confidence_modes'
   | 'exit_guard'
   | 'how_it_works'
@@ -212,6 +233,38 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Sharpe ratio', text: 'Return compared to volatility. Higher is smoother.'}
     ],
     settingKeys: ['MIN_CONFIDENCE', 'MAX_BET_FRACTION', 'SHADOW_BANKROLL_USD']
+  },
+  {
+    id: 'replay_lab',
+    title: 'Replay Lab',
+    summary: [
+      'This box reads the latest offline replay run instead of the live bankroll.',
+      'Use it to see which wallets, price bands, and holding periods helped or hurt under the latest tested policy.'
+    ],
+    rows: [
+      {label: 'Last replay', text: 'When the latest completed replay finished.'},
+      {label: 'Policy', text: 'Replay label and shortened policy version hash for the latest run.'},
+      {label: 'Replay P&L', text: 'Total replay profit versus the replay starting bankroll.'},
+      {label: 'Max DD', text: 'Largest peak-to-trough drawdown in the replay bankroll curve.'},
+      {label: 'Accept / win', text: 'Accepted replay trades and realized win rate on the resolved subset.'},
+      {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
+      {label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
+      {label: 'Best band', text: 'Entry-price band with the strongest replay P&L on the latest run.'},
+      {label: 'Worst band', text: 'Entry-price band with the weakest replay P&L on the latest run.'},
+      {label: 'Best horizon', text: 'Time-to-close bucket with the strongest replay P&L on the latest run.'},
+      {label: 'Worst horizon', text: 'Time-to-close bucket with the weakest replay P&L on the latest run.'}
+    ],
+    settingKeys: [
+      'MIN_CONFIDENCE',
+      'HEURISTIC_MIN_ENTRY_PRICE',
+      'HEURISTIC_MAX_ENTRY_PRICE',
+      'MODEL_EDGE_MID_THRESHOLD',
+      'MODEL_EDGE_HIGH_THRESHOLD',
+      'MAX_BET_FRACTION',
+      'MAX_TOTAL_OPEN_EXPOSURE_FRACTION',
+      'MAX_MARKET_EXPOSURE_FRACTION',
+      'MAX_TRADER_EXPOSURE_FRACTION'
+    ]
   },
   {
     id: 'confidence_modes',
@@ -310,9 +363,9 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
 ]
 
 export const MODEL_PANEL_COLUMN_LAYOUT: number[][] = [
-  [0, 1],
-  [2, 3],
-  [4, 5]
+  [0, 1, 2],
+  [3, 4],
+  [5, 6]
 ]
 
 interface ModelsProps {
@@ -418,6 +471,71 @@ SELECT
 FROM retrain_runs
 ORDER BY finished_at DESC, id DESC
 LIMIT 48
+`
+
+const REPLAY_SEGMENT_MIN_RESOLVED = 3
+
+const REPLAY_LATEST_RUN_SQL = `
+SELECT
+  id,
+  finished_at,
+  label,
+  policy_version,
+  total_pnl_usd,
+  max_drawdown_pct,
+  accepted_count,
+  resolved_count,
+  win_rate
+FROM replay_runs
+WHERE status='completed'
+ORDER BY finished_at DESC, id DESC
+LIMIT 1
+`
+
+const REPLAY_SEGMENT_BEST_SQL = `
+WITH latest_run AS (
+  SELECT id
+  FROM replay_runs
+  WHERE status='completed'
+  ORDER BY finished_at DESC, id DESC
+  LIMIT 1
+)
+SELECT
+  segment_value,
+  accepted_count,
+  resolved_count,
+  total_pnl_usd,
+  win_rate
+FROM segment_metrics
+WHERE replay_run_id=(SELECT id FROM latest_run)
+  AND segment_kind=?
+  AND accepted_count > 0
+  AND resolved_count >= ?
+ORDER BY total_pnl_usd DESC, resolved_count DESC, accepted_count DESC, segment_value ASC
+LIMIT 1
+`
+
+const REPLAY_SEGMENT_WORST_SQL = `
+WITH latest_run AS (
+  SELECT id
+  FROM replay_runs
+  WHERE status='completed'
+  ORDER BY finished_at DESC, id DESC
+  LIMIT 1
+)
+SELECT
+  segment_value,
+  accepted_count,
+  resolved_count,
+  total_pnl_usd,
+  win_rate
+FROM segment_metrics
+WHERE replay_run_id=(SELECT id FROM latest_run)
+  AND segment_kind=?
+  AND accepted_count > 0
+  AND resolved_count >= ?
+ORDER BY total_pnl_usd ASC, resolved_count DESC, accepted_count DESC, segment_value ASC
+LIMIT 1
 `
 
 const SHARED_HOLDOUT_MESSAGE_RE = /shared holdout ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)[\s\S]*?incumbent ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)/i
@@ -982,6 +1100,30 @@ function modeLabel(mode: string): string {
   return mode || 'Unknown'
 }
 
+function compactWalletLabel(value: string | null | undefined): string {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return '-'
+  if (!normalized.startsWith('0x') || normalized.length <= 12) return normalized
+  return `${normalized.slice(0, 6)}..${normalized.slice(-4)}`
+}
+
+function replaySegmentLabel(kind: 'trader_address' | 'entry_price_band' | 'time_to_close_band', value: string | null | undefined): string {
+  const normalized = String(value || '').trim()
+  if (!normalized) return '-'
+  if (kind === 'trader_address') return compactWalletLabel(normalized)
+  return normalized
+}
+
+function replaySegmentValue(
+  kind: 'trader_address' | 'entry_price_band' | 'time_to_close_band',
+  row: ReplaySegmentRow | null | undefined
+): string {
+  if (!row?.segment_value) return '-'
+  const label = replaySegmentLabel(kind, row.segment_value)
+  const pnl = formatDollar(row.total_pnl_usd)
+  return `${label} ${pnl}`.trim()
+}
+
 function trainingCycleDisplayLabel(label: string): string {
   if (label === 'Next scheduled') return 'Next run'
   if (label === 'Scheduled in') return 'Starts in'
@@ -1230,6 +1372,13 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const stacked = stackPanels(terminal.width)
   const models = useQuery<ModelRow>(MODEL_SQL)
   const retrainRuns = useQuery<RetrainRunRow>(RETRAIN_RUN_SQL)
+  const replayLatestRuns = useQuery<ReplayRunRow>(REPLAY_LATEST_RUN_SQL)
+  const replayBestWalletRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_BEST_SQL, ['trader_address', REPLAY_SEGMENT_MIN_RESOLVED])
+  const replayWorstWalletRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_WORST_SQL, ['trader_address', REPLAY_SEGMENT_MIN_RESOLVED])
+  const replayBestBandRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_BEST_SQL, ['entry_price_band', REPLAY_SEGMENT_MIN_RESOLVED])
+  const replayWorstBandRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_WORST_SQL, ['entry_price_band', REPLAY_SEGMENT_MIN_RESOLVED])
+  const replayBestHorizonRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_BEST_SQL, ['time_to_close_band', REPLAY_SEGMENT_MIN_RESOLVED])
+  const replayWorstHorizonRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_WORST_SQL, ['time_to_close_band', REPLAY_SEGMENT_MIN_RESOLVED])
   const trackerRows = useQuery<TrackerRow>(TRACKER_SQL)
   const perfRows = useQuery<PerfRow>(PERF_SQL)
   const signalModes = useQuery<SignalModeRow>(SIGNAL_MODE_SQL)
@@ -1246,6 +1395,13 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const exitAttributionRows = useQuery<ExitAttributionRow>(EXIT_ATTRIBUTION_SQL, [settlementFixedCostUsd, exitAuditModeRealMoney])
 
   const latest = models[0]
+  const latestReplay = replayLatestRuns[0]
+  const replayBestWallet = replayBestWalletRows[0]
+  const replayWorstWallet = replayWorstWalletRows[0]
+  const replayBestBand = replayBestBandRows[0]
+  const replayWorstBand = replayWorstBandRows[0]
+  const replayBestHorizon = replayBestHorizonRows[0]
+  const replayWorstHorizon = replayWorstHorizonRows[0]
   const tracker = trackerRows[0]
   const calibration = calibrationSummaryRows[0]
   const confusion = confusionRows[0]
@@ -1451,6 +1607,77 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const trackerHealthColumns = useMemo(
     () => splitIntoColumns(trackerHealthStats, 2),
     [trackerHealthStats]
+  )
+  const replayLabStats = useMemo<CompactStatItem[]>(
+    () => [
+      {
+        label: 'Last replay',
+        value: latestReplay?.finished_at ? secondsAgo(latestReplay.finished_at) : '-'
+      },
+      {
+        label: 'Policy',
+        value: latestReplay
+          ? `${String(latestReplay.label || '').trim() || 'latest'} ${String(latestReplay.policy_version || '').slice(0, 8)}`.trim()
+          : '-',
+        color: latestReplay ? theme.white : theme.dim
+      },
+      {
+        label: 'Replay P&L',
+        value: formatDollar(latestReplay?.total_pnl_usd),
+        color: dollarColor(latestReplay?.total_pnl_usd)
+      },
+      {
+        label: 'Max DD',
+        value: formatPct(latestReplay?.max_drawdown_pct, 1),
+        color: lowerIsBetterColor(latestReplay?.max_drawdown_pct, 0.05, 0.12)
+      },
+      {
+        label: 'Accept / win',
+        value: latestReplay
+          ? `${formatCount(latestReplay.accepted_count)} / ${formatPct(latestReplay.win_rate, 1)}`
+          : '-',
+        color: latestReplay?.win_rate != null ? probabilityColor(latestReplay.win_rate) : theme.dim
+      },
+      {
+        label: 'Best wallet',
+        value: replaySegmentValue('trader_address', replayBestWallet),
+        color: dollarColor(replayBestWallet?.total_pnl_usd)
+      },
+      {
+        label: 'Worst wallet',
+        value: replaySegmentValue('trader_address', replayWorstWallet),
+        color: dollarColor(replayWorstWallet?.total_pnl_usd)
+      },
+      {
+        label: 'Best band',
+        value: replaySegmentValue('entry_price_band', replayBestBand),
+        color: dollarColor(replayBestBand?.total_pnl_usd)
+      },
+      {
+        label: 'Worst band',
+        value: replaySegmentValue('entry_price_band', replayWorstBand),
+        color: dollarColor(replayWorstBand?.total_pnl_usd)
+      },
+      {
+        label: 'Best horizon',
+        value: replaySegmentValue('time_to_close_band', replayBestHorizon),
+        color: dollarColor(replayBestHorizon?.total_pnl_usd)
+      },
+      {
+        label: 'Worst horizon',
+        value: replaySegmentValue('time_to_close_band', replayWorstHorizon),
+        color: dollarColor(replayWorstHorizon?.total_pnl_usd)
+      }
+    ],
+    [
+      latestReplay,
+      replayBestBand,
+      replayBestHorizon,
+      replayBestWallet,
+      replayWorstBand,
+      replayWorstHorizon,
+      replayWorstWallet
+    ]
   )
   const trainingCycleStats = useMemo<CompactStatItem[]>(
     () => [
@@ -1943,6 +2170,23 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             labelWidth={14}
           />
         ))}
+        <ModelsSpacer />
+        <ModelsSectionTitle
+          title="Replay Lab"
+          width={modelsColumnWidths[0]}
+          selected={clampedSelectedPanelIndex === 2}
+          backgroundColor={selectedRowBackground}
+        />
+        {replayLabStats.map((item) => (
+          <DenseModelsRow
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            color={item.color ?? theme.white}
+            width={modelsColumnWidths[0]}
+            labelWidth={14}
+          />
+        ))}
       </InkBox>
 
       <InkBox width={modelsColumnGap} />
@@ -1951,7 +2195,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSectionTitle
           title="Confidence + Modes"
           width={modelsColumnWidths[1]}
-          selected={clampedSelectedPanelIndex === 2}
+          selected={clampedSelectedPanelIndex === 3}
           backgroundColor={selectedRowBackground}
         />
         {confusionCells.map((cell) => (
@@ -2020,7 +2264,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSectionTitle
           title="Exit Guard"
           width={modelsColumnWidths[1]}
-          selected={clampedSelectedPanelIndex === 3}
+          selected={clampedSelectedPanelIndex === 4}
           backgroundColor={selectedRowBackground}
         />
         {exitGuardStats.map((item) => (
@@ -2061,7 +2305,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSectionTitle
           title="How It Works"
           width={modelsColumnWidths[2]}
-          selected={clampedSelectedPanelIndex === 4}
+          selected={clampedSelectedPanelIndex === 5}
           backgroundColor={selectedRowBackground}
         />
         {howItWorksScoreRows.map((item) => (
@@ -2091,7 +2335,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSectionTitle
           title="Training Cycle"
           width={modelsColumnWidths[2]}
-          selected={clampedSelectedPanelIndex === 5}
+          selected={clampedSelectedPanelIndex === 6}
           backgroundColor={selectedRowBackground}
         />
         {trainingCycleDisplayStats.map((item) => (
@@ -2100,7 +2344,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             label={item.label}
             value={item.value}
             color={item.color ?? theme.white}
-            selected={clampedSelectedPanelIndex === 5 && item.label === 'Manual run'}
+            selected={clampedSelectedPanelIndex === 6 && item.label === 'Manual run'}
             backgroundColor={selectedRowBackground}
             width={modelsColumnWidths[2]}
             labelWidth={11}

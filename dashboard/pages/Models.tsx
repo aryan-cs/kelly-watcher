@@ -174,6 +174,12 @@ interface ReplaySearchSummaryRow {
   candidate_count: number | null
   feasible_count: number | null
   rejected_count: number | null
+  current_candidate_score: number | null
+  current_candidate_feasible: number | null
+  current_candidate_total_pnl_usd: number | null
+  current_candidate_max_drawdown_pct: number | null
+  best_vs_current_pnl_usd: number | null
+  best_vs_current_score: number | null
   best_feasible_score: number | null
   candidate_index: number | null
   score: number | null
@@ -273,6 +279,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
+      {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
+      {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
       {label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
       {label: 'Best band', text: 'Entry-price band with the strongest replay P&L on the latest run.'},
@@ -573,12 +581,18 @@ WITH latest_search AS (
     candidate_count,
     feasible_count,
     rejected_count,
+    current_candidate_score,
+    current_candidate_feasible,
+    current_candidate_total_pnl_usd,
+    current_candidate_max_drawdown_pct,
+    best_vs_current_pnl_usd,
+    best_vs_current_score,
     best_feasible_score
   FROM replay_search_runs
   ORDER BY finished_at DESC, id DESC
   LIMIT 1
 ),
-  best_candidate AS (
+best_candidate AS (
   SELECT
     replay_search_run_id,
     candidate_index,
@@ -593,8 +607,7 @@ WITH latest_search AS (
   FROM replay_search_candidates
   WHERE replay_search_run_id=(SELECT id FROM latest_search)
     AND feasible=1
-  ORDER BY score DESC, total_pnl_usd DESC, candidate_index ASC
-  LIMIT 1
+    AND candidate_index=(SELECT best_feasible_candidate_index FROM latest_search)
 )
 SELECT
   latest_search.id,
@@ -1882,6 +1895,24 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             ? theme.green
             : theme.white
           : theme.dim
+      },
+      {
+        label: 'Cur feasible',
+        value: latestReplaySearch
+          ? `${Number(latestReplaySearch.current_candidate_feasible || 0) > 0 ? 'yes' : 'no'} | ${formatDollar(latestReplaySearch.current_candidate_total_pnl_usd)} / ${formatPct(latestReplaySearch.current_candidate_max_drawdown_pct, 1)}`
+          : '-',
+        color: latestReplaySearch
+          ? Number(latestReplaySearch.current_candidate_feasible || 0) > 0
+            ? dollarColor(latestReplaySearch.current_candidate_total_pnl_usd)
+            : theme.yellow
+          : theme.dim
+      },
+      {
+        label: 'Cur regret',
+        value: latestReplaySearch
+          ? `${formatDollar(latestReplaySearch.best_vs_current_pnl_usd)} / ${formatNumber(latestReplaySearch.best_vs_current_score, 2)}`
+          : '-',
+        color: dollarColor(latestReplaySearch?.best_vs_current_pnl_usd)
       },
       {
         label: 'Best wallet',

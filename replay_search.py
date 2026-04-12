@@ -143,6 +143,40 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         )
 
 
+def _evaluate_candidate(
+    *,
+    policy: ReplayPolicy,
+    db_path: Path | None,
+    label: str,
+    notes: str,
+    windows: list[tuple[int | None, int | None]],
+) -> dict[str, Any]:
+    if len(windows) == 1 and windows[0] == (None, None):
+        return run_replay(
+            policy=policy,
+            db_path=db_path,
+            label=label,
+            notes=notes,
+        )
+
+    window_results: list[dict[str, Any]] = []
+    for window_index, (start_ts, end_ts) in enumerate(windows, start=1):
+        window_results.append(
+            run_replay(
+                policy=policy,
+                db_path=db_path,
+                label=f"{label}-w{window_index:02d}",
+                notes=notes,
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+        )
+    return _aggregate_window_results(
+        window_results,
+        initial_bankroll_usd=policy.initial_bankroll_usd,
+    )
+
+
 def _resolve_db_path(raw_path: str) -> Path | None:
     return Path(raw_path) if raw_path else Path(TRADING_DB_PATH)
 
@@ -267,6 +301,12 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             candidate_count               INTEGER NOT NULL DEFAULT 0,
             feasible_count                INTEGER NOT NULL DEFAULT 0,
             rejected_count                INTEGER NOT NULL DEFAULT 0,
+            current_candidate_score       REAL,
+            current_candidate_feasible    INTEGER NOT NULL DEFAULT 0,
+            current_candidate_total_pnl_usd REAL,
+            current_candidate_max_drawdown_pct REAL,
+            best_vs_current_pnl_usd       REAL,
+            best_vs_current_score         REAL,
             best_feasible_candidate_index INTEGER,
             best_feasible_score           REAL,
             best_feasible_total_pnl_usd   REAL,
@@ -318,6 +358,12 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "candidate_count": "INTEGER NOT NULL DEFAULT 0",
             "feasible_count": "INTEGER NOT NULL DEFAULT 0",
             "rejected_count": "INTEGER NOT NULL DEFAULT 0",
+            "current_candidate_score": "REAL",
+            "current_candidate_feasible": "INTEGER NOT NULL DEFAULT 0",
+            "current_candidate_total_pnl_usd": "REAL",
+            "current_candidate_max_drawdown_pct": "REAL",
+            "best_vs_current_pnl_usd": "REAL",
+            "best_vs_current_score": "REAL",
             "best_feasible_candidate_index": "INTEGER",
             "best_feasible_score": "REAL",
             "best_feasible_total_pnl_usd": "REAL",
@@ -329,6 +375,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
         "replay_search_candidates",
         {
             "feasible": "INTEGER NOT NULL DEFAULT 0",
+            "is_current_policy": "INTEGER NOT NULL DEFAULT 0",
             "constraint_failures_json": "TEXT NOT NULL DEFAULT '[]'",
             "overrides_json": "TEXT NOT NULL DEFAULT '{}'",
             "policy_json": "TEXT NOT NULL DEFAULT '{}'",
@@ -363,6 +410,8 @@ def _persist_search_results(
     worst_window_penalty: float,
     window_days: int,
     window_count: int,
+    current_candidate: dict[str, Any] | None,
+    persist_current_candidate: bool,
     ranked: list[dict[str, Any]],
     feasible: list[dict[str, Any]],
     rejected: list[dict[str, Any]],
@@ -379,9 +428,12 @@ def _persist_search_results(
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
                 window_stddev_penalty, worst_window_penalty, candidate_count, feasible_count,
-                rejected_count, best_feasible_candidate_index, best_feasible_score,
+                rejected_count, current_candidate_score, current_candidate_feasible,
+                current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct,
+                best_vs_current_pnl_usd, best_vs_current_score,
+                best_feasible_candidate_index, best_feasible_score,
                 best_feasible_total_pnl_usd, best_feasible_max_drawdown_pct
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 started_at,
@@ -400,6 +452,17 @@ def _persist_search_results(
                 len(ranked),
                 len(feasible),
                 len(rejected),
+                float(current_candidate["score"]) if current_candidate else None,
+                0 if current_candidate and current_candidate["constraint_failures"] else 1 if current_candidate else 0,
+                float(current_candidate["result"].get("total_pnl_usd") or 0.0) if current_candidate else None,
+                float(current_candidate["result"].get("max_drawdown_pct") or 0.0) if current_candidate else None,
+                (
+                    float(best_feasible["result"].get("total_pnl_usd") or 0.0)
+                    - float(current_candidate["result"].get("total_pnl_usd") or 0.0)
+                ) if best_feasible and current_candidate else None,
+                (
+                    float(best_feasible["score"]) - float(current_candidate["score"])
+                ) if best_feasible and current_candidate else None,
                 int(best_feasible["index"]) if best_feasible else None,
                 float(best_feasible["score"]) if best_feasible else None,
                 float(best_feasible["result"].get("total_pnl_usd") or 0.0) if best_feasible else None,
@@ -408,6 +471,32 @@ def _persist_search_results(
         )
         search_run_id = int(cursor.lastrowid)
         inserts = []
+        if current_candidate and persist_current_candidate:
+            current_result = current_candidate["result"]
+            inserts.append(
+                (
+                    search_run_id,
+                    0,
+                    float(current_candidate["score"]),
+                    0 if current_candidate["constraint_failures"] else 1,
+                    1,
+                    json.dumps(current_candidate["constraint_failures"], separators=(",", ":"), default=str),
+                    json.dumps({}, separators=(",", ":"), default=str),
+                    json.dumps(current_candidate["policy"], sort_keys=True, separators=(",", ":"), default=str),
+                    json.dumps(current_candidate["config"], sort_keys=True, separators=(",", ":"), default=str),
+                    json.dumps(current_result, sort_keys=True, separators=(",", ":"), default=str),
+                    float(current_result.get("total_pnl_usd") or 0.0),
+                    float(current_result.get("max_drawdown_pct") or 0.0),
+                    int(current_result.get("accepted_count") or 0),
+                    int(current_result.get("resolved_count") or 0),
+                    float(current_result.get("win_rate") or 0.0) if current_result.get("win_rate") is not None else None,
+                    int(current_result.get("positive_window_count") or 0),
+                    int(current_result.get("negative_window_count") or 0),
+                    float(current_result.get("worst_window_pnl_usd") or 0.0) if current_result.get("worst_window_pnl_usd") is not None else None,
+                    float(current_result.get("worst_window_drawdown_pct") or 0.0) if current_result.get("worst_window_drawdown_pct") is not None else None,
+                    float(current_result.get("window_pnl_stddev_usd") or 0.0) if current_result.get("window_pnl_stddev_usd") is not None else None,
+                )
+            )
         for row in ranked:
             result = row["result"]
             inserts.append(
@@ -416,6 +505,7 @@ def _persist_search_results(
                     int(row["index"]),
                     float(row["score"]),
                     0 if row["constraint_failures"] else 1,
+                    0,
                     json.dumps(row["constraint_failures"], separators=(",", ":"), default=str),
                     json.dumps(row["overrides"], sort_keys=True, separators=(",", ":"), default=str),
                     json.dumps(row["policy"], sort_keys=True, separators=(",", ":"), default=str),
@@ -437,12 +527,12 @@ def _persist_search_results(
             conn.executemany(
                 """
                 INSERT INTO replay_search_candidates (
-                    replay_search_run_id, candidate_index, score, feasible,
+                    replay_search_run_id, candidate_index, score, feasible, is_current_policy,
                     constraint_failures_json, overrides_json, policy_json, config_json, result_json,
                     total_pnl_usd, max_drawdown_pct, accepted_count, resolved_count,
                     win_rate, positive_window_count, negative_window_count,
                     worst_window_pnl_usd, worst_window_drawdown_pct, window_pnl_stddev_usd
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 inserts,
             )
@@ -496,35 +586,57 @@ def main() -> None:
         window_days=max(args.window_days, 0),
         window_count=max(args.window_count, 1),
     )
+    current_result = _evaluate_candidate(
+        policy=base_policy,
+        db_path=db_path,
+        label=f"{args.label_prefix}-current",
+        notes=args.notes,
+        windows=windows,
+    )
+    current_constraint_failures = _constraint_failures(
+        current_result,
+        min_accepted_count=args.min_accepted_count,
+        min_resolved_count=args.min_resolved_count,
+        min_win_rate=max(args.min_win_rate, 0.0),
+        max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
+        min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
+        max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
+    )
+    if int(current_result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
+        current_constraint_failures.append("positive_window_count")
+    current_candidate = {
+        "index": 0,
+        "score": round(
+            _score_result(
+                current_result,
+                initial_bankroll_usd=base_policy.initial_bankroll_usd,
+                drawdown_penalty=max(args.drawdown_penalty, 0.0),
+                window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
+                worst_window_penalty=max(args.worst_window_penalty, 0.0),
+            ),
+            6,
+        ),
+        "overrides": {},
+        "policy": base_policy.as_dict(),
+        "config": policy_to_config_payload(base_policy),
+        "result": current_result,
+        "constraint_failures": current_constraint_failures,
+        "is_current_policy": True,
+        "policy_version": base_policy.version(),
+    }
     candidates: list[dict[str, Any]] = []
     for index, overrides in enumerate(overrides_list, start=1):
         policy_payload = base_policy.as_dict()
         policy_payload.update(overrides)
         policy = ReplayPolicy.from_payload(policy_payload)
-        if len(windows) == 1 and windows[0] == (None, None):
-            result = run_replay(
-                policy=policy,
-                db_path=db_path,
-                label=f"{args.label_prefix}-{index:03d}",
-                notes=args.notes,
-            )
-        else:
-            window_results: list[dict[str, Any]] = []
-            for window_index, (start_ts, end_ts) in enumerate(windows, start=1):
-                window_results.append(
-                    run_replay(
-                        policy=policy,
-                        db_path=db_path,
-                        label=f"{args.label_prefix}-{index:03d}-w{window_index:02d}",
-                        notes=args.notes,
-                        start_ts=start_ts,
-                        end_ts=end_ts,
-                    )
-                )
-            result = _aggregate_window_results(
-                window_results,
-                initial_bankroll_usd=policy.initial_bankroll_usd,
-            )
+        policy_version = policy.version()
+        result = current_result if policy_version == current_candidate["policy_version"] else _evaluate_candidate(
+            policy=policy,
+            db_path=db_path,
+            label=f"{args.label_prefix}-{index:03d}",
+            notes=args.notes,
+            windows=windows,
+        )
         score = _score_result(
             result,
             initial_bankroll_usd=policy.initial_bankroll_usd,
@@ -552,9 +664,12 @@ def main() -> None:
                 "config": policy_to_config_payload(policy),
                 "result": result,
                 "constraint_failures": constraint_failures,
+                "is_current_policy": False,
+                "policy_version": policy_version,
             }
         )
 
+    current_matches_grid = any(row["policy_version"] == current_candidate["policy_version"] for row in candidates)
     ranked = sorted(
         candidates,
         key=lambda row: (
@@ -591,6 +706,8 @@ def main() -> None:
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         window_days=max(args.window_days, 0),
         window_count=max(args.window_count, 1),
+        current_candidate=current_candidate,
+        persist_current_candidate=not current_matches_grid,
         ranked=ranked,
         feasible=feasible,
         rejected=rejected,
@@ -609,7 +726,16 @@ def main() -> None:
                 "candidate_count": len(ranked),
                 "feasible_count": len(feasible),
                 "rejected_count": len(rejected),
+                "current_candidate_matches_grid": current_matches_grid,
+                "current_candidate": current_candidate,
                 "best_feasible_config": feasible[0]["config"] if feasible else None,
+                "best_vs_current_pnl_usd": (
+                    float(feasible[0]["result"].get("total_pnl_usd") or 0.0)
+                    - float(current_candidate["result"].get("total_pnl_usd") or 0.0)
+                ) if feasible else None,
+                "best_vs_current_score": (
+                    float(feasible[0]["score"]) - float(current_candidate["score"])
+                ) if feasible else None,
                 "best_feasible": feasible[0] if feasible else None,
                 "ranked": ranked,
             },

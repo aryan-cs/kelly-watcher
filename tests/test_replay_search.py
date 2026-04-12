@@ -54,12 +54,14 @@ class ReplaySearchTest(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["candidate_count"], 4)
+        self.assertEqual(payload["current_candidate"]["index"], 0)
+        self.assertFalse(payload["current_candidate_matches_grid"])
         self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.65)
         self.assertEqual(payload["ranked"][0]["overrides"]["max_bet_fraction"], 0.02)
         self.assertEqual(payload["ranked"][0]["config"]["MIN_CONFIDENCE"], 0.65)
         self.assertEqual(payload["ranked"][0]["config"]["MAX_BET_FRACTION"], 0.02)
         self.assertIn("Replay sweep top candidates:", stderr.getvalue())
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 5)
 
     def test_main_filters_infeasible_candidates_from_best_feasible_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes=""):
@@ -74,13 +76,22 @@ class ReplaySearchTest(unittest.TestCase):
                     "resolved_count": 4,
                     "win_rate": 0.80,
                 }
+            if min_conf >= 0.60:
+                return {
+                    "run_id": 1,
+                    "total_pnl_usd": 60.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 12,
+                    "resolved_count": 12,
+                    "win_rate": 0.62,
+                }
             return {
-                "run_id": 1,
-                "total_pnl_usd": 60.0,
+                "run_id": 0,
+                "total_pnl_usd": 40.0,
                 "max_drawdown_pct": 0.05,
                 "accepted_count": 12,
                 "resolved_count": 12,
-                "win_rate": 0.62,
+                "win_rate": 0.58,
             }
 
         stdout = io.StringIO()
@@ -107,7 +118,9 @@ class ReplaySearchTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["feasible_count"], 1)
         self.assertEqual(payload["rejected_count"], 1)
+        self.assertEqual(payload["current_candidate"]["overrides"], {})
         self.assertEqual(payload["best_feasible_config"]["MIN_CONFIDENCE"], 0.6)
+        self.assertEqual(payload["best_vs_current_pnl_usd"], 20.0)
         self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
         self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.65)
         self.assertEqual(payload["ranked"][0]["constraint_failures"], ["accepted_count", "max_drawdown_pct"])
@@ -169,9 +182,11 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["best_feasible"]["result"]["window_count"], 2)
         self.assertEqual(payload["best_feasible"]["result"]["positive_window_count"], 1)
         self.assertEqual(payload["best_feasible"]["result"]["total_pnl_usd"], 15.0)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(calls[0], (1, 2_592_001))
         self.assertEqual(calls[1], (2_592_001, 5_184_001))
+        self.assertEqual(calls[2], (1, 2_592_001))
+        self.assertEqual(calls[3], (2_592_001, 5_184_001))
 
     def test_main_can_penalize_window_instability(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -283,9 +298,21 @@ class ReplaySearchTest(unittest.TestCase):
                     "trade_count": 4,
                     "win_rate": 0.80,
                 }
+            if min_conf >= 0.60:
+                return {
+                    "run_id": 1,
+                    "total_pnl_usd": 60.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 12,
+                    "resolved_count": 12,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 12,
+                    "win_rate": 0.62,
+                }
             return {
-                "run_id": 1,
-                "total_pnl_usd": 60.0,
+                "run_id": 0,
+                "total_pnl_usd": 40.0,
                 "max_drawdown_pct": 0.05,
                 "accepted_count": 12,
                 "resolved_count": 12,
@@ -328,6 +355,8 @@ class ReplaySearchTest(unittest.TestCase):
                 run_row = conn.execute(
                     """
                     SELECT label_prefix, candidate_count, feasible_count, rejected_count,
+                           current_candidate_score, current_candidate_feasible,
+                           current_candidate_total_pnl_usd, best_vs_current_pnl_usd,
                            best_feasible_candidate_index, best_feasible_total_pnl_usd,
                            constraints_json, notes
                     FROM replay_search_runs
@@ -335,7 +364,7 @@ class ReplaySearchTest(unittest.TestCase):
                 ).fetchone()
                 candidate_rows = conn.execute(
                     """
-                    SELECT candidate_index, feasible, constraint_failures_json, overrides_json, config_json, result_json
+                    SELECT candidate_index, feasible, is_current_policy, constraint_failures_json, overrides_json, config_json, result_json
                     FROM replay_search_candidates
                     ORDER BY candidate_index ASC
                     """
@@ -344,21 +373,32 @@ class ReplaySearchTest(unittest.TestCase):
                 conn.close()
 
             self.assertEqual(payload["search_run_id"], 1)
-            self.assertEqual(run_row[:6], ("persist", 2, 1, 1, 1, 60.0))
-            self.assertEqual(json.loads(run_row[6]), {"max_drawdown_pct": 0.1, "min_accepted_count": 5, "min_positive_windows": 0, "min_resolved_count": 0, "min_win_rate": 0.0, "min_worst_window_pnl_usd": -1000000000.0, "max_worst_window_drawdown_pct": 0.0})
-            self.assertEqual(run_row[7], "persisted run")
+            self.assertEqual(run_row[:4], ("persist", 2, 1, 1))
+            self.assertEqual(run_row[4], -110.0)
+            self.assertEqual(run_row[5], 1)
+            self.assertEqual(run_row[6], 40.0)
+            self.assertEqual(run_row[7], 20.0)
+            self.assertEqual(run_row[8], 1)
+            self.assertEqual(run_row[9], 60.0)
+            self.assertEqual(json.loads(run_row[10]), {"max_drawdown_pct": 0.1, "min_accepted_count": 5, "min_positive_windows": 0, "min_resolved_count": 0, "min_win_rate": 0.0, "min_worst_window_pnl_usd": -1000000000.0, "max_worst_window_drawdown_pct": 0.0})
+            self.assertEqual(run_row[11], "persisted run")
             self.assertEqual(payload["best_feasible_config"]["MIN_CONFIDENCE"], 0.6)
-            self.assertEqual(len(candidate_rows), 2)
-            self.assertEqual(candidate_rows[0][0:2], (1, 1))
-            self.assertEqual(json.loads(candidate_rows[0][2]), [])
-            self.assertEqual(json.loads(candidate_rows[0][3]), {"min_confidence": 0.6})
-            self.assertEqual(json.loads(candidate_rows[0][4])["MIN_CONFIDENCE"], 0.6)
-            self.assertEqual(json.loads(candidate_rows[0][5])["total_pnl_usd"], 60.0)
-            self.assertEqual(candidate_rows[1][0:2], (2, 0))
-            self.assertEqual(json.loads(candidate_rows[1][2]), ["accepted_count", "max_drawdown_pct"])
-            self.assertEqual(json.loads(candidate_rows[1][3]), {"min_confidence": 0.65})
-            self.assertEqual(json.loads(candidate_rows[1][4])["MIN_CONFIDENCE"], 0.65)
-            self.assertEqual(json.loads(candidate_rows[1][5])["max_drawdown_pct"], 0.18)
+            self.assertEqual(len(candidate_rows), 3)
+            self.assertEqual(candidate_rows[0][0:3], (0, 1, 1))
+            self.assertEqual(json.loads(candidate_rows[0][3]), [])
+            self.assertEqual(json.loads(candidate_rows[0][4]), {})
+            self.assertEqual(json.loads(candidate_rows[0][5])["MIN_CONFIDENCE"], 0.55)
+            self.assertEqual(json.loads(candidate_rows[0][6])["total_pnl_usd"], 40.0)
+            self.assertEqual(candidate_rows[1][0:3], (1, 1, 0))
+            self.assertEqual(json.loads(candidate_rows[1][3]), [])
+            self.assertEqual(json.loads(candidate_rows[1][4]), {"min_confidence": 0.6})
+            self.assertEqual(json.loads(candidate_rows[1][5])["MIN_CONFIDENCE"], 0.6)
+            self.assertEqual(json.loads(candidate_rows[1][6])["total_pnl_usd"], 60.0)
+            self.assertEqual(candidate_rows[2][0:3], (2, 0, 0))
+            self.assertEqual(json.loads(candidate_rows[2][3]), ["accepted_count", "max_drawdown_pct"])
+            self.assertEqual(json.loads(candidate_rows[2][4]), {"min_confidence": 0.65})
+            self.assertEqual(json.loads(candidate_rows[2][5])["MIN_CONFIDENCE"], 0.65)
+            self.assertEqual(json.loads(candidate_rows[2][6])["max_drawdown_pct"], 0.18)
 
     def test_main_backfills_existing_search_tables_before_insert(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -422,12 +462,17 @@ class ReplaySearchTest(unittest.TestCase):
                 run_row = conn.execute(
                     """
                     SELECT candidate_count, feasible_count, rejected_count,
-                           best_feasible_score, best_feasible_total_pnl_usd
+                           current_candidate_score, current_candidate_feasible,
+                           current_candidate_total_pnl_usd, best_feasible_score, best_feasible_total_pnl_usd
                     FROM replay_search_runs
                     """
                 ).fetchone()
                 candidate_row = conn.execute(
-                    "SELECT feasible, constraint_failures_json, config_json, result_json FROM replay_search_candidates"
+                    """
+                    SELECT feasible, is_current_policy, constraint_failures_json, config_json, result_json
+                    FROM replay_search_candidates
+                    WHERE is_current_policy=1
+                    """
                 ).fetchone()
             finally:
                 conn.close()
@@ -437,11 +482,77 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertIn("feasible", candidate_columns)
             self.assertIn("config_json", candidate_columns)
             self.assertIn("result_json", candidate_columns)
-            self.assertEqual(run_row, (1, 1, 0, -78.0, 42.0))
+            self.assertEqual(run_row, (1, 1, 0, -78.0, 1, 42.0, -78.0, 42.0))
             self.assertEqual(candidate_row[0], 1)
-            self.assertEqual(json.loads(candidate_row[1]), [])
-            self.assertEqual(json.loads(candidate_row[2])["MIN_CONFIDENCE"], 0.6)
-            self.assertEqual(json.loads(candidate_row[3])["total_pnl_usd"], 42.0)
+            self.assertEqual(candidate_row[1], 1)
+            self.assertEqual(json.loads(candidate_row[2]), [])
+            self.assertEqual(json.loads(candidate_row[3])["MIN_CONFIDENCE"], 0.55)
+            self.assertEqual(json.loads(candidate_row[4])["total_pnl_usd"], 42.0)
+
+    def test_main_dedupes_current_candidate_when_grid_matches_base_policy(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            payload = policy.as_dict()
+            calls.append(payload)
+            return {
+                "run_id": len(calls),
+                "total_pnl_usd": 50.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": 9,
+                "resolved_count": 9,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 9,
+                "win_rate": 2 / 3,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "replay_search_dedupe.db"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--db",
+                str(db_path),
+                "--base-policy-json",
+                json.dumps({"min_confidence": 0.60}),
+                "--grid-json",
+                json.dumps({"min_confidence": [0.60]}),
+            ]
+            with (
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+            payload = json.loads(stdout.getvalue())
+            conn = sqlite3.connect(str(db_path))
+            try:
+                run_row = conn.execute(
+                    """
+                    SELECT candidate_count, feasible_count, rejected_count,
+                           current_candidate_total_pnl_usd, best_vs_current_pnl_usd,
+                           best_feasible_candidate_index
+                    FROM replay_search_runs
+                    """
+                ).fetchone()
+                candidate_rows = conn.execute(
+                    """
+                    SELECT candidate_index, feasible, is_current_policy
+                    FROM replay_search_candidates
+                    ORDER BY candidate_index ASC
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertTrue(payload["current_candidate_matches_grid"])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(run_row, (1, 1, 0, 50.0, 0.0, 1))
+            self.assertEqual(candidate_rows, [(1, 1, 0)])
 
 
 if __name__ == "__main__":

@@ -993,11 +993,7 @@ def _process_manual_trade_request(
     trader_address = request.trader_address or "manual-dashboard"
 
     if request.action == "buy_more":
-        account_equity = (
-            executor.get_account_equity_usd()
-            if live_entry_guard is not None
-            else executor.get_usdc_balance()
-        )
+        account_equity = executor.get_account_equity_usd()
         entry_block_reason = _entry_pause_reason(
             tracker,
             executor,
@@ -2943,7 +2939,7 @@ def main() -> None:
             entry_block_reason = None
             try:
                 bankroll = executor.get_usdc_balance()
-                account_equity = executor.get_account_equity_usd() if live_entry_guard is not None else bankroll
+                account_equity = executor.get_account_equity_usd()
                 if bankroll < 1.0:
                     logger.warning("Low balance: $%.2f - skipping poll", bankroll)
                 else:
@@ -3012,11 +3008,7 @@ def main() -> None:
                                 ),
                                 0.0,
                             )
-                            account_equity = (
-                                executor.get_account_equity_usd()
-                                if live_entry_guard is not None
-                                else bankroll
-                            )
+                            account_equity = executor.get_account_equity_usd()
                         except Exception as exc:
                             logger.error(
                                 "Event processing failed for trade %s: %s",

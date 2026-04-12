@@ -349,6 +349,83 @@ class RuntimeFixesTest(unittest.TestCase):
         with patch("executor.use_real_money", return_value=True):
             self.assertEqual(executor.get_account_equity_usd(), 117.5)
 
+    def test_shadow_account_equity_uses_cost_basis_for_open_positions(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trading.db"
+            with patch.object(db, "DB_PATH", db_path):
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
+                        actual_entry_size_usd, remaining_entry_shares, remaining_entry_size_usd,
+                        realized_exit_pnl_usd
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "open-1",
+                        "market-1",
+                        "0xabc",
+                        "yes",
+                        "buy",
+                        0.5,
+                        30.0,
+                        0.7,
+                        0.1,
+                        0,
+                        0,
+                        1_700_000_000,
+                        0.5,
+                        60.0,
+                        30.0,
+                        60.0,
+                        30.0,
+                        5.0,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
+                        actual_entry_size_usd, shadow_pnl_usd, exited_at, outcome
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "closed-1",
+                        "market-2",
+                        "0xdef",
+                        "yes",
+                        "buy",
+                        0.4,
+                        20.0,
+                        0.72,
+                        0.08,
+                        0,
+                        0,
+                        1_700_000_100,
+                        0.4,
+                        50.0,
+                        20.0,
+                        12.0,
+                        1_700_000_200,
+                        1,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                executor = object.__new__(PolymarketExecutor)
+                with patch("executor.use_real_money", return_value=False), patch(
+                    "executor.shadow_bankroll_usd", return_value=100.0
+                ):
+                    self.assertEqual(executor.get_usdc_balance(), 87.0)
+                    self.assertEqual(executor.get_account_equity_usd(), 117.0)
+
     def test_max_daily_loss_pct_reloads_from_env_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             env_path = Path(tmpdir) / ".env"

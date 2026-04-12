@@ -397,32 +397,7 @@ class PolymarketExecutor:
 
     def get_usdc_balance(self) -> float:
         if not use_real_money():
-            conn = get_conn()
-            row = conn.execute(
-                f"""
-                SELECT
-                    SUM(
-                        CASE
-                            WHEN {OPEN_EXECUTED_ENTRY_SQL} THEN {remaining_entry_size_expr()}
-                            ELSE 0
-                        END
-                    ) AS remaining_cost,
-                    SUM(
-                        CASE
-                            WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy' AND exited_at IS NULL AND outcome IS NULL
-                                THEN COALESCE(realized_exit_pnl_usd, 0)
-                            WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy'
-                                THEN COALESCE(shadow_pnl_usd, 0)
-                            ELSE 0
-                        END
-                    ) AS realized_pnl
-                FROM trade_log
-                WHERE real_money=0
-                """
-            ).fetchone()
-            conn.close()
-            spent = float(row["remaining_cost"] or 0.0)
-            realized_pnl = float(row["realized_pnl"] or 0.0)
+            realized_pnl, spent = self._shadow_balance_components()
             return max(shadow_bankroll_usd() + realized_pnl - spent, 0.0)
 
         try:
@@ -450,9 +425,13 @@ class PolymarketExecutor:
         return total_bought
 
     def get_account_equity_usd(self) -> float:
-        balance_usd = self.get_usdc_balance()
         if not use_real_money():
-            return balance_usd
+            realized_pnl, _ = self._shadow_balance_components()
+            # Shadow mode has no mark-to-market feed for open positions.
+            # Use cost basis so deployed capital does not masquerade as a drawdown.
+            return max(shadow_bankroll_usd() + realized_pnl, 0.0)
+
+        balance_usd = self.get_usdc_balance()
 
         rows = self._fetch_live_positions()
         if rows is None:
@@ -461,6 +440,36 @@ class PolymarketExecutor:
 
         open_value_usd = sum(self._live_position_mark_value(row) for row in rows)
         return round(balance_usd + open_value_usd, 6)
+
+    @staticmethod
+    def _shadow_balance_components() -> tuple[float, float]:
+        conn = get_conn()
+        row = conn.execute(
+            f"""
+            SELECT
+                SUM(
+                    CASE
+                        WHEN {OPEN_EXECUTED_ENTRY_SQL} THEN {remaining_entry_size_expr()}
+                        ELSE 0
+                    END
+                ) AS remaining_cost,
+                SUM(
+                    CASE
+                        WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy' AND exited_at IS NULL AND outcome IS NULL
+                            THEN COALESCE(realized_exit_pnl_usd, 0)
+                        WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy'
+                            THEN COALESCE(shadow_pnl_usd, 0)
+                        ELSE 0
+                    END
+                ) AS realized_pnl
+            FROM trade_log
+            WHERE real_money=0
+            """
+        ).fetchone()
+        conn.close()
+        realized_pnl = float(row["realized_pnl"] or 0.0)
+        remaining_cost = float(row["remaining_cost"] or 0.0)
+        return realized_pnl, remaining_cost
 
     @staticmethod
     def _parse_usdc_base_units(raw_value: Any) -> float:

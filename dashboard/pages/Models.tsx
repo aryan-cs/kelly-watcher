@@ -284,6 +284,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
+      {label: 'Deploy gap', text: 'Replay-only scorer-path toggles on the latest best feasible candidate that are not expressible through editable runtime config.'},
       {label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and replay-only scorer-path gates on the latest best feasible replay-search candidate.'},
       {label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.'},
@@ -1308,6 +1309,21 @@ function replaySearchSegmentGateSummary(raw: string | null | undefined): string 
     return parts.length ? parts.join(', ') : 'all'
   } catch {
     return 'all'
+  }
+}
+
+function replaySearchDeployGapSummary(rawPolicy: string | null | undefined): string {
+  if (!rawPolicy) return '-'
+  try {
+    const parsed = JSON.parse(rawPolicy)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '-'
+    const payload = parsed as Record<string, unknown>
+    const gaps: string[] = []
+    if (payload.allow_heuristic === false) gaps.push('replay-only: heur off')
+    if (payload.allow_xgboost === false) gaps.push('replay-only: xgb off')
+    return gaps.length ? gaps.join(' | ') : 'none'
+  } catch {
+    return '-'
   }
 }
 
@@ -2392,6 +2408,10 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => replaySearchConfigSuggestion(latestReplaySearch?.config_json, settingsValues, configFieldByKey),
     [configFieldByKey, latestReplaySearch?.config_json, settingsValues]
   )
+  const replaySearchDeployGap = useMemo(
+    () => replaySearchDeployGapSummary(latestReplaySearch?.policy_json),
+    [latestReplaySearch?.policy_json]
+  )
   const replaySearchCurrentModeRisk = useMemo(
     () => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json),
     [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]
@@ -2493,6 +2513,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             ? theme.green
             : theme.white
           : theme.dim
+      },
+      {
+        label: 'Deploy gap',
+        value: replaySearchDeployGap,
+        color: !latestReplaySearch
+          ? theme.dim
+          : replaySearchDeployGap === 'none'
+            ? theme.green
+            : theme.yellow
       },
       {
         label: 'Seg gates',
@@ -2609,6 +2638,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [
       latestReplay,
       latestReplaySearch,
+      replaySearchDeployGap,
       replaySearchBestHeadroom,
       replaySearchCurrentModeRisk,
       replaySearchSuggestedConfig,

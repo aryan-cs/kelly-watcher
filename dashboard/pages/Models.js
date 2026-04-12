@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box as InkBox, Text } from 'ink';
-import { Box } from '../components/Box.js';
 import { ModalOverlay } from '../components/ModalOverlay.js';
-import { StatRow } from '../components/StatRow.js';
 import { editableConfigFields, formatEditableConfigValue } from '../configEditor.js';
 import { fit, fitRight, formatDollar, formatNumber, formatPct, formatShortDateTime, secondsAgo, timeUntil } from '../format.js';
 import { stackPanels } from '../responsive.js';
@@ -19,7 +17,7 @@ export const MODEL_PANEL_DEFS = [
         title: 'Prediction Quality',
         summary: [
             'This box separates the scorer loaded in the runtime from the model artifact on disk.',
-            'Lower loss numbers grade the deployed model artifact, not the bankroll curve.'
+            'Lower loss numbers grade the model artifact, not the bankroll curve.'
         ],
         rows: [
             { label: 'Loaded scorer', text: 'Which scorer the running bot has loaded right now for new decisions.' },
@@ -53,6 +51,43 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Sharpe ratio', text: 'Return compared to volatility. Higher is smoother.' }
         ],
         settingKeys: ['MIN_CONFIDENCE', 'MAX_BET_FRACTION', 'SHADOW_BANKROLL_USD']
+    },
+    {
+        id: 'replay_lab',
+        title: 'Replay Lab',
+        summary: [
+            'This box reads the latest offline replay run instead of the live bankroll.',
+            'Use it to see which wallets, price bands, and holding periods helped or hurt under the latest tested policy.'
+        ],
+        rows: [
+            { label: 'Last replay', text: 'When the latest completed replay finished.' },
+            { label: 'Policy', text: 'Replay label and shortened policy version hash for the latest run.' },
+            { label: 'Replay P&L', text: 'Total replay profit versus the replay starting bankroll.' },
+            { label: 'Max DD', text: 'Largest peak-to-trough drawdown in the replay bankroll curve.' },
+            { label: 'Accept / win', text: 'Accepted replay trades and realized win rate on the resolved subset.' },
+            { label: 'Search run', text: 'How recently the latest persisted replay search finished.' },
+            { label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.' },
+            { label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.' },
+            { label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.' },
+            { label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.' },
+            { label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
+            { label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
+            { label: 'Best band', text: 'Entry-price band with the strongest replay P&L on the latest run.' },
+            { label: 'Worst band', text: 'Entry-price band with the weakest replay P&L on the latest run.' },
+            { label: 'Best horizon', text: 'Time-to-close bucket with the strongest replay P&L on the latest run.' },
+            { label: 'Worst horizon', text: 'Time-to-close bucket with the weakest replay P&L on the latest run.' }
+        ],
+        settingKeys: [
+            'MIN_CONFIDENCE',
+            'HEURISTIC_MIN_ENTRY_PRICE',
+            'HEURISTIC_MAX_ENTRY_PRICE',
+            'MODEL_EDGE_MID_THRESHOLD',
+            'MODEL_EDGE_HIGH_THRESHOLD',
+            'MAX_BET_FRACTION',
+            'MAX_TOTAL_OPEN_EXPOSURE_FRACTION',
+            'MAX_MARKET_EXPOSURE_FRACTION',
+            'MAX_TRADER_EXPOSURE_FRACTION'
+        ]
     },
     {
         id: 'confidence_modes',
@@ -150,9 +185,9 @@ export const MODEL_PANEL_DEFS = [
     }
 ];
 export const MODEL_PANEL_COLUMN_LAYOUT = [
-    [0, 1],
-    [2, 3],
-    [4, 5]
+    [0, 1, 2],
+    [3, 4],
+    [5, 6]
 ];
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
@@ -220,6 +255,117 @@ SELECT
 FROM retrain_runs
 ORDER BY finished_at DESC, id DESC
 LIMIT 48
+`;
+const REPLAY_SEGMENT_MIN_RESOLVED = 3;
+const REPLAY_LATEST_RUN_SQL = `
+SELECT
+  id,
+  finished_at,
+  label,
+  policy_version,
+  total_pnl_usd,
+  max_drawdown_pct,
+  accepted_count,
+  resolved_count,
+  win_rate
+FROM replay_runs
+WHERE status='completed'
+ORDER BY finished_at DESC, id DESC
+LIMIT 1
+`;
+const REPLAY_SEGMENT_BEST_SQL = `
+WITH latest_run AS (
+  SELECT id
+  FROM replay_runs
+  WHERE status='completed'
+  ORDER BY finished_at DESC, id DESC
+  LIMIT 1
+)
+SELECT
+  segment_value,
+  accepted_count,
+  resolved_count,
+  total_pnl_usd,
+  win_rate
+FROM segment_metrics
+WHERE replay_run_id=(SELECT id FROM latest_run)
+  AND segment_kind=?
+  AND accepted_count > 0
+  AND resolved_count >= ?
+ORDER BY total_pnl_usd DESC, resolved_count DESC, accepted_count DESC, segment_value ASC
+LIMIT 1
+`;
+const REPLAY_SEGMENT_WORST_SQL = `
+WITH latest_run AS (
+  SELECT id
+  FROM replay_runs
+  WHERE status='completed'
+  ORDER BY finished_at DESC, id DESC
+  LIMIT 1
+)
+SELECT
+  segment_value,
+  accepted_count,
+  resolved_count,
+  total_pnl_usd,
+  win_rate
+FROM segment_metrics
+WHERE replay_run_id=(SELECT id FROM latest_run)
+  AND segment_kind=?
+  AND accepted_count > 0
+  AND resolved_count >= ?
+ORDER BY total_pnl_usd ASC, resolved_count DESC, accepted_count DESC, segment_value ASC
+LIMIT 1
+`;
+const REPLAY_SEARCH_SUMMARY_SQL = `
+WITH latest_search AS (
+  SELECT
+    id,
+    finished_at,
+    label_prefix,
+    candidate_count,
+    feasible_count,
+    rejected_count,
+    best_feasible_score
+  FROM replay_search_runs
+  ORDER BY finished_at DESC, id DESC
+  LIMIT 1
+),
+best_candidate AS (
+  SELECT
+    replay_search_run_id,
+    candidate_index,
+    score,
+    total_pnl_usd,
+    max_drawdown_pct,
+    positive_window_count,
+    negative_window_count,
+    worst_window_pnl_usd,
+    overrides_json
+  FROM replay_search_candidates
+  WHERE replay_search_run_id=(SELECT id FROM latest_search)
+    AND feasible=1
+  ORDER BY score DESC, total_pnl_usd DESC, candidate_index ASC
+  LIMIT 1
+)
+SELECT
+  latest_search.id,
+  latest_search.finished_at,
+  latest_search.label_prefix,
+  latest_search.candidate_count,
+  latest_search.feasible_count,
+  latest_search.rejected_count,
+  latest_search.best_feasible_score,
+  best_candidate.candidate_index,
+  best_candidate.score,
+  best_candidate.total_pnl_usd,
+  best_candidate.max_drawdown_pct,
+  best_candidate.positive_window_count,
+  best_candidate.negative_window_count,
+  best_candidate.worst_window_pnl_usd,
+  best_candidate.overrides_json
+FROM latest_search
+LEFT JOIN best_candidate ON best_candidate.replay_search_run_id=latest_search.id
 `;
 const SHARED_HOLDOUT_MESSAGE_RE = /shared holdout ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)[\s\S]*?incumbent ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)/i;
 const TRACKER_SQL = `
@@ -649,7 +795,7 @@ function sharedHoldoutComparison(row) {
         challenger_log_loss: challengerLogLoss,
         challenger_brier_score: challengerBrierScore,
         incumbent_log_loss: incumbentLogLoss,
-        incumbent_brier_score: incumbentBrierScore,
+        incumbent_brier_score: incumbentBrierScore
     };
 }
 function sharedHoldoutGateRead(row) {
@@ -769,6 +915,10 @@ function modeLabel(mode) {
         return 'XGBoost';
     if (normalized === 'xgboost')
         return 'XGBoost';
+    if (normalized === 'ml')
+        return 'XGBoost';
+    if (normalized === 'hist_gradient_boosting')
+        return 'XGBoost';
     if (normalized === 'heuristic')
         return 'Heuristic';
     if (normalized === 'shadow')
@@ -776,6 +926,57 @@ function modeLabel(mode) {
     if (normalized === 'live')
         return 'Live';
     return mode || 'Unknown';
+}
+function compactWalletLabel(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized)
+        return '-';
+    if (!normalized.startsWith('0x') || normalized.length <= 12)
+        return normalized;
+    return `${normalized.slice(0, 6)}..${normalized.slice(-4)}`;
+}
+function replaySegmentLabel(kind, value) {
+    const normalized = String(value || '').trim();
+    if (!normalized)
+        return '-';
+    if (kind === 'trader_address')
+        return compactWalletLabel(normalized);
+    return normalized;
+}
+function replaySegmentValue(kind, row) {
+    if (!row?.segment_value)
+        return '-';
+    const label = replaySegmentLabel(kind, row.segment_value);
+    const pnl = formatDollar(row.total_pnl_usd);
+    return `${label} ${pnl}`.trim();
+}
+function replaySearchOverrideSummary(raw) {
+    if (!raw)
+        return '-';
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+            return '-';
+        const payload = parsed;
+        const parts = [];
+        if (payload.min_confidence != null)
+            parts.push(`conf ${payload.min_confidence}`);
+        if (payload.heuristic_min_entry_price != null && payload.heuristic_max_entry_price != null) {
+            parts.push(`band ${payload.heuristic_min_entry_price}-${payload.heuristic_max_entry_price}`);
+        }
+        if (payload.max_bet_fraction != null)
+            parts.push(`bet ${payload.max_bet_fraction}`);
+        if (payload.model_edge_mid_threshold != null || payload.model_edge_high_threshold != null) {
+            parts.push(`edge ${payload.model_edge_mid_threshold ?? '-'} / ${payload.model_edge_high_threshold ?? '-'}`);
+        }
+        if (parts.length)
+            return parts.join(', ');
+        const fallbackKeys = Object.keys(payload).slice(0, 3);
+        return fallbackKeys.length ? fallbackKeys.map((key) => `${key}=${String(payload[key])}`).join(', ') : '-';
+    }
+    catch {
+        return '-';
+    }
 }
 function trainingCycleDisplayLabel(label) {
     if (label === 'Next scheduled')
@@ -900,6 +1101,14 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const stacked = stackPanels(terminal.width);
     const models = useQuery(MODEL_SQL);
     const retrainRuns = useQuery(RETRAIN_RUN_SQL);
+    const replayLatestRuns = useQuery(REPLAY_LATEST_RUN_SQL);
+    const replaySearchSummaryRows = useQuery(REPLAY_SEARCH_SUMMARY_SQL);
+    const replayBestWalletRows = useQuery(REPLAY_SEGMENT_BEST_SQL, ['trader_address', REPLAY_SEGMENT_MIN_RESOLVED]);
+    const replayWorstWalletRows = useQuery(REPLAY_SEGMENT_WORST_SQL, ['trader_address', REPLAY_SEGMENT_MIN_RESOLVED]);
+    const replayBestBandRows = useQuery(REPLAY_SEGMENT_BEST_SQL, ['entry_price_band', REPLAY_SEGMENT_MIN_RESOLVED]);
+    const replayWorstBandRows = useQuery(REPLAY_SEGMENT_WORST_SQL, ['entry_price_band', REPLAY_SEGMENT_MIN_RESOLVED]);
+    const replayBestHorizonRows = useQuery(REPLAY_SEGMENT_BEST_SQL, ['time_to_close_band', REPLAY_SEGMENT_MIN_RESOLVED]);
+    const replayWorstHorizonRows = useQuery(REPLAY_SEGMENT_WORST_SQL, ['time_to_close_band', REPLAY_SEGMENT_MIN_RESOLVED]);
     const trackerRows = useQuery(TRACKER_SQL);
     const perfRows = useQuery(PERF_SQL);
     const signalModes = useQuery(SIGNAL_MODE_SQL);
@@ -915,6 +1124,14 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const recentExitAuditRows = useQuery(EXIT_AUDIT_RECENT_SQL, [exitAuditModeRealMoney]);
     const exitAttributionRows = useQuery(EXIT_ATTRIBUTION_SQL, [settlementFixedCostUsd, exitAuditModeRealMoney]);
     const latest = models[0];
+    const latestReplay = replayLatestRuns[0];
+    const latestReplaySearch = replaySearchSummaryRows[0];
+    const replayBestWallet = replayBestWalletRows[0];
+    const replayWorstWallet = replayWorstWalletRows[0];
+    const replayBestBand = replayBestBandRows[0];
+    const replayWorstBand = replayWorstBandRows[0];
+    const replayBestHorizon = replayBestHorizonRows[0];
+    const replayWorstHorizon = replayWorstHorizonRows[0];
     const tracker = trackerRows[0];
     const calibration = calibrationSummaryRows[0];
     const confusion = confusionRows[0];
@@ -923,13 +1140,6 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const trainingProgress = trainingProgressRows[0];
     const exitAuditSummary = exitAuditSummaryRows[0];
     const exitAttribution = exitAttributionRows[0];
-    const latestReplay = replayLatestRuns[0];
-    const replayBestWallet = replayBestWalletRows[0];
-    const replayWorstWallet = replayWorstWalletRows[0];
-    const replayBestBand = replayBestBandRows[0];
-    const replayWorstBand = replayWorstBandRows[0];
-    const replayBestHorizon = replayBestHorizonRows[0];
-    const replayWorstHorizon = replayWorstHorizonRows[0];
     const latestSharedHoldoutRun = retrainRuns.find((row) => sharedHoldoutComparison(row) != null);
     const latestSharedHoldout = sharedHoldoutComparison(latestSharedHoldoutRun);
     const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0];
@@ -1132,6 +1342,48 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             color: latestReplay?.win_rate != null ? probabilityColor(latestReplay.win_rate) : theme.dim
         },
         {
+            label: 'Search run',
+            value: latestReplaySearch?.finished_at ? secondsAgo(latestReplaySearch.finished_at) : '-'
+        },
+        {
+            label: 'Search fea/rej',
+            value: latestReplaySearch
+                ? `${formatCount(latestReplaySearch.feasible_count)} / ${formatCount(latestReplaySearch.rejected_count)}`
+                : '-',
+            color: latestReplaySearch
+                ? Number(latestReplaySearch.feasible_count || 0) > 0
+                    ? theme.green
+                    : Number(latestReplaySearch.candidate_count || 0) > 0
+                        ? theme.red
+                        : theme.dim
+                : theme.dim
+        },
+        {
+            label: 'Best search',
+            value: latestReplaySearch
+                ? latestReplaySearch.candidate_index != null
+                    ? `#${formatCount(latestReplaySearch.candidate_index)} @ ${formatNumber(latestReplaySearch.score ?? latestReplaySearch.best_feasible_score, 2)}`
+                    : latestReplaySearch.best_feasible_score != null
+                        ? `score ${formatNumber(latestReplaySearch.best_feasible_score, 2)}`
+                        : '-'
+                : '-',
+            color: latestReplaySearch ? theme.white : theme.dim
+        },
+        {
+            label: 'Search robust',
+            value: latestReplaySearch
+                ? `${formatDollar(latestReplaySearch.total_pnl_usd)} / ${formatPct(latestReplaySearch.max_drawdown_pct, 1)}`
+                : '-',
+            color: dollarColor(latestReplaySearch?.total_pnl_usd)
+        },
+        {
+            label: 'Search windows',
+            value: latestReplaySearch
+                ? `${formatCount(latestReplaySearch.positive_window_count)}+ / ${formatCount(latestReplaySearch.negative_window_count)}- | ${formatDollar(latestReplaySearch.worst_window_pnl_usd)}`
+                : '-',
+            color: dollarColor(latestReplaySearch?.worst_window_pnl_usd)
+        },
+        {
             label: 'Best wallet',
             value: replaySegmentValue('trader_address', replayBestWallet),
             color: dollarColor(replayBestWallet?.total_pnl_usd)
@@ -1163,6 +1415,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         }
     ], [
         latestReplay,
+        latestReplaySearch,
         replayBestBand,
         replayBestHorizon,
         replayBestWallet,
@@ -1546,10 +1799,10 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             predictionQualityStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
-            trackerHealthStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 })))),
+            trackerHealthStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Replay Lab", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
-            replayLabStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 }))),
+            replayLabStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 })))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[1], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "Confidence + Modes", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
@@ -1561,20 +1814,16 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             React.createElement(ModelsSubsectionTitle, { title: "Decision Paths", width: modelsColumnWidths[1] }),
             React.createElement(DenseModelsRow, { label: "Recent scorer", value: activeScorerLabel, color: activeScorerColor, width: modelsColumnWidths[1], labelWidth: 12 }),
             React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[1], labelWidth: 12 }),
-            signalModeCards.length
-                ? (signalModeCards.map((card) => (React.createElement(React.Fragment, { key: card.title },
-                    React.createElement(ModelsSpacer, null),
-                    React.createElement(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[1], color: card.titleColor ?? theme.white }),
-                    card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 })))))))
-                : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1]))),
+            signalModeCards.length ? (signalModeCards.map((card, index) => (React.createElement(React.Fragment, { key: card.title },
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[1], color: card.titleColor ?? theme.white }),
+                card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))))))) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1]))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Exit Guard", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
             exitGuardStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(RecentExitHeaderRow, { width: modelsColumnWidths[1] }),
-            recentExitAudits.length
-                ? (recentExitAudits.map((row, index) => (React.createElement(RecentExitDataRow, { key: `${row.audited_at}-${row.decision || 'decision'}-${index}`, width: modelsColumnWidths[1], timestamp: formatShortDateTime(row.audited_at), timestampColor: theme.dim, action: exitDecisionLabel(row.decision, row.reason), actionColor: exitDecisionColor(row.decision, row.reason), estimatedReturn: formatPct(row.estimated_return_pct, 1), estimatedReturnColor: signedMetricColor(row.estimated_return_pct), reason: String(row.reason || '').trim() || '-', reasonColor: theme.dim }))))
-                : (React.createElement(Text, { color: theme.dim }, fit('No exit audits logged yet.', modelsColumnWidths[1])))),
+            recentExitAudits.length ? (recentExitAudits.map((row, index) => (React.createElement(RecentExitDataRow, { key: `${row.audited_at}-${row.decision || 'decision'}-${index}`, width: modelsColumnWidths[1], timestamp: formatShortDateTime(row.audited_at), timestampColor: theme.dim, action: exitDecisionLabel(row.decision, row.reason), actionColor: exitDecisionColor(row.decision, row.reason), estimatedReturn: formatPct(row.estimated_return_pct, 1), estimatedReturnColor: signedMetricColor(row.estimated_return_pct), reason: String(row.reason || '').trim() || '-', reasonColor: theme.dim })))) : (React.createElement(Text, { color: theme.dim }, fit('No exit audits logged yet.', modelsColumnWidths[1])))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),

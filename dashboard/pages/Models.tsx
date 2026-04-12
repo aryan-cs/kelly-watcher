@@ -167,6 +167,24 @@ interface ReplaySegmentRow {
   win_rate: number | null
 }
 
+interface ReplaySearchSummaryRow {
+  id: number
+  finished_at: number
+  label_prefix: string | null
+  candidate_count: number | null
+  feasible_count: number | null
+  rejected_count: number | null
+  best_feasible_score: number | null
+  candidate_index: number | null
+  score: number | null
+  total_pnl_usd: number | null
+  max_drawdown_pct: number | null
+  positive_window_count: number | null
+  negative_window_count: number | null
+  worst_window_pnl_usd: number | null
+  overrides_json: string | null
+}
+
 export type ModelPanelId =
   | 'prediction_quality'
   | 'tracker_health'
@@ -247,6 +265,11 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Replay P&L', text: 'Total replay profit versus the replay starting bankroll.'},
       {label: 'Max DD', text: 'Largest peak-to-trough drawdown in the replay bankroll curve.'},
       {label: 'Accept / win', text: 'Accepted replay trades and realized win rate on the resolved subset.'},
+      {label: 'Search run', text: 'How recently the latest persisted replay search finished.'},
+      {label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.'},
+      {label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.'},
+      {label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.'},
+      {label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
       {label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
       {label: 'Best band', text: 'Entry-price band with the strongest replay P&L on the latest run.'},
@@ -536,6 +559,57 @@ WHERE replay_run_id=(SELECT id FROM latest_run)
   AND resolved_count >= ?
 ORDER BY total_pnl_usd ASC, resolved_count DESC, accepted_count DESC, segment_value ASC
 LIMIT 1
+`
+
+const REPLAY_SEARCH_SUMMARY_SQL = `
+WITH latest_search AS (
+  SELECT
+    id,
+    finished_at,
+    label_prefix,
+    candidate_count,
+    feasible_count,
+    rejected_count,
+    best_feasible_score
+  FROM replay_search_runs
+  ORDER BY finished_at DESC, id DESC
+  LIMIT 1
+),
+best_candidate AS (
+  SELECT
+    replay_search_run_id,
+    candidate_index,
+    score,
+    total_pnl_usd,
+    max_drawdown_pct,
+    positive_window_count,
+    negative_window_count,
+    worst_window_pnl_usd,
+    overrides_json
+  FROM replay_search_candidates
+  WHERE replay_search_run_id=(SELECT id FROM latest_search)
+    AND feasible=1
+  ORDER BY score DESC, total_pnl_usd DESC, candidate_index ASC
+  LIMIT 1
+)
+SELECT
+  latest_search.id,
+  latest_search.finished_at,
+  latest_search.label_prefix,
+  latest_search.candidate_count,
+  latest_search.feasible_count,
+  latest_search.rejected_count,
+  latest_search.best_feasible_score,
+  best_candidate.candidate_index,
+  best_candidate.score,
+  best_candidate.total_pnl_usd,
+  best_candidate.max_drawdown_pct,
+  best_candidate.positive_window_count,
+  best_candidate.negative_window_count,
+  best_candidate.worst_window_pnl_usd,
+  best_candidate.overrides_json
+FROM latest_search
+LEFT JOIN best_candidate ON best_candidate.replay_search_run_id=latest_search.id
 `
 
 const SHARED_HOLDOUT_MESSAGE_RE = /shared holdout ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)[\s\S]*?incumbent ll\/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*\/\s*([-+]?[0-9]*\.?[0-9]+)/i
@@ -1124,6 +1198,29 @@ function replaySegmentValue(
   return `${label} ${pnl}`.trim()
 }
 
+function replaySearchOverrideSummary(raw: string | null | undefined): string {
+  if (!raw) return '-'
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '-'
+    const payload = parsed as Record<string, unknown>
+    const parts: string[] = []
+    if (payload.min_confidence != null) parts.push(`conf ${payload.min_confidence}`)
+    if (payload.heuristic_min_entry_price != null && payload.heuristic_max_entry_price != null) {
+      parts.push(`band ${payload.heuristic_min_entry_price}-${payload.heuristic_max_entry_price}`)
+    }
+    if (payload.max_bet_fraction != null) parts.push(`bet ${payload.max_bet_fraction}`)
+    if (payload.model_edge_mid_threshold != null || payload.model_edge_high_threshold != null) {
+      parts.push(`edge ${payload.model_edge_mid_threshold ?? '-'} / ${payload.model_edge_high_threshold ?? '-'}`)
+    }
+    if (parts.length) return parts.join(', ')
+    const fallbackKeys = Object.keys(payload).slice(0, 3)
+    return fallbackKeys.length ? fallbackKeys.map((key) => `${key}=${String(payload[key])}`).join(', ') : '-'
+  } catch {
+    return '-'
+  }
+}
+
 function trainingCycleDisplayLabel(label: string): string {
   if (label === 'Next scheduled') return 'Next run'
   if (label === 'Scheduled in') return 'Starts in'
@@ -1373,6 +1470,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const models = useQuery<ModelRow>(MODEL_SQL)
   const retrainRuns = useQuery<RetrainRunRow>(RETRAIN_RUN_SQL)
   const replayLatestRuns = useQuery<ReplayRunRow>(REPLAY_LATEST_RUN_SQL)
+  const replaySearchSummaryRows = useQuery<ReplaySearchSummaryRow>(REPLAY_SEARCH_SUMMARY_SQL)
   const replayBestWalletRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_BEST_SQL, ['trader_address', REPLAY_SEGMENT_MIN_RESOLVED])
   const replayWorstWalletRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_WORST_SQL, ['trader_address', REPLAY_SEGMENT_MIN_RESOLVED])
   const replayBestBandRows = useQuery<ReplaySegmentRow>(REPLAY_SEGMENT_BEST_SQL, ['entry_price_band', REPLAY_SEGMENT_MIN_RESOLVED])
@@ -1396,6 +1494,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
 
   const latest = models[0]
   const latestReplay = replayLatestRuns[0]
+  const latestReplaySearch = replaySearchSummaryRows[0]
   const replayBestWallet = replayBestWalletRows[0]
   const replayWorstWallet = replayWorstWalletRows[0]
   const replayBestBand = replayBestBandRows[0]
@@ -1639,6 +1738,48 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         color: latestReplay?.win_rate != null ? probabilityColor(latestReplay.win_rate) : theme.dim
       },
       {
+        label: 'Search run',
+        value: latestReplaySearch?.finished_at ? secondsAgo(latestReplaySearch.finished_at) : '-'
+      },
+      {
+        label: 'Search fea/rej',
+        value: latestReplaySearch
+          ? `${formatCount(latestReplaySearch.feasible_count)} / ${formatCount(latestReplaySearch.rejected_count)}`
+          : '-',
+        color: latestReplaySearch
+          ? Number(latestReplaySearch.feasible_count || 0) > 0
+            ? theme.green
+            : Number(latestReplaySearch.candidate_count || 0) > 0
+              ? theme.red
+              : theme.dim
+          : theme.dim
+      },
+      {
+        label: 'Best search',
+        value: latestReplaySearch
+          ? latestReplaySearch.candidate_index != null
+            ? `#${formatCount(latestReplaySearch.candidate_index)} @ ${formatNumber(latestReplaySearch.score ?? latestReplaySearch.best_feasible_score, 2)}`
+            : latestReplaySearch.best_feasible_score != null
+              ? `score ${formatNumber(latestReplaySearch.best_feasible_score, 2)}`
+              : '-'
+          : '-',
+        color: latestReplaySearch ? theme.white : theme.dim
+      },
+      {
+        label: 'Search robust',
+        value: latestReplaySearch
+          ? `${formatDollar(latestReplaySearch.total_pnl_usd)} / ${formatPct(latestReplaySearch.max_drawdown_pct, 1)}`
+          : '-',
+        color: dollarColor(latestReplaySearch?.total_pnl_usd)
+      },
+      {
+        label: 'Search windows',
+        value: latestReplaySearch
+          ? `${formatCount(latestReplaySearch.positive_window_count)}+ / ${formatCount(latestReplaySearch.negative_window_count)}- | ${formatDollar(latestReplaySearch.worst_window_pnl_usd)}`
+          : '-',
+        color: dollarColor(latestReplaySearch?.worst_window_pnl_usd)
+      },
+      {
         label: 'Best wallet',
         value: replaySegmentValue('trader_address', replayBestWallet),
         color: dollarColor(replayBestWallet?.total_pnl_usd)
@@ -1671,6 +1812,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     ],
     [
       latestReplay,
+      latestReplaySearch,
       replayBestBand,
       replayBestHorizon,
       replayBestWallet,

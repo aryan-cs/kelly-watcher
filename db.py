@@ -527,6 +527,53 @@ def init_db() -> None:
             FOREIGN KEY (replay_run_id) REFERENCES replay_runs(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS replay_search_runs (
+            id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at                   INTEGER NOT NULL,
+            finished_at                  INTEGER NOT NULL,
+            label_prefix                 TEXT NOT NULL DEFAULT '',
+            status                       TEXT NOT NULL DEFAULT '',
+            base_policy_json             TEXT NOT NULL DEFAULT '{}',
+            grid_json                    TEXT NOT NULL DEFAULT '{}',
+            constraints_json             TEXT NOT NULL DEFAULT '{}',
+            notes                        TEXT NOT NULL DEFAULT '',
+            window_days                  INTEGER NOT NULL DEFAULT 0,
+            window_count                 INTEGER NOT NULL DEFAULT 1,
+            drawdown_penalty             REAL NOT NULL DEFAULT 0,
+            window_stddev_penalty        REAL NOT NULL DEFAULT 0,
+            worst_window_penalty         REAL NOT NULL DEFAULT 0,
+            candidate_count              INTEGER NOT NULL DEFAULT 0,
+            feasible_count               INTEGER NOT NULL DEFAULT 0,
+            rejected_count               INTEGER NOT NULL DEFAULT 0,
+            best_feasible_candidate_index INTEGER,
+            best_feasible_score          REAL,
+            best_feasible_total_pnl_usd  REAL,
+            best_feasible_max_drawdown_pct REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS replay_search_candidates (
+            id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+            replay_search_run_id         INTEGER NOT NULL,
+            candidate_index              INTEGER NOT NULL,
+            score                        REAL NOT NULL DEFAULT 0,
+            feasible                     INTEGER NOT NULL DEFAULT 0,
+            constraint_failures_json     TEXT NOT NULL DEFAULT '[]',
+            overrides_json               TEXT NOT NULL DEFAULT '{}',
+            policy_json                  TEXT NOT NULL DEFAULT '{}',
+            result_json                  TEXT NOT NULL DEFAULT '{}',
+            total_pnl_usd                REAL NOT NULL DEFAULT 0,
+            max_drawdown_pct             REAL,
+            accepted_count               INTEGER NOT NULL DEFAULT 0,
+            resolved_count               INTEGER NOT NULL DEFAULT 0,
+            win_rate                     REAL,
+            positive_window_count        INTEGER NOT NULL DEFAULT 0,
+            negative_window_count        INTEGER NOT NULL DEFAULT 0,
+            worst_window_pnl_usd         REAL,
+            worst_window_drawdown_pct    REAL,
+            window_pnl_stddev_usd        REAL,
+            FOREIGN KEY (replay_search_run_id) REFERENCES replay_search_runs(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS belief_priors (
             feature_name TEXT NOT NULL,
             bucket       TEXT NOT NULL,
@@ -652,6 +699,8 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_replay_trades_run_id ON replay_trades(replay_run_id);
         CREATE INDEX IF NOT EXISTS idx_replay_trades_trade_log_id ON replay_trades(trade_log_id);
         CREATE INDEX IF NOT EXISTS idx_segment_metrics_run_kind ON segment_metrics(replay_run_id, segment_kind);
+        CREATE INDEX IF NOT EXISTS idx_replay_search_runs_finished_at ON replay_search_runs(finished_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_replay_search_candidates_run_id ON replay_search_candidates(replay_search_run_id);
         """
     )
     _ensure_table_columns(
@@ -660,6 +709,50 @@ def init_db() -> None:
         {
             "window_start_ts": "INTEGER",
             "window_end_ts": "INTEGER",
+        },
+    )
+    _ensure_table_columns(
+        conn,
+        "replay_search_runs",
+        {
+            "status": "TEXT NOT NULL DEFAULT ''",
+            "base_policy_json": "TEXT NOT NULL DEFAULT '{}'",
+            "grid_json": "TEXT NOT NULL DEFAULT '{}'",
+            "constraints_json": "TEXT NOT NULL DEFAULT '{}'",
+            "notes": "TEXT NOT NULL DEFAULT ''",
+            "window_days": "INTEGER NOT NULL DEFAULT 0",
+            "window_count": "INTEGER NOT NULL DEFAULT 1",
+            "drawdown_penalty": "REAL NOT NULL DEFAULT 0",
+            "window_stddev_penalty": "REAL NOT NULL DEFAULT 0",
+            "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
+            "candidate_count": "INTEGER NOT NULL DEFAULT 0",
+            "feasible_count": "INTEGER NOT NULL DEFAULT 0",
+            "rejected_count": "INTEGER NOT NULL DEFAULT 0",
+            "best_feasible_candidate_index": "INTEGER",
+            "best_feasible_score": "REAL",
+            "best_feasible_total_pnl_usd": "REAL",
+            "best_feasible_max_drawdown_pct": "REAL",
+        },
+    )
+    _ensure_table_columns(
+        conn,
+        "replay_search_candidates",
+        {
+            "feasible": "INTEGER NOT NULL DEFAULT 0",
+            "constraint_failures_json": "TEXT NOT NULL DEFAULT '[]'",
+            "overrides_json": "TEXT NOT NULL DEFAULT '{}'",
+            "policy_json": "TEXT NOT NULL DEFAULT '{}'",
+            "result_json": "TEXT NOT NULL DEFAULT '{}'",
+            "total_pnl_usd": "REAL NOT NULL DEFAULT 0",
+            "max_drawdown_pct": "REAL",
+            "accepted_count": "INTEGER NOT NULL DEFAULT 0",
+            "resolved_count": "INTEGER NOT NULL DEFAULT 0",
+            "win_rate": "REAL",
+            "positive_window_count": "INTEGER NOT NULL DEFAULT 0",
+            "negative_window_count": "INTEGER NOT NULL DEFAULT 0",
+            "worst_window_pnl_usd": "REAL",
+            "worst_window_drawdown_pct": "REAL",
+            "window_pnl_stddev_usd": "REAL",
         },
     )
     _ensure_table_columns(

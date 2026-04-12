@@ -6,6 +6,7 @@ import json
 import math
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -237,7 +238,219 @@ def _aggregate_window_results(
     }
 
 
+def _ensure_table_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, ddl_type in columns.items():
+        if name in existing:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}")
+
+
+def _ensure_search_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS replay_search_runs (
+            id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at                    INTEGER NOT NULL,
+            finished_at                   INTEGER NOT NULL,
+            label_prefix                  TEXT NOT NULL DEFAULT '',
+            status                        TEXT NOT NULL DEFAULT '',
+            base_policy_json              TEXT NOT NULL DEFAULT '{}',
+            grid_json                     TEXT NOT NULL DEFAULT '{}',
+            constraints_json              TEXT NOT NULL DEFAULT '{}',
+            notes                         TEXT NOT NULL DEFAULT '',
+            window_days                   INTEGER NOT NULL DEFAULT 0,
+            window_count                  INTEGER NOT NULL DEFAULT 1,
+            drawdown_penalty              REAL NOT NULL DEFAULT 0,
+            window_stddev_penalty         REAL NOT NULL DEFAULT 0,
+            worst_window_penalty          REAL NOT NULL DEFAULT 0,
+            candidate_count               INTEGER NOT NULL DEFAULT 0,
+            feasible_count                INTEGER NOT NULL DEFAULT 0,
+            rejected_count                INTEGER NOT NULL DEFAULT 0,
+            best_feasible_candidate_index INTEGER,
+            best_feasible_score           REAL,
+            best_feasible_total_pnl_usd   REAL,
+            best_feasible_max_drawdown_pct REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS replay_search_candidates (
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            replay_search_run_id      INTEGER NOT NULL,
+            candidate_index           INTEGER NOT NULL,
+            score                     REAL NOT NULL DEFAULT 0,
+            feasible                  INTEGER NOT NULL DEFAULT 0,
+            constraint_failures_json  TEXT NOT NULL DEFAULT '[]',
+            overrides_json            TEXT NOT NULL DEFAULT '{}',
+            policy_json               TEXT NOT NULL DEFAULT '{}',
+            result_json               TEXT NOT NULL DEFAULT '{}',
+            total_pnl_usd             REAL NOT NULL DEFAULT 0,
+            max_drawdown_pct          REAL,
+            accepted_count            INTEGER NOT NULL DEFAULT 0,
+            resolved_count            INTEGER NOT NULL DEFAULT 0,
+            win_rate                  REAL,
+            positive_window_count     INTEGER NOT NULL DEFAULT 0,
+            negative_window_count     INTEGER NOT NULL DEFAULT 0,
+            worst_window_pnl_usd      REAL,
+            worst_window_drawdown_pct REAL,
+            window_pnl_stddev_usd     REAL,
+            FOREIGN KEY (replay_search_run_id) REFERENCES replay_search_runs(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_replay_search_runs_finished_at ON replay_search_runs(finished_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_replay_search_candidates_run_id ON replay_search_candidates(replay_search_run_id);
+        """
+    )
+    _ensure_table_columns(
+        conn,
+        "replay_search_runs",
+        {
+            "status": "TEXT NOT NULL DEFAULT ''",
+            "base_policy_json": "TEXT NOT NULL DEFAULT '{}'",
+            "grid_json": "TEXT NOT NULL DEFAULT '{}'",
+            "constraints_json": "TEXT NOT NULL DEFAULT '{}'",
+            "notes": "TEXT NOT NULL DEFAULT ''",
+            "window_days": "INTEGER NOT NULL DEFAULT 0",
+            "window_count": "INTEGER NOT NULL DEFAULT 1",
+            "drawdown_penalty": "REAL NOT NULL DEFAULT 0",
+            "window_stddev_penalty": "REAL NOT NULL DEFAULT 0",
+            "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
+            "candidate_count": "INTEGER NOT NULL DEFAULT 0",
+            "feasible_count": "INTEGER NOT NULL DEFAULT 0",
+            "rejected_count": "INTEGER NOT NULL DEFAULT 0",
+            "best_feasible_candidate_index": "INTEGER",
+            "best_feasible_score": "REAL",
+            "best_feasible_total_pnl_usd": "REAL",
+            "best_feasible_max_drawdown_pct": "REAL",
+        },
+    )
+    _ensure_table_columns(
+        conn,
+        "replay_search_candidates",
+        {
+            "feasible": "INTEGER NOT NULL DEFAULT 0",
+            "constraint_failures_json": "TEXT NOT NULL DEFAULT '[]'",
+            "overrides_json": "TEXT NOT NULL DEFAULT '{}'",
+            "policy_json": "TEXT NOT NULL DEFAULT '{}'",
+            "result_json": "TEXT NOT NULL DEFAULT '{}'",
+            "total_pnl_usd": "REAL NOT NULL DEFAULT 0",
+            "max_drawdown_pct": "REAL",
+            "accepted_count": "INTEGER NOT NULL DEFAULT 0",
+            "resolved_count": "INTEGER NOT NULL DEFAULT 0",
+            "win_rate": "REAL",
+            "positive_window_count": "INTEGER NOT NULL DEFAULT 0",
+            "negative_window_count": "INTEGER NOT NULL DEFAULT 0",
+            "worst_window_pnl_usd": "REAL",
+            "worst_window_drawdown_pct": "REAL",
+            "window_pnl_stddev_usd": "REAL",
+        },
+    )
+
+
+def _persist_search_results(
+    *,
+    db_path: Path | None,
+    started_at: int,
+    finished_at: int,
+    label_prefix: str,
+    notes: str,
+    base_policy: ReplayPolicy,
+    grid: dict[str, list[Any]],
+    constraints: dict[str, Any],
+    drawdown_penalty: float,
+    window_stddev_penalty: float,
+    worst_window_penalty: float,
+    window_days: int,
+    window_count: int,
+    ranked: list[dict[str, Any]],
+    feasible: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+) -> int:
+    target_path = db_path or Path(TRADING_DB_PATH)
+    conn = sqlite3.connect(str(target_path))
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        _ensure_search_schema(conn)
+        best_feasible = feasible[0] if feasible else None
+        cursor = conn.execute(
+            """
+            INSERT INTO replay_search_runs (
+                started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
+                constraints_json, notes, window_days, window_count, drawdown_penalty,
+                window_stddev_penalty, worst_window_penalty, candidate_count, feasible_count,
+                rejected_count, best_feasible_candidate_index, best_feasible_score,
+                best_feasible_total_pnl_usd, best_feasible_max_drawdown_pct
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                started_at,
+                finished_at,
+                label_prefix,
+                "completed",
+                json.dumps(base_policy.as_dict(), sort_keys=True, separators=(",", ":")),
+                json.dumps(grid, sort_keys=True, separators=(",", ":"), default=str),
+                json.dumps(constraints, sort_keys=True, separators=(",", ":"), default=str),
+                notes,
+                window_days,
+                window_count,
+                drawdown_penalty,
+                window_stddev_penalty,
+                worst_window_penalty,
+                len(ranked),
+                len(feasible),
+                len(rejected),
+                int(best_feasible["index"]) if best_feasible else None,
+                float(best_feasible["score"]) if best_feasible else None,
+                float(best_feasible["result"].get("total_pnl_usd") or 0.0) if best_feasible else None,
+                float(best_feasible["result"].get("max_drawdown_pct") or 0.0) if best_feasible else None,
+            ),
+        )
+        search_run_id = int(cursor.lastrowid)
+        inserts = []
+        for row in ranked:
+            result = row["result"]
+            inserts.append(
+                (
+                    search_run_id,
+                    int(row["index"]),
+                    float(row["score"]),
+                    0 if row["constraint_failures"] else 1,
+                    json.dumps(row["constraint_failures"], separators=(",", ":"), default=str),
+                    json.dumps(row["overrides"], sort_keys=True, separators=(",", ":"), default=str),
+                    json.dumps(row["policy"], sort_keys=True, separators=(",", ":"), default=str),
+                    json.dumps(result, sort_keys=True, separators=(",", ":"), default=str),
+                    float(result.get("total_pnl_usd") or 0.0),
+                    float(result.get("max_drawdown_pct") or 0.0),
+                    int(result.get("accepted_count") or 0),
+                    int(result.get("resolved_count") or 0),
+                    float(result.get("win_rate") or 0.0) if result.get("win_rate") is not None else None,
+                    int(result.get("positive_window_count") or 0),
+                    int(result.get("negative_window_count") or 0),
+                    float(result.get("worst_window_pnl_usd") or 0.0) if result.get("worst_window_pnl_usd") is not None else None,
+                    float(result.get("worst_window_drawdown_pct") or 0.0) if result.get("worst_window_drawdown_pct") is not None else None,
+                    float(result.get("window_pnl_stddev_usd") or 0.0) if result.get("window_pnl_stddev_usd") is not None else None,
+                )
+            )
+        if inserts:
+            conn.executemany(
+                """
+                INSERT INTO replay_search_candidates (
+                    replay_search_run_id, candidate_index, score, feasible,
+                    constraint_failures_json, overrides_json, policy_json, result_json,
+                    total_pnl_usd, max_drawdown_pct, accepted_count, resolved_count,
+                    win_rate, positive_window_count, negative_window_count,
+                    worst_window_pnl_usd, worst_window_drawdown_pct, window_pnl_stddev_usd
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                inserts,
+            )
+        conn.commit()
+        return search_run_id
+    finally:
+        conn.close()
+
+
 def main() -> None:
+    started_at = int(time.time())
     parser = argparse.ArgumentParser(description="Run a replay policy sweep over a parameter grid.")
     parser.add_argument("--db", default="", help="Path to a trading.db snapshot. Defaults to the runtime DB.")
     parser.add_argument("--label-prefix", default="sweep", help="Label prefix stored with each replay run.")
@@ -350,24 +563,45 @@ def main() -> None:
     )
     feasible = [row for row in ranked if not row["constraint_failures"]]
     rejected = [row for row in ranked if row["constraint_failures"]]
+    constraints = {
+        "min_accepted_count": max(args.min_accepted_count, 0),
+        "min_resolved_count": max(args.min_resolved_count, 0),
+        "min_win_rate": max(args.min_win_rate, 0.0),
+        "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
+        "min_positive_windows": max(args.min_positive_windows, 0),
+        "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
+        "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
+    }
+    finished_at = int(time.time())
+    search_run_id = _persist_search_results(
+        db_path=db_path,
+        started_at=started_at,
+        finished_at=finished_at,
+        label_prefix=args.label_prefix,
+        notes=args.notes,
+        base_policy=base_policy,
+        grid=grid,
+        constraints=constraints,
+        drawdown_penalty=max(args.drawdown_penalty, 0.0),
+        window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
+        worst_window_penalty=max(args.worst_window_penalty, 0.0),
+        window_days=max(args.window_days, 0),
+        window_count=max(args.window_count, 1),
+        ranked=ranked,
+        feasible=feasible,
+        rejected=rejected,
+    )
     print(
         json.dumps(
             {
+                "search_run_id": search_run_id,
                 "base_policy": base_policy.as_dict(),
                 "grid": grid,
                 "windows": [{"start_ts": start_ts, "end_ts": end_ts} for start_ts, end_ts in windows],
                 "drawdown_penalty": max(args.drawdown_penalty, 0.0),
                 "window_stddev_penalty": max(args.window_stddev_penalty, 0.0),
                 "worst_window_penalty": max(args.worst_window_penalty, 0.0),
-                "constraints": {
-                    "min_accepted_count": max(args.min_accepted_count, 0),
-                    "min_resolved_count": max(args.min_resolved_count, 0),
-                    "min_win_rate": max(args.min_win_rate, 0.0),
-                    "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
-                    "min_positive_windows": max(args.min_positive_windows, 0),
-                    "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
-                    "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
-                },
+                "constraints": constraints,
                 "candidate_count": len(ranked),
                 "feasible_count": len(feasible),
                 "rejected_count": len(rejected),

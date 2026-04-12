@@ -284,7 +284,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
       {label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.'},
       {label: 'Search modes', text: 'Accepted trade mix and replay P&L by scorer on the latest best feasible replay-search candidate.'},
-      {label: 'Mode floors', text: 'Per-scorer minimum accepted-trade floors from the latest replay search, if any.'},
+      {label: 'Mode guard', text: 'Per-scorer accepted-count and share guardrails from the latest replay search, if any.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
       {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
@@ -1321,8 +1321,12 @@ function replaySearchModeMixSummary(raw: string | null | undefined): string {
         return left.mode.localeCompare(right.mode)
       })
     if (!entries.length) return '-'
+    const totalAccepted = entries.reduce((sum, entry) => sum + entry.acceptedCount, 0)
     return entries
-      .map((entry) => `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${formatDollar(entry.totalPnlUsd)}`)
+      .map((entry) => {
+        const share = totalAccepted > 0 ? `${Math.round((entry.acceptedCount / totalAccepted) * 100)}%` : '0%'
+        return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} ${formatDollar(entry.totalPnlUsd)}`
+      })
       .join(' | ')
   } catch {
     return '-'
@@ -1338,8 +1342,12 @@ function replaySearchModeFloorSummary(raw: string | null | undefined): string {
     const parts: string[] = []
     const minHeuristicAccepted = Number(payload.min_heuristic_accepted_count || 0)
     const minXgboostAccepted = Number(payload.min_xgboost_accepted_count || 0)
+    const maxHeuristicAcceptedShare = Number(payload.max_heuristic_accepted_share || 0)
+    const minXgboostAcceptedShare = Number(payload.min_xgboost_accepted_share || 0)
     if (minHeuristicAccepted > 0) parts.push(`heur >=${formatCount(minHeuristicAccepted)}`)
     if (minXgboostAccepted > 0) parts.push(`model >=${formatCount(minXgboostAccepted)}`)
+    if (maxHeuristicAcceptedShare > 0) parts.push(`heur <=${formatPct(maxHeuristicAcceptedShare, 0)}`)
+    if (minXgboostAcceptedShare > 0) parts.push(`model >=${formatPct(minXgboostAcceptedShare, 0)}`)
     return parts.length ? parts.join(', ') : 'none'
   } catch {
     return 'none'
@@ -2053,7 +2061,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         color: latestReplaySearch?.result_json ? theme.white : theme.dim
       },
       {
-        label: 'Mode floors',
+        label: 'Mode guard',
         value: replaySearchModeFloorSummary(latestReplaySearch?.constraints_json),
         color: latestReplaySearch?.constraints_json ? theme.white : theme.dim
       },

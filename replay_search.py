@@ -123,6 +123,17 @@ def _canonical_signal_mode(raw: Any) -> str:
     return normalized
 
 
+def _accepted_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
+    total_accepted = sum(int(values.get("accepted_count") or 0) for values in signal_mode_summary.values())
+    if total_accepted <= 0:
+        return 0.0
+    return float(int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)) / float(total_accepted)
+
+
+def _clamp_fraction(raw: float) -> float:
+    return min(max(float(raw), 0.0), 1.0)
+
+
 def _constraint_failures(
     result: dict[str, Any],
     *,
@@ -134,6 +145,8 @@ def _constraint_failures(
     max_worst_window_drawdown_pct: float,
     min_heuristic_accepted_count: int,
     min_xgboost_accepted_count: int,
+    max_heuristic_accepted_share: float,
+    min_xgboost_accepted_share: float,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
@@ -161,6 +174,12 @@ def _constraint_failures(
         failures.append("heuristic_accepted_count")
     if int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) < max(min_xgboost_accepted_count, 0):
         failures.append("xgboost_accepted_count")
+    heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
+    xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
+    if max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
+        failures.append("heuristic_accepted_share")
+    if min_xgboost_accepted_share > 0 and xgboost_accepted_share < min_xgboost_accepted_share:
+        failures.append("xgboost_accepted_share")
     return failures
 
 
@@ -181,7 +200,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         for mode, label in (("heuristic", "heur"), ("xgboost", "xgb")):
             accepted_count = int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)
             if accepted_count > 0:
-                mode_parts.append(f"{label} {accepted_count}")
+                mode_parts.append(f"{label} {accepted_count} ({_accepted_share(signal_mode_summary, mode) * 100:.0f}%)")
         mode_suffix = f" | modes {' / '.join(mode_parts)}" if mode_parts else ""
         window_count = int(row["result"].get("window_count") or 0)
         window_suffix = ""
@@ -660,6 +679,8 @@ def main() -> None:
     parser.add_argument("--max-worst-window-drawdown-pct", type=float, default=0.0, help="Maximum allowed drawdown for the worst replay window.")
     parser.add_argument("--min-heuristic-accepted-count", type=int, default=0, help="Minimum accepted heuristic trades required for a candidate to be feasible.")
     parser.add_argument("--min-xgboost-accepted-count", type=int, default=0, help="Minimum accepted xgboost trades required for a candidate to be feasible.")
+    parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
+    parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
     args = parser.parse_args()
 
     base_policy = _load_base_policy(args)
@@ -692,6 +713,8 @@ def main() -> None:
         max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
         min_heuristic_accepted_count=max(args.min_heuristic_accepted_count, 0),
         min_xgboost_accepted_count=max(args.min_xgboost_accepted_count, 0),
+        max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
+        min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
     )
     if int(current_result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
         current_constraint_failures.append("positive_window_count")
@@ -745,6 +768,8 @@ def main() -> None:
             max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
             min_heuristic_accepted_count=max(args.min_heuristic_accepted_count, 0),
             min_xgboost_accepted_count=max(args.min_xgboost_accepted_count, 0),
+            max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
+            min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         )
         if int(result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
             constraint_failures.append("positive_window_count")
@@ -785,6 +810,8 @@ def main() -> None:
         "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
         "min_heuristic_accepted_count": max(args.min_heuristic_accepted_count, 0),
         "min_xgboost_accepted_count": max(args.min_xgboost_accepted_count, 0),
+        "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
+        "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
     }
     finished_at = int(time.time())
     search_run_id = _persist_search_results(

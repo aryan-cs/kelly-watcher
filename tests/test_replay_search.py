@@ -340,7 +340,63 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["constraint_failures"], ["xgboost_accepted_count"])
         self.assertEqual(payload["constraints"]["min_heuristic_accepted_count"], 4)
         self.assertEqual(payload["constraints"]["min_xgboost_accepted_count"], 4)
-        self.assertIn("modes heur 5 / xgb 7", stderr.getvalue())
+        self.assertIn("modes heur 5 (42%) / xgb 7 (58%)", stderr.getvalue())
+
+    def test_main_can_require_mode_specific_accepted_shares(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 68.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "win_rate": 0.7,
+                    "signal_mode_summary": {
+                        "heuristic": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 16.0, "win_count": 3},
+                        "xgboost": {"accepted_count": 6, "resolved_count": 6, "trade_count": 6, "total_pnl_usd": 52.0, "win_count": 4},
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 82.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.68,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 8, "resolved_count": 8, "trade_count": 8, "total_pnl_usd": 64.0, "win_count": 6},
+                    "xgboost": {"accepted_count": 2, "resolved_count": 2, "trade_count": 2, "total_pnl_usd": 18.0, "win_count": 1},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--max-heuristic-accepted-share",
+            "0.60",
+            "--min-xgboost-accepted-share",
+            "0.40",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["heuristic_accepted_share", "xgboost_accepted_share"])
+        self.assertEqual(payload["constraints"]["max_heuristic_accepted_share"], 0.6)
+        self.assertEqual(payload["constraints"]["min_xgboost_accepted_share"], 0.4)
+        self.assertIn("modes heur 4 (40%) / xgb 6 (60%)", stderr.getvalue())
 
     def test_main_can_penalize_window_instability(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -538,6 +594,7 @@ class ReplaySearchTest(unittest.TestCase):
                 json.loads(run_row[10]),
                 {
                     "max_drawdown_pct": 0.1,
+                    "max_heuristic_accepted_share": 0.0,
                     "max_worst_window_drawdown_pct": 0.0,
                     "min_accepted_count": 5,
                     "min_heuristic_accepted_count": 0,
@@ -545,6 +602,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "min_resolved_count": 0,
                     "min_win_rate": 0.0,
                     "min_worst_window_pnl_usd": -1000000000.0,
+                    "min_xgboost_accepted_share": 0.0,
                     "min_xgboost_accepted_count": 0,
                 },
             )

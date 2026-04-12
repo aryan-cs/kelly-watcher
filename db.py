@@ -466,6 +466,65 @@ def init_db() -> None:
             sharpe          REAL
         );
 
+        CREATE TABLE IF NOT EXISTS replay_runs (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at              INTEGER NOT NULL,
+            finished_at             INTEGER NOT NULL,
+            label                   TEXT NOT NULL DEFAULT '',
+            mode                    TEXT NOT NULL DEFAULT 'shadow',
+            status                  TEXT NOT NULL DEFAULT '',
+            policy_version          TEXT NOT NULL DEFAULT '',
+            policy_json             TEXT NOT NULL DEFAULT '{}',
+            notes                   TEXT NOT NULL DEFAULT '',
+            initial_bankroll_usd    REAL NOT NULL DEFAULT 0,
+            final_bankroll_usd      REAL NOT NULL DEFAULT 0,
+            total_pnl_usd           REAL NOT NULL DEFAULT 0,
+            max_drawdown_pct        REAL,
+            trade_count             INTEGER NOT NULL DEFAULT 0,
+            accepted_count          INTEGER NOT NULL DEFAULT 0,
+            rejected_count          INTEGER NOT NULL DEFAULT 0,
+            unresolved_count        INTEGER NOT NULL DEFAULT 0,
+            resolved_count          INTEGER NOT NULL DEFAULT 0,
+            win_rate                REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS replay_trades (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            replay_run_id           INTEGER NOT NULL,
+            trade_log_id            INTEGER NOT NULL,
+            trade_id                TEXT NOT NULL DEFAULT '',
+            placed_at               INTEGER NOT NULL DEFAULT 0,
+            market_id               TEXT NOT NULL DEFAULT '',
+            trader_address          TEXT NOT NULL DEFAULT '',
+            signal_mode             TEXT NOT NULL DEFAULT '',
+            decision                TEXT NOT NULL DEFAULT '',
+            reason                  TEXT NOT NULL DEFAULT '',
+            source_status           TEXT NOT NULL DEFAULT '',
+            entry_price             REAL,
+            requested_size_usd      REAL,
+            simulated_size_usd      REAL NOT NULL DEFAULT 0,
+            return_pct              REAL,
+            pnl_usd                 REAL,
+            bankroll_after_usd      REAL,
+            open_exposure_after_usd REAL,
+            metadata_json           TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY (replay_run_id) REFERENCES replay_runs(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS segment_metrics (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            replay_run_id    INTEGER NOT NULL,
+            segment_kind     TEXT NOT NULL,
+            segment_value    TEXT NOT NULL,
+            trade_count      INTEGER NOT NULL DEFAULT 0,
+            accepted_count   INTEGER NOT NULL DEFAULT 0,
+            resolved_count   INTEGER NOT NULL DEFAULT 0,
+            total_pnl_usd    REAL NOT NULL DEFAULT 0,
+            win_rate         REAL,
+            avg_return_pct   REAL,
+            FOREIGN KEY (replay_run_id) REFERENCES replay_runs(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS belief_priors (
             feature_name TEXT NOT NULL,
             bucket       TEXT NOT NULL,
@@ -498,6 +557,28 @@ def init_db() -> None:
             updated_at               INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS wallet_policy_metrics (
+            wallet_address                       TEXT PRIMARY KEY,
+            total_buy_signals                    INTEGER NOT NULL DEFAULT 0,
+            resolved_copied_count                INTEGER NOT NULL DEFAULT 0,
+            resolved_copied_wins                 INTEGER NOT NULL DEFAULT 0,
+            resolved_copied_win_rate             REAL,
+            resolved_copied_avg_return           REAL,
+            resolved_copied_total_pnl_usd        REAL NOT NULL DEFAULT 0,
+            recent_window_seconds                INTEGER NOT NULL DEFAULT 0,
+            recent_resolved_copied_count         INTEGER NOT NULL DEFAULT 0,
+            recent_resolved_copied_wins          INTEGER NOT NULL DEFAULT 0,
+            recent_resolved_copied_win_rate      REAL,
+            recent_resolved_copied_avg_return    REAL,
+            recent_resolved_copied_total_pnl_usd REAL NOT NULL DEFAULT 0,
+            last_resolved_at                     INTEGER NOT NULL DEFAULT 0,
+            local_quality_score                  REAL,
+            local_weight                         REAL NOT NULL DEFAULT 0,
+            local_drop_ready                     INTEGER NOT NULL DEFAULT 0,
+            local_drop_reason                    TEXT,
+            updated_at                           INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS trade_log_manual_edits (
             trade_log_id INTEGER PRIMARY KEY,
             entry_price  REAL,
@@ -528,7 +609,12 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_trade_log_skipped ON trade_log(skipped);
         CREATE INDEX IF NOT EXISTS idx_belief_updates_applied_at ON belief_updates(applied_at);
         CREATE INDEX IF NOT EXISTS idx_wallet_watch_state_status ON wallet_watch_state(status);
+        CREATE INDEX IF NOT EXISTS idx_wallet_policy_metrics_drop_ready ON wallet_policy_metrics(local_drop_ready);
         CREATE INDEX IF NOT EXISTS idx_retrain_runs_finished_at ON retrain_runs(finished_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_replay_runs_finished_at ON replay_runs(finished_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_replay_trades_run_id ON replay_trades(replay_run_id);
+        CREATE INDEX IF NOT EXISTS idx_replay_trades_trade_log_id ON replay_trades(trade_log_id);
+        CREATE INDEX IF NOT EXISTS idx_segment_metrics_run_kind ON segment_metrics(replay_run_id, segment_kind);
         """
     )
     _ensure_table_columns(

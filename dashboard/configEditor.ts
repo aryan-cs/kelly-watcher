@@ -273,6 +273,30 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: true
   },
   {
+    key: 'WALLET_LOCAL_DROP_MIN_RESOLVED_COPIED_BUYS',
+    label: 'Local Drop Min',
+    kind: 'int',
+    description: 'Minimum resolved copied buys before a wallet can be fully dropped for losing money when copied. Applies live on the next loop.',
+    defaultValue: '12',
+    liveApplies: true
+  },
+  {
+    key: 'WALLET_LOCAL_DROP_MAX_AVG_RETURN',
+    label: 'Local Drop Return',
+    kind: 'float',
+    description: 'Average copied return threshold that marks a wallet as locally underperforming enough to drop. Applies live on the next loop.',
+    defaultValue: '-0.08',
+    liveApplies: true
+  },
+  {
+    key: 'WALLET_LOCAL_DROP_MAX_TOTAL_PNL_USD',
+    label: 'Local Drop P&L',
+    kind: 'float',
+    description: 'Maximum copied total P&L a wallet may have before local underperformance can auto-drop it. Applies live on the next loop.',
+    defaultValue: '0.0',
+    liveApplies: true
+  },
+  {
     key: 'WALLET_QUALITY_SIZE_MIN_MULTIPLIER',
     label: 'Wallet Quality Min Multiplier',
     kind: 'float',

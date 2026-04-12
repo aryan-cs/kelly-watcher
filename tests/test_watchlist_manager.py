@@ -264,17 +264,83 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_tracker_poll_empty_subset_does_not_fall_back_to_full_watchlist(self) -> None:
-        tracker = PolymarketTracker(["0xhot", "0xwarm"])
-        calls: list[str] = []
-        tracker.get_wallet_trades = lambda address: calls.append(address) or []
-        try:
-            events = tracker.poll([])
-        finally:
-            tracker.close()
+    def test_local_copied_performance_can_outrank_stronger_public_profile(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xflashy", 0.72, 60, 0.5, 4_000.0, 50.0, 15, 100, 43, 1, 1_200.0, 0.08, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xsteady", 0.60, 38, 0.3, 1_200.0, 30.0, 10, 80, 23, 1, 150.0, 0.02, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                for index in range(14):
+                    insert_logged_trade(
+                        conn,
+                        "0xflashy",
+                        1_700_000_000 + index,
+                        actual_entry_price=0.50,
+                        actual_entry_shares=2.0,
+                        actual_entry_size_usd=1.0,
+                        shadow_pnl_usd=-0.20,
+                    )
+                for index in range(12):
+                    insert_logged_trade(
+                        conn,
+                        "0xsteady",
+                        1_700_000_100 + index,
+                        actual_entry_price=0.50,
+                        actual_entry_shares=2.0,
+                        actual_entry_size_usd=1.0,
+                        shadow_pnl_usd=0.10,
+                    )
+                conn.commit()
+                conn.close()
 
-        self.assertEqual(events, [])
-        self.assertEqual(calls, [])
+                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=999
+                ), patch("watchlist_manager.time.time", return_value=1_700_000_500):
+                    manager = WatchlistManager(["0xflashy", "0xsteady"])
+                    snapshot = manager.refresh(run_auto_drop=False)
+
+                self.assertEqual(snapshot.hot, ("0xsteady",))
+                self.assertEqual(snapshot.warm, ("0xflashy",))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_tracker_poll_empty_subset_does_not_fall_back_to_full_watchlist(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                tracker = PolymarketTracker(["0xhot", "0xwarm"])
+                calls: list[str] = []
+                tracker.get_wallet_trades = lambda address: calls.append(address) or []
+                try:
+                    events = tracker.poll([])
+                finally:
+                    tracker.close()
+
+                self.assertEqual(events, [])
+                self.assertEqual(calls, [])
+            finally:
+                db.DB_PATH = original_db_path
 
     def test_poll_batches_apply_tier_specific_trade_limits(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -719,6 +785,100 @@ class WatchlistManagerTest(unittest.TestCase):
                     snapshot = manager.refresh()
 
                 self.assertEqual(snapshot.dropped, ("0xbad",))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_local_underperforming_wallets_are_auto_dropped_after_bad_copied_results(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xgood", 0.62, 42, 0.2, 0.0, 20.0, 10, 10, 26, 0, 250.0, 0.03, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xloser", 0.66, 48, 0.3, 0.0, 20.0, 10, 10, 31, 0, 500.0, 0.04, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    (
+                        ("0xgood", 1_700_000_000, 1_700_000_000),
+                        ("0xloser", 1_700_000_000, 1_700_000_000),
+                    ),
+                )
+                for index in range(8):
+                    insert_logged_trade(
+                        conn,
+                        "0xgood",
+                        1_700_000_100 + index,
+                        actual_entry_price=0.50,
+                        actual_entry_shares=2.0,
+                        actual_entry_size_usd=1.0,
+                        shadow_pnl_usd=0.08,
+                    )
+                for index in range(6):
+                    insert_logged_trade(
+                        conn,
+                        "0xloser",
+                        1_700_000_200 + index,
+                        actual_entry_price=0.50,
+                        actual_entry_shares=2.0,
+                        actual_entry_size_usd=1.0,
+                        shadow_pnl_usd=-0.20,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=10), patch(
+                    "watchlist_manager.wallet_local_drop_max_avg_return", return_value=-0.08
+                ), patch("watchlist_manager.wallet_local_drop_max_total_pnl_usd", return_value=0.0), patch(
+                    "watchlist_manager.time.time", return_value=1_700_000_500
+                ):
+                    manager = WatchlistManager(["0xgood", "0xloser"])
+                    snapshot = manager.refresh()
+
+                self.assertEqual(snapshot.hot, ("0xgood",))
+                self.assertEqual(snapshot.dropped, ("0xloser",))
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    "SELECT status, status_reason FROM wallet_watch_state WHERE wallet_address=?",
+                    ("0xloser",),
+                ).fetchone()
+                metrics_row = conn.execute(
+                    """
+                    SELECT recent_resolved_copied_count, recent_resolved_copied_total_pnl_usd, local_drop_ready
+                    FROM wallet_policy_metrics
+                    WHERE wallet_address=?
+                    """,
+                    ("0xloser",),
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(row["status"], "dropped")
+                self.assertIn("local_recent", row["status_reason"])
+                self.assertEqual(int(metrics_row["recent_resolved_copied_count"] or 0), 6)
+                self.assertEqual(int(metrics_row["local_drop_ready"] or 0), 1)
+                self.assertAlmostEqual(float(metrics_row["recent_resolved_copied_total_pnl_usd"] or 0.0), -1.2, places=6)
             finally:
                 db.DB_PATH = original_db_path
 

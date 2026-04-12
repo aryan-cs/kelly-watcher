@@ -2683,6 +2683,7 @@ def main() -> None:
     dashboard_api_server: DashboardApiServer | None = None
     telegram_command_stop: threading.Event | None = None
     telegram_command_thread: threading.Thread | None = None
+    engine: SignalEngine | None = None
     shutdown_event = threading.Event()
     previous_signal_handlers = _install_shutdown_signal_handlers(shutdown_event)
     pending_shadow_reset: ShadowResetRequest | None = None
@@ -2717,6 +2718,20 @@ def main() -> None:
         "last_retrain_min_samples": 0,
         "last_retrain_trigger": "",
         "last_retrain_deployed": False,
+        "loaded_scorer": "heuristic",
+        "loaded_model_backend": "heuristic",
+        "model_artifact_exists": False,
+        "model_artifact_path": "",
+        "model_artifact_backend": "",
+        "model_artifact_contract": None,
+        "runtime_contract": None,
+        "model_artifact_label_mode": "",
+        "runtime_label_mode": "",
+        "model_runtime_compatible": False,
+        "model_fallback_reason": "",
+        "model_load_error": "",
+        "model_prediction_mode": "",
+        "model_loaded_at": 0,
     }
     last_activity_write_at = 0.0
     current_loop_started_at = 0
@@ -2745,6 +2760,11 @@ def main() -> None:
         if current_loop_started_at > 0:
             updates["last_loop_started_at"] = current_loop_started_at
         _persist_bot_state(**updates)
+
+    def _persist_runtime_truth() -> None:
+        if engine is None:
+            return
+        _persist_bot_state(**engine.runtime_info())
 
     def _run_retrain_job(trigger: str) -> bool:
         if not retrain_lock.acquire(blocking=False):
@@ -2781,6 +2801,7 @@ def main() -> None:
                 last_retrain_trigger=trigger,
                 last_retrain_deployed=bool(report.get("deployed")),
             )
+            _persist_runtime_truth()
             return bool(report.get("ok"))
         except Exception as exc:
             finished_at = int(time.time())
@@ -2795,6 +2816,7 @@ def main() -> None:
                 last_retrain_trigger=trigger,
                 last_retrain_deployed=False,
             )
+            _persist_runtime_truth()
             raise
         finally:
             _heartbeat(force=True)
@@ -2844,6 +2866,7 @@ def main() -> None:
     daily_loss_guard = _init_daily_loss_guard(executor)
     _set_startup_detail("loading signal engine")
     engine = SignalEngine()
+    _persist_runtime_truth()
     _set_startup_detail("loading trade cache")
     dedup = DedupeCache()
     dedup.load_from_db(rebuild_shadow_positions=True)

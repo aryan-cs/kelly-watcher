@@ -224,6 +224,59 @@ class ExpectedReturnModelTest(unittest.TestCase):
         self.assertEqual(result["reason"], "passed heuristic threshold")
         self.assertAlmostEqual(result["min_market_score"], 0.61, places=4)
 
+    def test_signal_engine_runtime_info_reports_contract_mismatch(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.20)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION - 1,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.01},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            runtime = engine.runtime_info()
+            self.assertEqual(runtime["loaded_scorer"], "heuristic")
+            self.assertTrue(runtime["model_artifact_exists"])
+            self.assertEqual(runtime["model_artifact_backend"], "hist_gradient_boosting")
+            self.assertEqual(runtime["model_artifact_contract"], DATA_CONTRACT_VERSION - 1)
+            self.assertEqual(runtime["runtime_contract"], DATA_CONTRACT_VERSION)
+            self.assertFalse(runtime["model_runtime_compatible"])
+            self.assertEqual(runtime["model_fallback_reason"], "contract_mismatch")
+
+    def test_signal_engine_runtime_info_reports_loaded_model(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = {
+                "model": ConstantReturnModel(transform_return_target(0.20)),
+                "probability_calibrator": IdentityCalibrator(),
+                "feature_cols": FEATURE_COLS[:3],
+                "model_backend": "hist_gradient_boosting",
+                "prediction_mode": "expected_return",
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "label_mode": MODEL_LABEL_MODE,
+                "policy": {"edge_threshold": 0.01},
+            }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            runtime = engine.runtime_info()
+            self.assertEqual(runtime["loaded_scorer"], "xgboost")
+            self.assertEqual(runtime["loaded_model_backend"], "hist_gradient_boosting")
+            self.assertTrue(runtime["model_artifact_exists"])
+            self.assertTrue(runtime["model_runtime_compatible"])
+            self.assertEqual(runtime["model_fallback_reason"], "")
+            self.assertGreater(int(runtime["model_loaded_at"] or 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

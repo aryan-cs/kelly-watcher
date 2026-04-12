@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 import numpy as np
 
@@ -40,11 +41,30 @@ class SignalEngine:
         self._xgb_probability_calibrator = None
         self._xgb_prediction_mode = "probability"
         self._model_backend = "heuristic"
+        self._artifact_backend = None
+        self._artifact_contract_version = None
+        self._artifact_label_mode = None
+        self._artifact_prediction_mode = None
+        self._artifact_exists = False
+        self._artifact_path = ""
+        self._fallback_reason = "missing_artifact"
+        self._load_error = ""
+        self._loaded_at = 0
         self._try_load_xgb()
 
     def _try_load_xgb(self) -> None:
         path = model_path()
+        self._artifact_path = path
+        self._artifact_exists = os.path.exists(path)
+        self._artifact_backend = None
+        self._artifact_contract_version = None
+        self._artifact_label_mode = None
+        self._artifact_prediction_mode = None
+        self._fallback_reason = ""
+        self._load_error = ""
+        self._loaded_at = 0
         if not os.path.exists(path):
+            self._fallback_reason = "missing_artifact"
             logger.info("No XGBoost model found - using heuristic scorer")
             return
         try:
@@ -53,10 +73,19 @@ class SignalEngine:
             artifact = joblib.load(path)
             if isinstance(artifact, dict):
                 contract_version = int(artifact.get("data_contract_version") or 0)
-                if (
-                    contract_version < DATA_CONTRACT_VERSION
-                    or artifact.get("label_mode") != MODEL_LABEL_MODE
-                ):
+                self._artifact_contract_version = contract_version
+                self._artifact_label_mode = str(artifact.get("label_mode") or "") or None
+                self._artifact_prediction_mode = str(artifact.get("prediction_mode") or "probability")
+                self._artifact_backend = str(artifact.get("model_backend") or "ml")
+                if contract_version < DATA_CONTRACT_VERSION:
+                    self._fallback_reason = "contract_mismatch"
+                    logger.warning(
+                        "Ignoring legacy model at %s because it was not trained under the current training-label contract",
+                        path,
+                    )
+                    return
+                if artifact.get("label_mode") != MODEL_LABEL_MODE:
+                    self._fallback_reason = "label_mode_mismatch"
                     logger.warning(
                         "Ignoring legacy model at %s because it was not trained under the current training-label contract",
                         path,
@@ -68,7 +97,9 @@ class SignalEngine:
                 self._xgb_cols = artifact.get("feature_cols", FEATURE_COLS)
                 self._xgb_policy = artifact.get("policy", {"edge_threshold": 0.0})
                 self._model_backend = artifact.get("model_backend", "ml")
+                self._loaded_at = int(time.time())
             else:
+                self._fallback_reason = "legacy_artifact_type"
                 logger.warning("Ignoring legacy tuple model artifact at %s", path)
                 return
             logger.info("%s model loaded from %s", self._model_backend, path)
@@ -79,6 +110,8 @@ class SignalEngine:
             self._xgb_probability_calibrator = None
             self._xgb_prediction_mode = "probability"
             self._model_backend = "heuristic"
+            self._fallback_reason = "load_failed"
+            self._load_error = str(exc)
             logger.warning("Failed to load trained model: %s - using heuristic scorer", exc)
 
     def reload_model(self) -> None:
@@ -92,6 +125,27 @@ class SignalEngine:
 
     def sizing_mode(self) -> str:
         return "xgboost" if self._xgb is not None else "heuristic"
+
+    def runtime_info(self) -> dict:
+        artifact_backend = self._artifact_backend
+        if artifact_backend is None and self._artifact_exists:
+            artifact_backend = "unknown"
+        return {
+            "loaded_scorer": self.sizing_mode(),
+            "loaded_model_backend": self._model_backend,
+            "model_artifact_exists": bool(self._artifact_exists),
+            "model_artifact_path": self._artifact_path,
+            "model_artifact_backend": artifact_backend,
+            "model_artifact_contract": self._artifact_contract_version,
+            "runtime_contract": DATA_CONTRACT_VERSION,
+            "model_artifact_label_mode": self._artifact_label_mode,
+            "runtime_label_mode": MODEL_LABEL_MODE,
+            "model_runtime_compatible": bool(self._xgb is not None),
+            "model_fallback_reason": self._fallback_reason,
+            "model_load_error": self._load_error,
+            "model_prediction_mode": self._artifact_prediction_mode or self._xgb_prediction_mode,
+            "model_loaded_at": self._loaded_at,
+        }
 
     def evaluate(
         self,

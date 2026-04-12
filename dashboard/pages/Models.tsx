@@ -146,12 +146,14 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
     id: 'prediction_quality',
     title: 'Prediction Quality',
     summary: [
-      'This box separates the live scorer from the latest deployed model artifact.',
-      'Lower loss numbers grade the deployed model artifact, not the bankroll curve.'
+      'This box separates the scorer loaded in the runtime from the model artifact on disk.',
+      'Lower loss numbers grade the model artifact, not the bankroll curve.'
     ],
     rows: [
-      {label: 'Live scorer', text: 'Which scorer drove recent accepted trades: XGBoost or Heuristic.'},
+      {label: 'Loaded scorer', text: 'Which scorer the running bot has loaded right now for new decisions.'},
       {label: 'Model artifact', text: 'The latest deployed model artifact on disk, even if live trading is currently falling back.'},
+      {label: 'Contract', text: 'Artifact contract versus runtime contract. A mismatch means the runtime will reject the model.'},
+      {label: 'Fallback', text: 'Why the runtime is using heuristics instead of the model, if it is degraded.'},
       {label: 'Trained', text: 'When the latest deployed model artifact was built.'},
       {label: 'Model age', text: 'How long that deployed model artifact has been sitting without a retrain.'},
       {label: 'Samples', text: 'How many resolved trades were available to train the deployed model artifact.'},
@@ -194,7 +196,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Read / Bias', text: 'Plain-English bias read plus the point gap between prediction and reality.'},
       {label: 'Avg miss', text: 'Average miss per graded bet versus the actual 0/1 outcome. Lower is better.'},
       {label: 'Main band / hit', text: 'The most common confidence range and how often it actually won.'},
-      {label: 'Active scorer', text: 'Which scorer has driven the most recent accepted trades.'},
+      {label: 'Recent scorer', text: 'Which scorer has driven the most recent accepted trades.'},
       {label: 'Primary path', text: 'Which decision path has produced the most accepted trades so far.'},
       {label: 'Role', text: 'Whether a path is primary, secondary, or currently idle.'},
       {label: 'Signals / taken', text: 'How many candidate signals flowed through that path, and how many became bets.'},
@@ -824,6 +826,8 @@ function modeLabel(mode: string): string {
   const normalized = mode.trim().toLowerCase()
   if (normalized === 'model') return 'XGBoost'
   if (normalized === 'xgboost') return 'XGBoost'
+  if (normalized === 'ml') return 'XGBoost'
+  if (normalized === 'hist_gradient_boosting') return 'XGBoost'
   if (normalized === 'heuristic') return 'Heuristic'
   if (normalized === 'shadow') return 'Tracker'
   if (normalized === 'live') return 'Live'
@@ -1352,7 +1356,41 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => splitIntoColumns(confidenceCheckStats, 2),
     [confidenceCheckStats]
   )
-  const deployedModelLabel = latest?.deployed ? 'XGBoost' : 'Heuristic'
+  const loadedScorerLabel = botState.loaded_scorer ? modeLabel(botState.loaded_scorer) : 'Heuristic'
+  const loadedScorerColor = loadedScorerLabel === 'XGBoost' ? theme.green : theme.yellow
+  const deployedModelLabel = botState.model_artifact_exists
+    ? modeLabel(botState.model_artifact_backend || 'unknown')
+    : '-'
+  const deployedModelColor = !botState.model_artifact_exists
+    ? theme.dim
+    : botState.model_runtime_compatible
+      ? theme.green
+      : theme.yellow
+  const contractLabel = (
+    botState.model_artifact_contract != null && botState.runtime_contract != null
+      ? `${botState.model_artifact_contract} / ${botState.runtime_contract}`
+      : '-'
+  )
+  const contractColor = !botState.model_artifact_exists
+    ? theme.dim
+    : botState.model_runtime_compatible
+      ? theme.green
+      : theme.red
+  const fallbackLabel = useMemo(() => {
+    const reason = String(botState.model_fallback_reason || '').trim().toLowerCase()
+    if (!reason) return '-'
+    if (reason === 'missing_artifact') return 'No artifact'
+    if (reason === 'contract_mismatch') return 'Contract mismatch'
+    if (reason === 'label_mode_mismatch') return 'Label mismatch'
+    if (reason === 'legacy_artifact_type') return 'Legacy artifact'
+    if (reason === 'load_failed') return 'Load failed'
+    return reason.replace(/_/g, ' ')
+  }, [botState.model_fallback_reason])
+  const fallbackColor = fallbackLabel === '-'
+    ? theme.dim
+    : fallbackLabel === 'No artifact'
+      ? theme.yellow
+      : theme.red
   const recentActiveMode = useMemo(
     () =>
       recentSignalModes.reduce<string | null>(
@@ -1365,7 +1403,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       ),
     [recentSignalModes]
   )
-  const activeScorerLabel = recentActiveMode ? modeLabel(recentActiveMode) : deployedModelLabel
+  const activeScorerLabel = recentActiveMode ? modeLabel(recentActiveMode) : loadedScorerLabel
   const activeScorerColor = activeScorerLabel === 'XGBoost' ? theme.green : theme.yellow
   const primaryMode = useMemo(
     () =>
@@ -1519,15 +1557,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const predictionQualityStats = useMemo<CompactStatItem[]>(
     () => [
       {
-        label: 'Live scorer',
-        value: activeScorerLabel,
-        color: activeScorerColor
+        label: 'Loaded scorer',
+        value: loadedScorerLabel,
+        color: loadedScorerColor
       },
       {
         label: 'Model artifact',
         value: deployedModelLabel,
-        color: latest?.deployed ? theme.green : theme.yellow
+        color: deployedModelColor
       },
+      {label: 'Contract', value: contractLabel, color: contractColor},
+      {label: 'Fallback', value: fallbackLabel, color: fallbackColor},
       {label: 'Trained', value: latest ? formatShortDateTime(latest.trained_at) : '-'},
       {label: 'Model age', value: latest ? secondsAgo(latest.trained_at) : '-'},
       {label: 'Samples', value: formatCount(latest?.n_samples)},
@@ -1543,7 +1583,18 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         color: lowerIsBetterColor(latest?.log_loss, 0.55, 0.69)
       }
     ],
-    [activeScorerColor, activeScorerLabel, deployedModelLabel, featureCount, latest]
+    [
+      contractColor,
+      contractLabel,
+      deployedModelColor,
+      deployedModelLabel,
+      fallbackColor,
+      fallbackLabel,
+      featureCount,
+      latest,
+      loadedScorerColor,
+      loadedScorerLabel
+    ]
   )
   const recentRetrainRuns = useMemo(
     () => retrainRuns.slice(0, historyLimit),
@@ -1630,7 +1681,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <ModelsSpacer />
         <ModelsSubsectionTitle title="Decision Paths" width={modelsColumnWidths[1]} />
         <DenseModelsRow
-          label="Active scorer"
+          label="Recent scorer"
           value={activeScorerLabel}
           color={activeScorerColor}
           width={modelsColumnWidths[1]}

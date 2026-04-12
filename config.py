@@ -427,6 +427,32 @@ def wallet_local_performance_penalty_size_multiplier() -> float:
     )
 
 
+def wallet_local_drop_min_resolved_copied_buys() -> int:
+    return _get_bounded_int(
+        "WALLET_LOCAL_DROP_MIN_RESOLVED_COPIED_BUYS",
+        "12",
+        minimum=0,
+    )
+
+
+def wallet_local_drop_max_avg_return() -> float:
+    return _get_bounded_float(
+        "WALLET_LOCAL_DROP_MAX_AVG_RETURN",
+        "-0.08",
+        minimum=-1.0,
+        maximum=1.0,
+    )
+
+
+def wallet_local_drop_max_total_pnl_usd() -> float:
+    return _get_bounded_float(
+        "WALLET_LOCAL_DROP_MAX_TOTAL_PNL_USD",
+        "0.0",
+        minimum=-1_000_000.0,
+        maximum=1_000_000.0,
+    )
+
+
 def wallet_quality_size_min_multiplier() -> float:
     return _get_bounded_float("WALLET_QUALITY_SIZE_MIN_MULTIPLIER", "0.75", minimum=0.10, maximum=1.0)
 

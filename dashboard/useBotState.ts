@@ -26,6 +26,20 @@ export interface BotState {
   last_retrain_min_samples?: number
   last_retrain_trigger?: string
   last_retrain_deployed?: boolean
+  loaded_scorer?: string
+  loaded_model_backend?: string
+  model_artifact_exists?: boolean
+  model_artifact_path?: string
+  model_artifact_backend?: string
+  model_artifact_contract?: number | null
+  runtime_contract?: number | null
+  model_artifact_label_mode?: string
+  runtime_label_mode?: string
+  model_runtime_compatible?: boolean
+  model_fallback_reason?: string
+  model_load_error?: string
+  model_prediction_mode?: string
+  model_loaded_at?: number
   api_base_url?: string
   api_error?: string
 }
@@ -112,7 +126,21 @@ export function beginShadowRestartBotState(): void {
     last_retrain_sample_count: 0,
     last_retrain_min_samples: 0,
     last_retrain_trigger: '',
-    last_retrain_deployed: false
+    last_retrain_deployed: false,
+    loaded_scorer: 'heuristic',
+    loaded_model_backend: 'heuristic',
+    model_artifact_exists: false,
+    model_artifact_path: '',
+    model_artifact_backend: '',
+    model_artifact_contract: null,
+    runtime_contract: null,
+    model_artifact_label_mode: '',
+    runtime_label_mode: '',
+    model_runtime_compatible: false,
+    model_fallback_reason: '',
+    model_load_error: '',
+    model_prediction_mode: '',
+    model_loaded_at: 0
   }
 }
 

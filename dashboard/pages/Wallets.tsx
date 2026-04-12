@@ -60,6 +60,28 @@ interface WalletWatchStateRow {
   updated_at: number | null
 }
 
+interface WalletPolicyMetricRow {
+  wallet_address: string
+  total_buy_signals: number | null
+  resolved_copied_count: number | null
+  resolved_copied_wins: number | null
+  resolved_copied_win_rate: number | null
+  resolved_copied_avg_return: number | null
+  resolved_copied_total_pnl_usd: number | null
+  recent_window_seconds: number | null
+  recent_resolved_copied_count: number | null
+  recent_resolved_copied_wins: number | null
+  recent_resolved_copied_win_rate: number | null
+  recent_resolved_copied_avg_return: number | null
+  recent_resolved_copied_total_pnl_usd: number | null
+  last_resolved_at: number | null
+  local_quality_score: number | null
+  local_weight: number | null
+  local_drop_ready: number | null
+  local_drop_reason: string | null
+  updated_at: number | null
+}
+
 type WatchTier = 'HOT' | 'WARM' | 'DISC'
 export type WalletPane = 'best' | 'worst' | 'tracked' | 'dropped'
 
@@ -118,6 +140,16 @@ interface WalletRow {
   tracking_started_at: number | null
   last_source_ts_at_status: number | null
   watch_index: number
+  resolved_copied_avg_return: number | null
+  resolved_copied_total_pnl_usd: number | null
+  recent_resolved_copied_count: number | null
+  recent_resolved_copied_avg_return: number | null
+  recent_resolved_copied_total_pnl_usd: number | null
+  recent_window_seconds: number | null
+  local_quality_score: number | null
+  local_weight: number | null
+  local_drop_ready: boolean
+  local_drop_reason: string | null
 }
 
 interface TopShadowRow {
@@ -321,6 +353,30 @@ SELECT
 FROM wallet_watch_state
 `
 
+const WALLET_POLICY_METRICS_SQL = `
+SELECT
+  wallet_address,
+  total_buy_signals,
+  resolved_copied_count,
+  resolved_copied_wins,
+  resolved_copied_win_rate,
+  resolved_copied_avg_return,
+  resolved_copied_total_pnl_usd,
+  recent_window_seconds,
+  recent_resolved_copied_count,
+  recent_resolved_copied_wins,
+  recent_resolved_copied_win_rate,
+  recent_resolved_copied_avg_return,
+  recent_resolved_copied_total_pnl_usd,
+  last_resolved_at,
+  local_quality_score,
+  local_weight,
+  local_drop_ready,
+  local_drop_reason,
+  updated_at
+FROM wallet_policy_metrics
+`
+
 const SHADOW_WALLETS_SQL = `
 SELECT
   trader_address,
@@ -507,6 +563,66 @@ function clip(value: number, low = 0, high = 1): number {
   return Math.max(low, Math.min(high, value))
 }
 
+function scoreLocalCopiedPerformance(params: {
+  resolvedCopiedCount: number | null | undefined
+  resolvedCopiedWinRate: number | null | undefined
+  resolvedCopiedAvgReturn: number | null | undefined
+  resolvedCopiedTotalPnlUsd: number | null | undefined
+  recentResolvedCopiedCount: number | null | undefined
+  recentResolvedCopiedWinRate: number | null | undefined
+  recentResolvedCopiedAvgReturn: number | null | undefined
+  recentResolvedCopiedTotalPnlUsd: number | null | undefined
+}): {qualityScore: number | null; localWeight: number} {
+  const resolvedCopiedCount = Math.max(0, params.resolvedCopiedCount ?? 0)
+  const recentResolvedCopiedCount = Math.max(0, params.recentResolvedCopiedCount ?? 0)
+  if (resolvedCopiedCount <= 0 && recentResolvedCopiedCount <= 0) {
+    return {qualityScore: null, localWeight: 0}
+  }
+
+  const scoreWindow = (
+    count: number,
+    winRate: number | null | undefined,
+    avgReturn: number | null | undefined,
+    totalPnlUsd: number | null | undefined
+  ): number | null => {
+    if (count <= 0 || winRate == null || avgReturn == null) {
+      return null
+    }
+    const winScore = clip((winRate - 0.45) / 0.25)
+    const returnScore = clip((avgReturn + 0.05) / 0.2)
+    const pnlScore = clip(0.5 + (Math.atan((totalPnlUsd ?? 0) / 25) / Math.PI))
+    const sampleScore = clip(Math.log1p(count) / Math.log1p(24))
+    return (
+      (0.30 * winScore) +
+      (0.35 * returnScore) +
+      (0.20 * pnlScore) +
+      (0.15 * sampleScore)
+    )
+  }
+
+  const allTimeQuality = scoreWindow(
+    resolvedCopiedCount,
+    params.resolvedCopiedWinRate,
+    params.resolvedCopiedAvgReturn,
+    params.resolvedCopiedTotalPnlUsd
+  )
+  const recentQuality = scoreWindow(
+    recentResolvedCopiedCount,
+    params.recentResolvedCopiedWinRate,
+    params.recentResolvedCopiedAvgReturn,
+    params.recentResolvedCopiedTotalPnlUsd
+  )
+  const qualityScore =
+    recentQuality != null && allTimeQuality != null
+      ? ((0.65 * recentQuality) + (0.35 * allTimeQuality))
+      : recentQuality ?? allTimeQuality
+  const localWeight = clip(
+    (0.60 * clip(resolvedCopiedCount / 20)) +
+    (0.40 * clip(recentResolvedCopiedCount / 8))
+  )
+  return {qualityScore, localWeight: Number(localWeight.toFixed(4))}
+}
+
 function scoreWalletForTier(params: {
   winRate: number | null | undefined
   nTrades: number | null | undefined
@@ -519,6 +635,14 @@ function scoreWalletForTier(params: {
   uncopyableSkipRate: number | null | undefined
   uncopyablePenaltyMinBuys: number
   uncopyablePenaltyWeight: number
+  resolvedCopiedCount: number | null | undefined
+  resolvedCopiedWinRate: number | null | undefined
+  resolvedCopiedAvgReturn: number | null | undefined
+  resolvedCopiedTotalPnlUsd: number | null | undefined
+  recentResolvedCopiedCount: number | null | undefined
+  recentResolvedCopiedWinRate: number | null | undefined
+  recentResolvedCopiedAvgReturn: number | null | undefined
+  recentResolvedCopiedTotalPnlUsd: number | null | undefined
   nowTs: number
 }): number {
   const winRate = params.winRate ?? 0.5
@@ -552,11 +676,25 @@ function scoreWalletForTier(params: {
     buySignals >= params.uncopyablePenaltyMinBuys && params.uncopyablePenaltyWeight > 0
       ? params.uncopyablePenaltyWeight * clip(buySignals / Math.max(params.uncopyablePenaltyMinBuys * 3, 1)) * uncopyableSkipRate
       : 0
-  const qualityScore =
+  const publicQualityScore =
     (0.45 * winScore) +
     (0.2 * returnScore) +
     (0.2 * sampleScore) +
     (0.15 * pnlScore)
+  const {qualityScore: localQualityScore, localWeight} = scoreLocalCopiedPerformance({
+    resolvedCopiedCount: params.resolvedCopiedCount,
+    resolvedCopiedWinRate: params.resolvedCopiedWinRate,
+    resolvedCopiedAvgReturn: params.resolvedCopiedAvgReturn,
+    resolvedCopiedTotalPnlUsd: params.resolvedCopiedTotalPnlUsd,
+    recentResolvedCopiedCount: params.recentResolvedCopiedCount,
+    recentResolvedCopiedWinRate: params.recentResolvedCopiedWinRate,
+    recentResolvedCopiedAvgReturn: params.recentResolvedCopiedAvgReturn,
+    recentResolvedCopiedTotalPnlUsd: params.recentResolvedCopiedTotalPnlUsd
+  })
+  const qualityScore =
+    localQualityScore == null
+      ? publicQualityScore
+      : (((1 - localWeight) * publicQualityScore) + (localWeight * localQualityScore))
   return Number(((
     (0.7 * qualityScore) +
     (0.25 * activityScore) +
@@ -896,6 +1034,7 @@ export function Wallets({
   const traderCacheRows = useQuery<TraderCacheRow>(TRADER_CACHE_SQL)
   const walletCursorRows = useQuery<WalletCursorRow>(WALLET_CURSOR_SQL)
   const watchStateRows = useQuery<WalletWatchStateRow>(WALLET_WATCH_STATE_SQL)
+  const walletPolicyRows = useQuery<WalletPolicyMetricRow>(WALLET_POLICY_METRICS_SQL)
   const shadowWalletRows = useQuery<TopShadowRow>(SHADOW_WALLETS_SQL)
   const events = useEventStream(1000)
   const config = useDashboardConfig()
@@ -922,10 +1061,11 @@ export function Wallets({
       ...activityRows.map((row) => row.trader_address.toLowerCase()),
       ...traderCacheRows.map((row) => row.trader_address.toLowerCase()),
       ...walletCursorRows.map((row) => row.wallet_address.toLowerCase()),
-      ...watchStateRows.map((row) => row.wallet_address.toLowerCase())
+      ...watchStateRows.map((row) => row.wallet_address.toLowerCase()),
+      ...walletPolicyRows.map((row) => row.wallet_address.toLowerCase())
     ]))
     return watchedWallets.length ? watchedWallets : fallbackWallets
-  }, [activityRows, traderCacheRows, walletCursorRows, watchStateRows, watchedWallets])
+  }, [activityRows, traderCacheRows, walletCursorRows, walletPolicyRows, watchStateRows, watchedWallets])
   const watchStateByWallet = useMemo(
     () =>
       new Map(
@@ -952,12 +1092,14 @@ export function Wallets({
   const tierByWallet = useMemo(() => {
     const cacheByWallet = new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row]))
     const activityByWallet = new Map(activityRows.map((row) => [row.trader_address.toLowerCase(), row]))
+    const policyByWallet = new Map(walletPolicyRows.map((row) => [row.wallet_address.toLowerCase(), row]))
     const activeWallets = sourceWallets.filter((wallet) => watchStateByWallet.get(wallet)?.status !== 'dropped')
     const nowTs = Math.floor(Date.now() / 1000)
     const ranked = activeWallets.map((wallet, index) => {
       const cached = cacheByWallet.get(wallet)
       const cursor = cursorByWallet.get(wallet)
       const activity = activityByWallet.get(wallet)
+      const policy = policyByWallet.get(wallet)
       return {
         wallet,
         index,
@@ -976,6 +1118,14 @@ export function Wallets({
               : 0,
           uncopyablePenaltyMinBuys: watchConfig.uncopyablePenaltyMinBuys,
           uncopyablePenaltyWeight: watchConfig.uncopyablePenaltyWeight,
+          resolvedCopiedCount: policy?.resolved_copied_count,
+          resolvedCopiedWinRate: policy?.resolved_copied_win_rate,
+          resolvedCopiedAvgReturn: policy?.resolved_copied_avg_return,
+          resolvedCopiedTotalPnlUsd: policy?.resolved_copied_total_pnl_usd,
+          recentResolvedCopiedCount: policy?.recent_resolved_copied_count,
+          recentResolvedCopiedWinRate: policy?.recent_resolved_copied_win_rate,
+          recentResolvedCopiedAvgReturn: policy?.recent_resolved_copied_avg_return,
+          recentResolvedCopiedTotalPnlUsd: policy?.recent_resolved_copied_total_pnl_usd,
           nowTs
         }),
         lastSourceTs: cursor?.last_source_ts ?? 0,
@@ -1003,6 +1153,7 @@ export function Wallets({
     cursorByWallet,
     sourceWallets,
     traderCacheRows,
+    walletPolicyRows,
     watchConfig.hotCount,
     watchConfig.uncopyablePenaltyMinBuys,
     watchConfig.uncopyablePenaltyWeight,
@@ -1013,12 +1164,14 @@ export function Wallets({
   const wallets = useMemo(() => {
     const activityByWallet = new Map(activityRows.map((row) => [row.trader_address.toLowerCase(), row]))
     const cacheByWallet = new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row]))
+    const policyByWallet = new Map(walletPolicyRows.map((row) => [row.wallet_address.toLowerCase(), row]))
 
     return sourceWallets.map<WalletRow>((wallet, index) => {
       const activity = activityByWallet.get(wallet)
       const cached = cacheByWallet.get(wallet)
       const cursor = cursorByWallet.get(wallet)
       const watchState = watchStateByWallet.get(wallet)
+      const policy = policyByWallet.get(wallet)
       return {
         trader_address: wallet,
         username: usernames.get(wallet) || '',
@@ -1070,10 +1223,20 @@ export function Wallets({
         reactivated_at: watchState?.reactivated_at ?? null,
         tracking_started_at: watchState?.tracking_started_at ?? watchState?.reactivated_at ?? watchState?.updated_at ?? null,
         last_source_ts_at_status: watchState?.last_source_ts_at_status ?? null,
-        watch_index: index
+        watch_index: index,
+        resolved_copied_avg_return: policy?.resolved_copied_avg_return ?? null,
+        resolved_copied_total_pnl_usd: policy?.resolved_copied_total_pnl_usd ?? null,
+        recent_resolved_copied_count: policy?.recent_resolved_copied_count ?? null,
+        recent_resolved_copied_avg_return: policy?.recent_resolved_copied_avg_return ?? null,
+        recent_resolved_copied_total_pnl_usd: policy?.recent_resolved_copied_total_pnl_usd ?? null,
+        recent_window_seconds: policy?.recent_window_seconds ?? null,
+        local_quality_score: policy?.local_quality_score ?? null,
+        local_weight: policy?.local_weight ?? null,
+        local_drop_ready: Boolean(policy?.local_drop_ready ?? 0),
+        local_drop_reason: policy?.local_drop_reason ?? null
       }
     })
-  }, [activityRows, cursorByWallet, sourceWallets, tierByWallet, traderCacheRows, usernames, watchStateByWallet])
+  }, [activityRows, cursorByWallet, sourceWallets, tierByWallet, traderCacheRows, usernames, walletPolicyRows, watchStateByWallet])
   const trackedWallets = useMemo(
     () => wallets.filter((wallet) => wallet.status !== 'dropped'),
     [wallets]
@@ -1340,6 +1503,69 @@ export function Wallets({
               selectedWallet.local_pnl == null
                 ? theme.dim
                 : centeredGradientColor(selectedWallet.local_pnl, maxAbsLocalPnl)
+          },
+          {
+            label: 'Copy Avg Ret',
+            value: selectedWallet.resolved_copied_avg_return == null ? '-' : formatPct(selectedWallet.resolved_copied_avg_return, 2),
+            color:
+              selectedWallet.resolved_copied_avg_return == null
+                ? theme.dim
+                : probabilityColor(clip(0.5 + (selectedWallet.resolved_copied_avg_return / 2)))
+          }
+        ]
+      },
+      {
+        title: 'Policy',
+        metrics: [
+          {
+            label: 'Local Weight',
+            value: selectedWallet.local_weight == null ? '-' : formatPct(selectedWallet.local_weight, 1),
+            color: selectedWallet.local_weight == null ? theme.dim : probabilityColor(selectedWallet.local_weight)
+          },
+          {
+            label: 'Local Score',
+            value: selectedWallet.local_quality_score == null ? '-' : selectedWallet.local_quality_score.toFixed(3),
+            color:
+              selectedWallet.local_quality_score == null
+                ? theme.dim
+                : probabilityColor(selectedWallet.local_quality_score)
+          },
+          {
+            label: 'Recent Window',
+            value: secondsAgo(
+              selectedWallet.recent_window_seconds == null
+                ? undefined
+                : Math.floor(Date.now() / 1000) - selectedWallet.recent_window_seconds
+            )
+          },
+          {
+            label: 'Recent Copied',
+            value: formatFullCount(selectedWallet.recent_resolved_copied_count)
+          },
+          {
+            label: 'Recent Avg Ret',
+            value: selectedWallet.recent_resolved_copied_avg_return == null ? '-' : formatPct(selectedWallet.recent_resolved_copied_avg_return, 2),
+            color:
+              selectedWallet.recent_resolved_copied_avg_return == null
+                ? theme.dim
+                : probabilityColor(clip(0.5 + (selectedWallet.recent_resolved_copied_avg_return / 2)))
+          },
+          {
+            label: 'Recent P&L',
+            value: formatSignedMoney(selectedWallet.recent_resolved_copied_total_pnl_usd, 18),
+            color:
+              selectedWallet.recent_resolved_copied_total_pnl_usd == null
+                ? theme.dim
+                : centeredGradientColor(selectedWallet.recent_resolved_copied_total_pnl_usd, maxAbsLocalPnl)
+          },
+          {
+            label: 'Drop Signal',
+            value: selectedWallet.local_drop_ready ? 'Ready' : 'Clear',
+            color: selectedWallet.local_drop_ready ? theme.red : theme.green
+          },
+          {
+            label: 'Drop Reason',
+            value: selectedWallet.local_drop_reason || '-'
           }
         ]
       },

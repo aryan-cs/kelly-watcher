@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import db
+from replay import ReplayPolicy, run_replay
+
+
+def _insert_trade(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: str,
+    market_id: str,
+    trader_address: str,
+    signal_mode: str,
+    confidence: float,
+    price_at_signal: float,
+    placed_at: int,
+    resolved_at: int | None = None,
+    skipped: bool = False,
+    actual_entry_price: float | None = None,
+    actual_entry_size_usd: float | None = None,
+    shadow_pnl_usd: float | None = None,
+    counterfactual_return: float | None = None,
+    signal_payload: dict | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO trade_log (
+            trade_id, market_id, question, trader_address, side, token_id, source_action,
+            price_at_signal, signal_size_usd, actual_entry_price, actual_entry_shares,
+            actual_entry_size_usd, confidence, kelly_fraction, signal_mode, real_money,
+            skipped, skip_reason, placed_at, resolved_at, counterfactual_return, shadow_pnl_usd,
+            decision_context_json
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            trade_id,
+            market_id,
+            f"Question for {trade_id}",
+            trader_address,
+            "yes",
+            f"token-{trade_id}",
+            "buy",
+            price_at_signal,
+            actual_entry_size_usd if actual_entry_size_usd is not None else 100.0,
+            actual_entry_price,
+            (actual_entry_size_usd / actual_entry_price) if actual_entry_size_usd and actual_entry_price else None,
+            actual_entry_size_usd,
+            confidence,
+            0.1,
+            signal_mode,
+            0,
+            1 if skipped else 0,
+            "counterfactual only" if skipped else None,
+            placed_at,
+            resolved_at,
+            counterfactual_return,
+            shadow_pnl_usd,
+            json.dumps({"signal": signal_payload or {}}, separators=(",", ":")),
+        ),
+    )
+
+
+class ReplayTest(unittest.TestCase):
+    def test_run_replay_persists_summary_and_trade_decisions(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="heur-pass",
+                    market_id="market-1",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.70,
+                    price_at_signal=0.68,
+                    actual_entry_price=0.68,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=20.0,
+                    placed_at=1_700_000_000,
+                    resolved_at=1_700_000_100,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.85},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="heur-band-reject",
+                    market_id="market-2",
+                    trader_address="0xbbb",
+                    signal_mode="heuristic",
+                    confidence=0.75,
+                    price_at_signal=0.80,
+                    actual_entry_price=0.80,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=25.0,
+                    placed_at=1_700_000_010,
+                    resolved_at=1_700_000_110,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.90},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="model-edge-reject",
+                    market_id="market-3",
+                    trader_address="0xccc",
+                    signal_mode="xgboost",
+                    confidence=0.60,
+                    price_at_signal=0.58,
+                    actual_entry_price=0.58,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=50.0,
+                    placed_at=1_700_000_020,
+                    resolved_at=1_700_000_120,
+                    signal_payload={
+                        "mode": "xgboost",
+                        "edge": 0.02,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                    label="unit-test",
+                )
+
+                self.assertEqual(result["trade_count"], 3)
+                self.assertEqual(result["accepted_count"], 1)
+                self.assertEqual(result["rejected_count"], 2)
+                self.assertAlmostEqual(result["final_bankroll_usd"], 1011.548, places=3)
+
+                conn = sqlite3.connect(str(test_db_path))
+                conn.row_factory = sqlite3.Row
+                run_row = conn.execute("SELECT * FROM replay_runs").fetchone()
+                trade_rows = conn.execute(
+                    "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
+                ).fetchall()
+                mode_segment = conn.execute(
+                    """
+                    SELECT segment_value, accepted_count, total_pnl_usd
+                    FROM segment_metrics
+                    WHERE segment_kind='signal_mode'
+                    ORDER BY segment_value ASC
+                    """
+                ).fetchall()
+                conn.close()
+
+                self.assertEqual(run_row["label"], "unit-test")
+                self.assertEqual(run_row["accepted_count"], 1)
+                self.assertEqual(
+                    [(row["trade_id"], row["decision"], row["reason"]) for row in trade_rows],
+                    [
+                        ("heur-pass", "accept", "accepted"),
+                        ("heur-band-reject", "reject", "heuristic_entry_band"),
+                        ("model-edge-reject", "reject", "model_edge_below_threshold"),
+                    ],
+                )
+                self.assertIn(("heuristic", 1, 11.548), [(row["segment_value"], row["accepted_count"], round(float(row["total_pnl_usd"]), 3)) for row in mode_segment])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_can_accept_skipped_counterfactual_rows(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="skip-counterfactual",
+                    market_id="market-skip",
+                    trader_address="0xskip",
+                    signal_mode="heuristic",
+                    confidence=0.50,
+                    price_at_signal=0.66,
+                    placed_at=1_700_000_000,
+                    resolved_at=1_700_000_100,
+                    skipped=True,
+                    counterfactual_return=0.50,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.82},
+                        "min_confidence": 0.45,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.45,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                )
+
+                self.assertEqual(result["accepted_count"], 1)
+                self.assertAlmostEqual(result["final_bankroll_usd"], 1015.075, places=3)
+            finally:
+                db.DB_PATH = original_db_path
+
+
+if __name__ == "__main__":
+    unittest.main()

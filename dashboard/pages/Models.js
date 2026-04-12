@@ -73,7 +73,8 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
             { label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.' },
             { label: 'Seg gates', text: 'Entry-price-band and holding-horizon gates on the latest best feasible replay-search candidate.' },
-            { label: 'Search modes', text: 'Accepted trade mix and replay P&L by scorer on the latest best feasible replay-search candidate.' },
+            { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
+            { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
             { label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.' },
             { label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.' },
@@ -1063,13 +1064,14 @@ function replaySearchModeMixSummary(raw) {
             .map(([mode, value]) => {
             if (!value || typeof value !== 'object' || Array.isArray(value))
                 return null;
-            const payload = value;
-            return {
-                mode,
-                acceptedCount: Number(payload.accepted_count || 0),
-                totalPnlUsd: Number(payload.total_pnl_usd || 0)
-            };
-        })
+                const payload = value;
+                return {
+                    mode,
+                    acceptedCount: Number(payload.accepted_count || 0),
+                    resolvedCount: Number(payload.resolved_count || 0),
+                    totalPnlUsd: Number(payload.total_pnl_usd || 0)
+                };
+            })
             .filter((entry) => Boolean(entry))
             .filter((entry) => entry.acceptedCount > 0)
             .sort((left, right) => {
@@ -1083,9 +1085,10 @@ function replaySearchModeMixSummary(raw) {
             return '-';
         const totalAccepted = entries.reduce((sum, entry) => sum + entry.acceptedCount, 0);
         return entries
-            .map((entry) => {
+        .map((entry) => {
             const share = totalAccepted > 0 ? `${Math.round((entry.acceptedCount / totalAccepted) * 100)}%` : '0%';
-            return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} ${formatDollar(entry.totalPnlUsd)}`;
+            const resolvedShare = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%';
+            return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} cov ${resolvedShare} ${formatDollar(entry.totalPnlUsd)}`;
         })
             .join(' | ');
     }
@@ -1141,6 +1144,50 @@ function replaySearchModeDriftSummary(bestRaw, currentRaw) {
         parts.push(`${modeLabel(mode)} ${sign}${rounded}pt`);
     }
     return parts.length ? parts.join(' | ') : '-';
+}
+function replaySearchCurrentModeEvidenceSummary(raw) {
+    if (!raw)
+        return '-';
+    try {
+        const parsed = JSON.parse(raw);
+        const rawSummary = parsed?.signal_mode_summary;
+        if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary))
+            return '-';
+        const entries = Object.entries(rawSummary)
+            .map(([mode, value]) => {
+            if (!value || typeof value !== 'object' || Array.isArray(value))
+                return null;
+            const payload = value;
+            return {
+                mode,
+                acceptedCount: Number(payload.accepted_count || 0),
+                resolvedCount: Number(payload.resolved_count || 0),
+                totalPnlUsd: Number(payload.total_pnl_usd || 0),
+                winRate: payload.win_rate == null ? null : Number(payload.win_rate)
+            };
+        })
+            .filter((entry) => Boolean(entry))
+            .filter((entry) => entry.acceptedCount > 0)
+            .sort((left, right) => {
+            const leftPriority = left.mode === 'heuristic' ? 0 : left.mode === 'xgboost' ? 1 : 2;
+            const rightPriority = right.mode === 'heuristic' ? 0 : right.mode === 'xgboost' ? 1 : 2;
+            if (leftPriority !== rightPriority)
+                return leftPriority - rightPriority;
+            return left.mode.localeCompare(right.mode);
+        });
+        if (!entries.length)
+            return '-';
+        return entries
+            .map((entry) => {
+            const coverage = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%';
+            const rate = entry.winRate == null ? '-' : formatPct(entry.winRate, 0);
+            return `${modeLabel(entry.mode)} ${formatCount(entry.resolvedCount)}r/${formatCount(entry.acceptedCount)}a ${coverage} ${rate} ${formatDollar(entry.totalPnlUsd)}`;
+        })
+            .join(' | ');
+    }
+    catch {
+        return '-';
+    }
 }
 function replaySearchModeFloorSummary(raw) {
     if (!raw)
@@ -1850,6 +1897,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             label: 'Search modes',
             value: replaySearchModeMixSummary(latestReplaySearch?.result_json),
             color: latestReplaySearch?.result_json ? theme.white : theme.dim
+        },
+        {
+            label: 'Cur evidence',
+            value: replaySearchCurrentModeEvidenceSummary(latestReplaySearch?.current_candidate_result_json),
+            color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
         },
         {
             label: 'Mode guard',

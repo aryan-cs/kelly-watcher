@@ -5996,7 +5996,7 @@ def main() -> None:
         window_days=max(args.window_days, 0),
         window_count=max(args.window_count, 1),
         current_candidate=current_candidate,
-        persist_current_candidate=not current_matches_grid,
+        persist_current_candidate=True,
         ranked=ranked,
         feasible=feasible,
         rejected=rejected,

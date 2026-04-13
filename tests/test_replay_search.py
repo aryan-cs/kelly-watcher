@@ -17944,7 +17944,7 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(run_row[0:4], (1, 1, 0, 50.0))
             self.assertEqual(json.loads(run_row[4])["signal_mode_summary"]["xgboost"]["accepted_count"], 9)
             self.assertEqual(run_row[5:7], (0.0, 1))
-            self.assertEqual(candidate_rows, [(1, 1, 0)])
+            self.assertEqual(candidate_rows, [(0, 1, 1), (1, 1, 0)])
 
 
 if __name__ == "__main__":

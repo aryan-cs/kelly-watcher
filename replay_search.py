@@ -1825,6 +1825,9 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             concentration_parts.append(f"hzn sz {top_horizon_size_share * 100:.0f}%")
         concentration_suffix = f" | {' / '.join(concentration_parts)}" if concentration_parts else ""
         window_count = int(row["result"].get("window_count") or 0)
+        carry_window_count = int(row["result"].get("carry_window_count") or 0)
+        avg_window_end_open_exposure_share = _avg_window_end_open_exposure_share(row["result"])
+        carry_suffix = ""
         window_suffix = ""
         if window_count > 1:
             positive_window_count = int(row["result"].get("positive_window_count") or 0)
@@ -1832,22 +1835,29 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             worst_active_window_accepted_count = int(row["result"].get("worst_active_window_accepted_count") or 0)
             worst_active_window_accepted_size_usd = float(row["result"].get("worst_active_window_accepted_size_usd") or 0.0)
             worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
-            carry_window_count = int(row["result"].get("carry_window_count") or 0)
+            carry_summary = (
+                f"{carry_window_count}/{active_window_count}"
+                if active_window_count > 0
+                else ("yes" if carry_window_count > 0 else "0")
+            )
             window_suffix = (
                 f" | windows {positive_window_count}/{window_count}+"
                 f" active {active_window_count}/{window_count}"
-                f" carry {carry_window_count}/{window_count}"
+                f" carry {carry_summary}"
+                f" carry-avg {avg_window_end_open_exposure_share * 100:.0f}%"
                 f" worst-act {worst_active_window_accepted_count}"
                 f" worst-act$ {worst_active_window_accepted_size_usd:.2f}"
                 f" | worst {worst_window_pnl_usd:+.2f}"
             )
+        elif carry_window_count > 0 or avg_window_end_open_exposure_share > 0:
+            carry_suffix = f" | carry yes carry-avg {avg_window_end_open_exposure_share * 100:.0f}%"
         print(
             "  "
             f"{index}. score {row['score']:+.2f} | pnl {row['result']['total_pnl_usd']:+.2f} | "
             f"dd {float(row['result'].get('max_drawdown_pct') or 0.0) * 100:.1f}% | "
             f"acc {int(row['result'].get('accepted_count') or 0)} | "
             f"win {float(row['result'].get('win_rate') or 0.0) * 100:.1f}% | "
-            f"{_compact_override_summary(row['overrides'])}{mode_suffix}{pause_suffix}{concentration_suffix}{window_suffix}{feasibility_suffix}",
+            f"{_compact_override_summary(row['overrides'])}{mode_suffix}{pause_suffix}{concentration_suffix}{carry_suffix}{window_suffix}{feasibility_suffix}",
             file=sys.stderr,
         )
 

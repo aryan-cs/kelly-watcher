@@ -6434,6 +6434,118 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.6)
         self.assertIn("windows 2/2+", stderr.getvalue())
 
+    def test_main_reports_carry_against_active_windows_in_stderr(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            if start_ts == 0:
+                return {
+                    "run_id": 1,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "total_pnl_usd": 12.0,
+                    "max_drawdown_pct": 0.04,
+                    "accepted_count": 10,
+                    "resolved_count": 8,
+                    "rejected_count": 0,
+                    "unresolved_count": 2,
+                    "trade_count": 10,
+                    "win_rate": 0.6,
+                    "window_end_open_exposure_usd": 10.0,
+                    "window_end_open_exposure_share": 0.10,
+                }
+            if start_ts == 2_592_000:
+                return {
+                    "run_id": 2,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "total_pnl_usd": 5.0,
+                    "max_drawdown_pct": 0.03,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 10,
+                    "win_rate": 0.6,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
+                }
+            return {
+                "run_id": 3,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 0.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 0,
+                "resolved_count": 0,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 0,
+                "win_rate": None,
+                "window_end_open_exposure_usd": 0.0,
+                "window_end_open_exposure_share": 0.0,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "3",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=7_775_999),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        rendered = stderr.getvalue()
+        self.assertIn("carry 1/2", rendered)
+        self.assertIn("carry-avg 5%", rendered)
+
+    def test_main_reports_single_window_carry_in_stderr(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 12.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 8,
+                "resolved_count": 6,
+                "rejected_count": 0,
+                "unresolved_count": 2,
+                "trade_count": 8,
+                "win_rate": 0.625,
+                "window_end_open_exposure_usd": 10.0,
+                "window_end_open_exposure_share": 0.10,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60]}),
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        rendered = stderr.getvalue()
+        self.assertIn("carry yes", rendered)
+        self.assertIn("carry-avg 10%", rendered)
+        self.assertNotIn(" | windows ", rendered)
+
     def test_main_can_reject_bad_worst_window(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])

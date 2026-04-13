@@ -3052,6 +3052,37 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["worst_window_penalty_usd"], 6000.0)
         self.assertEqual(breakdown["score_usd"], -6012.0)
 
+    def test_score_breakdown_penalizes_explicitly_unproven_global_worst_window_risk(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 4,
+                "accepted_count": 6,
+                "resolved_count": 6,
+                "worst_window_pnl_usd": 0.0,
+                "has_proven_worst_window_pnl": False,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=2.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["worst_window_penalty_usd"], 6000.0)
+        self.assertEqual(breakdown["score_usd"], -5980.0)
+
     def test_score_breakdown_penalizes_low_accepted_window_share(self) -> None:
         breakdown = replay_search._score_breakdown(
             {
@@ -5358,6 +5389,25 @@ class ReplaySearchTest(unittest.TestCase):
                 "window_count": 4,
                 "active_window_count": 4,
                 "total_pnl_usd": -1.0,
+            },
+            **self._constraint_defaults(
+                min_worst_window_pnl_usd=-10.0,
+            ),
+        )
+
+        self.assertEqual(failures, ["worst_window_pnl_usd"])
+
+    def test_constraint_failures_fail_closed_on_explicitly_unproven_global_worst_window_pnl(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "worst_window_pnl_usd": 0.0,
+                "has_proven_worst_window_pnl": False,
             },
             **self._constraint_defaults(
                 min_worst_window_pnl_usd=-10.0,

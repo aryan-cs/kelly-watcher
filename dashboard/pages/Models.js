@@ -2282,6 +2282,12 @@ function replaySearchActiveWindowCountFromPayload(payload) {
     return replaySearchHasParticipation(payload) ? 1 : 0;
   return Math.max(windowCount - Number(payload.inactive_window_count || 0), 0);
 }
+function replaySearchInactiveWindowCountFromPayload(payload) {
+  const windowCount = Number(payload.window_count || 0);
+  if (windowCount <= 1)
+    return replaySearchHasParticipation(payload) ? 0 : 1;
+  return Math.max(windowCount - replaySearchActiveWindowCountFromPayload(payload), 0);
+}
 function replaySearchAcceptedWindowCountFromPayload(payload) {
   const explicit = Number(payload.accepted_window_count || 0);
   if (explicit > 0)
@@ -2478,6 +2484,11 @@ function replaySearchModeActiveWindowCountFromPayload(payload, windowCount) {
   if (windowCount <= 1)
     return replaySearchModeHasParticipation(payload) ? 1 : 0;
   return Math.max(windowCount - Number(payload.inactive_window_count || 0), 0);
+}
+function replaySearchModeInactiveWindowCountFromPayload(payload, windowCount) {
+  if (windowCount <= 1)
+    return replaySearchModeHasParticipation(payload) ? 0 : 1;
+  return Math.max(windowCount - replaySearchModeActiveWindowCountFromPayload(payload, windowCount), 0);
 }
 function replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount) {
   const explicit = Number(payload.accepted_window_count || 0);
@@ -3348,8 +3359,8 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
       const worstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(payload);
             const worstActiveWindowAcceptedCount = replaySearchModeWorstActiveWindowAcceptedCountFromPayload(payload, windowCount);
             const worstActiveWindowAcceptedSizeUsd = replaySearchModeWorstActiveWindowAcceptedSizeUsdFromPayload(payload, windowCount);
-            const inactiveWindowCount = Number(payload.inactive_window_count || 0);
-            const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount);
+      const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount);
+      const inactiveWindowCount = replaySearchModeInactiveWindowCountFromPayload(payload, windowCount);
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
       const acceptedWindowShare = replaySearchModeAcceptedWindowShareFromPayload(payload, windowCount);
       const maxNonAcceptingActiveWindowStreakValue = replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, windowCount);
@@ -3914,8 +3925,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalTotalPnl = Number(resultParsed.total_pnl_usd || 0);
         const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0);
         const globalPositiveWindows = Number(resultParsed.positive_window_count || 0);
-        const globalActiveWindows = Number(resultParsed.active_window_count || 0);
-        const globalInactiveWindows = Number(resultParsed.inactive_window_count || 0);
+        const globalActiveWindows = replaySearchActiveWindowCountFromPayload(resultParsed);
+        const globalInactiveWindows = replaySearchInactiveWindowCountFromPayload(resultParsed);
         const globalAcceptedWindows = replaySearchAcceptedWindowCountFromPayload(resultParsed);
         const globalAcceptedWindowShare = replaySearchAcceptedWindowShareFromPayload(resultParsed);
         const globalMaxNonAcceptingActiveWindowStreak = replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(resultParsed);
@@ -4155,8 +4166,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             const worstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(payload);
             const worstActiveWindowAcceptedCount = replaySearchModeWorstActiveWindowAcceptedCountFromPayload(payload, Number(resultParsed.window_count || 0));
             const worstActiveWindowAcceptedSizeUsd = replaySearchModeWorstActiveWindowAcceptedSizeUsdFromPayload(payload, Number(resultParsed.window_count || 0));
-      const inactiveWindowCount = Number(payload.inactive_window_count || 0);
       const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, Number(resultParsed.window_count || 0));
+      const inactiveWindowCount = replaySearchModeInactiveWindowCountFromPayload(payload, Number(resultParsed.window_count || 0));
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, Number(resultParsed.window_count || 0));
       const acceptedWindowShare = replaySearchModeAcceptedWindowShareFromPayload(payload, Number(resultParsed.window_count || 0));
       const maxNonAcceptingActiveWindowStreak = replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, Number(resultParsed.window_count || 0));
@@ -4315,12 +4326,12 @@ function replaySearchWindowSummary(latestSearch) {
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
             return `${positive}+ / ${negative}- | ${worst}`;
         const windowCount = Number(parsed.window_count || 0);
-        const activeWindowCount = Number(parsed.active_window_count || 0);
+        const activeWindowCount = replaySearchActiveWindowCountFromPayload(parsed);
         const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(parsed);
         const acceptedWindowShare = replaySearchAcceptedWindowShareFromPayload(parsed);
         const maxNonAcceptingActiveWindowStreak = replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(parsed);
         const nonAcceptingActiveWindowEpisodeCount = replaySearchNonAcceptingActiveWindowEpisodeCountFromPayload(parsed);
-        const inactiveWindowCount = Number(parsed.inactive_window_count || 0);
+        const inactiveWindowCount = replaySearchInactiveWindowCountFromPayload(parsed);
         const maxAcceptingWindowAcceptedShare = replaySearchMaxAcceptingWindowAcceptedShareFromPayload(parsed);
         const maxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(parsed);
         const worstActiveWindowAcceptedCount = replaySearchWorstActiveWindowAcceptedCountFromPayload(parsed);

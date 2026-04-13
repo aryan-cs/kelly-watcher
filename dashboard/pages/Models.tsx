@@ -2033,6 +2033,12 @@ function replaySearchActiveWindowCountFromPayload(payload: Record<string, unknow
   return Math.max(windowCount - Number(payload.inactive_window_count || 0), 0)
 }
 
+function replaySearchInactiveWindowCountFromPayload(payload: Record<string, unknown>): number {
+  const windowCount = Number(payload.window_count || 0)
+  if (windowCount <= 1) return replaySearchHasParticipation(payload) ? 0 : 1
+  return Math.max(windowCount - replaySearchActiveWindowCountFromPayload(payload), 0)
+}
+
 function replaySearchAcceptedWindowCountFromPayload(payload: Record<string, unknown>): number {
   const explicit = Number(payload.accepted_window_count || 0)
   if (explicit > 0) return explicit
@@ -2250,6 +2256,11 @@ function replaySearchModeHasParticipation(payload: Record<string, unknown>): boo
 function replaySearchModeActiveWindowCountFromPayload(payload: Record<string, unknown>, windowCount: number): number {
   if (windowCount <= 1) return replaySearchModeHasParticipation(payload) ? 1 : 0
   return Math.max(windowCount - Number(payload.inactive_window_count || 0), 0)
+}
+
+function replaySearchModeInactiveWindowCountFromPayload(payload: Record<string, unknown>, windowCount: number): number {
+  if (windowCount <= 1) return replaySearchModeHasParticipation(payload) ? 0 : 1
+  return Math.max(windowCount - replaySearchModeActiveWindowCountFromPayload(payload, windowCount), 0)
 }
 
 function replaySearchModeAcceptedWindowCountFromPayload(payload: Record<string, unknown>, windowCount: number): number {
@@ -3612,8 +3623,8 @@ function replaySearchCurrentModeRiskSummary(
       const worstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(payload)
       const worstActiveWindowAcceptedCount = replaySearchModeWorstActiveWindowAcceptedCountFromPayload(payload, windowCount)
       const worstActiveWindowAcceptedSizeUsd = replaySearchModeWorstActiveWindowAcceptedSizeUsdFromPayload(payload, windowCount)
-      const inactiveWindowCount = Number(payload.inactive_window_count || 0)
       const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount)
+      const inactiveWindowCount = replaySearchModeInactiveWindowCountFromPayload(payload, windowCount)
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount)
       const acceptedWindowShare = replaySearchModeAcceptedWindowShareFromPayload(payload, windowCount)
       const maxNonAcceptingActiveWindowStreakValue = replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, windowCount)
@@ -4128,8 +4139,8 @@ function replaySearchHeadroomSummary(
     const globalTotalPnl = Number(resultParsed.total_pnl_usd || 0)
     const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0)
     const globalPositiveWindows = Number(resultParsed.positive_window_count || 0)
-    const globalActiveWindows = Number(resultParsed.active_window_count || 0)
-    const globalInactiveWindows = Number(resultParsed.inactive_window_count || 0)
+    const globalActiveWindows = replaySearchActiveWindowCountFromPayload(resultParsed as Record<string, unknown>)
+    const globalInactiveWindows = replaySearchInactiveWindowCountFromPayload(resultParsed as Record<string, unknown>)
     const globalAcceptedWindows = replaySearchAcceptedWindowCountFromPayload(resultParsed as Record<string, unknown>)
     const globalAcceptedWindowShare = replaySearchAcceptedWindowShareFromPayload(resultParsed as Record<string, unknown>)
     const globalMaxNonAcceptingActiveWindowStreak = replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(resultParsed as Record<string, unknown>)
@@ -4327,8 +4338,8 @@ function replaySearchHeadroomSummary(
       const worstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(payload)
       const worstActiveWindowAcceptedCount = replaySearchModeWorstActiveWindowAcceptedCountFromPayload(payload, Number(resultParsed.window_count || 0))
       const worstActiveWindowAcceptedSizeUsd = replaySearchModeWorstActiveWindowAcceptedSizeUsdFromPayload(payload, Number(resultParsed.window_count || 0))
-      const inactiveWindowCount = Number(payload.inactive_window_count || 0)
       const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, Number(resultParsed.window_count || 0))
+      const inactiveWindowCount = replaySearchModeInactiveWindowCountFromPayload(payload, Number(resultParsed.window_count || 0))
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, Number(resultParsed.window_count || 0))
       const acceptedWindowShare = replaySearchModeAcceptedWindowShareFromPayload(payload, Number(resultParsed.window_count || 0))
       const maxNonAcceptingActiveWindowStreak = replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, Number(resultParsed.window_count || 0))
@@ -4492,11 +4503,11 @@ function replaySearchWindowSummary(latestSearch: ReplaySearchSummaryRow | null |
     const parsed = JSON.parse(latestSearch.result_json)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return `${positive}+ / ${negative}- | ${worst}`
     const windowCount = Number(parsed.window_count || 0)
-    const activeWindowCount = Number(parsed.active_window_count || 0)
+    const activeWindowCount = replaySearchActiveWindowCountFromPayload(parsed as Record<string, unknown>)
     const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(parsed)
     const acceptedWindowShare = replaySearchAcceptedWindowShareFromPayload(parsed)
     const maxNonAcceptingActiveWindowStreak = replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(parsed as Record<string, unknown>)
-    const inactiveWindowCount = Number(parsed.inactive_window_count || 0)
+    const inactiveWindowCount = replaySearchInactiveWindowCountFromPayload(parsed as Record<string, unknown>)
     const maxAcceptingWindowAcceptedShare = replaySearchMaxAcceptingWindowAcceptedShareFromPayload(parsed as Record<string, unknown>)
     const maxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(parsed as Record<string, unknown>)
     const topTwoAcceptingWindowAcceptedShare = replaySearchTopTwoAcceptingWindowAcceptedShareFromPayload(parsed as Record<string, unknown>)

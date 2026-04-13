@@ -1590,6 +1590,9 @@ def _global_worst_window_pnl(result: dict[str, Any]) -> float:
 
 
 def _has_proven_worst_window_pnl(result: dict[str, Any]) -> bool:
+    raw_value = result.get("has_proven_worst_window_pnl")
+    if raw_value is not None:
+        return bool(raw_value)
     if result.get("worst_window_pnl_usd") is not None:
         return True
     return max(int(result.get("window_count") or 0), 1) <= 1

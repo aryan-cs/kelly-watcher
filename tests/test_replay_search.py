@@ -695,6 +695,33 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(result["active_window_count"], 1)
         self.assertEqual(result["inactive_window_count"], 0)
 
+    def test_active_window_count_uses_exact_single_window_resolution_fallback(self) -> None:
+        self.assertEqual(
+            replay_search._active_window_count(
+                {
+                    "window_count": 1,
+                    "accepted_count": 0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 100.0,
+                    "total_pnl_usd": 20.0,
+                }
+            ),
+            1,
+        )
+
+    def test_active_window_count_uses_exact_single_window_carry_fallback(self) -> None:
+        self.assertEqual(
+            replay_search._active_window_count(
+                {
+                    "window_count": 1,
+                    "accepted_count": 0,
+                    "resolved_count": 0,
+                    "window_end_open_exposure_usd": 100.0,
+                }
+            ),
+            1,
+        )
+
     def test_signal_mode_summary_materializes_worst_active_window_accepted_count(self) -> None:
         summary = replay_search._signal_mode_summary(
             {

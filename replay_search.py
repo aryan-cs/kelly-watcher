@@ -2190,7 +2190,7 @@ def _active_window_count(result: dict[str, Any]) -> int:
         return active_window_count
     window_count = int(result.get("window_count") or 0)
     if window_count <= 1:
-        return 1 if int(result.get("accepted_count") or 0) > 0 else 0
+        return 1 if _window_has_participation(result) else 0
     return max(window_count - int(result.get("inactive_window_count") or 0), 0)
 
 

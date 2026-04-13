@@ -2012,11 +2012,24 @@ interface ReplaySearchPauseGuardSummary {
   overLimit: boolean
 }
 
+function replaySearchHasParticipation(payload: Record<string, unknown>): boolean {
+  if (Number(payload.accepted_count || 0) > 0) return true
+  if (Number(payload.accepted_size_usd || 0) > 0) return true
+  if (Number(payload.resolved_count || 0) > 0) return true
+  if (Number(payload.resolved_size_usd || 0) > 0) return true
+  if (Math.abs(Number(payload.total_pnl_usd || 0)) > 1e-9) return true
+  if (Number(payload.peak_open_exposure_usd || 0) > 0) return true
+  if (Number(payload.window_end_open_exposure_usd || 0) > 0) return true
+  if (Number(payload.window_end_live_guard_triggered || 0) > 0) return true
+  if (Number(payload.window_end_daily_guard_triggered || 0) > 0) return true
+  return false
+}
+
 function replaySearchActiveWindowCountFromPayload(payload: Record<string, unknown>): number {
   const explicit = Number(payload.active_window_count || 0)
   if (explicit > 0) return explicit
   const windowCount = Number(payload.window_count || 0)
-  if (windowCount <= 1) return Number(payload.accepted_count || 0) > 0 ? 1 : 0
+  if (windowCount <= 1) return replaySearchHasParticipation(payload) ? 1 : 0
   return Math.max(windowCount - Number(payload.inactive_window_count || 0), 0)
 }
 

@@ -251,14 +251,7 @@ def _score_breakdown(
         and int(signal_mode_summary.get(mode, {}).get("worst_active_window_accepted_count") or 0) > 0
     ]
     mode_accepted_window_counts = {
-        mode: (
-            max(int(signal_mode_summary.get(mode, {}).get("accepted_window_count") or 0), 0)
-            or (
-                max(window_count - int(signal_mode_summary.get(mode, {}).get("inactive_window_count") or 0), 0)
-                if float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0) > 0
-                else 0
-            )
-        )
+        mode: _mode_accepted_window_count(signal_mode_summary, mode, window_count)
         for mode in enabled_modes
     }
     mode_worst_active_window_accepted_size_candidates = [

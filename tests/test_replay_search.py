@@ -711,6 +711,7 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(summary["xgboost"]["worst_active_window_accepted_count"], 4)
+        self.assertEqual(summary["xgboost"]["worst_accepting_window_accepted_count"], 4)
 
     def test_signal_mode_summary_materializes_worst_active_window_accepted_size_usd(self) -> None:
         summary = replay_search._signal_mode_summary(
@@ -730,6 +731,25 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(summary["xgboost"]["worst_active_window_accepted_size_usd"], 96.0)
+        self.assertEqual(summary["xgboost"]["worst_accepting_window_accepted_size_usd"], 96.0)
+
+    def test_with_window_activity_fields_materializes_worst_accepting_window_aliases(self) -> None:
+        enriched = replay_search._with_window_activity_fields(
+            {
+                "accepted_count": 3,
+                "accepted_size_usd": 75.0,
+                "resolved_count": 3,
+                "resolved_size_usd": 75.0,
+                "trade_count": 3,
+                "total_pnl_usd": 5.0,
+                "initial_bankroll_usd": 1000.0,
+            }
+        )
+
+        self.assertEqual(enriched["worst_active_window_accepted_count"], 3)
+        self.assertEqual(enriched["worst_accepting_window_accepted_count"], 3)
+        self.assertEqual(enriched["worst_active_window_accepted_size_usd"], 75.0)
+        self.assertEqual(enriched["worst_accepting_window_accepted_size_usd"], 75.0)
 
     def test_signal_mode_summary_materializes_accepted_window_count(self) -> None:
         summary = replay_search._signal_mode_summary(
@@ -8588,7 +8608,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["worst_active_window_accepted_penalty_usd"], best_breakdown["worst_active_window_accepted_penalty_usd"])
         self.assertGreater(best_breakdown["score_usd"], rejected_breakdown["score_usd"])
         self.assertIn("accept 2/2", stderr.getvalue())
-        self.assertIn("worst-act 2", stderr.getvalue())
+        self.assertIn("worst-acc 2", stderr.getvalue())
 
     def test_main_uses_worst_active_window_counts_for_distinct_concentration_floors(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):

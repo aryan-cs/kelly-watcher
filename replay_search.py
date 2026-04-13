@@ -1089,9 +1089,12 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 else 1.0
             )
         )
+        raw_worst_accepting_window_accepted_count = raw_values.get("worst_accepting_window_accepted_count")
         raw_worst_active_window_accepted_count = raw_values.get("worst_active_window_accepted_count")
         resolved_worst_active_window_accepted_count = (
-            int(raw_worst_active_window_accepted_count)
+            int(raw_worst_accepting_window_accepted_count)
+            if raw_worst_accepting_window_accepted_count is not None
+            else int(raw_worst_active_window_accepted_count)
             if raw_worst_active_window_accepted_count is not None
             else (
                 int(raw_values.get("accepted_count") or 0)
@@ -1099,9 +1102,12 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 else None
             )
         )
+        raw_worst_accepting_window_accepted_size_usd = raw_values.get("worst_accepting_window_accepted_size_usd")
         raw_worst_active_window_accepted_size_usd = raw_values.get("worst_active_window_accepted_size_usd")
         resolved_worst_active_window_accepted_size_usd = (
-            float(raw_worst_active_window_accepted_size_usd)
+            float(raw_worst_accepting_window_accepted_size_usd)
+            if raw_worst_accepting_window_accepted_size_usd is not None
+            else float(raw_worst_active_window_accepted_size_usd)
             if raw_worst_active_window_accepted_size_usd is not None
             else (
                 float(raw_values.get("accepted_size_usd") or 0.0)
@@ -1419,11 +1425,13 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if values["worst_active_window_accepted_count"] is not None
             else None
         )
+        values["worst_accepting_window_accepted_count"] = values["worst_active_window_accepted_count"]
         values["worst_active_window_accepted_size_usd"] = (
             round(float(values["worst_active_window_accepted_size_usd"]), 6)
             if values["worst_active_window_accepted_size_usd"] is not None
             else None
         )
+        values["worst_accepting_window_accepted_size_usd"] = values["worst_active_window_accepted_size_usd"]
         values["min_active_window_accepted_share"] = (
             round(float(values["min_active_window_accepted_share"]), 6)
             if values["min_active_window_accepted_share"] is not None
@@ -1968,6 +1976,20 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
         enriched["worst_active_window_accepted_count"] = accepted_count if accepted_count > 0 else 0
     if "worst_active_window_accepted_size_usd" not in enriched and window_count == 1:
         enriched["worst_active_window_accepted_size_usd"] = round(accepted_size_usd, 6) if accepted_size_usd > 0 else 0.0
+    if "worst_accepting_window_accepted_count" not in enriched:
+        if enriched.get("worst_active_window_accepted_count") is not None:
+            enriched["worst_accepting_window_accepted_count"] = int(enriched.get("worst_active_window_accepted_count") or 0)
+        elif window_count == 1:
+            enriched["worst_accepting_window_accepted_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
+    if "worst_accepting_window_accepted_size_usd" not in enriched:
+        if enriched.get("worst_active_window_accepted_size_usd") is not None:
+            enriched["worst_accepting_window_accepted_size_usd"] = round(float(enriched.get("worst_active_window_accepted_size_usd") or 0.0), 6)
+        elif window_count == 1:
+            enriched["worst_accepting_window_accepted_size_usd"] = round(accepted_size_usd, 6) if accepted_size_usd > 0 else 0.0
+    if "worst_active_window_accepted_count" not in enriched and enriched.get("worst_accepting_window_accepted_count") is not None:
+        enriched["worst_active_window_accepted_count"] = int(enriched.get("worst_accepting_window_accepted_count") or 0)
+    if "worst_active_window_accepted_size_usd" not in enriched and enriched.get("worst_accepting_window_accepted_size_usd") is not None:
+        enriched["worst_active_window_accepted_size_usd"] = round(float(enriched.get("worst_accepting_window_accepted_size_usd") or 0.0), 6)
     if "accepted_window_count" not in enriched:
         if window_count == 1:
             enriched["accepted_window_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
@@ -3161,8 +3183,16 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             top_two_accepting_window_accepted_size_share = _top_two_accepting_window_accepted_size_share(row["result"])
             accepting_window_accepted_concentration_index = _accepting_window_accepted_concentration_index(row["result"])
             accepting_window_accepted_size_concentration_index = _accepting_window_accepted_size_concentration_index(row["result"])
-            worst_active_window_accepted_count = int(row["result"].get("worst_active_window_accepted_count") or 0)
-            worst_active_window_accepted_size_usd = float(row["result"].get("worst_active_window_accepted_size_usd") or 0.0)
+            worst_accepting_window_accepted_count = int(
+                row["result"].get("worst_accepting_window_accepted_count")
+                or row["result"].get("worst_active_window_accepted_count")
+                or 0
+            )
+            worst_accepting_window_accepted_size_usd = float(
+                row["result"].get("worst_accepting_window_accepted_size_usd")
+                or row["result"].get("worst_active_window_accepted_size_usd")
+                or 0.0
+            )
             worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
             carry_summary = (
                 f"{carry_window_count}/{active_window_count}"
@@ -3189,8 +3219,8 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
                 f" carry {carry_summary}"
                 f"{carry_restart_suffix}"
                 f" carry-avg {avg_window_end_open_exposure_share * 100:.0f}%"
-                f" worst-act {worst_active_window_accepted_count}"
-                f" worst-act$ {worst_active_window_accepted_size_usd:.2f}"
+                f" worst-acc {worst_accepting_window_accepted_count}"
+                f" worst-acc$ {worst_accepting_window_accepted_size_usd:.2f}"
                 f" | worst {worst_window_pnl_usd:+.2f}"
             )
         elif carry_window_count > 0 or avg_window_end_open_exposure_share > 0:
@@ -3707,7 +3737,17 @@ def _aggregate_window_results(
                 if values["active_window_accepted_counts"]
                 else None
             ),
+            "worst_accepting_window_accepted_count": (
+                int(min(values["active_window_accepted_counts"]))
+                if values["active_window_accepted_counts"]
+                else None
+            ),
             "worst_active_window_accepted_size_usd": (
+                round(float(min(values["active_window_accepted_sizes_usd"])), 6)
+                if values["active_window_accepted_sizes_usd"]
+                else None
+            ),
+            "worst_accepting_window_accepted_size_usd": (
                 round(float(min(values["active_window_accepted_sizes_usd"])), 6)
                 if values["active_window_accepted_sizes_usd"]
                 else None
@@ -4022,7 +4062,9 @@ def _aggregate_window_results(
         "accepting_window_accepted_concentration_index": round(accepting_window_accepted_concentration_index, 6),
         "accepting_window_accepted_size_concentration_index": round(accepting_window_accepted_size_concentration_index, 6),
         "worst_active_window_accepted_count": worst_active_window_accepted_count,
+        "worst_accepting_window_accepted_count": worst_active_window_accepted_count,
         "worst_active_window_accepted_size_usd": round(worst_active_window_accepted_size_usd, 6),
+        "worst_accepting_window_accepted_size_usd": round(worst_active_window_accepted_size_usd, 6),
         "window_avg_pnl_usd": round(window_avg_pnl_usd, 6),
         "window_pnl_stddev_usd": round(window_pnl_stddev_usd, 6),
         "worst_window_pnl_usd": round(min(pnl_values, default=0.0), 6),
@@ -4603,10 +4645,10 @@ def main() -> None:
     parser.add_argument("--mode-worst-window-resolved-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer unresolved deployed-dollar share in its worst active replay window in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--mode-active-window-accepted-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer active-window accepted-trade mix imbalance in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--mode-active-window-accepted-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer active-window deployed-dollar mix imbalance in bankroll-dollar terms when ranking candidates.")
-    parser.add_argument("--worst-active-window-accepted-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse accepted depth in the sparsest active replay window in bankroll-dollar terms when ranking candidates.")
-    parser.add_argument("--worst-active-window-accepted-size-penalty", type=float, default=0.0, help="Penalty multiplier applied to deployed-dollar sparsity in the shallowest active replay window relative to the candidate's own average active-window size.")
-    parser.add_argument("--mode-worst-active-window-accepted-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse accepted depth in the sparsest active enabled scorer window in bankroll-dollar terms when ranking candidates.")
-    parser.add_argument("--mode-worst-active-window-accepted-size-penalty", type=float, default=0.0, help="Penalty multiplier applied to deployed-dollar sparsity in the shallowest active enabled scorer window relative to that scorer's own average active-window size.")
+    parser.add_argument("--worst-active-window-accepted-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse accepted depth in the sparsest accepting replay window in bankroll-dollar terms when ranking candidates. Legacy flag name retained for compatibility.")
+    parser.add_argument("--worst-active-window-accepted-size-penalty", type=float, default=0.0, help="Penalty multiplier applied to deployed-dollar sparsity in the shallowest accepting replay window relative to the candidate's own average accepting-window size. Legacy flag name retained for compatibility.")
+    parser.add_argument("--mode-worst-active-window-accepted-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse accepted depth in the sparsest accepting enabled scorer window in bankroll-dollar terms when ranking candidates. Legacy flag name retained for compatibility.")
+    parser.add_argument("--mode-worst-active-window-accepted-size-penalty", type=float, default=0.0, help="Penalty multiplier applied to deployed-dollar sparsity in the shallowest accepting enabled scorer window relative to that scorer's own average accepting-window size. Legacy flag name retained for compatibility.")
     parser.add_argument("--mode-loss-penalty", type=float, default=0.0, help="Penalty per replay dollar lost by any active scorer path when ranking candidates.")
     parser.add_argument("--mode-inactivity-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer inactive-window share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--mode-accepted-window-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse fresh accepting-window breadth for the worst enabled scorer across stitched scorer-active replay windows.")
@@ -4658,8 +4700,8 @@ def main() -> None:
     parser.add_argument("--max-top-two-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum combined share of accepted replay deployed dollars allowed to fall into the top two stitched accepting windows.")
     parser.add_argument("--max-accepting-window-accepted-concentration-index", type=float, default=0.0, help="Maximum stitched accepting-window trade concentration index allowed across the replay horizon.")
     parser.add_argument("--max-accepting-window-accepted-size-concentration-index", type=float, default=0.0, help="Maximum stitched accepting-window deployed-dollar concentration index allowed across the replay horizon.")
-    parser.add_argument("--min-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in the sparsest active replay window.")
-    parser.add_argument("--min-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in the shallowest active replay window.")
+    parser.add_argument("--min-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in the sparsest accepting replay window. Legacy flag name retained for compatibility.")
+    parser.add_argument("--min-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in the shallowest accepting replay window. Legacy flag name retained for compatibility.")
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-count", type=int, default=0, help="Minimum resolved trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades that must be resolved.")
@@ -4694,10 +4736,10 @@ def main() -> None:
     parser.add_argument("--min-xgboost-worst-window-resolved-size-share", type=float, default=0.0, help="Minimum deployed-dollar resolved-share required for xgboost in its worst active replay window.")
     parser.add_argument("--min-heuristic-positive-windows", type=int, default=0, help="Minimum count of positive replay windows required from heuristic.")
     parser.add_argument("--min-xgboost-positive-windows", type=int, default=0, help="Minimum count of positive replay windows required from xgboost.")
-    parser.add_argument("--min-heuristic-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in heuristic's sparsest active replay window.")
-    parser.add_argument("--min-xgboost-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in xgboost's sparsest active replay window.")
-    parser.add_argument("--min-heuristic-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in heuristic's shallowest active replay window.")
-    parser.add_argument("--min-xgboost-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in xgboost's shallowest active replay window.")
+    parser.add_argument("--min-heuristic-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in heuristic's sparsest accepting replay window. Legacy flag name retained for compatibility.")
+    parser.add_argument("--min-xgboost-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in xgboost's sparsest accepting replay window. Legacy flag name retained for compatibility.")
+    parser.add_argument("--min-heuristic-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in heuristic's shallowest accepting replay window. Legacy flag name retained for compatibility.")
+    parser.add_argument("--min-xgboost-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in xgboost's shallowest accepting replay window. Legacy flag name retained for compatibility.")
     parser.add_argument("--max-heuristic-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where heuristic may be inactive before a candidate is rejected.")
     parser.add_argument("--max-xgboost-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where xgboost may be inactive before a candidate is rejected.")
     parser.add_argument("--min-heuristic-accepted-windows", type=int, default=0, help="Minimum count of stitched replay windows that must still produce fresh heuristic accepts.")

@@ -1660,9 +1660,9 @@ function replaySearchModeFloorSummary(raw, policyRaw) {
         if (minHeuristicPositiveWindows > 0)
             parts.push(`heur pos>=${formatCount(minHeuristicPositiveWindows)}`);
         if (minHeuristicWorstActiveWindowAcceptedCount > 0)
-            parts.push(`heur worst act>=${formatCount(minHeuristicWorstActiveWindowAcceptedCount)}`);
+            parts.push(`heur worst acc>=${formatCount(minHeuristicWorstActiveWindowAcceptedCount)}`);
             if (minHeuristicWorstActiveWindowAcceptedSizeUsd > 0)
-                parts.push(`heur worst act$>=${formatDollar(minHeuristicWorstActiveWindowAcceptedSizeUsd)}`);
+                parts.push(`heur worst acc$>=${formatDollar(minHeuristicWorstActiveWindowAcceptedSizeUsd)}`);
             if (maxHeuristicInactiveWindows >= 0)
                 parts.push(`heur idle<=${formatCount(maxHeuristicInactiveWindows)}`);
             if (minHeuristicAcceptedWindows > 0)
@@ -1719,9 +1719,9 @@ function replaySearchModeFloorSummary(raw, policyRaw) {
         if (minXgboostPositiveWindows > 0)
             parts.push(`model pos>=${formatCount(minXgboostPositiveWindows)}`);
         if (minXgboostWorstActiveWindowAcceptedCount > 0)
-            parts.push(`model worst act>=${formatCount(minXgboostWorstActiveWindowAcceptedCount)}`);
+            parts.push(`model worst acc>=${formatCount(minXgboostWorstActiveWindowAcceptedCount)}`);
             if (minXgboostWorstActiveWindowAcceptedSizeUsd > 0)
-                parts.push(`model worst act$>=${formatDollar(minXgboostWorstActiveWindowAcceptedSizeUsd)}`);
+                parts.push(`model worst acc$>=${formatDollar(minXgboostWorstActiveWindowAcceptedSizeUsd)}`);
             if (maxXgboostInactiveWindows >= 0)
                 parts.push(`model idle<=${formatCount(maxXgboostInactiveWindows)}`);
             if (minXgboostAcceptedWindows > 0)
@@ -2105,9 +2105,9 @@ function replaySearchScoreBreakdownSummary(raw) {
         if (Math.abs(worstWindowResolvedSizeSharePenaltyUsd) > 1e-9)
             parts.push(`w-sz-cov ${formatDollar(-worstWindowResolvedSizeSharePenaltyUsd)}`);
         if (Math.abs(worstActiveWindowAcceptedPenaltyUsd) > 1e-9)
-            parts.push(`w-act ${formatDollar(-worstActiveWindowAcceptedPenaltyUsd)}`);
+            parts.push(`w-acc ${formatDollar(-worstActiveWindowAcceptedPenaltyUsd)}`);
         if (Math.abs(worstActiveWindowAcceptedSizePenaltyUsd) > 1e-9)
-            parts.push(`w-act$ ${formatDollar(-worstActiveWindowAcceptedSizePenaltyUsd)}`);
+            parts.push(`w-acc$ ${formatDollar(-worstActiveWindowAcceptedSizePenaltyUsd)}`);
         if (Math.abs(modeResolvedSharePenaltyUsd) > 1e-9)
             parts.push(`m-cov ${formatDollar(-modeResolvedSharePenaltyUsd)}`);
         if (Math.abs(modeResolvedSizeSharePenaltyUsd) > 1e-9)
@@ -2121,9 +2121,9 @@ function replaySearchScoreBreakdownSummary(raw) {
         if (Math.abs(modeActiveWindowAcceptedSizeSharePenaltyUsd) > 1e-9)
             parts.push(`m-acc-mix$ ${formatDollar(-modeActiveWindowAcceptedSizeSharePenaltyUsd)}`);
         if (Math.abs(modeWorstActiveWindowAcceptedPenaltyUsd) > 1e-9)
-            parts.push(`mw-act ${formatDollar(-modeWorstActiveWindowAcceptedPenaltyUsd)}`);
+            parts.push(`mw-acc ${formatDollar(-modeWorstActiveWindowAcceptedPenaltyUsd)}`);
         if (Math.abs(modeWorstActiveWindowAcceptedSizePenaltyUsd) > 1e-9)
-            parts.push(`mw-act$ ${formatDollar(-modeWorstActiveWindowAcceptedSizePenaltyUsd)}`);
+            parts.push(`mw-acc$ ${formatDollar(-modeWorstActiveWindowAcceptedSizePenaltyUsd)}`);
         if (Math.abs(modeLossPenaltyUsd) > 1e-9)
             parts.push(`mode ${formatDollar(-modeLossPenaltyUsd)}`);
         if (Math.abs(modeInactivityPenaltyUsd) > 1e-9)
@@ -2215,16 +2215,16 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('acc-ci$', row.accepting_window_accepted_size_concentration_index_penalty);
     pushIfActive('w-cov', row.worst_window_resolved_share_penalty);
     pushIfActive('w-sz-cov', row.worst_window_resolved_size_share_penalty);
-    pushIfActive('w-act', row.worst_active_window_accepted_penalty);
-    pushIfActive('w-act$', row.worst_active_window_accepted_size_penalty);
+    pushIfActive('w-acc', row.worst_active_window_accepted_penalty);
+    pushIfActive('w-acc$', row.worst_active_window_accepted_size_penalty);
     pushIfActive('m-cov', row.mode_resolved_share_penalty);
     pushIfActive('m-sz-cov', row.mode_resolved_size_share_penalty);
     pushIfActive('mw-cov', row.mode_worst_window_resolved_share_penalty);
     pushIfActive('mw-sz-cov', row.mode_worst_window_resolved_size_share_penalty);
     pushIfActive('m-acc-mix', row.mode_active_window_accepted_share_penalty);
     pushIfActive('m-acc-mix$', row.mode_active_window_accepted_size_share_penalty);
-    pushIfActive('mw-act', row.mode_worst_active_window_accepted_penalty);
-    pushIfActive('mw-act$', row.mode_worst_active_window_accepted_size_penalty);
+    pushIfActive('mw-acc', row.mode_worst_active_window_accepted_penalty);
+    pushIfActive('mw-acc$', row.mode_worst_active_window_accepted_size_penalty);
     pushIfActive('mode', row.mode_loss_penalty);
     pushIfActive('idle', row.mode_inactivity_penalty);
     pushIfActive('m-acc-win', row.mode_accepted_window_count_penalty);
@@ -2692,9 +2692,9 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     if (Math.abs(worstSizeCoverageDelta) > 1e-9)
         parts.push(`w-sz-cov ${formatDollar(worstSizeCoverageDelta)}`);
     if (Math.abs(worstActiveDepthDelta) > 1e-9)
-        parts.push(`w-act ${formatDollar(worstActiveDepthDelta)}`);
+        parts.push(`w-acc ${formatDollar(worstActiveDepthDelta)}`);
     if (Math.abs(worstActiveSizeDepthDelta) > 1e-9)
-        parts.push(`w-act$ ${formatDollar(worstActiveSizeDepthDelta)}`);
+        parts.push(`w-acc$ ${formatDollar(worstActiveSizeDepthDelta)}`);
     if (Math.abs(modeCoverageDelta) > 1e-9)
         parts.push(`m-cov ${formatDollar(modeCoverageDelta)}`);
     if (Math.abs(modeSizeCoverageDelta) > 1e-9)
@@ -2708,9 +2708,9 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     if (Math.abs(modeActiveWindowSizeMixDelta) > 1e-9)
         parts.push(`m-acc-mix$ ${formatDollar(modeActiveWindowSizeMixDelta)}`);
     if (Math.abs(modeWorstActiveDepthDelta) > 1e-9)
-        parts.push(`mw-act ${formatDollar(modeWorstActiveDepthDelta)}`);
+        parts.push(`mw-acc ${formatDollar(modeWorstActiveDepthDelta)}`);
     if (Math.abs(modeWorstActiveSizeDepthDelta) > 1e-9)
-        parts.push(`mw-act$ ${formatDollar(modeWorstActiveSizeDepthDelta)}`);
+        parts.push(`mw-acc$ ${formatDollar(modeWorstActiveSizeDepthDelta)}`);
     if (Math.abs(modeDelta) > 1e-9)
         parts.push(`mode ${formatDollar(modeDelta)}`);
     if (Math.abs(inactivityDelta) > 1e-9)
@@ -3167,10 +3167,10 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
             const rawWorstWindowPnlUsd = payload.worst_window_pnl_usd;
             const worstWindowPnlUsd = rawWorstWindowPnlUsd == null ? totalPnlUsd : Number(rawWorstWindowPnlUsd);
             const worstWindowResolvedShare = Number(payload.worst_active_window_resolved_share ?? payload.worst_window_resolved_share ?? resolvedShare);
-            const worstActiveWindowAcceptedCount = payload.worst_active_window_accepted_count == null
+            const worstActiveWindowAcceptedCount = payload.worst_accepting_window_accepted_count == null && payload.worst_active_window_accepted_count == null
                 ? null
-                : Number(payload.worst_active_window_accepted_count);
-            const worstActiveWindowAcceptedSizeUsd = Number(payload.worst_active_window_accepted_size_usd || 0);
+                : Number(payload.worst_accepting_window_accepted_count ?? payload.worst_active_window_accepted_count);
+            const worstActiveWindowAcceptedSizeUsd = Number(payload.worst_accepting_window_accepted_size_usd ?? payload.worst_active_window_accepted_size_usd ?? 0);
             const inactiveWindowCount = Number(payload.inactive_window_count || 0);
             const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount);
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
@@ -3260,12 +3260,12 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
             if (minWorstActiveWindowAcceptedCount > 0 && acceptedCount > 0) {
                 hasActiveGuard = true;
                 if (worstActiveWindowAcceptedCount == null || worstActiveWindowAcceptedCount < minWorstActiveWindowAcceptedCount)
-                    breaches.push(`${prefix} worst act ${formatCount(worstActiveWindowAcceptedCount)}<${formatCount(minWorstActiveWindowAcceptedCount)}`);
+                    breaches.push(`${prefix} worst acc ${formatCount(worstActiveWindowAcceptedCount)}<${formatCount(minWorstActiveWindowAcceptedCount)}`);
             }
             if (minWorstActiveWindowAcceptedSizeUsd > 0 && acceptedSizeUsd > 0) {
                 hasActiveGuard = true;
                 if (worstActiveWindowAcceptedSizeUsd < minWorstActiveWindowAcceptedSizeUsd)
-                    breaches.push(`${prefix} worst act$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}<${formatDollar(minWorstActiveWindowAcceptedSizeUsd)}`);
+                    breaches.push(`${prefix} worst acc$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}<${formatDollar(minWorstActiveWindowAcceptedSizeUsd)}`);
             }
             if (maxInactiveWindows >= 0) {
                 hasActiveGuard = true;
@@ -3421,9 +3421,9 @@ function replaySearchModePenaltySummary(row) {
     if (modeActiveWindowAcceptedSizeSharePenalty > 0)
         parts.push(`acc-mix$ ${modeActiveWindowAcceptedSizeSharePenalty.toFixed(2)}x`);
     if (modeWorstActiveWindowAcceptedPenalty > 0)
-        parts.push(`w-act ${modeWorstActiveWindowAcceptedPenalty.toFixed(2)}x`);
+        parts.push(`w-acc ${modeWorstActiveWindowAcceptedPenalty.toFixed(2)}x`);
     if (modeWorstActiveWindowAcceptedSizePenalty > 0)
-        parts.push(`w-act$ ${modeWorstActiveWindowAcceptedSizePenalty.toFixed(2)}x`);
+        parts.push(`w-acc$ ${modeWorstActiveWindowAcceptedSizePenalty.toFixed(2)}x`);
     if (modeLossPenalty > 0)
         parts.push(`loss ${modeLossPenalty.toFixed(2)}x`);
     if (modeInactivityPenalty > 0)
@@ -3515,9 +3515,9 @@ function replaySearchFailureSummary(raw, feasible) {
                 case 'accepting_window_accepted_size_concentration_index':
                     return 'acc-ci$';
                 case 'worst_active_window_accepted_count':
-                    return 'worst act n';
+                    return 'worst acc n';
                 case 'worst_active_window_accepted_size_usd':
-                    return 'worst act$';
+                    return 'worst acc$';
                 case 'pause_guard_reject_share':
                     return 'pause share';
                 case 'daily_guard_window_share':
@@ -3597,9 +3597,9 @@ function replaySearchFailureSummary(raw, feasible) {
                 case 'heuristic_worst_window_resolved_size_share':
                     return 'heur worst size cov';
                 case 'heuristic_worst_active_window_accepted_count':
-                    return 'heur worst act';
+                    return 'heur worst acc';
                 case 'heuristic_worst_active_window_accepted_size_usd':
-                    return 'heur worst act$';
+                    return 'heur worst acc$';
                 case 'heuristic_accepted_size_share':
                     return 'heur mix$';
                 case 'heuristic_accepted_share':
@@ -3635,9 +3635,9 @@ function replaySearchFailureSummary(raw, feasible) {
                 case 'xgboost_worst_window_resolved_size_share':
                     return 'model worst size cov';
                 case 'xgboost_worst_active_window_accepted_count':
-                    return 'model worst act';
+                    return 'model worst acc';
                 case 'xgboost_worst_active_window_accepted_size_usd':
-                    return 'model worst act$';
+                    return 'model worst acc$';
                 case 'xgboost_accepted_size_share':
                     return 'model mix$';
                 case 'xgboost_accepted_share':
@@ -3735,8 +3735,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
     const globalMaxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(resultParsed);
     const globalTopTwoAcceptingWindowAcceptedShare = replaySearchTopTwoAcceptingWindowAcceptedShareFromPayload(resultParsed);
     const globalTopTwoAcceptingWindowAcceptedSizeShare = replaySearchTopTwoAcceptingWindowAcceptedSizeShareFromPayload(resultParsed);
-        const globalWorstActiveWindowAcceptedCount = Number(resultParsed.worst_active_window_accepted_count || 0);
-        const globalWorstActiveWindowAcceptedSizeUsd = Number(resultParsed.worst_active_window_accepted_size_usd || 0);
+        const globalWorstActiveWindowAcceptedCount = Number(resultParsed.worst_accepting_window_accepted_count ?? resultParsed.worst_active_window_accepted_count ?? 0);
+        const globalWorstActiveWindowAcceptedSizeUsd = Number(resultParsed.worst_accepting_window_accepted_size_usd ?? resultParsed.worst_active_window_accepted_size_usd ?? 0);
         const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0);
         const globalWorstWindowResolvedShare = Number(resultParsed.worst_active_window_resolved_share ?? resultParsed.worst_window_resolved_share ?? globalResolvedShare);
         const globalWorstWindowResolvedSizeShare = Number(resultParsed.worst_active_window_resolved_size_share ?? resultParsed.worst_window_resolved_size_share ?? globalResolvedSizeShare);
@@ -3929,9 +3929,9 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         if (maxAcceptingWindowAcceptedSizeConcentrationIndex > 0)
             pushHeadroom('global', 'acc-ci$', replaySearchAcceptingWindowAcceptedSizeConcentrationIndexFromPayload(resultParsed), maxAcceptingWindowAcceptedSizeConcentrationIndex, replayHeadroomPctPoints, 'max');
         if (minWorstActiveWindowAcceptedCount > 0)
-            pushHeadroom('global', 'worst act n', globalWorstActiveWindowAcceptedCount, minWorstActiveWindowAcceptedCount, replayHeadroomCount, 'min');
+            pushHeadroom('global', 'worst acc n', globalWorstActiveWindowAcceptedCount, minWorstActiveWindowAcceptedCount, replayHeadroomCount, 'min');
         if (minWorstActiveWindowAcceptedSizeUsd > 0)
-            pushHeadroom('global', 'worst act$', globalWorstActiveWindowAcceptedSizeUsd, minWorstActiveWindowAcceptedSizeUsd, formatDollar, 'min');
+            pushHeadroom('global', 'worst acc$', globalWorstActiveWindowAcceptedSizeUsd, minWorstActiveWindowAcceptedSizeUsd, formatDollar, 'min');
         if (minWorstWindowPnlUsd > -999999999)
             pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min');
         if (minWorstWindowResolvedShare > 0)
@@ -3958,10 +3958,10 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0;
             const resolvedSizeShare = acceptedSizeUsd > 0 ? resolvedSizeUsd / acceptedSizeUsd : 0;
             const worstWindowResolvedShare = Number(payload.worst_active_window_resolved_share ?? payload.worst_window_resolved_share ?? resolvedShare);
-            const worstActiveWindowAcceptedCount = payload.worst_active_window_accepted_count == null
+            const worstActiveWindowAcceptedCount = payload.worst_accepting_window_accepted_count == null && payload.worst_active_window_accepted_count == null
                 ? null
-                : Number(payload.worst_active_window_accepted_count);
-            const worstActiveWindowAcceptedSizeUsd = Number(payload.worst_active_window_accepted_size_usd || 0);
+                : Number(payload.worst_accepting_window_accepted_count ?? payload.worst_active_window_accepted_count);
+            const worstActiveWindowAcceptedSizeUsd = Number(payload.worst_accepting_window_accepted_size_usd ?? payload.worst_active_window_accepted_size_usd ?? 0);
       const inactiveWindowCount = Number(payload.inactive_window_count || 0);
       const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, Number(resultParsed.window_count || 0));
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, Number(resultParsed.window_count || 0));
@@ -4023,9 +4023,9 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             if (minModePositiveWindows > 0)
                 pushHeadroom(mode, `${prefix} pos`, positiveWindowCount, minModePositiveWindows, replayHeadroomCount, 'min');
             if (minModeWorstActiveWindowAcceptedCount > 0 && acceptedCount > 0 && worstActiveWindowAcceptedCount != null)
-                pushHeadroom(mode, `${prefix} worst act`, worstActiveWindowAcceptedCount, minModeWorstActiveWindowAcceptedCount, replayHeadroomCount, 'min');
+                pushHeadroom(mode, `${prefix} worst acc`, worstActiveWindowAcceptedCount, minModeWorstActiveWindowAcceptedCount, replayHeadroomCount, 'min');
             if (minModeWorstActiveWindowAcceptedSizeUsd > 0 && acceptedSizeUsd > 0)
-                pushHeadroom(mode, `${prefix} worst act$`, worstActiveWindowAcceptedSizeUsd, minModeWorstActiveWindowAcceptedSizeUsd, formatDollar, 'min');
+                pushHeadroom(mode, `${prefix} worst acc$`, worstActiveWindowAcceptedSizeUsd, minModeWorstActiveWindowAcceptedSizeUsd, formatDollar, 'min');
             if (maxModeInactiveWindows >= 0)
                 pushHeadroom(mode, `${prefix} idle`, inactiveWindowCount, maxModeInactiveWindows, replayHeadroomCount, 'max');
             if (minModeAcceptedWindows > 0)
@@ -4122,8 +4122,8 @@ function replaySearchWindowSummary(latestSearch) {
         const inactiveWindowCount = Number(parsed.inactive_window_count || 0);
         const maxAcceptingWindowAcceptedShare = replaySearchMaxAcceptingWindowAcceptedShareFromPayload(parsed);
         const maxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(parsed);
-        const worstActiveWindowAcceptedCount = Number(parsed.worst_active_window_accepted_count || 0);
-        const worstActiveWindowAcceptedSizeUsd = Number(parsed.worst_active_window_accepted_size_usd || 0);
+        const worstActiveWindowAcceptedCount = Number(parsed.worst_accepting_window_accepted_count ?? parsed.worst_active_window_accepted_count ?? 0);
+        const worstActiveWindowAcceptedSizeUsd = Number(parsed.worst_accepting_window_accepted_size_usd ?? parsed.worst_active_window_accepted_size_usd ?? 0);
         const carryWindowCount = Number(parsed.carry_window_count || 0);
         const carryRestartWindowCount = Number(parsed.carry_restart_window_count || 0);
         const carryRestartWindowOpportunityCount = Number(parsed.carry_restart_window_opportunity_count || 0);
@@ -4163,7 +4163,7 @@ function replaySearchWindowSummary(latestSearch) {
             : '';
         if (windowCount <= 1)
             return `${positive}+ / ${negative}-${topAcceptSuffix}${topAcceptSizeSuffix}${topTwoAcceptSuffix}${topTwoAcceptSizeSuffix}${concentrationSuffix}${concentrationSizeSuffix}${carrySuffix}${carryFreqSuffix}${carryRestartSuffix} | ${worst}`;
-        return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | accept ${formatCount(acceptedWindowCount)}/${formatCount(windowCount)} | acc-freq ${formatPct(acceptedWindowShare, 0)} | acc-gap ${formatCount(maxNonAcceptingActiveWindowStreak)} | acc-runs ${formatCount(nonAcceptingActiveWindowEpisodeCount)} | top-acc ${formatPct(maxAcceptingWindowAcceptedShare, 0)} | top-acc$ ${formatPct(maxAcceptingWindowAcceptedSizeShare, 0)}${topTwoAcceptSuffix}${topTwoAcceptSizeSuffix}${concentrationSuffix}${concentrationSizeSuffix} | idle ${formatCount(inactiveWindowCount)}${carryFreqSuffix}${carryRestartSuffix} | worst act ${formatCount(worstActiveWindowAcceptedCount)} | worst act$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}${carrySuffix} | ${worst}`;
+        return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | accept ${formatCount(acceptedWindowCount)}/${formatCount(windowCount)} | acc-freq ${formatPct(acceptedWindowShare, 0)} | acc-gap ${formatCount(maxNonAcceptingActiveWindowStreak)} | acc-runs ${formatCount(nonAcceptingActiveWindowEpisodeCount)} | top-acc ${formatPct(maxAcceptingWindowAcceptedShare, 0)} | top-acc$ ${formatPct(maxAcceptingWindowAcceptedSizeShare, 0)}${topTwoAcceptSuffix}${topTwoAcceptSizeSuffix}${concentrationSuffix}${concentrationSizeSuffix} | idle ${formatCount(inactiveWindowCount)}${carryFreqSuffix}${carryRestartSuffix} | worst acc ${formatCount(worstActiveWindowAcceptedCount)} | worst acc$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}${carrySuffix} | ${worst}`;
     }
     catch {
         return `${positive}+ / ${negative}- | ${worst}`;

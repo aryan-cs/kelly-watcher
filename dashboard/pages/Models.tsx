@@ -6109,19 +6109,26 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const startupFailed = Boolean(botState.startup_failed || botState.startup_validation_failed)
   const startupDetail = String(botState.startup_detail || '').trim()
   const startupFailureMessage = String(botState.startup_failure_message || botState.startup_validation_message || '').trim()
+  const shadowRestartPending = Boolean(botState.shadow_restart_pending)
+  const shadowRestartMessage = String(botState.shadow_restart_message || '').trim() || 'shadow restart in progress'
   const startupValue = useMemo(() => {
     if (startupFailed) return startupDetail || startupFailureMessage || 'startup failed'
+    if (shadowRestartPending) return shadowRestartMessage
     if ((botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail) return startupDetail
     return 'ready'
   }, [
     botState.last_poll_at,
     botState.started_at,
+    shadowRestartMessage,
+    shadowRestartPending,
     startupDetail,
     startupFailed,
     startupFailureMessage
   ])
   const startupColor = startupFailed
     ? theme.red
+    : shadowRestartPending
+      ? theme.yellow
     : (botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail
       ? theme.yellow
       : theme.green

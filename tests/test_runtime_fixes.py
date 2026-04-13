@@ -907,6 +907,40 @@ class RuntimeFixesTest(unittest.TestCase):
         )
         self.assertEqual(row["status"], "completed")
 
+    def test_insert_replay_search_failure_run_persists_durable_failed_row(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+
+                row = main._insert_replay_search_failure_run(
+                    started_at=100,
+                    finished_at=120,
+                    request_token="req-failed",
+                    trigger="scheduled",
+                    label_prefix="scheduled",
+                    notes="nightly",
+                    message="Replay search failed with exit code 2: traceback tail",
+                )
+                payload = main._latest_replay_search_state_payload(row)
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        assert row is not None
+        self.assertEqual(row["request_token"], "req-failed")
+        self.assertEqual(row["trigger"], "scheduled")
+        self.assertEqual(row["label_prefix"], "scheduled")
+        self.assertEqual(row["notes"], "nightly")
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["status_message"], "Replay search failed with exit code 2: traceback tail")
+        self.assertEqual(payload["last_replay_search_status"], "failed")
+        self.assertEqual(payload["last_replay_search_trigger"], "scheduled")
+        self.assertEqual(payload["last_replay_search_message"], "Replay search failed with exit code 2: traceback tail")
+
     def test_latest_retrain_state_payload_loads_latest_persisted_run_for_restart(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

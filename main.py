@@ -2721,6 +2721,49 @@ def _persist_replay_search_run_runtime_context(
         conn.close()
 
 
+def _insert_replay_search_failure_run(
+    *,
+    started_at: int,
+    finished_at: int,
+    request_token: str,
+    trigger: str,
+    label_prefix: str,
+    notes: str,
+    message: str,
+) -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO replay_search_runs (
+                started_at, finished_at, request_token, trigger, label_prefix, status, status_message, notes
+            ) VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                int(started_at),
+                int(finished_at),
+                str(request_token or ""),
+                str(trigger or ""),
+                str(label_prefix or ""),
+                "failed",
+                str(message or ""),
+                str(notes or ""),
+            ),
+        )
+        run_id = int(cursor.lastrowid or 0)
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM replay_search_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    except Exception:
+        logger.exception("Failed to insert fallback replay-search failure row")
+        return None
+    finally:
+        conn.close()
+
+
 def _load_replay_search_candidate(
     replay_search_run_id: int,
     *,
@@ -4356,6 +4399,7 @@ def main() -> None:
             return False
 
         started_at = int(time.time())
+        request_token = ""
         _persist_bot_state(
             **_replay_search_transient_status_state(
                 status="running",
@@ -4403,6 +4447,16 @@ def main() -> None:
                         "status_message": message,
                         "status": "failed",
                     }
+                else:
+                    run_row = _insert_replay_search_failure_run(
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        request_token=request_token,
+                        trigger=trigger,
+                        label_prefix=replay_search_label_prefix(),
+                        notes=replay_search_notes(),
+                        message=message,
+                    )
                 _persist_bot_state(
                     replay_search_in_progress=False,
                     replay_search_started_at=0,
@@ -4425,6 +4479,15 @@ def main() -> None:
                     f"for request_token={request_token}"
                 )
                 logger.error(message)
+                run_row = _insert_replay_search_failure_run(
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    request_token=request_token,
+                    trigger=trigger,
+                    label_prefix=replay_search_label_prefix(),
+                    notes=replay_search_notes(),
+                    message=message,
+                )
                 _persist_bot_state(
                     replay_search_in_progress=False,
                     replay_search_started_at=0,
@@ -4433,6 +4496,7 @@ def main() -> None:
                     last_replay_search_message=message,
                     last_replay_search_trigger=trigger,
                     last_replay_search_scope="shadow_only",
+                    last_replay_search_run_id=int((run_row or {}).get("id") or 0),
                 )
                 return False
 
@@ -4479,6 +4543,15 @@ def main() -> None:
             finished_at = int(time.time())
             message = f"Replay search failed: {exc}"
             logger.exception(message)
+            run_row = _insert_replay_search_failure_run(
+                started_at=started_at,
+                finished_at=finished_at,
+                request_token=request_token,
+                trigger=trigger,
+                label_prefix=replay_search_label_prefix(),
+                notes=replay_search_notes(),
+                message=message,
+            )
             _persist_bot_state(
                 replay_search_in_progress=False,
                 replay_search_started_at=0,
@@ -4487,6 +4560,7 @@ def main() -> None:
                 last_replay_search_message=message,
                 last_replay_search_trigger=trigger,
                 last_replay_search_scope="shadow_only",
+                last_replay_search_run_id=int((run_row or {}).get("id") or 0),
             )
             return False
         finally:

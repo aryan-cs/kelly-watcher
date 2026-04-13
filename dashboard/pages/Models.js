@@ -80,8 +80,8 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and scorer-path gates on the latest best feasible replay-search candidate.' },
             { label: 'Wallet conc', text: 'Best and current replay-search dependence on a single wallet, shown as top accepted-share and top absolute-P&L share plus any active caps.' },
             { label: 'Market conc', text: 'Best and current replay-search dependence on a single market, shown as top accepted-share and top absolute-P&L share plus any active caps.' },
-            { label: 'Entry conc', text: 'Best and current replay-search dependence on a single entry-price band, shown as top accepted-share and top absolute-P&L share plus any active caps.' },
-            { label: 'Horizon conc', text: 'Best and current replay-search dependence on a single time-to-close band, shown as top accepted-share and top absolute-P&L share plus any active caps.' },
+            { label: 'Entry conc', text: 'Best and current replay-search dependence on a single entry-price band, shown as top accepted-share, top absolute-P&L share, and any active cap or score penalty.' },
+            { label: 'Horizon conc', text: 'Best and current replay-search dependence on a single time-to-close band, shown as top accepted-share, top absolute-P&L share, and any active cap or score penalty.' },
             { label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap or ranking penalty.' },
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
@@ -94,7 +94,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.' },
             { label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.' },
             { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window loss, pause-guard, global coverage, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
-            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including global coverage, scorer coverage, and scorer inactivity.' },
+            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including coverage, scorer-path, and concentration penalties.' },
             { label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.' },
             { label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
             { label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
@@ -374,7 +374,9 @@ WITH latest_search AS (
     mode_loss_penalty,
     mode_inactivity_penalty,
     wallet_concentration_penalty,
-    market_concentration_penalty
+    market_concentration_penalty,
+    entry_price_band_concentration_penalty,
+    time_to_close_band_concentration_penalty
   FROM replay_search_runs
   ORDER BY finished_at DESC, id DESC
   LIMIT 1
@@ -428,6 +430,8 @@ SELECT
   latest_search.mode_inactivity_penalty,
   latest_search.wallet_concentration_penalty,
   latest_search.market_concentration_penalty,
+  latest_search.entry_price_band_concentration_penalty,
+  latest_search.time_to_close_band_concentration_penalty,
   best_candidate.candidate_index,
   best_candidate.score,
   best_candidate.total_pnl_usd,
@@ -1562,6 +1566,8 @@ function replaySearchScoreBreakdownSummary(raw) {
         const modeInactivityPenaltyUsd = Number(breakdown.mode_inactivity_penalty_usd || 0);
         const walletConcentrationPenaltyUsd = Number(breakdown.wallet_concentration_penalty_usd || 0);
         const marketConcentrationPenaltyUsd = Number(breakdown.market_concentration_penalty_usd || 0);
+        const entryPriceBandConcentrationPenaltyUsd = Number(breakdown.entry_price_band_concentration_penalty_usd || 0);
+        const timeToCloseBandConcentrationPenaltyUsd = Number(breakdown.time_to_close_band_concentration_penalty_usd || 0);
         const parts = [
             `${formatNumber(scoreUsd, 2)} = ${formatDollar(pnlUsd)}`,
             `dd ${formatDollar(-drawdownPenaltyUsd)}`
@@ -1588,6 +1594,10 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`wallet ${formatDollar(-walletConcentrationPenaltyUsd)}`);
         if (Math.abs(marketConcentrationPenaltyUsd) > 1e-9)
             parts.push(`market ${formatDollar(-marketConcentrationPenaltyUsd)}`);
+        if (Math.abs(entryPriceBandConcentrationPenaltyUsd) > 1e-9)
+            parts.push(`band ${formatDollar(-entryPriceBandConcentrationPenaltyUsd)}`);
+        if (Math.abs(timeToCloseBandConcentrationPenaltyUsd) > 1e-9)
+            parts.push(`hzn ${formatDollar(-timeToCloseBandConcentrationPenaltyUsd)}`);
         return parts.join(' | ');
     }
     catch {
@@ -1615,6 +1625,8 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('idle', row.mode_inactivity_penalty);
     pushIfActive('wallet', row.wallet_concentration_penalty);
     pushIfActive('market', row.market_concentration_penalty);
+    pushIfActive('band', row.entry_price_band_concentration_penalty);
+    pushIfActive('hzn', row.time_to_close_band_concentration_penalty);
     return parts.length ? parts.join(' | ') : 'none';
 }
 function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
@@ -1643,7 +1655,9 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
                 mode_inactivity_penalty_usd: Number(breakdown.mode_inactivity_penalty_usd || 0),
                 wallet_concentration_penalty_usd: Number(breakdown.wallet_concentration_penalty_usd || 0),
-                market_concentration_penalty_usd: Number(breakdown.market_concentration_penalty_usd || 0)
+                market_concentration_penalty_usd: Number(breakdown.market_concentration_penalty_usd || 0),
+                entry_price_band_concentration_penalty_usd: Number(breakdown.entry_price_band_concentration_penalty_usd || 0),
+                time_to_close_band_concentration_penalty_usd: Number(breakdown.time_to_close_band_concentration_penalty_usd || 0)
             };
         }
         catch {
@@ -1668,6 +1682,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const inactivityDelta = current.mode_inactivity_penalty_usd - best.mode_inactivity_penalty_usd;
     const walletDelta = current.wallet_concentration_penalty_usd - best.wallet_concentration_penalty_usd;
     const marketDelta = current.market_concentration_penalty_usd - best.market_concentration_penalty_usd;
+    const entryBandDelta = current.entry_price_band_concentration_penalty_usd - best.entry_price_band_concentration_penalty_usd;
+    const horizonDelta = current.time_to_close_band_concentration_penalty_usd - best.time_to_close_band_concentration_penalty_usd;
     const parts = [
         `${formatDollar(scoreDelta)} = pnl ${formatDollar(pnlDelta)}`,
         `dd ${formatDollar(drawdownDelta)}`
@@ -1694,6 +1710,10 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`wallet ${formatDollar(walletDelta)}`);
     if (Math.abs(marketDelta) > 1e-9)
         parts.push(`market ${formatDollar(marketDelta)}`);
+    if (Math.abs(entryBandDelta) > 1e-9)
+        parts.push(`band ${formatDollar(entryBandDelta)}`);
+    if (Math.abs(horizonDelta) > 1e-9)
+        parts.push(`hzn ${formatDollar(horizonDelta)}`);
     return parts.join(' | ');
 }
 function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
@@ -1826,7 +1846,7 @@ function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraints
         overLimit
     };
 }
-function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw) {
+function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
     const parse = (raw) => {
         if (!raw)
             return { acceptedShare: null, absPnlShare: null };
@@ -1880,6 +1900,9 @@ function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, con
     if (limits.accepted > 0 || limits.pnl > 0) {
         parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`);
     }
+    const resolvedPenalty = Math.max(Number(penalty || 0), 0);
+    if (resolvedPenalty > 0)
+        parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
     const overLimit = (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
     return {
@@ -1888,7 +1911,7 @@ function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, con
         overLimit
     };
 }
-function replaySearchTimeToCloseBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw) {
+function replaySearchTimeToCloseBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
     const parse = (raw) => {
         if (!raw)
             return { acceptedShare: null, absPnlShare: null };
@@ -1942,6 +1965,9 @@ function replaySearchTimeToCloseBandConcentrationSummary(bestRaw, currentRaw, co
     if (limits.accepted > 0 || limits.pnl > 0) {
         parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`);
     }
+    const resolvedPenalty = Math.max(Number(penalty || 0), 0);
+    if (resolvedPenalty > 0)
+        parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
     const overLimit = (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
     return {
@@ -2879,15 +2905,17 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         latestReplaySearch?.result_json,
         latestReplaySearch?.market_concentration_penalty
     ]);
-    const replaySearchEntryPriceBandConcentration = useMemo(() => replaySearchEntryPriceBandConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [
+    const replaySearchEntryPriceBandConcentration = useMemo(() => replaySearchEntryPriceBandConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.entry_price_band_concentration_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
-        latestReplaySearch?.result_json
+        latestReplaySearch?.result_json,
+        latestReplaySearch?.entry_price_band_concentration_penalty
     ]);
-    const replaySearchTimeToCloseBandConcentration = useMemo(() => replaySearchTimeToCloseBandConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [
+    const replaySearchTimeToCloseBandConcentration = useMemo(() => replaySearchTimeToCloseBandConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.time_to_close_band_concentration_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
-        latestReplaySearch?.result_json
+        latestReplaySearch?.result_json,
+        latestReplaySearch?.time_to_close_band_concentration_penalty
     ]);
     const replayLabStats = useMemo(() => [
         {

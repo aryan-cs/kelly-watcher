@@ -121,6 +121,36 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["mode_inactivity_penalty_usd"], 0.0)
         self.assertEqual(breakdown["score_usd"], 20.0)
 
+    def test_score_breakdown_ignores_disabled_scorer_losses(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 5,
+                        "resolved_count": 5,
+                        "trade_count": 5,
+                        "total_pnl_usd": -12.0,
+                    }
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            mode_loss_penalty=1.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=False,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_loss_penalty_usd"], 0.0)
+        self.assertEqual(breakdown["score_usd"], 20.0)
+
     def test_main_filters_infeasible_candidates_from_best_feasible_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes=""):
             payload = policy.as_dict()
@@ -940,6 +970,51 @@ class ReplaySearchTest(unittest.TestCase):
         rejected_breakdown = rejected["result"]["score_breakdown"]
         self.assertEqual(best_breakdown["mode_loss_penalty_usd"], 0.0)
         self.assertGreater(rejected_breakdown["mode_loss_penalty_usd"], 0.0)
+
+    def test_main_mode_loss_penalty_ignores_disabled_scorer_paths(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            allow_heuristic = bool(policy.as_dict()["allow_heuristic"])
+            return {
+                "run_id": 1 if allow_heuristic else 2,
+                "total_pnl_usd": 40.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "rejected_count": 0,
+                "trade_count": 8,
+                "win_rate": 0.625,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": -18.0, "win_count": 1},
+                    "xgboost": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 58.0, "win_count": 4},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"allow_heuristic": [True, False]}),
+            "--mode-loss-penalty",
+            "1.0",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["ranked"][0]["overrides"]["allow_heuristic"], False)
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["allow_heuristic"] is True)
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertEqual(best_breakdown["mode_loss_penalty_usd"], 0.0)
+        self.assertGreater(rejected_breakdown["mode_loss_penalty_usd"], 0.0)
+        self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
+        self.assertIn("allow_heuristic=False", stderr.getvalue())
 
     def test_main_can_penalize_scorer_inactivity_in_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):

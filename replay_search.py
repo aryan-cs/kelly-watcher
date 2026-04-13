@@ -82,16 +82,16 @@ def _score_breakdown(
     pause_guard_reject_share = _pause_guard_reject_share(result)
     signal_mode_summary = _signal_mode_summary(result)
     window_count = max(int(result.get("window_count") or 0), 0)
-    mode_loss_penalty_usd = mode_loss_penalty * sum(
-        max(-float(values.get("total_pnl_usd") or 0.0), 0.0)
-        for values in signal_mode_summary.values()
-        if int(values.get("accepted_count") or 0) > 0
-    )
     enabled_modes = []
     if allow_heuristic:
         enabled_modes.append("heuristic")
     if allow_xgboost:
         enabled_modes.append("xgboost")
+    mode_loss_penalty_usd = mode_loss_penalty * sum(
+        max(-float(signal_mode_summary.get(mode, {}).get("total_pnl_usd") or 0.0), 0.0)
+        for mode in enabled_modes
+        if int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0) > 0
+    )
     mode_inactivity_share = max(
         (
             float(int(signal_mode_summary.get(mode, {}).get("inactive_window_count") or 0)) / float(window_count)

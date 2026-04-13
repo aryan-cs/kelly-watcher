@@ -2076,6 +2076,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         if window_count > 1:
             positive_window_count = int(row["result"].get("positive_window_count") or 0)
             active_window_count = int(row["result"].get("active_window_count") or 0)
+            accepted_window_count = int(row["result"].get("accepted_window_count") or 0)
             worst_active_window_accepted_count = int(row["result"].get("worst_active_window_accepted_count") or 0)
             worst_active_window_accepted_size_usd = float(row["result"].get("worst_active_window_accepted_size_usd") or 0.0)
             worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
@@ -2094,6 +2095,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             window_suffix = (
                 f" | windows {positive_window_count}/{window_count}+"
                 f" active {active_window_count}/{window_count}"
+                f" accept {accepted_window_count}/{window_count}"
                 f" carry {carry_summary}"
                 f"{carry_restart_suffix}"
                 f" carry-avg {avg_window_end_open_exposure_share * 100:.0f}%"

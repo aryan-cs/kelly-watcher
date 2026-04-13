@@ -5464,6 +5464,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["worst_active_window_accepted_penalty_usd"], 0.0)
         self.assertGreater(rejected_breakdown["worst_active_window_accepted_penalty_usd"], best_breakdown["worst_active_window_accepted_penalty_usd"])
         self.assertGreater(best_breakdown["score_usd"], rejected_breakdown["score_usd"])
+        self.assertIn("accept 2/2", stderr.getvalue())
         self.assertIn("worst-act 2", stderr.getvalue())
 
     def test_main_uses_worst_active_window_counts_for_distinct_concentration_floors(self) -> None:

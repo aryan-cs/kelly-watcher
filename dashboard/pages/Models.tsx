@@ -203,6 +203,10 @@ interface ReplaySearchSummaryRow {
   mode_loss_penalty: number | null
   mode_inactivity_penalty: number | null
   window_inactivity_penalty: number | null
+  wallet_count_penalty: number | null
+  market_count_penalty: number | null
+  entry_price_band_count_penalty: number | null
+  time_to_close_band_count_penalty: number | null
   wallet_concentration_penalty: number | null
   market_concentration_penalty: number | null
   entry_price_band_concentration_penalty: number | null
@@ -650,6 +654,10 @@ WITH latest_search AS (
     mode_loss_penalty,
     mode_inactivity_penalty,
     window_inactivity_penalty,
+    wallet_count_penalty,
+    market_count_penalty,
+    entry_price_band_count_penalty,
+    time_to_close_band_count_penalty,
     wallet_concentration_penalty,
     market_concentration_penalty,
     entry_price_band_concentration_penalty,
@@ -708,6 +716,10 @@ SELECT
   latest_search.mode_loss_penalty,
   latest_search.mode_inactivity_penalty,
   latest_search.window_inactivity_penalty,
+  latest_search.wallet_count_penalty,
+  latest_search.market_count_penalty,
+  latest_search.entry_price_band_count_penalty,
+  latest_search.time_to_close_band_count_penalty,
   latest_search.wallet_concentration_penalty,
   latest_search.market_concentration_penalty,
   latest_search.entry_price_band_concentration_penalty,
@@ -1733,6 +1745,10 @@ function replaySearchScoreWeightSummary(row: ReplaySearchSummaryRow | undefined)
   pushIfActive('mw-act', row.mode_worst_active_window_accepted_penalty)
   pushIfActive('mode', row.mode_loss_penalty)
   pushIfActive('idle', row.mode_inactivity_penalty)
+  pushIfActive('wallet#', row.wallet_count_penalty)
+  pushIfActive('market#', row.market_count_penalty)
+  pushIfActive('band#', row.entry_price_band_count_penalty)
+  pushIfActive('hzn#', row.time_to_close_band_count_penalty)
   pushIfActive('wallet', row.wallet_concentration_penalty)
   pushIfActive('market', row.market_concentration_penalty)
   pushIfActive('band', row.entry_price_band_concentration_penalty)
@@ -1763,6 +1779,10 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     const modeWorstActiveWindowAcceptedPenaltyUsd = Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0)
     const modeLossPenaltyUsd = Number(breakdown.mode_loss_penalty_usd || 0)
     const modeInactivityPenaltyUsd = Number(breakdown.mode_inactivity_penalty_usd || 0)
+    const walletCountPenaltyUsd = Number(breakdown.wallet_count_penalty_usd || 0)
+    const marketCountPenaltyUsd = Number(breakdown.market_count_penalty_usd || 0)
+    const entryPriceBandCountPenaltyUsd = Number(breakdown.entry_price_band_count_penalty_usd || 0)
+    const timeToCloseBandCountPenaltyUsd = Number(breakdown.time_to_close_band_count_penalty_usd || 0)
     const walletConcentrationPenaltyUsd = Number(breakdown.wallet_concentration_penalty_usd || 0)
     const marketConcentrationPenaltyUsd = Number(breakdown.market_concentration_penalty_usd || 0)
     const entryPriceBandConcentrationPenaltyUsd = Number(breakdown.entry_price_band_concentration_penalty_usd || 0)
@@ -1783,6 +1803,10 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     if (Math.abs(modeWorstActiveWindowAcceptedPenaltyUsd) > 1e-9) parts.push(`mw-act ${formatDollar(-modeWorstActiveWindowAcceptedPenaltyUsd)}`)
     if (Math.abs(modeLossPenaltyUsd) > 1e-9) parts.push(`mode ${formatDollar(-modeLossPenaltyUsd)}`)
     if (Math.abs(modeInactivityPenaltyUsd) > 1e-9) parts.push(`idle ${formatDollar(-modeInactivityPenaltyUsd)}`)
+    if (Math.abs(walletCountPenaltyUsd) > 1e-9) parts.push(`wallet# ${formatDollar(-walletCountPenaltyUsd)}`)
+    if (Math.abs(marketCountPenaltyUsd) > 1e-9) parts.push(`market# ${formatDollar(-marketCountPenaltyUsd)}`)
+    if (Math.abs(entryPriceBandCountPenaltyUsd) > 1e-9) parts.push(`band# ${formatDollar(-entryPriceBandCountPenaltyUsd)}`)
+    if (Math.abs(timeToCloseBandCountPenaltyUsd) > 1e-9) parts.push(`hzn# ${formatDollar(-timeToCloseBandCountPenaltyUsd)}`)
     if (Math.abs(walletConcentrationPenaltyUsd) > 1e-9) parts.push(`wallet ${formatDollar(-walletConcentrationPenaltyUsd)}`)
     if (Math.abs(marketConcentrationPenaltyUsd) > 1e-9) parts.push(`market ${formatDollar(-marketConcentrationPenaltyUsd)}`)
     if (Math.abs(entryPriceBandConcentrationPenaltyUsd) > 1e-9) parts.push(`band ${formatDollar(-entryPriceBandConcentrationPenaltyUsd)}`)
@@ -1821,6 +1845,10 @@ function replaySearchScoreDriftSummary(
         mode_worst_active_window_accepted_penalty_usd: Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0),
         mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
         mode_inactivity_penalty_usd: Number(breakdown.mode_inactivity_penalty_usd || 0),
+        wallet_count_penalty_usd: Number(breakdown.wallet_count_penalty_usd || 0),
+        market_count_penalty_usd: Number(breakdown.market_count_penalty_usd || 0),
+        entry_price_band_count_penalty_usd: Number(breakdown.entry_price_band_count_penalty_usd || 0),
+        time_to_close_band_count_penalty_usd: Number(breakdown.time_to_close_band_count_penalty_usd || 0),
         wallet_concentration_penalty_usd: Number(breakdown.wallet_concentration_penalty_usd || 0),
         market_concentration_penalty_usd: Number(breakdown.market_concentration_penalty_usd || 0),
         entry_price_band_concentration_penalty_usd: Number(breakdown.entry_price_band_concentration_penalty_usd || 0),
@@ -1850,6 +1878,10 @@ function replaySearchScoreDriftSummary(
   const modeWorstActiveDepthDelta = current.mode_worst_active_window_accepted_penalty_usd - best.mode_worst_active_window_accepted_penalty_usd
   const modeDelta = current.mode_loss_penalty_usd - best.mode_loss_penalty_usd
   const inactivityDelta = current.mode_inactivity_penalty_usd - best.mode_inactivity_penalty_usd
+  const walletCountDelta = current.wallet_count_penalty_usd - best.wallet_count_penalty_usd
+  const marketCountDelta = current.market_count_penalty_usd - best.market_count_penalty_usd
+  const entryBandCountDelta = current.entry_price_band_count_penalty_usd - best.entry_price_band_count_penalty_usd
+  const horizonCountDelta = current.time_to_close_band_count_penalty_usd - best.time_to_close_band_count_penalty_usd
   const walletDelta = current.wallet_concentration_penalty_usd - best.wallet_concentration_penalty_usd
   const marketDelta = current.market_concentration_penalty_usd - best.market_concentration_penalty_usd
   const entryBandDelta = current.entry_price_band_concentration_penalty_usd - best.entry_price_band_concentration_penalty_usd
@@ -1870,6 +1902,10 @@ function replaySearchScoreDriftSummary(
   if (Math.abs(modeWorstActiveDepthDelta) > 1e-9) parts.push(`mw-act ${formatDollar(modeWorstActiveDepthDelta)}`)
   if (Math.abs(modeDelta) > 1e-9) parts.push(`mode ${formatDollar(modeDelta)}`)
   if (Math.abs(inactivityDelta) > 1e-9) parts.push(`idle ${formatDollar(inactivityDelta)}`)
+  if (Math.abs(walletCountDelta) > 1e-9) parts.push(`wallet# ${formatDollar(walletCountDelta)}`)
+  if (Math.abs(marketCountDelta) > 1e-9) parts.push(`market# ${formatDollar(marketCountDelta)}`)
+  if (Math.abs(entryBandCountDelta) > 1e-9) parts.push(`band# ${formatDollar(entryBandCountDelta)}`)
+  if (Math.abs(horizonCountDelta) > 1e-9) parts.push(`hzn# ${formatDollar(horizonCountDelta)}`)
   if (Math.abs(walletDelta) > 1e-9) parts.push(`wallet ${formatDollar(walletDelta)}`)
   if (Math.abs(marketDelta) > 1e-9) parts.push(`market ${formatDollar(marketDelta)}`)
   if (Math.abs(entryBandDelta) > 1e-9) parts.push(`band ${formatDollar(entryBandDelta)}`)
@@ -1887,7 +1923,8 @@ function replaySearchTraderConcentrationSummary(
   bestRaw: string | null | undefined,
   currentRaw: string | null | undefined,
   constraintsRaw: string | null | undefined,
-  penalty: number | null | undefined
+  sharePenalty: number | null | undefined,
+  countPenalty: number | null | undefined
 ): ReplaySearchTraderConcentrationSummary {
   const parse = (raw: string | null | undefined): {count: number | null; peakCount: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
     if (!raw) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
@@ -1950,8 +1987,10 @@ function replaySearchTraderConcentrationSummary(
     const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null
     parts.push([countText, mixText].filter(Boolean).join(' '))
   }
-  const resolvedPenalty = Math.max(Number(penalty || 0), 0)
-  if (resolvedPenalty > 0) parts.push(`pen ${resolvedPenalty.toFixed(2)}x`)
+  const resolvedSharePenalty = Math.max(Number(sharePenalty || 0), 0)
+  const resolvedCountPenalty = Math.max(Number(countPenalty || 0), 0)
+  if (resolvedSharePenalty > 0) parts.push(`share pen ${resolvedSharePenalty.toFixed(2)}x`)
+  if (resolvedCountPenalty > 0) parts.push(`cnt pen ${resolvedCountPenalty.toFixed(2)}x`)
   const overLimit =
     (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
     ||
@@ -1974,7 +2013,8 @@ function replaySearchMarketConcentrationSummary(
   bestRaw: string | null | undefined,
   currentRaw: string | null | undefined,
   constraintsRaw: string | null | undefined,
-  penalty: number | null | undefined
+  sharePenalty: number | null | undefined,
+  countPenalty: number | null | undefined
 ): ReplaySearchMarketConcentrationSummary {
   const parse = (raw: string | null | undefined): {count: number | null; peakCount: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
     if (!raw) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
@@ -2037,8 +2077,10 @@ function replaySearchMarketConcentrationSummary(
     const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null
     parts.push([countText, mixText].filter(Boolean).join(' '))
   }
-  const resolvedPenalty = Math.max(Number(penalty || 0), 0)
-  if (resolvedPenalty > 0) parts.push(`pen ${resolvedPenalty.toFixed(2)}x`)
+  const resolvedSharePenalty = Math.max(Number(sharePenalty || 0), 0)
+  const resolvedCountPenalty = Math.max(Number(countPenalty || 0), 0)
+  if (resolvedSharePenalty > 0) parts.push(`share pen ${resolvedSharePenalty.toFixed(2)}x`)
+  if (resolvedCountPenalty > 0) parts.push(`cnt pen ${resolvedCountPenalty.toFixed(2)}x`)
   const overLimit =
     (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
     ||
@@ -2055,7 +2097,8 @@ function replaySearchEntryPriceBandConcentrationSummary(
   bestRaw: string | null | undefined,
   currentRaw: string | null | undefined,
   constraintsRaw: string | null | undefined,
-  penalty: number | null | undefined
+  sharePenalty: number | null | undefined,
+  countPenalty: number | null | undefined
 ): ReplaySearchTraderConcentrationSummary {
   const parse = (raw: string | null | undefined): {count: number | null; peakCount: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
     if (!raw) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
@@ -2118,8 +2161,10 @@ function replaySearchEntryPriceBandConcentrationSummary(
     const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null
     parts.push([countText, mixText].filter(Boolean).join(' '))
   }
-  const resolvedPenalty = Math.max(Number(penalty || 0), 0)
-  if (resolvedPenalty > 0) parts.push(`pen ${resolvedPenalty.toFixed(2)}x`)
+  const resolvedSharePenalty = Math.max(Number(sharePenalty || 0), 0)
+  const resolvedCountPenalty = Math.max(Number(countPenalty || 0), 0)
+  if (resolvedSharePenalty > 0) parts.push(`share pen ${resolvedSharePenalty.toFixed(2)}x`)
+  if (resolvedCountPenalty > 0) parts.push(`cnt pen ${resolvedCountPenalty.toFixed(2)}x`)
   const overLimit =
     (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
     ||
@@ -2136,7 +2181,8 @@ function replaySearchTimeToCloseBandConcentrationSummary(
   bestRaw: string | null | undefined,
   currentRaw: string | null | undefined,
   constraintsRaw: string | null | undefined,
-  penalty: number | null | undefined
+  sharePenalty: number | null | undefined,
+  countPenalty: number | null | undefined
 ): ReplaySearchTraderConcentrationSummary {
   const parse = (raw: string | null | undefined): {count: number | null; peakCount: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
     if (!raw) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
@@ -2199,8 +2245,10 @@ function replaySearchTimeToCloseBandConcentrationSummary(
     const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null
     parts.push([countText, mixText].filter(Boolean).join(' '))
   }
-  const resolvedPenalty = Math.max(Number(penalty || 0), 0)
-  if (resolvedPenalty > 0) parts.push(`pen ${resolvedPenalty.toFixed(2)}x`)
+  const resolvedSharePenalty = Math.max(Number(sharePenalty || 0), 0)
+  const resolvedCountPenalty = Math.max(Number(countPenalty || 0), 0)
+  if (resolvedSharePenalty > 0) parts.push(`share pen ${resolvedSharePenalty.toFixed(2)}x`)
+  if (resolvedCountPenalty > 0) parts.push(`cnt pen ${resolvedCountPenalty.toFixed(2)}x`)
   const overLimit =
     (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
     ||
@@ -3518,13 +3566,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       latestReplaySearch?.result_json,
       latestReplaySearch?.current_candidate_result_json,
       latestReplaySearch?.constraints_json,
-      latestReplaySearch?.wallet_concentration_penalty
+      latestReplaySearch?.wallet_concentration_penalty,
+      latestReplaySearch?.wallet_count_penalty
     ),
     [
       latestReplaySearch?.constraints_json,
       latestReplaySearch?.current_candidate_result_json,
       latestReplaySearch?.result_json,
-      latestReplaySearch?.wallet_concentration_penalty
+      latestReplaySearch?.wallet_concentration_penalty,
+      latestReplaySearch?.wallet_count_penalty
     ]
   )
   const replaySearchMarketConcentration = useMemo(
@@ -3532,13 +3582,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       latestReplaySearch?.result_json,
       latestReplaySearch?.current_candidate_result_json,
       latestReplaySearch?.constraints_json,
-      latestReplaySearch?.market_concentration_penalty
+      latestReplaySearch?.market_concentration_penalty,
+      latestReplaySearch?.market_count_penalty
     ),
     [
       latestReplaySearch?.constraints_json,
       latestReplaySearch?.current_candidate_result_json,
       latestReplaySearch?.result_json,
-      latestReplaySearch?.market_concentration_penalty
+      latestReplaySearch?.market_concentration_penalty,
+      latestReplaySearch?.market_count_penalty
     ]
   )
   const replaySearchEntryPriceBandConcentration = useMemo(
@@ -3546,13 +3598,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       latestReplaySearch?.result_json,
       latestReplaySearch?.current_candidate_result_json,
       latestReplaySearch?.constraints_json,
-      latestReplaySearch?.entry_price_band_concentration_penalty
+      latestReplaySearch?.entry_price_band_concentration_penalty,
+      latestReplaySearch?.entry_price_band_count_penalty
     ),
     [
       latestReplaySearch?.constraints_json,
       latestReplaySearch?.current_candidate_result_json,
       latestReplaySearch?.result_json,
-      latestReplaySearch?.entry_price_band_concentration_penalty
+      latestReplaySearch?.entry_price_band_concentration_penalty,
+      latestReplaySearch?.entry_price_band_count_penalty
     ]
   )
   const replaySearchTimeToCloseBandConcentration = useMemo(
@@ -3560,13 +3614,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       latestReplaySearch?.result_json,
       latestReplaySearch?.current_candidate_result_json,
       latestReplaySearch?.constraints_json,
-      latestReplaySearch?.time_to_close_band_concentration_penalty
+      latestReplaySearch?.time_to_close_band_concentration_penalty,
+      latestReplaySearch?.time_to_close_band_count_penalty
     ),
     [
       latestReplaySearch?.constraints_json,
       latestReplaySearch?.current_candidate_result_json,
       latestReplaySearch?.result_json,
-      latestReplaySearch?.time_to_close_band_concentration_penalty
+      latestReplaySearch?.time_to_close_band_concentration_penalty,
+      latestReplaySearch?.time_to_close_band_count_penalty
     ]
   )
   const replayLabStats = useMemo<CompactStatItem[]>(

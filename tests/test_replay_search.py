@@ -43,6 +43,10 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("mode_loss_penalty", columns)
         self.assertIn("mode_inactivity_penalty", columns)
         self.assertIn("window_inactivity_penalty", columns)
+        self.assertIn("wallet_count_penalty", columns)
+        self.assertIn("market_count_penalty", columns)
+        self.assertIn("entry_price_band_count_penalty", columns)
+        self.assertIn("time_to_close_band_count_penalty", columns)
         self.assertIn("wallet_concentration_penalty", columns)
         self.assertIn("market_concentration_penalty", columns)
         self.assertIn("entry_price_band_concentration_penalty", columns)
@@ -287,6 +291,55 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(breakdown["worst_active_window_accepted_penalty_usd"], 150.0)
         self.assertEqual(breakdown["score_usd"], -130.0)
+
+    def test_score_breakdown_penalizes_low_breadth_counts(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trader_concentration": {
+                    "trader_count": 2,
+                },
+                "market_concentration": {
+                    "market_count": 4,
+                },
+                "entry_price_band_concentration": {
+                    "entry_price_band_count": 5,
+                },
+                "time_to_close_band_concentration": {
+                    "time_to_close_band_count": 10,
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+            wallet_count_penalty=0.1,
+            market_count_penalty=0.1,
+            entry_price_band_count_penalty=0.1,
+            time_to_close_band_count_penalty=0.1,
+        )
+
+        self.assertEqual(breakdown["wallet_count_penalty_usd"], 150.0)
+        self.assertEqual(breakdown["market_count_penalty_usd"], 75.0)
+        self.assertEqual(breakdown["entry_price_band_count_penalty_usd"], 60.0)
+        self.assertEqual(breakdown["time_to_close_band_count_penalty_usd"], 30.0)
+        self.assertEqual(breakdown["score_usd"], -295.0)
 
     def test_score_breakdown_penalizes_mode_worst_active_window_depth(self) -> None:
         breakdown = replay_search._score_breakdown(
@@ -2028,6 +2081,80 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(best_breakdown["time_to_close_band_concentration_penalty_usd"], 0.0)
         self.assertGreater(rejected_breakdown["entry_price_band_concentration_penalty_usd"], best_breakdown["entry_price_band_concentration_penalty_usd"])
         self.assertGreater(rejected_breakdown["time_to_close_band_concentration_penalty_usd"], best_breakdown["time_to_close_band_concentration_penalty_usd"])
+
+    def test_main_can_penalize_low_breadth_counts_in_ranking(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 68.0,
+                    "max_drawdown_pct": 0.04,
+                    "accepted_count": 8,
+                    "resolved_count": 8,
+                    "rejected_count": 0,
+                    "trade_count": 8,
+                    "win_rate": 0.625,
+                    "trader_concentration": {"trader_count": 4},
+                    "market_concentration": {"market_count": 4},
+                    "entry_price_band_concentration": {"entry_price_band_count": 4},
+                    "time_to_close_band_concentration": {"time_to_close_band_count": 4},
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 74.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "rejected_count": 0,
+                "trade_count": 8,
+                "win_rate": 0.625,
+                "trader_concentration": {"trader_count": 2},
+                "market_concentration": {"market_count": 2},
+                "entry_price_band_concentration": {"entry_price_band_count": 2},
+                "time_to_close_band_concentration": {"time_to_close_band_count": 2},
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--wallet-count-penalty",
+            "0.1",
+            "--market-count-penalty",
+            "0.1",
+            "--entry-price-band-count-penalty",
+            "0.1",
+            "--time-to-close-band-count-penalty",
+            "0.1",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["wallet_count_penalty"], 0.1)
+        self.assertEqual(payload["market_count_penalty"], 0.1)
+        self.assertEqual(payload["entry_price_band_count_penalty"], 0.1)
+        self.assertEqual(payload["time_to_close_band_count_penalty"], 0.1)
+        self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.65)
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertGreater(best_breakdown["wallet_count_penalty_usd"], 0.0)
+        self.assertGreater(best_breakdown["market_count_penalty_usd"], 0.0)
+        self.assertGreater(best_breakdown["entry_price_band_count_penalty_usd"], 0.0)
+        self.assertGreater(best_breakdown["time_to_close_band_count_penalty_usd"], 0.0)
+        self.assertGreater(rejected_breakdown["wallet_count_penalty_usd"], best_breakdown["wallet_count_penalty_usd"])
+        self.assertGreater(rejected_breakdown["market_count_penalty_usd"], best_breakdown["market_count_penalty_usd"])
+        self.assertGreater(rejected_breakdown["entry_price_band_count_penalty_usd"], best_breakdown["entry_price_band_count_penalty_usd"])
+        self.assertGreater(rejected_breakdown["time_to_close_band_count_penalty_usd"], best_breakdown["time_to_close_band_count_penalty_usd"])
 
     def test_main_can_penalize_losing_scorer_paths_in_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -4184,6 +4311,10 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertIn("mode_loss_penalty", run_columns)
             self.assertIn("mode_inactivity_penalty", run_columns)
             self.assertIn("window_inactivity_penalty", run_columns)
+            self.assertIn("wallet_count_penalty", run_columns)
+            self.assertIn("market_count_penalty", run_columns)
+            self.assertIn("entry_price_band_count_penalty", run_columns)
+            self.assertIn("time_to_close_band_count_penalty", run_columns)
             self.assertIn("wallet_concentration_penalty", run_columns)
             self.assertIn("market_concentration_penalty", run_columns)
             self.assertIn("feasible", candidate_columns)
@@ -4309,6 +4440,117 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertGreater(
                 current_candidate_json["score_breakdown"]["time_to_close_band_concentration_penalty_usd"],
                 best_candidate_json["score_breakdown"]["time_to_close_band_concentration_penalty_usd"],
+            )
+
+    def test_main_persists_nonzero_count_penalties(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.60:
+                return {
+                    "run_id": 1,
+                    "total_pnl_usd": 55.0,
+                    "max_drawdown_pct": 0.04,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 10,
+                    "win_rate": 0.6,
+                    "trader_concentration": {"trader_count": 4},
+                    "market_concentration": {"market_count": 5},
+                    "entry_price_band_concentration": {"entry_price_band_count": 4},
+                    "time_to_close_band_concentration": {"time_to_close_band_count": 5},
+                }
+            return {
+                "run_id": 0,
+                "total_pnl_usd": 40.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+                "trader_concentration": {"trader_count": 2},
+                "market_concentration": {"market_count": 2},
+                "entry_price_band_concentration": {"entry_price_band_count": 2},
+                "time_to_close_band_concentration": {"time_to_close_band_count": 2},
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "replay_search_count_penalties.db"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--db",
+                str(db_path),
+                "--grid-json",
+                json.dumps({"min_confidence": [0.60]}),
+                "--wallet-count-penalty",
+                "0.25",
+                "--market-count-penalty",
+                "0.10",
+                "--entry-price-band-count-penalty",
+                "0.15",
+                "--time-to-close-band-count-penalty",
+                "0.20",
+            ]
+            with (
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                run_row = conn.execute(
+                    """
+                    SELECT wallet_count_penalty, market_count_penalty,
+                           entry_price_band_count_penalty, time_to_close_band_count_penalty,
+                           current_candidate_result_json
+                    FROM replay_search_runs
+                    """
+                ).fetchone()
+                candidate_rows = conn.execute(
+                    """
+                    SELECT is_current_policy, result_json
+                    FROM replay_search_candidates
+                    ORDER BY candidate_index ASC
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertIsNotNone(run_row)
+            self.assertEqual(run_row[0], 0.25)
+            self.assertEqual(run_row[1], 0.10)
+            self.assertEqual(run_row[2], 0.15)
+            self.assertEqual(run_row[3], 0.20)
+            current_result_json = json.loads(run_row[4])
+            self.assertGreater(current_result_json["score_breakdown"]["wallet_count_penalty_usd"], 0.0)
+            self.assertGreater(current_result_json["score_breakdown"]["market_count_penalty_usd"], 0.0)
+            self.assertGreater(current_result_json["score_breakdown"]["entry_price_band_count_penalty_usd"], 0.0)
+            self.assertGreater(current_result_json["score_breakdown"]["time_to_close_band_count_penalty_usd"], 0.0)
+            current_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 1))
+            best_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 0))
+            self.assertGreater(
+                current_candidate_json["score_breakdown"]["wallet_count_penalty_usd"],
+                best_candidate_json["score_breakdown"]["wallet_count_penalty_usd"],
+            )
+            self.assertGreater(
+                current_candidate_json["score_breakdown"]["market_count_penalty_usd"],
+                best_candidate_json["score_breakdown"]["market_count_penalty_usd"],
+            )
+            self.assertGreater(
+                current_candidate_json["score_breakdown"]["entry_price_band_count_penalty_usd"],
+                best_candidate_json["score_breakdown"]["entry_price_band_count_penalty_usd"],
+            )
+            self.assertGreater(
+                current_candidate_json["score_breakdown"]["time_to_close_band_count_penalty_usd"],
+                best_candidate_json["score_breakdown"]["time_to_close_band_count_penalty_usd"],
             )
 
     def test_main_persists_nonzero_mode_loss_penalty(self) -> None:

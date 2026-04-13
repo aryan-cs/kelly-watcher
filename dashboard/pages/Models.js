@@ -376,6 +376,10 @@ WITH latest_search AS (
     mode_loss_penalty,
     mode_inactivity_penalty,
     window_inactivity_penalty,
+    wallet_count_penalty,
+    market_count_penalty,
+    entry_price_band_count_penalty,
+    time_to_close_band_count_penalty,
     wallet_concentration_penalty,
     market_concentration_penalty,
     entry_price_band_concentration_penalty,
@@ -434,6 +438,10 @@ SELECT
   latest_search.mode_loss_penalty,
   latest_search.mode_inactivity_penalty,
   latest_search.window_inactivity_penalty,
+  latest_search.wallet_count_penalty,
+  latest_search.market_count_penalty,
+  latest_search.entry_price_band_count_penalty,
+  latest_search.time_to_close_band_count_penalty,
   latest_search.wallet_concentration_penalty,
   latest_search.market_concentration_penalty,
   latest_search.entry_price_band_concentration_penalty,
@@ -1579,6 +1587,10 @@ function replaySearchScoreBreakdownSummary(raw) {
         const modeWorstActiveWindowAcceptedPenaltyUsd = Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0);
         const modeLossPenaltyUsd = Number(breakdown.mode_loss_penalty_usd || 0);
         const modeInactivityPenaltyUsd = Number(breakdown.mode_inactivity_penalty_usd || 0);
+        const walletCountPenaltyUsd = Number(breakdown.wallet_count_penalty_usd || 0);
+        const marketCountPenaltyUsd = Number(breakdown.market_count_penalty_usd || 0);
+        const entryPriceBandCountPenaltyUsd = Number(breakdown.entry_price_band_count_penalty_usd || 0);
+        const timeToCloseBandCountPenaltyUsd = Number(breakdown.time_to_close_band_count_penalty_usd || 0);
         const walletConcentrationPenaltyUsd = Number(breakdown.wallet_concentration_penalty_usd || 0);
         const marketConcentrationPenaltyUsd = Number(breakdown.market_concentration_penalty_usd || 0);
         const entryPriceBandConcentrationPenaltyUsd = Number(breakdown.entry_price_band_concentration_penalty_usd || 0);
@@ -1611,6 +1623,14 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`mode ${formatDollar(-modeLossPenaltyUsd)}`);
         if (Math.abs(modeInactivityPenaltyUsd) > 1e-9)
             parts.push(`idle ${formatDollar(-modeInactivityPenaltyUsd)}`);
+        if (Math.abs(walletCountPenaltyUsd) > 1e-9)
+            parts.push(`wallet# ${formatDollar(-walletCountPenaltyUsd)}`);
+        if (Math.abs(marketCountPenaltyUsd) > 1e-9)
+            parts.push(`market# ${formatDollar(-marketCountPenaltyUsd)}`);
+        if (Math.abs(entryPriceBandCountPenaltyUsd) > 1e-9)
+            parts.push(`band# ${formatDollar(-entryPriceBandCountPenaltyUsd)}`);
+        if (Math.abs(timeToCloseBandCountPenaltyUsd) > 1e-9)
+            parts.push(`hzn# ${formatDollar(-timeToCloseBandCountPenaltyUsd)}`);
         if (Math.abs(walletConcentrationPenaltyUsd) > 1e-9)
             parts.push(`wallet ${formatDollar(-walletConcentrationPenaltyUsd)}`);
         if (Math.abs(marketConcentrationPenaltyUsd) > 1e-9)
@@ -1647,6 +1667,10 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('mw-act', row.mode_worst_active_window_accepted_penalty);
     pushIfActive('mode', row.mode_loss_penalty);
     pushIfActive('idle', row.mode_inactivity_penalty);
+    pushIfActive('wallet#', row.wallet_count_penalty);
+    pushIfActive('market#', row.market_count_penalty);
+    pushIfActive('band#', row.entry_price_band_count_penalty);
+    pushIfActive('hzn#', row.time_to_close_band_count_penalty);
     pushIfActive('wallet', row.wallet_concentration_penalty);
     pushIfActive('market', row.market_concentration_penalty);
     pushIfActive('band', row.entry_price_band_concentration_penalty);
@@ -1681,6 +1705,10 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 mode_worst_active_window_accepted_penalty_usd: Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0),
                 mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
                 mode_inactivity_penalty_usd: Number(breakdown.mode_inactivity_penalty_usd || 0),
+                wallet_count_penalty_usd: Number(breakdown.wallet_count_penalty_usd || 0),
+                market_count_penalty_usd: Number(breakdown.market_count_penalty_usd || 0),
+                entry_price_band_count_penalty_usd: Number(breakdown.entry_price_band_count_penalty_usd || 0),
+                time_to_close_band_count_penalty_usd: Number(breakdown.time_to_close_band_count_penalty_usd || 0),
                 wallet_concentration_penalty_usd: Number(breakdown.wallet_concentration_penalty_usd || 0),
                 market_concentration_penalty_usd: Number(breakdown.market_concentration_penalty_usd || 0),
                 entry_price_band_concentration_penalty_usd: Number(breakdown.entry_price_band_concentration_penalty_usd || 0),
@@ -1710,6 +1738,10 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const modeWorstActiveDepthDelta = current.mode_worst_active_window_accepted_penalty_usd - best.mode_worst_active_window_accepted_penalty_usd;
     const modeDelta = current.mode_loss_penalty_usd - best.mode_loss_penalty_usd;
     const inactivityDelta = current.mode_inactivity_penalty_usd - best.mode_inactivity_penalty_usd;
+    const walletCountDelta = current.wallet_count_penalty_usd - best.wallet_count_penalty_usd;
+    const marketCountDelta = current.market_count_penalty_usd - best.market_count_penalty_usd;
+    const entryBandCountDelta = current.entry_price_band_count_penalty_usd - best.entry_price_band_count_penalty_usd;
+    const horizonCountDelta = current.time_to_close_band_count_penalty_usd - best.time_to_close_band_count_penalty_usd;
     const walletDelta = current.wallet_concentration_penalty_usd - best.wallet_concentration_penalty_usd;
     const marketDelta = current.market_concentration_penalty_usd - best.market_concentration_penalty_usd;
     const entryBandDelta = current.entry_price_band_concentration_penalty_usd - best.entry_price_band_concentration_penalty_usd;
@@ -1742,6 +1774,14 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`mode ${formatDollar(modeDelta)}`);
     if (Math.abs(inactivityDelta) > 1e-9)
         parts.push(`idle ${formatDollar(inactivityDelta)}`);
+    if (Math.abs(walletCountDelta) > 1e-9)
+        parts.push(`wallet# ${formatDollar(walletCountDelta)}`);
+    if (Math.abs(marketCountDelta) > 1e-9)
+        parts.push(`market# ${formatDollar(marketCountDelta)}`);
+    if (Math.abs(entryBandCountDelta) > 1e-9)
+        parts.push(`band# ${formatDollar(entryBandCountDelta)}`);
+    if (Math.abs(horizonCountDelta) > 1e-9)
+        parts.push(`hzn# ${formatDollar(horizonCountDelta)}`);
     if (Math.abs(walletDelta) > 1e-9)
         parts.push(`wallet ${formatDollar(walletDelta)}`);
     if (Math.abs(marketDelta) > 1e-9)
@@ -1752,7 +1792,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`hzn ${formatDollar(horizonDelta)}`);
     return parts.join(' | ');
 }
-function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
+function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraintsRaw, sharePenalty, countPenalty) {
     const parse = (raw) => {
         if (!raw)
             return { count: null, peakCount: null, acceptedShare: null, absPnlShare: null };
@@ -1819,9 +1859,12 @@ function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraints
         const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null;
         parts.push([countText, mixText].filter(Boolean).join(' '));
     }
-    const resolvedPenalty = Math.max(Number(penalty || 0), 0);
-    if (resolvedPenalty > 0)
-        parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
+    const resolvedSharePenalty = Math.max(Number(sharePenalty || 0), 0);
+    const resolvedCountPenalty = Math.max(Number(countPenalty || 0), 0);
+    if (resolvedSharePenalty > 0)
+        parts.push(`share pen ${resolvedSharePenalty.toFixed(2)}x`);
+    if (resolvedCountPenalty > 0)
+        parts.push(`cnt pen ${resolvedCountPenalty.toFixed(2)}x`);
     const overLimit = (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
         || (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
@@ -1831,7 +1874,7 @@ function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraints
         overLimit
     };
 }
-function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
+function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraintsRaw, sharePenalty, countPenalty) {
     const parse = (raw) => {
         if (!raw)
             return { count: null, peakCount: null, acceptedShare: null, absPnlShare: null };
@@ -1898,9 +1941,12 @@ function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraints
         const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null;
         parts.push([countText, mixText].filter(Boolean).join(' '));
     }
-    const resolvedPenalty = Math.max(Number(penalty || 0), 0);
-    if (resolvedPenalty > 0)
-        parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
+    const resolvedSharePenalty = Math.max(Number(sharePenalty || 0), 0);
+    const resolvedCountPenalty = Math.max(Number(countPenalty || 0), 0);
+    if (resolvedSharePenalty > 0)
+        parts.push(`share pen ${resolvedSharePenalty.toFixed(2)}x`);
+    if (resolvedCountPenalty > 0)
+        parts.push(`cnt pen ${resolvedCountPenalty.toFixed(2)}x`);
     const overLimit = (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
         || (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
@@ -1910,7 +1956,7 @@ function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraints
         overLimit
     };
 }
-function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
+function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw, sharePenalty, countPenalty) {
     const parse = (raw) => {
         if (!raw)
             return { count: null, peakCount: null, acceptedShare: null, absPnlShare: null };
@@ -1977,9 +2023,12 @@ function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, con
         const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null;
         parts.push([countText, mixText].filter(Boolean).join(' '));
     }
-    const resolvedPenalty = Math.max(Number(penalty || 0), 0);
-    if (resolvedPenalty > 0)
-        parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
+    const resolvedSharePenalty = Math.max(Number(sharePenalty || 0), 0);
+    const resolvedCountPenalty = Math.max(Number(countPenalty || 0), 0);
+    if (resolvedSharePenalty > 0)
+        parts.push(`share pen ${resolvedSharePenalty.toFixed(2)}x`);
+    if (resolvedCountPenalty > 0)
+        parts.push(`cnt pen ${resolvedCountPenalty.toFixed(2)}x`);
     const overLimit = (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
         || (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
@@ -1989,7 +2038,7 @@ function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, con
         overLimit
     };
 }
-function replaySearchTimeToCloseBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
+function replaySearchTimeToCloseBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw, sharePenalty, countPenalty) {
     const parse = (raw) => {
         if (!raw)
             return { count: null, peakCount: null, acceptedShare: null, absPnlShare: null };
@@ -2056,9 +2105,12 @@ function replaySearchTimeToCloseBandConcentrationSummary(bestRaw, currentRaw, co
         const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null;
         parts.push([countText, mixText].filter(Boolean).join(' '));
     }
-    const resolvedPenalty = Math.max(Number(penalty || 0), 0);
-    if (resolvedPenalty > 0)
-        parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
+    const resolvedSharePenalty = Math.max(Number(sharePenalty || 0), 0);
+    const resolvedCountPenalty = Math.max(Number(countPenalty || 0), 0);
+    if (resolvedSharePenalty > 0)
+        parts.push(`share pen ${resolvedSharePenalty.toFixed(2)}x`);
+    if (resolvedCountPenalty > 0)
+        parts.push(`cnt pen ${resolvedCountPenalty.toFixed(2)}x`);
     const overLimit = (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
         || (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
@@ -3073,29 +3125,33 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         latestReplaySearch?.pause_guard_penalty,
         latestReplaySearch?.result_json
     ]);
-    const replaySearchTraderConcentration = useMemo(() => replaySearchTraderConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.wallet_concentration_penalty), [
+    const replaySearchTraderConcentration = useMemo(() => replaySearchTraderConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.wallet_concentration_penalty, latestReplaySearch?.wallet_count_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
         latestReplaySearch?.result_json,
-        latestReplaySearch?.wallet_concentration_penalty
+        latestReplaySearch?.wallet_concentration_penalty,
+        latestReplaySearch?.wallet_count_penalty
     ]);
-    const replaySearchMarketConcentration = useMemo(() => replaySearchMarketConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.market_concentration_penalty), [
+    const replaySearchMarketConcentration = useMemo(() => replaySearchMarketConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.market_concentration_penalty, latestReplaySearch?.market_count_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
         latestReplaySearch?.result_json,
-        latestReplaySearch?.market_concentration_penalty
+        latestReplaySearch?.market_concentration_penalty,
+        latestReplaySearch?.market_count_penalty
     ]);
-    const replaySearchEntryPriceBandConcentration = useMemo(() => replaySearchEntryPriceBandConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.entry_price_band_concentration_penalty), [
+    const replaySearchEntryPriceBandConcentration = useMemo(() => replaySearchEntryPriceBandConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.entry_price_band_concentration_penalty, latestReplaySearch?.entry_price_band_count_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
         latestReplaySearch?.result_json,
-        latestReplaySearch?.entry_price_band_concentration_penalty
+        latestReplaySearch?.entry_price_band_concentration_penalty,
+        latestReplaySearch?.entry_price_band_count_penalty
     ]);
-    const replaySearchTimeToCloseBandConcentration = useMemo(() => replaySearchTimeToCloseBandConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.time_to_close_band_concentration_penalty), [
+    const replaySearchTimeToCloseBandConcentration = useMemo(() => replaySearchTimeToCloseBandConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.time_to_close_band_concentration_penalty, latestReplaySearch?.time_to_close_band_count_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
         latestReplaySearch?.result_json,
-        latestReplaySearch?.time_to_close_band_concentration_penalty
+        latestReplaySearch?.time_to_close_band_concentration_penalty,
+        latestReplaySearch?.time_to_close_band_count_penalty
     ]);
     const replayLabStats = useMemo(() => [
         {

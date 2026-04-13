@@ -82,6 +82,10 @@ def _score_breakdown(
     entry_price_band_concentration_penalty: float = 0.0,
     time_to_close_band_concentration_penalty: float = 0.0,
     window_inactivity_penalty: float = 0.0,
+    wallet_count_penalty: float = 0.0,
+    market_count_penalty: float = 0.0,
+    entry_price_band_count_penalty: float = 0.0,
+    time_to_close_band_count_penalty: float = 0.0,
 ) -> dict[str, float]:
     pnl = float(result.get("total_pnl_usd") or 0.0)
     max_drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
@@ -177,6 +181,10 @@ def _score_breakdown(
         float(_time_to_close_band_concentration(result).get("top_accepted_share") or 0.0),
         float(_time_to_close_band_concentration(result).get("top_abs_pnl_share") or 0.0),
     )
+    wallet_count_risk = _inverse_count_risk(_trader_concentration(result).get("trader_count"))
+    market_count_risk = _inverse_count_risk(_market_concentration(result).get("market_count"))
+    entry_price_band_count_risk = _inverse_count_risk(_entry_price_band_concentration(result).get("entry_price_band_count"))
+    time_to_close_band_count_risk = _inverse_count_risk(_time_to_close_band_concentration(result).get("time_to_close_band_count"))
     drawdown_penalty_usd = initial_bankroll_usd * drawdown_penalty * max_drawdown_pct
     window_stddev_penalty_usd = window_stddev_penalty * window_pnl_stddev_usd
     worst_window_penalty_usd = worst_window_penalty * worst_window_loss_usd
@@ -191,6 +199,10 @@ def _score_breakdown(
     market_concentration_penalty_usd = initial_bankroll_usd * market_concentration_penalty * market_concentration_share
     entry_price_band_concentration_penalty_usd = initial_bankroll_usd * entry_price_band_concentration_penalty * entry_price_band_concentration_share
     time_to_close_band_concentration_penalty_usd = initial_bankroll_usd * time_to_close_band_concentration_penalty * time_to_close_band_concentration_share
+    wallet_count_penalty_usd = initial_bankroll_usd * wallet_count_penalty * wallet_count_risk
+    market_count_penalty_usd = initial_bankroll_usd * market_count_penalty * market_count_risk
+    entry_price_band_count_penalty_usd = initial_bankroll_usd * entry_price_band_count_penalty * entry_price_band_count_risk
+    time_to_close_band_count_penalty_usd = initial_bankroll_usd * time_to_close_band_count_penalty * time_to_close_band_count_risk
     mode_inactivity_penalty_usd = initial_bankroll_usd * mode_inactivity_penalty * mode_inactivity_share
     window_inactivity_penalty_usd = initial_bankroll_usd * window_inactivity_penalty * window_inactivity_share
     score_usd = (
@@ -208,6 +220,10 @@ def _score_breakdown(
         - mode_loss_penalty_usd
         - mode_inactivity_penalty_usd
         - window_inactivity_penalty_usd
+        - wallet_count_penalty_usd
+        - market_count_penalty_usd
+        - entry_price_band_count_penalty_usd
+        - time_to_close_band_count_penalty_usd
         - wallet_concentration_penalty_usd
         - market_concentration_penalty_usd
         - entry_price_band_concentration_penalty_usd
@@ -228,6 +244,10 @@ def _score_breakdown(
         "mode_loss_penalty_usd": round(mode_loss_penalty_usd, 6),
         "mode_inactivity_penalty_usd": round(mode_inactivity_penalty_usd, 6),
         "window_inactivity_penalty_usd": round(window_inactivity_penalty_usd, 6),
+        "wallet_count_penalty_usd": round(wallet_count_penalty_usd, 6),
+        "market_count_penalty_usd": round(market_count_penalty_usd, 6),
+        "entry_price_band_count_penalty_usd": round(entry_price_band_count_penalty_usd, 6),
+        "time_to_close_band_count_penalty_usd": round(time_to_close_band_count_penalty_usd, 6),
         "wallet_concentration_penalty_usd": round(wallet_concentration_penalty_usd, 6),
         "market_concentration_penalty_usd": round(market_concentration_penalty_usd, 6),
         "entry_price_band_concentration_penalty_usd": round(entry_price_band_concentration_penalty_usd, 6),
@@ -259,6 +279,10 @@ def _score_result(
     entry_price_band_concentration_penalty: float = 0.0,
     time_to_close_band_concentration_penalty: float = 0.0,
     window_inactivity_penalty: float = 0.0,
+    wallet_count_penalty: float = 0.0,
+    market_count_penalty: float = 0.0,
+    entry_price_band_count_penalty: float = 0.0,
+    time_to_close_band_count_penalty: float = 0.0,
 ) -> float:
     return float(
         _score_breakdown(
@@ -277,6 +301,10 @@ def _score_result(
             mode_loss_penalty=mode_loss_penalty,
             mode_inactivity_penalty=mode_inactivity_penalty,
             window_inactivity_penalty=window_inactivity_penalty,
+            wallet_count_penalty=wallet_count_penalty,
+            market_count_penalty=market_count_penalty,
+            entry_price_band_count_penalty=entry_price_band_count_penalty,
+            time_to_close_band_count_penalty=time_to_close_band_count_penalty,
             allow_heuristic=allow_heuristic,
             allow_xgboost=allow_xgboost,
             wallet_concentration_penalty=wallet_concentration_penalty,
@@ -310,6 +338,10 @@ def _with_score_breakdown(
     entry_price_band_concentration_penalty: float = 0.0,
     time_to_close_band_concentration_penalty: float = 0.0,
     window_inactivity_penalty: float = 0.0,
+    wallet_count_penalty: float = 0.0,
+    market_count_penalty: float = 0.0,
+    entry_price_band_count_penalty: float = 0.0,
+    time_to_close_band_count_penalty: float = 0.0,
 ) -> dict[str, Any]:
     payload = dict(result)
     payload["score_breakdown"] = _score_breakdown(
@@ -328,6 +360,10 @@ def _with_score_breakdown(
         mode_loss_penalty=mode_loss_penalty,
         mode_inactivity_penalty=mode_inactivity_penalty,
         window_inactivity_penalty=window_inactivity_penalty,
+        wallet_count_penalty=wallet_count_penalty,
+        market_count_penalty=market_count_penalty,
+        entry_price_band_count_penalty=entry_price_band_count_penalty,
+        time_to_close_band_count_penalty=time_to_close_band_count_penalty,
         allow_heuristic=allow_heuristic,
         allow_xgboost=allow_xgboost,
         wallet_concentration_penalty=wallet_concentration_penalty,
@@ -643,6 +679,13 @@ def _time_to_close_band_concentration(result: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     return raw
+
+
+def _inverse_count_risk(raw_count: Any) -> float:
+    count = int(raw_count or 0)
+    if count <= 0:
+        return 0.0
+    return 1.0 / float(count)
 
 
 def _clamp_fraction(raw: float) -> float:
@@ -1316,6 +1359,10 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             mode_loss_penalty             REAL NOT NULL DEFAULT 0,
             mode_inactivity_penalty       REAL NOT NULL DEFAULT 0,
             window_inactivity_penalty     REAL NOT NULL DEFAULT 0,
+            wallet_count_penalty          REAL NOT NULL DEFAULT 0,
+            market_count_penalty          REAL NOT NULL DEFAULT 0,
+            entry_price_band_count_penalty REAL NOT NULL DEFAULT 0,
+            time_to_close_band_count_penalty REAL NOT NULL DEFAULT 0,
             wallet_concentration_penalty  REAL NOT NULL DEFAULT 0,
             market_concentration_penalty  REAL NOT NULL DEFAULT 0,
             entry_price_band_concentration_penalty REAL NOT NULL DEFAULT 0,
@@ -1389,6 +1436,10 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "mode_loss_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_inactivity_penalty": "REAL NOT NULL DEFAULT 0",
             "window_inactivity_penalty": "REAL NOT NULL DEFAULT 0",
+            "wallet_count_penalty": "REAL NOT NULL DEFAULT 0",
+            "market_count_penalty": "REAL NOT NULL DEFAULT 0",
+            "entry_price_band_count_penalty": "REAL NOT NULL DEFAULT 0",
+            "time_to_close_band_count_penalty": "REAL NOT NULL DEFAULT 0",
             "wallet_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "market_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "entry_price_band_concentration_penalty": "REAL NOT NULL DEFAULT 0",
@@ -1458,6 +1509,10 @@ def _persist_search_results(
     mode_loss_penalty: float,
     mode_inactivity_penalty: float,
     window_inactivity_penalty: float,
+    wallet_count_penalty: float,
+    market_count_penalty: float,
+    entry_price_band_count_penalty: float,
+    time_to_close_band_count_penalty: float,
     wallet_concentration_penalty: float,
     market_concentration_penalty: float,
     entry_price_band_concentration_penalty: float,
@@ -1500,6 +1555,10 @@ def _persist_search_results(
             mode_loss_penalty,
             mode_inactivity_penalty,
             window_inactivity_penalty,
+            wallet_count_penalty,
+            market_count_penalty,
+            entry_price_band_count_penalty,
+            time_to_close_band_count_penalty,
             wallet_concentration_penalty,
             market_concentration_penalty,
             entry_price_band_concentration_penalty,
@@ -1531,7 +1590,7 @@ def _persist_search_results(
             INSERT INTO replay_search_runs (
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
-                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, resolved_share_penalty, worst_window_resolved_share_penalty, mode_resolved_share_penalty, mode_worst_window_resolved_share_penalty, worst_active_window_accepted_penalty, mode_worst_active_window_accepted_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
+                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, resolved_share_penalty, worst_window_resolved_share_penalty, mode_resolved_share_penalty, mode_worst_window_resolved_share_penalty, worst_active_window_accepted_penalty, mode_worst_active_window_accepted_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
                 candidate_count, feasible_count, rejected_count, current_candidate_score, current_candidate_feasible,
                 current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
                 best_vs_current_pnl_usd, best_vs_current_score,
@@ -1643,6 +1702,10 @@ def main() -> None:
     parser.add_argument("--mode-loss-penalty", type=float, default=0.0, help="Penalty per replay dollar lost by any active scorer path when ranking candidates.")
     parser.add_argument("--mode-inactivity-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer inactive-window share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--window-inactivity-penalty", type=float, default=0.0, help="Penalty multiplier applied to global replay inactive-window share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--wallet-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse distinct-wallet breadth in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--market-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse distinct-market breadth in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--entry-price-band-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse distinct entry-price-band breadth in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--time-to-close-band-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse distinct time-to-close-band breadth in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--wallet-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay wallet concentration share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--market-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay market concentration share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--entry-price-band-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay entry-price-band concentration share in bankroll-dollar terms when ranking candidates.")
@@ -1736,6 +1799,10 @@ def main() -> None:
         mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
         window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+        wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
+        market_count_penalty=max(args.market_count_penalty, 0.0),
+        entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
+        time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
         allow_heuristic=bool(base_policy.allow_heuristic),
         allow_xgboost=bool(base_policy.allow_xgboost),
         wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -1816,6 +1883,10 @@ def main() -> None:
                 mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
                 mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
                 window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+                wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
+                market_count_penalty=max(args.market_count_penalty, 0.0),
+                entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
+                time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
                 allow_heuristic=bool(base_policy.allow_heuristic),
                 allow_xgboost=bool(base_policy.allow_xgboost),
                 wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -1863,6 +1934,10 @@ def main() -> None:
                 mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
                 mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
                 window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+                wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
+                market_count_penalty=max(args.market_count_penalty, 0.0),
+                entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
+                time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
                 allow_heuristic=bool(policy.allow_heuristic),
                 allow_xgboost=bool(policy.allow_xgboost),
                 wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -1886,6 +1961,10 @@ def main() -> None:
             mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
             mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
             window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+            wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
+            market_count_penalty=max(args.market_count_penalty, 0.0),
+            entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
+            time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
             allow_heuristic=bool(policy.allow_heuristic),
             allow_xgboost=bool(policy.allow_xgboost),
             wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -2047,6 +2126,10 @@ def main() -> None:
         mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
         window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+        wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
+        market_count_penalty=max(args.market_count_penalty, 0.0),
+        entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
+        time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
         wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
         market_concentration_penalty=max(args.market_concentration_penalty, 0.0),
         entry_price_band_concentration_penalty=max(args.entry_price_band_concentration_penalty, 0.0),
@@ -2079,6 +2162,10 @@ def main() -> None:
                 "mode_loss_penalty": max(args.mode_loss_penalty, 0.0),
                 "mode_inactivity_penalty": max(args.mode_inactivity_penalty, 0.0),
                 "window_inactivity_penalty": max(args.window_inactivity_penalty, 0.0),
+                "wallet_count_penalty": max(args.wallet_count_penalty, 0.0),
+                "market_count_penalty": max(args.market_count_penalty, 0.0),
+                "entry_price_band_count_penalty": max(args.entry_price_band_count_penalty, 0.0),
+                "time_to_close_band_count_penalty": max(args.time_to_close_band_count_penalty, 0.0),
                 "wallet_concentration_penalty": max(args.wallet_concentration_penalty, 0.0),
                 "market_concentration_penalty": max(args.market_concentration_penalty, 0.0),
                 "entry_price_band_concentration_penalty": max(args.entry_price_band_concentration_penalty, 0.0),

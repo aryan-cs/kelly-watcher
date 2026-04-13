@@ -1019,6 +1019,86 @@ def _resolved_share_from_sizes(accepted_size_usd: Any, resolved_size_usd: Any) -
     return min(max(resolved / accepted, 0.0), 1.0)
 
 
+def _window_equity_summary(
+    result: dict[str, Any],
+    *,
+    default_start_equity: float,
+) -> tuple[float, float, float, float]:
+    start_equity = max(float(result.get("initial_bankroll_usd") or default_start_equity), 0.0)
+    final_equity = result.get("final_equity_usd")
+    if final_equity is None:
+        if result.get("final_bankroll_usd") is not None:
+            final_equity = result.get("final_bankroll_usd")
+        else:
+            final_equity = start_equity + float(result.get("total_pnl_usd") or 0.0)
+    final_equity_value = max(float(final_equity or 0.0), 0.0)
+    peak_equity_value = max(
+        float(result.get("peak_equity_usd") or max(start_equity, final_equity_value)),
+        0.0,
+    )
+    min_equity_value = max(
+        float(result.get("min_equity_usd") or min(start_equity, final_equity_value)),
+        0.0,
+    )
+    return start_equity, final_equity_value, peak_equity_value, min_equity_value
+
+
+def _scaled_equity_value(
+    *,
+    local_value: float,
+    local_start_equity: float,
+    stitched_start_equity: float,
+) -> float:
+    if local_start_equity > 0:
+        return max(stitched_start_equity * (local_value / local_start_equity), 0.0)
+    if stitched_start_equity <= 0:
+        return 0.0
+    return max(local_value, 0.0)
+
+
+def _stitched_max_drawdown_pct(
+    window_results: list[dict[str, Any]],
+    *,
+    initial_bankroll_usd: float,
+) -> float:
+    stitched_equity = max(float(initial_bankroll_usd or 0.0), 0.0)
+    stitched_peak_equity = stitched_equity
+    stitched_max_drawdown_pct = 0.0
+    for row in window_results:
+        local_start_equity, local_final_equity, local_peak_equity, local_min_equity = _window_equity_summary(
+            row,
+            default_start_equity=initial_bankroll_usd,
+        )
+        window_min_equity = _scaled_equity_value(
+            local_value=local_min_equity,
+            local_start_equity=local_start_equity,
+            stitched_start_equity=stitched_equity,
+        )
+        window_peak_equity = _scaled_equity_value(
+            local_value=local_peak_equity,
+            local_start_equity=local_start_equity,
+            stitched_start_equity=stitched_equity,
+        )
+        window_final_equity = _scaled_equity_value(
+            local_value=local_final_equity,
+            local_start_equity=local_start_equity,
+            stitched_start_equity=stitched_equity,
+        )
+        if stitched_peak_equity > 0:
+            stitched_max_drawdown_pct = max(
+                stitched_max_drawdown_pct,
+                (stitched_peak_equity - window_min_equity) / stitched_peak_equity,
+            )
+        stitched_max_drawdown_pct = max(
+            stitched_max_drawdown_pct,
+            float(row.get("max_drawdown_pct") or 0.0),
+        )
+        if window_peak_equity > stitched_peak_equity:
+            stitched_peak_equity = window_peak_equity
+        stitched_equity = window_final_equity
+    return round(stitched_max_drawdown_pct, 6)
+
+
 def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
     if "worst_window_resolved_share" in result:
         if (
@@ -1075,7 +1155,19 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
     accepted_count = int(enriched.get("accepted_count") or 0)
     accepted_size_usd = float(enriched.get("accepted_size_usd") or 0.0)
     window_count = int(enriched.get("window_count") or 1)
+    initial_bankroll_usd = max(float(enriched.get("initial_bankroll_usd") or 0.0), 0.0)
     enriched.setdefault("window_count", window_count)
+    if "final_equity_usd" not in enriched and window_count == 1:
+        if enriched.get("final_bankroll_usd") is not None:
+            enriched["final_equity_usd"] = round(float(enriched.get("final_bankroll_usd") or 0.0), 6)
+        else:
+            enriched["final_equity_usd"] = round(initial_bankroll_usd + total_pnl_usd, 6)
+    if "peak_equity_usd" not in enriched and window_count == 1:
+        final_equity_usd = float(enriched.get("final_equity_usd") or initial_bankroll_usd)
+        enriched["peak_equity_usd"] = round(max(initial_bankroll_usd, final_equity_usd), 6)
+    if "min_equity_usd" not in enriched and window_count == 1:
+        final_equity_usd = float(enriched.get("final_equity_usd") or initial_bankroll_usd)
+        enriched["min_equity_usd"] = round(min(initial_bankroll_usd, final_equity_usd), 6)
     if "positive_window_count" not in enriched and window_count == 1:
         enriched["positive_window_count"] = 1 if total_pnl_usd > 0 else 0
     if "negative_window_count" not in enriched and window_count == 1:
@@ -1656,7 +1748,11 @@ def _aggregate_window_results(
         float(row.get("win_rate") or 0.0) * int(row.get("resolved_count") or 0)
         for row in window_results
     )
-    max_drawdown_pct = max(drawdown_values, default=0.0)
+    worst_window_drawdown_pct = max(drawdown_values, default=0.0)
+    max_drawdown_pct = _stitched_max_drawdown_pct(
+        window_results,
+        initial_bankroll_usd=initial_bankroll_usd,
+    )
     positive_window_count = sum(1 for pnl in pnl_values if pnl > 0)
     negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
     active_window_count = sum(1 for row in window_results if int(row.get("accepted_count") or 0) > 0)
@@ -2026,7 +2122,7 @@ def _aggregate_window_results(
             else None
         ),
         "best_window_pnl_usd": round(max(pnl_values, default=0.0), 6),
-        "worst_window_drawdown_pct": round(max(drawdown_values, default=0.0), 6),
+        "worst_window_drawdown_pct": round(worst_window_drawdown_pct, 6),
         "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
         "signal_mode_summary": signal_mode_summary,
         "trader_concentration": trader_concentration,

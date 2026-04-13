@@ -186,6 +186,117 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(summary["xgboost"]["worst_active_window_accepted_size_usd"], 96.0)
 
+    def test_aggregate_window_results_uses_stitched_max_drawdown_pct(self) -> None:
+        result = replay_search._aggregate_window_results(
+            [
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 90.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 90.0,
+                    "total_pnl_usd": -10.0,
+                    "max_drawdown_pct": 0.10,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 2,
+                    "resolved_size_usd": 20.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 2,
+                    "win_rate": 0.5,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 70.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 70.0,
+                    "total_pnl_usd": -30.0,
+                    "max_drawdown_pct": 0.30,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 2,
+                    "resolved_size_usd": 20.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 2,
+                    "win_rate": 0.5,
+                    "signal_mode_summary": {},
+                },
+            ],
+            initial_bankroll_usd=100.0,
+        )
+
+        self.assertEqual(result["worst_window_drawdown_pct"], 0.3)
+        self.assertEqual(result["max_drawdown_pct"], 0.37)
+
+    def test_main_uses_stitched_max_drawdown_pct_for_multi_window_replay(self) -> None:
+        calls: list[tuple[int | None, int | None]] = []
+
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            calls.append((start_ts, end_ts))
+            if start_ts == 0:
+                return {
+                    "run_id": 1,
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 90.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 90.0,
+                    "total_pnl_usd": -10.0,
+                    "max_drawdown_pct": 0.10,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 2,
+                    "resolved_size_usd": 20.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 2,
+                    "win_rate": 0.5,
+                }
+            return {
+                "run_id": 2,
+                "initial_bankroll_usd": 100.0,
+                "final_equity_usd": 70.0,
+                "peak_equity_usd": 100.0,
+                "min_equity_usd": 70.0,
+                "total_pnl_usd": -30.0,
+                "max_drawdown_pct": 0.30,
+                "accepted_count": 2,
+                "accepted_size_usd": 20.0,
+                "resolved_count": 2,
+                "resolved_size_usd": 20.0,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 2,
+                "win_rate": 0.5,
+            }
+
+        stdout = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--base-policy-json",
+            json.dumps({"min_confidence": 0.60}),
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch.object(replay_search, "_latest_trade_ts", return_value=30 * 86400),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        result = payload["best_feasible"]["result"]
+        self.assertEqual(result["worst_window_drawdown_pct"], 0.3)
+        self.assertEqual(result["max_drawdown_pct"], 0.37)
+        self.assertEqual(len(calls), 2)
+
     def test_score_breakdown_ignores_disabled_scorer_inactivity(self) -> None:
         breakdown = replay_search._score_breakdown(
             {

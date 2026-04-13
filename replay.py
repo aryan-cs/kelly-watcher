@@ -316,6 +316,7 @@ def _simulate(
     open_positions: list[dict[str, Any]] = []
     realized_pnl = 0.0
     peak_equity = max(policy.initial_bankroll_usd, 0.0)
+    min_equity = max(policy.initial_bankroll_usd, 0.0)
     max_drawdown_pct = 0.0
     replay_rows: list[dict[str, Any]] = []
     unresolved_count = 0
@@ -336,10 +337,12 @@ def _simulate(
         return max(policy.initial_bankroll_usd + realized_pnl - open_exposure(), 0.0)
 
     def update_drawdown() -> None:
-        nonlocal peak_equity, max_drawdown_pct
+        nonlocal peak_equity, min_equity, max_drawdown_pct
         current_equity = account_equity()
         if current_equity > peak_equity:
             peak_equity = current_equity
+        if current_equity < min_equity:
+            min_equity = current_equity
         if peak_equity > 0:
             max_drawdown_pct = max(max_drawdown_pct, (peak_equity - current_equity) / peak_equity)
 
@@ -703,7 +706,8 @@ def _simulate(
     rejected_rows = [row for row in replay_rows if row["decision"] == "reject"]
     resolved_rows = [row for row in accepted_rows if row["pnl_usd"] is not None]
     wins = sum(1 for row in resolved_rows if float(row["pnl_usd"] or 0.0) > 0)
-    final_bankroll = round(policy.initial_bankroll_usd + realized_pnl - open_exposure(), 6)
+    final_equity = round(policy.initial_bankroll_usd + realized_pnl, 6)
+    final_bankroll = round(final_equity - open_exposure(), 6)
     accepted_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in accepted_rows)
     resolved_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in resolved_rows)
     reject_reason_summary: dict[str, int] = {}
@@ -753,7 +757,10 @@ def _simulate(
         "window_start_ts": start_ts,
         "window_end_ts": end_ts,
         "initial_bankroll_usd": round(policy.initial_bankroll_usd, 6),
+        "final_equity_usd": final_equity,
         "final_bankroll_usd": final_bankroll,
+        "peak_equity_usd": round(peak_equity, 6),
+        "min_equity_usd": round(min_equity, 6),
         "total_pnl_usd": round(final_bankroll - policy.initial_bankroll_usd, 6),
         "max_drawdown_pct": round(max_drawdown_pct, 6),
         "trade_count": len(replay_rows),

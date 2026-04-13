@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from replay_search_contract import validate_replay_search_score_weight_payload
+
 from dotenv import dotenv_values
 
 from env_profile import (
@@ -864,7 +866,7 @@ def replay_search_constraints() -> dict[str, Any]:
 def replay_search_score_weights() -> dict[str, Any]:
     payload = _load_json_object_file(replay_search_score_weights_file())
     payload.update(_get_env_file_json_object("REPLAY_SEARCH_SCORE_WEIGHTS_JSON"))
-    return payload
+    return validate_replay_search_score_weight_payload(payload, error_cls=ConfigError)
 
 
 def replay_search_top() -> int:

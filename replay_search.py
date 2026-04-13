@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from replay_search_contract import validate_replay_search_score_weight_payload
 from replay import ReplayPolicy, policy_to_config_payload, run_replay
 from runtime_paths import TRADING_DB_PATH
 
@@ -3843,16 +3844,7 @@ def _apply_score_weights_payload(
         return
     if not isinstance(payload, dict):
         raise ValueError("Score-weight payload must be a JSON object")
-    allowed_keys = {
-        str(action.dest)
-        for action in parser._actions
-        if str(getattr(action, "dest", "")).endswith("_penalty")
-    }
-    normalized_payload = {str(key): value for key, value in payload.items()}
-    unknown_keys = sorted(key for key in normalized_payload if key not in allowed_keys)
-    if unknown_keys:
-        joined_unknown_keys = ", ".join(unknown_keys)
-        raise ValueError(f"Unknown replay-search score-weight key(s): {joined_unknown_keys}")
+    normalized_payload = validate_replay_search_score_weight_payload(payload)
     for key, value in normalized_payload.items():
         option = f"--{key.replace('_', '-')}"
         if _argv_has_option(raw_argv, option):

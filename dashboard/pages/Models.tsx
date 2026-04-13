@@ -6089,6 +6089,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       ? theme.yellow
       : theme.red
   const replaySearchStatusText = replaySearchStatusLabel(botState.last_replay_search_status)
+  const replaySearchStatusRaw = String(botState.last_replay_search_status || '').trim().toLowerCase()
   const replaySearchScopeText = replaySearchScopeLabel(botState.last_replay_search_scope)
   const replaySearchCandidateCount = Math.max(0, Number(botState.last_replay_search_candidate_count || 0))
   const replaySearchValue = useMemo(() => {
@@ -6096,9 +6097,12 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     const parts: string[] = []
     if (replaySearchStatusText !== '-') parts.push(replaySearchStatusText)
     if (replaySearchScopeText !== '-') parts.push(replaySearchScopeText)
-    if (replaySearchCandidateCount > 0 || parts.length > 0) parts.push(`${formatCount(replaySearchCandidateCount)} cand`)
+    const showCandidateCount = replaySearchCandidateCount > 0 || !['running', 'already_running'].includes(replaySearchStatusRaw)
+    if (showCandidateCount && (replaySearchCandidateCount > 0 || parts.length > 0)) {
+      parts.push(`${formatCount(replaySearchCandidateCount)} cand`)
+    }
     return parts.length ? parts.join(' | ') : '-'
-  }, [replaySearchCandidateCount, replaySearchScopeText, replaySearchStatusText])
+  }, [replaySearchCandidateCount, replaySearchScopeText, replaySearchStatusRaw, replaySearchStatusText])
   const replaySearchValueColor = replaySearchStatusColor(botState.last_replay_search_status)
   const promotionStatusText = replayPromotionStatusLabel(botState.last_replay_promotion_status)
   const promotionScopeText = replaySearchScopeLabel(botState.last_replay_promotion_scope)

@@ -2197,6 +2197,33 @@ def _env_value_text(value: Any) -> str:
     return str(value)
 
 
+def _replay_search_transient_status_state(
+    *,
+    status: str,
+    message: str,
+    trigger: str,
+    started_at: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "last_replay_search_status": status,
+        "last_replay_search_message": message,
+        "last_replay_search_trigger": trigger,
+        "last_replay_search_scope": "shadow_only",
+        "last_replay_search_run_id": 0,
+        "last_replay_search_candidate_count": 0,
+        "last_replay_search_feasible_count": 0,
+        "last_replay_search_best_score": None,
+        "last_replay_search_best_pnl_usd": None,
+    }
+    if started_at is not None:
+        payload.update(
+            replay_search_in_progress=True,
+            replay_search_started_at=int(started_at),
+            last_replay_search_started_at=int(started_at),
+        )
+    return payload
+
+
 PROMOTABLE_REPLAY_CONFIG_KEYS = frozenset(str(key).strip().upper() for key in REPLAY_POLICY_CONFIG_KEY_MAP.values())
 
 
@@ -3913,22 +3940,22 @@ def main() -> None:
             message = f"Replay search request ignored: already running ({trigger})"
             logger.info(message)
             _persist_bot_state(
-                last_replay_search_status="already_running",
-                last_replay_search_message=message,
-                last_replay_search_trigger=trigger,
-                last_replay_search_scope="shadow_only",
+                **_replay_search_transient_status_state(
+                    status="already_running",
+                    message=message,
+                    trigger=trigger,
+                )
             )
             return False
 
         started_at = int(time.time())
         _persist_bot_state(
-            replay_search_in_progress=True,
-            replay_search_started_at=started_at,
-            last_replay_search_started_at=started_at,
-            last_replay_search_status="running",
-            last_replay_search_message=f"Replay search running ({trigger})",
-            last_replay_search_trigger=trigger,
-            last_replay_search_scope="shadow_only",
+            **_replay_search_transient_status_state(
+                status="running",
+                message=f"Replay search running ({trigger})",
+                trigger=trigger,
+                started_at=started_at,
+            )
         )
         _heartbeat(force=True)
         try:

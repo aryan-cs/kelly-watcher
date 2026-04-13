@@ -2452,6 +2452,37 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("--score-weights-json", command)
         self.assertIn(json.dumps({"worst_window_penalty": 0.1}, separators=(",", ":"), sort_keys=True), command)
 
+    def test_replay_search_transient_status_state_clears_stale_summary_fields(self) -> None:
+        running_state = main._replay_search_transient_status_state(
+            status="running",
+            message="Replay search running (scheduled)",
+            trigger="scheduled",
+            started_at=1_700_000_123,
+        )
+        busy_state = main._replay_search_transient_status_state(
+            status="already_running",
+            message="Replay search request ignored: already running (manual)",
+            trigger="manual",
+        )
+
+        self.assertTrue(running_state["replay_search_in_progress"])
+        self.assertEqual(running_state["replay_search_started_at"], 1_700_000_123)
+        self.assertEqual(running_state["last_replay_search_started_at"], 1_700_000_123)
+        self.assertEqual(running_state["last_replay_search_candidate_count"], 0)
+        self.assertEqual(running_state["last_replay_search_feasible_count"], 0)
+        self.assertEqual(running_state["last_replay_search_run_id"], 0)
+        self.assertIsNone(running_state["last_replay_search_best_score"])
+        self.assertIsNone(running_state["last_replay_search_best_pnl_usd"])
+
+        self.assertEqual(busy_state["last_replay_search_status"], "already_running")
+        self.assertEqual(busy_state["last_replay_search_trigger"], "manual")
+        self.assertEqual(busy_state["last_replay_search_candidate_count"], 0)
+        self.assertEqual(busy_state["last_replay_search_feasible_count"], 0)
+        self.assertEqual(busy_state["last_replay_search_run_id"], 0)
+        self.assertIsNone(busy_state["last_replay_search_best_score"])
+        self.assertIsNone(busy_state["last_replay_search_best_pnl_usd"])
+        self.assertNotIn("replay_search_in_progress", busy_state)
+
     def test_apply_env_config_payload_only_writes_promotable_replay_keys(self) -> None:
         with patch.object(main, "_write_env_value") as write_env_value:
             result = main._apply_env_config_payload(
@@ -2514,6 +2545,14 @@ class RuntimeFixesTest(unittest.TestCase):
             self.assertEqual(config.replay_search_grid_file(), "replay_search_specs/grid.json")
             self.assertEqual(config.replay_search_constraints_file(), "replay_search_specs/constraints.json")
             self.assertEqual(config.replay_search_score_weights_file(), "replay_search_specs/score_weights.json")
+
+    def test_replay_search_score_weights_reject_unknown_keys_before_subprocess(self) -> None:
+        with (
+            patch.object(config, "_load_json_object_file", return_value={}),
+            patch.object(config, "_get_env_file_json_object", return_value={"not_a_real_penalty": 1}),
+        ):
+            with self.assertRaisesRegex(config.ConfigError, "Unknown replay-search score-weight key"):
+                config.replay_search_score_weights()
 
     def test_replay_auto_promote_defaults_true_without_explicit_env(self) -> None:
         def fake_get(name: str, default: str = "") -> str:

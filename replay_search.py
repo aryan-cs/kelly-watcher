@@ -2261,7 +2261,7 @@ def _aggregate_window_results(
     live_guard_restart_pending = False
     last_window_index = max(len(window_results) - 1, 0)
     for index, row in enumerate(window_results):
-        if int(row.get("accepted_count") or 0) > 0:
+        if _window_has_participation(row):
             if carry_restart_pending:
                 carry_restart_window_count += 1
                 carry_restart_pending = False

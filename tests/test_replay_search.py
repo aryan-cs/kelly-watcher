@@ -1118,8 +1118,8 @@ class ReplaySearchTest(unittest.TestCase):
                     "rejected_count": 0,
                     "unresolved_count": 0,
                     "trade_count": 0,
-                    "window_end_open_exposure_usd": 10.0,
-                    "window_end_open_exposure_share": 0.1,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
                     "signal_mode_summary": {},
                 },
                 {
@@ -1135,6 +1135,51 @@ class ReplaySearchTest(unittest.TestCase):
                     "rejected_count": 0,
                     "unresolved_count": 0,
                     "trade_count": 2,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
+                    "signal_mode_summary": {},
+                },
+            ],
+            initial_bankroll_usd=100.0,
+        )
+
+        self.assertEqual(result["carry_restart_window_count"], 1)
+        self.assertEqual(result["carry_restart_window_opportunity_count"], 1)
+        self.assertEqual(result["carry_restart_window_share"], 1.0)
+
+    def test_aggregate_window_results_tracks_carry_restart_on_resolution_only_window(self) -> None:
+        result = replay_search._aggregate_window_results(
+            [
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 95.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": -5.0,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 2,
+                    "window_end_open_exposure_usd": 10.0,
+                    "window_end_open_exposure_share": 10.0 / 95.0,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 95.0,
+                    "final_equity_usd": 101.0,
+                    "peak_equity_usd": 101.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": 6.0,
+                    "accepted_count": 0,
+                    "accepted_size_usd": 0.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 0,
                     "window_end_open_exposure_usd": 0.0,
                     "window_end_open_exposure_share": 0.0,
                     "signal_mode_summary": {},
@@ -1238,7 +1283,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "rejected_count": 0,
                     "unresolved_count": 0,
                     "trade_count": 0,
-                    "window_end_daily_guard_triggered": 1,
+                    "window_end_daily_guard_triggered": 0,
                     "signal_mode_summary": {},
                 },
                 {
@@ -1254,6 +1299,51 @@ class ReplaySearchTest(unittest.TestCase):
                     "rejected_count": 0,
                     "unresolved_count": 0,
                     "trade_count": 2,
+                    "window_end_daily_guard_triggered": 0,
+                    "signal_mode_summary": {},
+                },
+            ],
+            initial_bankroll_usd=100.0,
+        )
+
+        self.assertEqual(result["daily_guard_restart_window_count"], 1)
+        self.assertEqual(result["daily_guard_restart_window_opportunity_count"], 1)
+        self.assertEqual(result["daily_guard_restart_window_share"], 1.0)
+
+    def test_aggregate_window_results_tracks_daily_guard_restart_on_resolution_only_window(
+        self,
+    ) -> None:
+        result = replay_search._aggregate_window_results(
+            [
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 95.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": -5.0,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 2,
+                    "window_end_daily_guard_triggered": 1,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 95.0,
+                    "final_equity_usd": 101.0,
+                    "peak_equity_usd": 101.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": 6.0,
+                    "accepted_count": 0,
+                    "accepted_size_usd": 0.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 0,
                     "window_end_daily_guard_triggered": 0,
                     "signal_mode_summary": {},
                 },
@@ -1324,6 +1414,51 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(result["live_guard_restart_window_opportunity_count"], 1)
         self.assertEqual(result["live_guard_restart_window_share"], 1.0)
 
+    def test_aggregate_window_results_tracks_live_guard_restart_on_resolution_only_window(
+        self,
+    ) -> None:
+        result = replay_search._aggregate_window_results(
+            [
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 95.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": -5.0,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 2,
+                    "window_end_live_guard_triggered": 1,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 95.0,
+                    "final_equity_usd": 101.0,
+                    "peak_equity_usd": 101.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": 6.0,
+                    "accepted_count": 0,
+                    "accepted_size_usd": 0.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 0,
+                    "window_end_live_guard_triggered": 0,
+                    "signal_mode_summary": {},
+                },
+            ],
+            initial_bankroll_usd=100.0,
+        )
+
+        self.assertEqual(result["live_guard_restart_window_count"], 1)
+        self.assertEqual(result["live_guard_restart_window_opportunity_count"], 1)
+        self.assertEqual(result["live_guard_restart_window_share"], 1.0)
+
     def test_aggregate_window_results_tracks_live_guard_restart_across_inactive_gap(self) -> None:
         result = replay_search._aggregate_window_results(
             [
@@ -1356,7 +1491,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "rejected_count": 0,
                     "unresolved_count": 0,
                     "trade_count": 0,
-                    "window_end_live_guard_triggered": 1,
+                    "window_end_live_guard_triggered": 0,
                     "signal_mode_summary": {},
                 },
                 {

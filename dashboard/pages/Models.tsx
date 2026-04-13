@@ -2061,6 +2061,21 @@ function replaySearchWorstWindowPnlFromPayload(payload: Record<string, unknown>)
   return Math.min(totalPnlUsd, 0)
 }
 
+function replaySearchWorstWindowPnlFromSummaryRow(row: ReplaySearchSummaryRow | null | undefined): number {
+  if (!row) return 0
+  if (row.result_json) {
+    try {
+      const parsed = JSON.parse(row.result_json)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return replaySearchWorstWindowPnlFromPayload(parsed as Record<string, unknown>)
+      }
+    } catch {
+      // Fall back to the summary row value below.
+    }
+  }
+  return Number(row.worst_window_pnl_usd || 0)
+}
+
 function replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload: Record<string, unknown>): number {
   if (payload.max_non_accepting_active_window_streak != null) {
     return Math.max(Number(payload.max_non_accepting_active_window_streak || 0), 0)
@@ -3963,7 +3978,7 @@ function replaySearchHeadroomSummary(
     const globalTopTwoAcceptingWindowAcceptedSizeShare = replaySearchTopTwoAcceptingWindowAcceptedSizeShareFromPayload(resultParsed as Record<string, unknown>)
     const globalWorstActiveWindowAcceptedCount = Number(resultParsed.worst_accepting_window_accepted_count ?? resultParsed.worst_active_window_accepted_count ?? 0)
     const globalWorstActiveWindowAcceptedSizeUsd = Number(resultParsed.worst_accepting_window_accepted_size_usd ?? resultParsed.worst_active_window_accepted_size_usd ?? 0)
-    const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0)
+    const globalWorstWindowPnl = replaySearchWorstWindowPnlFromPayload(resultParsed as Record<string, unknown>)
     const globalWorstWindowResolvedShare = Number(
       resultParsed.worst_active_window_resolved_share
       ?? resultParsed.worst_window_resolved_share
@@ -4319,7 +4334,7 @@ function replaySearchWindowSummary(latestSearch: ReplaySearchSummaryRow | null |
   if (!latestSearch) return '-'
   const positive = formatCount(latestSearch.positive_window_count)
   const negative = formatCount(latestSearch.negative_window_count)
-  const worst = formatDollar(latestSearch.worst_window_pnl_usd)
+  const worst = formatDollar(replaySearchWorstWindowPnlFromSummaryRow(latestSearch))
   if (!latestSearch.result_json) return `${positive}+ / ${negative}- | ${worst}`
   try {
     const parsed = JSON.parse(latestSearch.result_json)
@@ -5243,7 +5258,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       {
         label: 'Search windows',
         value: replaySearchWindowSummary(latestReplaySearch),
-        color: dollarColor(latestReplaySearch?.worst_window_pnl_usd)
+        color: dollarColor(replaySearchWorstWindowPnlFromSummaryRow(latestReplaySearch))
       },
       {
         label: 'Cfg drift',

@@ -88,6 +88,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.' },
             { label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.' },
             { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window, and pause-guard penalties.' },
+            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term.' },
             { label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.' },
             { label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
             { label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
@@ -1408,6 +1409,53 @@ function replaySearchScoreBreakdownSummary(raw) {
         return '-';
     }
 }
+function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
+    if (!bestRaw || !currentRaw)
+        return '-';
+    const parse = (raw) => {
+        try {
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                return null;
+            const rawBreakdown = parsed.score_breakdown;
+            if (!rawBreakdown || typeof rawBreakdown !== 'object' || Array.isArray(rawBreakdown))
+                return null;
+            const breakdown = rawBreakdown;
+            return {
+                score_usd: Number(breakdown.score_usd || 0),
+                pnl_usd: Number(breakdown.pnl_usd || 0),
+                drawdown_penalty_usd: Number(breakdown.drawdown_penalty_usd || 0),
+                window_stddev_penalty_usd: Number(breakdown.window_stddev_penalty_usd || 0),
+                worst_window_penalty_usd: Number(breakdown.worst_window_penalty_usd || 0),
+                pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0)
+            };
+        }
+        catch {
+            return null;
+        }
+    };
+    const best = parse(bestRaw);
+    const current = parse(currentRaw);
+    if (!best || !current)
+        return '-';
+    const scoreDelta = best.score_usd - current.score_usd;
+    const pnlDelta = best.pnl_usd - current.pnl_usd;
+    const drawdownDelta = current.drawdown_penalty_usd - best.drawdown_penalty_usd;
+    const stddevDelta = current.window_stddev_penalty_usd - best.window_stddev_penalty_usd;
+    const worstDelta = current.worst_window_penalty_usd - best.worst_window_penalty_usd;
+    const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd;
+    const parts = [
+        `${formatDollar(scoreDelta)} = pnl ${formatDollar(pnlDelta)}`,
+        `dd ${formatDollar(drawdownDelta)}`
+    ];
+    if (Math.abs(stddevDelta) > 1e-9)
+        parts.push(`std ${formatDollar(stddevDelta)}`);
+    if (Math.abs(worstDelta) > 1e-9)
+        parts.push(`worst ${formatDollar(worstDelta)}`);
+    if (Math.abs(pauseDelta) > 1e-9)
+        parts.push(`pause ${formatDollar(pauseDelta)}`);
+    return parts.join(' | ');
+}
 function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw) {
     if (!currentRaw || !constraintsRaw)
         return { summary: '-', breachCount: 0, hasActiveGuard: false };
@@ -2413,6 +2461,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         {
             label: 'Cur score',
             value: replaySearchScoreBreakdownSummary(latestReplaySearch?.current_candidate_result_json),
+            color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
+        },
+        {
+            label: 'Score drift',
+            value: replaySearchScoreDriftSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json),
             color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
         },
         {

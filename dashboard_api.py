@@ -284,6 +284,34 @@ def _request_is_recent(path: Path, max_age_seconds: int) -> bool:
     return age_seconds <= max_age_seconds
 
 
+def _request_payload_if_fresh(path: Path, max_age_seconds: int) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+
+    payload = _read_json_dict(path)
+    if not payload:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return None
+
+    requested_at = int(payload.get("requested_at") or 0)
+    now_ts = int(time.time())
+    if requested_at > 0:
+        is_fresh = (now_ts - requested_at) <= max_age_seconds
+    else:
+        is_fresh = _request_is_recent(path, max_age_seconds)
+    if is_fresh:
+        return payload
+
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    return None
+
+
 def _write_atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
@@ -330,21 +358,21 @@ def _bot_state_snapshot() -> dict[str, Any]:
         manual_trade_requested_at=int(bot_state.get("manual_trade_requested_at") or 0),
         manual_trade_message=str(bot_state.get("manual_trade_message") or ""),
     )
-    if MANUAL_RETRAIN_REQUEST_FILE.exists():
-        request_payload = _read_json_dict(MANUAL_RETRAIN_REQUEST_FILE)
+    request_payload = _request_payload_if_fresh(MANUAL_RETRAIN_REQUEST_FILE, 900)
+    if request_payload is not None:
         bot_state.update(
             manual_retrain_pending=True,
             manual_retrain_requested_at=int(request_payload.get("requested_at") or 0),
             manual_retrain_message=_manual_retrain_pending_message(request_payload),
         )
-    if _request_is_recent(SHADOW_RESET_REQUEST_FILE, 900):
-        request_payload = _read_json_dict(SHADOW_RESET_REQUEST_FILE)
+    request_payload = _request_payload_if_fresh(SHADOW_RESET_REQUEST_FILE, 900)
+    if request_payload is not None:
         bot_state.update(
             shadow_restart_pending=True,
             shadow_restart_message=_shadow_restart_pending_message(str(request_payload.get("wallet_mode") or "")),
         )
-    if MANUAL_TRADE_REQUEST_FILE.exists():
-        request_payload = _read_json_dict(MANUAL_TRADE_REQUEST_FILE)
+    request_payload = _request_payload_if_fresh(MANUAL_TRADE_REQUEST_FILE, 900)
+    if request_payload is not None:
         bot_state.update(
             manual_trade_pending=True,
             manual_trade_requested_at=int(request_payload.get("requested_at") or 0),
@@ -388,7 +416,7 @@ def _manual_retrain_response() -> dict[str, Any]:
     if bool(bot_state.get("retrain_in_progress")):
         return {"ok": False, "message": "A retrain is already running."}
 
-    if MANUAL_RETRAIN_REQUEST_FILE.exists():
+    if _request_payload_if_fresh(MANUAL_RETRAIN_REQUEST_FILE, 900) is not None:
         return {
             "ok": True,
             "message": "Manual retrain already requested. Waiting for the bot to pick it up.",
@@ -459,7 +487,7 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "message": "Manual trade actions are unavailable while shadow restart is pending. Wait for the restart to finish first.",
         }
-    if MANUAL_TRADE_REQUEST_FILE.exists():
+    if _request_payload_if_fresh(MANUAL_TRADE_REQUEST_FILE, 900) is not None:
         return {
             "ok": True,
             "message": "A manual trade request is already pending. Waiting for the bot to pick it up.",
@@ -858,7 +886,7 @@ def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
             "ok": False,
             "message": "Restart Shadow is unavailable because the bot state looks stale. Restart or refresh the bot first.",
         }
-    if bool(bot_state.get("shadow_restart_pending")) or SHADOW_RESET_REQUEST_FILE.exists():
+    if bool(bot_state.get("shadow_restart_pending")) or _request_payload_if_fresh(SHADOW_RESET_REQUEST_FILE, 900) is not None:
         return {
             "ok": True,
             "message": "Shadow reset already requested. Waiting for the bot to restart.",

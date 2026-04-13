@@ -246,6 +246,7 @@ class ReplaySearchTest(unittest.TestCase):
             min_total_pnl_usd=-1_000_000_000.0,
             max_drawdown_pct=0.0,
             min_worst_window_pnl_usd=-1_000_000_000.0,
+            min_worst_window_resolved_share=0.0,
             max_worst_window_drawdown_pct=0.0,
             min_heuristic_accepted_count=1,
             min_xgboost_accepted_count=1,
@@ -1685,6 +1686,75 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["constraint_failures"], ["resolved_share"])
         self.assertEqual(payload["constraints"]["min_resolved_share"], 0.75)
 
+    def test_main_can_require_global_worst_window_resolved_share(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if start_ts == 1:
+                resolved_count = 10
+            elif min_conf >= 0.65:
+                resolved_count = 8
+            else:
+                resolved_count = 4
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 12.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": 10,
+                "resolved_count": resolved_count,
+                "rejected_count": 0,
+                "unresolved_count": max(10 - resolved_count, 0),
+                "trade_count": 10,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": min(4, resolved_count),
+                        "trade_count": 4,
+                        "total_pnl_usd": 4.0,
+                        "win_count": 2,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "resolved_count": max(resolved_count - 4, 0),
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                        "win_count": 4,
+                    },
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--min-worst-window-resolved-share",
+            "0.75",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["worst_window_resolved_share"])
+        self.assertEqual(rejected["result"]["worst_window_resolved_share"], 0.4)
+        self.assertEqual(payload["constraints"]["min_worst_window_resolved_share"], 0.75)
+        self.assertIn("reject worst_window_resolved_share", stderr.getvalue())
+
     def test_main_can_require_mode_specific_worst_window_pnl_floors(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -2190,6 +2260,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "min_total_pnl_usd": -1000000000.0,
                     "min_win_rate": 0.0,
                     "min_worst_window_pnl_usd": -1000000000.0,
+                    "min_worst_window_resolved_share": 0.0,
                     "min_xgboost_accepted_share": 0.0,
                     "min_xgboost_accepted_count": 0,
                     "min_xgboost_resolved_count": 0,

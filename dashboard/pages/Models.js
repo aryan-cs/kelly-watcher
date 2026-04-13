@@ -1919,6 +1919,8 @@ function replaySearchFailureSummary(raw, feasible) {
                     return 'drawdown';
                 case 'worst_window_pnl_usd':
                     return 'worst pnl';
+                case 'worst_window_resolved_share':
+                    return 'worst cov';
                 case 'worst_window_drawdown_pct':
                     return 'worst dd';
                 case 'positive_window_count':
@@ -2008,6 +2010,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0);
         const globalPositiveWindows = Number(resultParsed.positive_window_count || 0);
         const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0);
+        const globalWorstWindowResolvedShare = Number(resultParsed.worst_window_resolved_share ?? globalResolvedShare);
         const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0);
         const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
             ? resultParsed.reject_reason_summary
@@ -2034,6 +2037,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const maxTopMarketAbsPnlShare = Number(constraints.max_top_market_abs_pnl_share || 0);
         const minPositiveWindows = Number(constraints.min_positive_windows || 0);
         const minWorstWindowPnlUsd = Number(constraints.min_worst_window_pnl_usd ?? -1000000000);
+        const minWorstWindowResolvedShare = Number(constraints.min_worst_window_resolved_share || 0);
         const maxWorstWindowDrawdownPct = Number(constraints.max_worst_window_drawdown_pct || 0);
         const topTraderAcceptedShare = Number(traderConcentration.top_accepted_share || 0);
         const topTraderAbsPnlShare = Number(traderConcentration.top_abs_pnl_share || 0);
@@ -2065,6 +2069,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             pushHeadroom('global', 'pos', globalPositiveWindows, minPositiveWindows, replayHeadroomCount, 'min');
         if (minWorstWindowPnlUsd > -999999999)
             pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min');
+        if (minWorstWindowResolvedShare > 0)
+            pushHeadroom('global', 'worst cov', globalWorstWindowResolvedShare, minWorstWindowResolvedShare, replayHeadroomPctPoints, 'min');
         if (maxWorstWindowDrawdownPct > 0)
             pushHeadroom('global', 'worst dd', globalWorstWindowDrawdown, maxWorstWindowDrawdownPct, replayHeadroomPctPoints, 'max');
         for (const [mode, prefix] of [['heuristic', 'heur'], ['xgboost', 'model']]) {

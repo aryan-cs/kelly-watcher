@@ -2137,6 +2137,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'drawdown'
         case 'worst_window_pnl_usd':
           return 'worst pnl'
+        case 'worst_window_resolved_share':
+          return 'worst cov'
         case 'worst_window_drawdown_pct':
           return 'worst dd'
         case 'positive_window_count':
@@ -2251,6 +2253,7 @@ function replaySearchHeadroomSummary(
     const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0)
     const globalPositiveWindows = Number(resultParsed.positive_window_count || 0)
     const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0)
+    const globalWorstWindowResolvedShare = Number(resultParsed.worst_window_resolved_share ?? globalResolvedShare)
     const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0)
     const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
       ? resultParsed.reject_reason_summary as Record<string, unknown>
@@ -2280,6 +2283,7 @@ function replaySearchHeadroomSummary(
     const maxTopMarketAbsPnlShare = Number(constraints.max_top_market_abs_pnl_share || 0)
     const minPositiveWindows = Number(constraints.min_positive_windows || 0)
     const minWorstWindowPnlUsd = Number(constraints.min_worst_window_pnl_usd ?? -1_000_000_000)
+    const minWorstWindowResolvedShare = Number(constraints.min_worst_window_resolved_share || 0)
     const maxWorstWindowDrawdownPct = Number(constraints.max_worst_window_drawdown_pct || 0)
     const topTraderAcceptedShare = Number(traderConcentration.top_accepted_share || 0)
     const topTraderAbsPnlShare = Number(traderConcentration.top_abs_pnl_share || 0)
@@ -2299,6 +2303,7 @@ function replaySearchHeadroomSummary(
     if (maxTopMarketAbsPnlShare > 0) pushHeadroom('global', 'market pnl', topMarketAbsPnlShare, maxTopMarketAbsPnlShare, replayHeadroomPctPoints, 'max')
     if (minPositiveWindows > 0) pushHeadroom('global', 'pos', globalPositiveWindows, minPositiveWindows, replayHeadroomCount, 'min')
     if (minWorstWindowPnlUsd > -999_999_999) pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min')
+    if (minWorstWindowResolvedShare > 0) pushHeadroom('global', 'worst cov', globalWorstWindowResolvedShare, minWorstWindowResolvedShare, replayHeadroomPctPoints, 'min')
     if (maxWorstWindowDrawdownPct > 0) {
       pushHeadroom('global', 'worst dd', globalWorstWindowDrawdown, maxWorstWindowDrawdownPct, replayHeadroomPctPoints, 'max')
     }

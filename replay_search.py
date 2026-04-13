@@ -361,6 +361,24 @@ def _worst_window_pnl(signal_mode_summary: dict[str, dict[str, Any]], mode: str)
     return float(raw_value)
 
 
+def _resolved_share_from_counts(accepted_count: Any, resolved_count: Any) -> float:
+    accepted = int(accepted_count or 0)
+    if accepted <= 0:
+        return 0.0
+    return float(int(resolved_count or 0)) / float(accepted)
+
+
+def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
+    if "worst_window_resolved_share" in result:
+        return result
+    enriched = dict(result)
+    enriched["worst_window_resolved_share"] = round(
+        _resolved_share_from_counts(enriched.get("accepted_count"), enriched.get("resolved_count")),
+        6,
+    )
+    return enriched
+
+
 def _reject_reason_summary(result: dict[str, Any]) -> dict[str, int]:
     raw = result.get("reject_reason_summary")
     if not isinstance(raw, dict):
@@ -413,6 +431,7 @@ def _constraint_failures(
     min_total_pnl_usd: float,
     max_drawdown_pct: float,
     min_worst_window_pnl_usd: float,
+    min_worst_window_resolved_share: float,
     max_worst_window_drawdown_pct: float,
     min_heuristic_accepted_count: int,
     min_xgboost_accepted_count: int,
@@ -441,7 +460,7 @@ def _constraint_failures(
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
     resolved_count = int(result.get("resolved_count") or 0)
-    resolved_share = float(resolved_count) / float(accepted_count) if accepted_count > 0 else 0.0
+    resolved_share = _resolved_share_from_counts(accepted_count, resolved_count)
     signal_mode_summary = _signal_mode_summary(result)
     trader_concentration = _trader_concentration(result)
     market_concentration = _market_concentration(result)
@@ -450,6 +469,7 @@ def _constraint_failures(
     total_pnl_usd = float(result.get("total_pnl_usd") or 0.0)
     drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
     worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
+    worst_window_resolved_share = float(result.get("worst_window_resolved_share") or 0.0)
     worst_window_drawdown_pct = float(result.get("worst_window_drawdown_pct") or 0.0)
 
     if accepted_count < max(min_accepted_count, 0):
@@ -466,6 +486,8 @@ def _constraint_failures(
         failures.append("max_drawdown_pct")
     if worst_window_pnl_usd < min_worst_window_pnl_usd:
         failures.append("worst_window_pnl_usd")
+    if min_worst_window_resolved_share > 0 and worst_window_resolved_share < min_worst_window_resolved_share:
+        failures.append("worst_window_resolved_share")
     if max_worst_window_drawdown_pct > 0 and worst_window_drawdown_pct > max_worst_window_drawdown_pct:
         failures.append("worst_window_drawdown_pct")
     if allow_heuristic and int(signal_mode_summary.get("heuristic", {}).get("accepted_count") or 0) < max(min_heuristic_accepted_count, 0):
@@ -586,23 +608,27 @@ def _evaluate_candidate(
     windows: list[tuple[int | None, int | None]],
 ) -> dict[str, Any]:
     if len(windows) == 1 and windows[0] == (None, None):
-        return run_replay(
-            policy=policy,
-            db_path=db_path,
-            label=label,
-            notes=notes,
+        return _with_worst_window_resolved_share(
+            run_replay(
+                policy=policy,
+                db_path=db_path,
+                label=label,
+                notes=notes,
+            )
         )
 
     window_results: list[dict[str, Any]] = []
     for window_index, (start_ts, end_ts) in enumerate(windows, start=1):
         window_results.append(
-            run_replay(
-                policy=policy,
-                db_path=db_path,
-                label=f"{label}-w{window_index:02d}",
-                notes=notes,
-                start_ts=start_ts,
-                end_ts=end_ts,
+            _with_worst_window_resolved_share(
+                run_replay(
+                    policy=policy,
+                    db_path=db_path,
+                    label=f"{label}-w{window_index:02d}",
+                    notes=notes,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                )
             )
         )
     return _aggregate_window_results(
@@ -677,6 +703,13 @@ def _aggregate_window_results(
     max_drawdown_pct = max(drawdown_values, default=0.0)
     positive_window_count = sum(1 for pnl in pnl_values if pnl > 0)
     negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
+    worst_window_resolved_share = min(
+        (
+            _resolved_share_from_counts(row.get("accepted_count"), row.get("resolved_count"))
+            for row in window_results
+        ),
+        default=0.0,
+    )
     window_avg_pnl_usd = sum(pnl_values) / len(pnl_values) if pnl_values else 0.0
     window_pnl_stddev_usd = (
         math.sqrt(sum((value - window_avg_pnl_usd) ** 2 for value in pnl_values) / len(pnl_values))
@@ -799,6 +832,7 @@ def _aggregate_window_results(
         "window_avg_pnl_usd": round(window_avg_pnl_usd, 6),
         "window_pnl_stddev_usd": round(window_pnl_stddev_usd, 6),
         "worst_window_pnl_usd": round(min(pnl_values, default=0.0), 6),
+        "worst_window_resolved_share": round(worst_window_resolved_share, 6),
         "best_window_pnl_usd": round(max(pnl_values, default=0.0), 6),
         "worst_window_drawdown_pct": round(max(drawdown_values, default=0.0), 6),
         "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
@@ -1149,6 +1183,7 @@ def main() -> None:
     parser.add_argument("--min-total-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum total replay P&L required for a candidate to be feasible.")
     parser.add_argument("--max-drawdown-pct", type=float, default=0.0, help="Maximum replay drawdown allowed for a candidate to be feasible.")
     parser.add_argument("--min-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed P&L for the worst replay window.")
+    parser.add_argument("--min-worst-window-resolved-share", type=float, default=0.0, help="Minimum resolved-share required for the worst replay window.")
     parser.add_argument("--max-worst-window-drawdown-pct", type=float, default=0.0, help="Maximum allowed drawdown for the worst replay window.")
     parser.add_argument("--min-heuristic-accepted-count", type=int, default=0, help="Minimum accepted heuristic trades required for a candidate to be feasible.")
     parser.add_argument("--min-xgboost-accepted-count", type=int, default=0, help="Minimum accepted xgboost trades required for a candidate to be feasible.")
@@ -1222,6 +1257,7 @@ def main() -> None:
         min_total_pnl_usd=float(args.min_total_pnl_usd),
         max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
         min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
+        min_worst_window_resolved_share=_clamp_fraction(args.min_worst_window_resolved_share),
         max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
         min_heuristic_accepted_count=max(args.min_heuristic_accepted_count, 0),
         min_xgboost_accepted_count=max(args.min_xgboost_accepted_count, 0),
@@ -1335,6 +1371,7 @@ def main() -> None:
             min_total_pnl_usd=float(args.min_total_pnl_usd),
             max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
             min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
+            min_worst_window_resolved_share=_clamp_fraction(args.min_worst_window_resolved_share),
             max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
             min_heuristic_accepted_count=max(args.min_heuristic_accepted_count, 0),
             min_xgboost_accepted_count=max(args.min_xgboost_accepted_count, 0),
@@ -1398,6 +1435,7 @@ def main() -> None:
         "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
         "min_positive_windows": max(args.min_positive_windows, 0),
         "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
+        "min_worst_window_resolved_share": _clamp_fraction(args.min_worst_window_resolved_share),
         "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
         "min_heuristic_accepted_count": max(args.min_heuristic_accepted_count, 0),
         "min_xgboost_accepted_count": max(args.min_xgboost_accepted_count, 0),

@@ -1810,6 +1810,8 @@ def _constraint_failures(
     max_avg_window_end_open_exposure_share: float = 0.0,
     max_carry_window_share: float = 0.0,
     max_carry_restart_window_share: float = 0.0,
+    min_heuristic_accepted_windows: int = 0,
+    min_xgboost_accepted_windows: int = 0,
     min_heuristic_accepted_window_share: float = 0.0,
     min_xgboost_accepted_window_share: float = 0.0,
 ) -> list[str]:
@@ -1956,10 +1958,13 @@ def _constraint_failures(
         failures.append("xgboost_positive_window_count")
     heuristic_inactive_window_count = int(signal_mode_summary.get("heuristic", {}).get("inactive_window_count") or 0)
     xgboost_inactive_window_count = int(signal_mode_summary.get("xgboost", {}).get("inactive_window_count") or 0)
-    heuristic_active_window_count = _mode_active_window_count(signal_mode_summary, "heuristic", max(int(result.get("window_count") or 0), 0))
-    xgboost_active_window_count = _mode_active_window_count(signal_mode_summary, "xgboost", max(int(result.get("window_count") or 0), 0))
-    heuristic_accepted_window_share = _mode_accepted_window_share(signal_mode_summary, "heuristic", max(int(result.get("window_count") or 0), 0))
-    xgboost_accepted_window_share = _mode_accepted_window_share(signal_mode_summary, "xgboost", max(int(result.get("window_count") or 0), 0))
+    mode_window_count = max(int(result.get("window_count") or 0), 0)
+    heuristic_active_window_count = _mode_active_window_count(signal_mode_summary, "heuristic", mode_window_count)
+    xgboost_active_window_count = _mode_active_window_count(signal_mode_summary, "xgboost", mode_window_count)
+    heuristic_accepted_window_count = _mode_accepted_window_count(signal_mode_summary, "heuristic", mode_window_count)
+    xgboost_accepted_window_count = _mode_accepted_window_count(signal_mode_summary, "xgboost", mode_window_count)
+    heuristic_accepted_window_share = _mode_accepted_window_share(signal_mode_summary, "heuristic", mode_window_count)
+    xgboost_accepted_window_share = _mode_accepted_window_share(signal_mode_summary, "xgboost", mode_window_count)
     heuristic_worst_active_window_accepted_count = signal_mode_summary.get("heuristic", {}).get("worst_active_window_accepted_count")
     heuristic_worst_active_window_accepted_size_usd = signal_mode_summary.get("heuristic", {}).get("worst_active_window_accepted_size_usd")
     xgboost_worst_active_window_accepted_count = signal_mode_summary.get("xgboost", {}).get("worst_active_window_accepted_count")
@@ -1968,6 +1973,10 @@ def _constraint_failures(
         failures.append("heuristic_inactive_window_count")
     if allow_xgboost and max_xgboost_inactive_window_count >= 0 and xgboost_inactive_window_count > max_xgboost_inactive_window_count:
         failures.append("xgboost_inactive_window_count")
+    if allow_heuristic and heuristic_accepted_window_count < max(min_heuristic_accepted_windows, 0):
+        failures.append("heuristic_accepted_window_count")
+    if allow_xgboost and xgboost_accepted_window_count < max(min_xgboost_accepted_windows, 0):
+        failures.append("xgboost_accepted_window_count")
     if (
         allow_heuristic
         and min_heuristic_accepted_window_share > 0
@@ -3469,6 +3478,8 @@ def main() -> None:
     parser.add_argument("--min-xgboost-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in xgboost's shallowest active replay window.")
     parser.add_argument("--max-heuristic-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where heuristic may be inactive before a candidate is rejected.")
     parser.add_argument("--max-xgboost-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where xgboost may be inactive before a candidate is rejected.")
+    parser.add_argument("--min-heuristic-accepted-windows", type=int, default=0, help="Minimum count of stitched replay windows that must still produce fresh heuristic accepts.")
+    parser.add_argument("--min-xgboost-accepted-windows", type=int, default=0, help="Minimum count of stitched replay windows that must still produce fresh xgboost accepts.")
     parser.add_argument("--min-heuristic-accepted-window-share", type=float, default=0.0, help="Minimum share of heuristic stitched active windows that must still produce fresh heuristic accepts.")
     parser.add_argument("--min-xgboost-accepted-window-share", type=float, default=0.0, help="Minimum share of xgboost stitched active windows that must still produce fresh xgboost accepts.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
@@ -3621,11 +3632,13 @@ def main() -> None:
         min_xgboost_worst_active_window_accepted_size_usd=max(args.min_xgboost_worst_active_window_accepted_size_usd, 0.0),
         max_heuristic_inactive_window_count=int(args.max_heuristic_inactive_windows),
         max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
+        min_heuristic_accepted_windows=max(args.min_heuristic_accepted_windows, 0),
         min_heuristic_accepted_window_share=_clamp_fraction(args.min_heuristic_accepted_window_share),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         max_heuristic_accepted_size_share=_clamp_fraction(args.max_heuristic_accepted_size_share),
         max_heuristic_active_window_accepted_share=_clamp_fraction(args.max_heuristic_active_window_accepted_share),
         max_heuristic_active_window_accepted_size_share=_clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
+        min_xgboost_accepted_windows=max(args.min_xgboost_accepted_windows, 0),
         min_xgboost_accepted_window_share=_clamp_fraction(args.min_xgboost_accepted_window_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         min_xgboost_accepted_size_share=_clamp_fraction(args.min_xgboost_accepted_size_share),
@@ -3881,11 +3894,13 @@ def main() -> None:
             min_xgboost_worst_active_window_accepted_size_usd=max(args.min_xgboost_worst_active_window_accepted_size_usd, 0.0),
             max_heuristic_inactive_window_count=int(args.max_heuristic_inactive_windows),
             max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
+            min_heuristic_accepted_windows=max(args.min_heuristic_accepted_windows, 0),
             min_heuristic_accepted_window_share=_clamp_fraction(args.min_heuristic_accepted_window_share),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             max_heuristic_accepted_size_share=_clamp_fraction(args.max_heuristic_accepted_size_share),
             max_heuristic_active_window_accepted_share=_clamp_fraction(args.max_heuristic_active_window_accepted_share),
             max_heuristic_active_window_accepted_size_share=_clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
+            min_xgboost_accepted_windows=max(args.min_xgboost_accepted_windows, 0),
             min_xgboost_accepted_window_share=_clamp_fraction(args.min_xgboost_accepted_window_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
             min_xgboost_accepted_size_share=_clamp_fraction(args.min_xgboost_accepted_size_share),
@@ -3994,11 +4009,13 @@ def main() -> None:
         "min_xgboost_worst_active_window_accepted_size_usd": max(args.min_xgboost_worst_active_window_accepted_size_usd, 0.0),
         "max_heuristic_inactive_windows": int(args.max_heuristic_inactive_windows),
         "max_xgboost_inactive_windows": int(args.max_xgboost_inactive_windows),
+        "min_heuristic_accepted_windows": max(args.min_heuristic_accepted_windows, 0),
         "min_heuristic_accepted_window_share": _clamp_fraction(args.min_heuristic_accepted_window_share),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "max_heuristic_accepted_size_share": _clamp_fraction(args.max_heuristic_accepted_size_share),
         "max_heuristic_active_window_accepted_share": _clamp_fraction(args.max_heuristic_active_window_accepted_share),
         "max_heuristic_active_window_accepted_size_share": _clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
+        "min_xgboost_accepted_windows": max(args.min_xgboost_accepted_windows, 0),
         "min_xgboost_accepted_window_share": _clamp_fraction(args.min_xgboost_accepted_window_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
         "min_xgboost_accepted_size_share": _clamp_fraction(args.min_xgboost_accepted_size_share),

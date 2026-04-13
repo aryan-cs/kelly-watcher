@@ -2446,6 +2446,59 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("--constraints-json", command)
         self.assertIn(json.dumps({"min_accepted_count": 12}, separators=(",", ":"), sort_keys=True), command)
 
+    def test_apply_env_config_payload_only_writes_promotable_replay_keys(self) -> None:
+        with patch.object(main, "_write_env_value") as write_env_value:
+            result = main._apply_env_config_payload(
+                {
+                    "MIN_CONFIDENCE": 0.66,
+                    "UNSAFE_EXTRA_KEY": "ignored",
+                    "ALLOW_XGBOOST": False,
+                }
+            )
+
+        self.assertEqual(result["applied_keys"], ["ALLOW_XGBOOST", "MIN_CONFIDENCE"])
+        self.assertEqual(result["ignored_keys"], ["UNSAFE_EXTRA_KEY"])
+        self.assertEqual(result["config"], {"ALLOW_XGBOOST": False, "MIN_CONFIDENCE": 0.66})
+        self.assertEqual(
+            write_env_value.call_args_list,
+            [
+                unittest.mock.call("ALLOW_XGBOOST", "false"),
+                unittest.mock.call("MIN_CONFIDENCE", "0.66"),
+            ],
+        )
+
+    def test_apply_env_config_payload_rejects_non_promotable_only_payloads(self) -> None:
+        with self.assertRaisesRegex(ValueError, "did not contain any promotable config keys"):
+            main._apply_env_config_payload({"UNSAFE_EXTRA_KEY": "ignored"})
+
+    def test_restore_env_config_payload_rolls_back_env_file_and_process_env(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text("MIN_CONFIDENCE=0.55\n", encoding="utf-8")
+            original_value = os.environ.get("MIN_CONFIDENCE")
+            os.environ["MIN_CONFIDENCE"] = "0.55"
+
+            def fake_write_env_value(key: str, value: str) -> None:
+                env_path.write_text(f"{key}={value}\n", encoding="utf-8")
+
+            try:
+                with (
+                    patch.object(main, "ENV_PATH", env_path),
+                    patch.object(main, "_write_env_value", side_effect=fake_write_env_value),
+                ):
+                    result = main._apply_env_config_payload({"MIN_CONFIDENCE": 0.61})
+                    self.assertEqual(env_path.read_text(encoding="utf-8"), "MIN_CONFIDENCE=0.61\n")
+                    self.assertEqual(os.environ.get("MIN_CONFIDENCE"), "0.61")
+                    main._restore_env_config_payload(result["snapshot"])
+
+                self.assertEqual(env_path.read_text(encoding="utf-8"), "MIN_CONFIDENCE=0.55\n")
+                self.assertEqual(os.environ.get("MIN_CONFIDENCE"), "0.55")
+            finally:
+                if original_value is None:
+                    os.environ.pop("MIN_CONFIDENCE", None)
+                else:
+                    os.environ["MIN_CONFIDENCE"] = original_value
+
     def test_replay_search_file_getters_default_to_checked_in_specs(self) -> None:
         with (
             patch.object(config, "_get_env_file_value", return_value=None),

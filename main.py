@@ -107,7 +107,7 @@ from config import (
     watched_wallets,
     xgboost_allowed_entry_price_bands,
 )
-from dashboard_api import DashboardApiServer, _write_env_value, start_dashboard_api_server
+from dashboard_api import DashboardApiServer, ENV_PATH, _write_env_value, start_dashboard_api_server
 from db import DB_PATH, get_conn, init_db
 from dedup import DedupeCache
 from economics import EntryEconomics
@@ -122,6 +122,7 @@ from kelly_watcher.shadow_reset import (
 )
 from market_scorer import MarketScorer, build_market_features
 from market_urls import market_url_from_metadata
+from replay import REPLAY_POLICY_CONFIG_KEY_MAP
 from signal_engine import SignalEngine
 from telegram_runtime import service_telegram_commands
 from trade_contract import OPEN_EXECUTED_ENTRY_SQL, RESOLVED_EXECUTED_ENTRY_SQL
@@ -2194,6 +2195,9 @@ def _env_value_text(value: Any) -> str:
     return str(value)
 
 
+PROMOTABLE_REPLAY_CONFIG_KEYS = frozenset(str(key).strip().upper() for key in REPLAY_POLICY_CONFIG_KEY_MAP.values())
+
+
 def _latest_applied_replay_promotion() -> dict[str, Any] | None:
     conn = get_conn()
     try:
@@ -2369,18 +2373,62 @@ def _insert_replay_promotion(payload: dict[str, Any]) -> int:
         conn.close()
 
 
-def _apply_env_config_payload(config_payload: dict[str, Any]) -> None:
-    prepared: list[tuple[str, str]] = []
-    for raw_key, raw_value in sorted(config_payload.items()):
+def _filtered_replay_promotion_config_payload(config_payload: dict[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
+    filtered: dict[str, Any] = {}
+    ignored_keys: list[str] = []
+    for raw_key, raw_value in sorted(_json_object_or_empty(config_payload).items()):
         key = str(raw_key or "").strip().upper()
         if not key:
             continue
-        prepared.append((key, _env_value_text(raw_value)))
+        if key not in PROMOTABLE_REPLAY_CONFIG_KEYS:
+            ignored_keys.append(key)
+            continue
+        filtered[key] = raw_value
+    return filtered, ignored_keys
+
+
+def _apply_env_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
+    filtered_payload, ignored_keys = _filtered_replay_promotion_config_payload(config_payload)
+    prepared = [(key, _env_value_text(raw_value)) for key, raw_value in sorted(filtered_payload.items())]
     if not prepared:
-        raise ValueError("Promotion config payload is empty")
+        raise ValueError("Promotion config payload did not contain any promotable config keys")
+    snapshot = {
+        "env_path": ENV_PATH,
+        "env_file_existed": ENV_PATH.exists(),
+        "env_file_text": ENV_PATH.read_text(encoding="utf-8") if ENV_PATH.exists() else None,
+        "env_values": {key: os.environ.get(key) for key, _value in prepared},
+    }
     for key, value in prepared:
         _write_env_value(key, value)
         os.environ[key] = value
+    return {
+        "applied_keys": [key for key, _value in prepared],
+        "ignored_keys": ignored_keys,
+        "config": filtered_payload,
+        "snapshot": snapshot,
+    }
+
+
+def _restore_env_config_payload(snapshot: dict[str, Any]) -> None:
+    env_path = snapshot.get("env_path")
+    if not isinstance(env_path, Path):
+        raise ValueError("Invalid env snapshot path")
+    if bool(snapshot.get("env_file_existed")):
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text(str(snapshot.get("env_file_text") or ""), encoding="utf-8")
+    elif env_path.exists():
+        env_path.unlink()
+
+    env_values = snapshot.get("env_values") or {}
+    if isinstance(env_values, dict):
+        for raw_key, previous_value in env_values.items():
+            key = str(raw_key or "").strip().upper()
+            if not key:
+                continue
+            if previous_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(previous_value)
 
 
 def _normalize_replay_search_flag_name(name: str) -> str:
@@ -3610,8 +3658,12 @@ def main() -> None:
         score_delta: float | None = None,
         pnl_delta_usd: float | None = None,
     ) -> dict[str, Any]:
-        candidate_config = _json_object_or_empty((candidate_row or {}).get("config_json"))
-        previous_config = _json_object_or_empty((current_candidate_row or {}).get("config_json"))
+        candidate_config, ignored_candidate_keys = _filtered_replay_promotion_config_payload(
+            _json_object_or_empty((candidate_row or {}).get("config_json"))
+        )
+        previous_config, _ignored_previous_keys = _filtered_replay_promotion_config_payload(
+            _json_object_or_empty((current_candidate_row or {}).get("config_json"))
+        )
         updated_keys = sorted(
             key
             for key in set(candidate_config) | set(previous_config)
@@ -3654,6 +3706,7 @@ def main() -> None:
             "score_delta": score_delta,
             "pnl_delta_usd": pnl_delta_usd,
             "updated_keys": updated_keys,
+            "ignored_keys": ignored_candidate_keys,
         }
 
     def _maybe_auto_promote_replay_candidate(*, trigger: str, run_row: dict[str, Any]) -> dict[str, Any]:
@@ -3668,8 +3721,12 @@ def main() -> None:
                 run_id,
                 candidate_index=int(best_candidate_index),
             ) if run_id > 0 else None
-        best_config = _json_object_or_empty((best_candidate_row or {}).get("config_json"))
-        current_config = _json_object_or_empty((current_candidate_row or {}).get("config_json"))
+        best_config, ignored_best_keys = _filtered_replay_promotion_config_payload(
+            _json_object_or_empty((best_candidate_row or {}).get("config_json"))
+        )
+        current_config, _ignored_current_keys = _filtered_replay_promotion_config_payload(
+            _json_object_or_empty((current_candidate_row or {}).get("config_json"))
+        )
         current_feasible = bool((current_candidate_row or {}).get("feasible"))
         score_delta = (
             float(run_row.get("best_vs_current_score"))
@@ -3730,8 +3787,8 @@ def main() -> None:
                 run_row=run_row,
                 candidate_row=best_candidate_row,
                 current_candidate_row=current_candidate_row,
-                status="skipped_no_config",
-                reason="Best feasible candidate did not persist a promotion config payload",
+                status="skipped_no_promotable_config",
+                reason="Best feasible candidate did not contain any promotable editable config keys",
                 score_delta=score_delta,
                 pnl_delta_usd=pnl_delta_usd,
             )
@@ -3789,7 +3846,7 @@ def main() -> None:
                 return result
 
         try:
-            _apply_env_config_payload(best_config)
+            apply_result = _apply_env_config_payload(best_config)
             engine = SignalEngine()
             applied_at = int(time.time())
             message = (
@@ -3798,6 +3855,9 @@ def main() -> None:
                 f"score_delta={score_delta if score_delta is not None else 0.0:.6f}, "
                 f"pnl_delta=${pnl_delta_usd if pnl_delta_usd is not None else 0.0:.2f})"
             )
+            ignored_key_count = len(set(ignored_best_keys) | set(apply_result.get("ignored_keys") or []))
+            if ignored_key_count > 0:
+                message += f"; ignored {ignored_key_count} non-promotable key(s)"
             logger.info(message)
             result = _record_replay_promotion(
                 trigger=trigger,
@@ -3815,7 +3875,12 @@ def main() -> None:
             _refresh_shadow_history_state()
             return result
         except Exception as exc:
-            message = f"Replay auto-promotion failed: {exc}"
+            if isinstance(apply_result, dict):
+                try:
+                    _restore_env_config_payload(apply_result.get("snapshot") or {})
+                except Exception:
+                    logger.exception("Failed to roll back replay auto-promotion config after runtime init error")
+            message = f"Replay auto-promotion failed and was rolled back: {exc}"
             logger.exception(message)
             result = _record_replay_promotion(
                 trigger=trigger,

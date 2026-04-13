@@ -30,6 +30,9 @@ export interface BotState {
   last_retrain_min_samples?: number
   last_retrain_trigger?: string
   last_retrain_deployed?: boolean
+  manual_retrain_pending?: boolean
+  manual_retrain_requested_at?: number
+  manual_retrain_message?: string
   last_replay_search_started_at?: number
   last_replay_search_finished_at?: number
   last_replay_search_status?: string
@@ -59,6 +62,9 @@ export interface BotState {
   last_applied_replay_promotion_candidate_id?: number
   last_applied_replay_promotion_score_delta?: number | null
   last_applied_replay_promotion_pnl_delta_usd?: number | null
+  manual_trade_pending?: boolean
+  manual_trade_requested_at?: number
+  manual_trade_message?: string
   shadow_history_state_known?: boolean
   resolved_shadow_trade_count?: number
   live_require_shadow_history_enabled?: boolean

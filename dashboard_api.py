@@ -298,6 +298,17 @@ def _shadow_restart_pending_message(wallet_mode: str = "") -> str:
     return "Shadow restart requested. Waiting for backend to restart."
 
 
+def _manual_retrain_pending_message(payload: dict[str, Any]) -> str:
+    source = str(payload.get("source") or "unknown").strip().lower() or "unknown"
+    return f"requested by {source}"
+
+
+def _manual_trade_pending_message(payload: dict[str, Any]) -> str:
+    action = str(payload.get("action") or "").strip().lower().replace("_", " ") or "trade"
+    target = str(payload.get("question") or payload.get("market_id") or "").strip()
+    return f"{action} {target}".strip()
+
+
 def _persist_shadow_restart_pending_state(request_payload: dict[str, Any]) -> None:
     bot_state = _read_json_dict(BOT_STATE_FILE)
     bot_state.update(
@@ -309,11 +320,35 @@ def _persist_shadow_restart_pending_state(request_payload: dict[str, Any]) -> No
 
 def _bot_state_snapshot() -> dict[str, Any]:
     bot_state = _read_json_dict(BOT_STATE_FILE)
+    bot_state.update(
+        manual_retrain_pending=bool(bot_state.get("manual_retrain_pending")),
+        manual_retrain_requested_at=int(bot_state.get("manual_retrain_requested_at") or 0),
+        manual_retrain_message=str(bot_state.get("manual_retrain_message") or ""),
+        shadow_restart_pending=bool(bot_state.get("shadow_restart_pending")),
+        shadow_restart_message=str(bot_state.get("shadow_restart_message") or ""),
+        manual_trade_pending=bool(bot_state.get("manual_trade_pending")),
+        manual_trade_requested_at=int(bot_state.get("manual_trade_requested_at") or 0),
+        manual_trade_message=str(bot_state.get("manual_trade_message") or ""),
+    )
+    if _request_is_recent(MANUAL_RETRAIN_REQUEST_FILE, 30):
+        request_payload = _read_json_dict(MANUAL_RETRAIN_REQUEST_FILE)
+        bot_state.update(
+            manual_retrain_pending=True,
+            manual_retrain_requested_at=int(request_payload.get("requested_at") or 0),
+            manual_retrain_message=_manual_retrain_pending_message(request_payload),
+        )
     if _request_is_recent(SHADOW_RESET_REQUEST_FILE, 900):
         request_payload = _read_json_dict(SHADOW_RESET_REQUEST_FILE)
         bot_state.update(
             shadow_restart_pending=True,
             shadow_restart_message=_shadow_restart_pending_message(str(request_payload.get("wallet_mode") or "")),
+        )
+    if _request_is_recent(MANUAL_TRADE_REQUEST_FILE, 15):
+        request_payload = _read_json_dict(MANUAL_TRADE_REQUEST_FILE)
+        bot_state.update(
+            manual_trade_pending=True,
+            manual_trade_requested_at=int(request_payload.get("requested_at") or 0),
+            manual_trade_message=_manual_trade_pending_message(request_payload),
         )
     return bot_state
 

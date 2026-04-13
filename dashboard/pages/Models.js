@@ -23,11 +23,12 @@ export const MODEL_PANEL_DEFS = [
         { label: 'Scorer gates', text: 'Which scorer paths are enabled in config. Disabled paths cannot be loaded for new decisions.' },
         { label: 'Loaded scorer', text: 'Which scorer the running bot has loaded right now for new decisions.' },
         { label: 'Model artifact', text: 'The latest deployed model artifact on disk, even if live trading is currently falling back.' },
-            { label: 'Contract', text: 'Artifact contract versus runtime contract. A mismatch means the runtime will reject the model.' },
-            { label: 'Fallback', text: 'Why the runtime is using heuristics instead of the model, if it is degraded.' },
-            { label: 'Startup', text: 'Current startup state. Red means startup failed before the runtime reached its first stable polling loop.' },
-            { label: 'Replay search', text: 'Latest replay-search attempt, trigger, and scope, including persisted feasible-candidate depth plus any non-redundant completion detail on completed runs, and persisted failure detail on non-success runs. This is the search job status, not the promotion result.' },
-            { label: 'Promotion', text: 'Latest replay-promotion attempt, including skipped or failed auto-promotion attempts after replay search, with the persisted attempt reason.' },
+        { label: 'Contract', text: 'Artifact contract versus runtime contract. A mismatch means the runtime will reject the model.' },
+        { label: 'Fallback', text: 'Why the runtime is using heuristics instead of the model, if it is degraded.' },
+        { label: 'Startup', text: 'Current startup state. Red means startup failed before the runtime reached its first stable polling loop.' },
+        { label: 'Manual req', text: 'Accepted manual retrain and manual trade requests that are still pending pickup by the runtime, derived from the request files rather than transient local UI state.' },
+        { label: 'Replay search', text: 'Latest replay-search attempt, trigger, and scope, including persisted feasible-candidate depth plus any non-redundant completion detail on completed runs, and persisted failure detail on non-success runs. This is the search job status, not the promotion result.' },
+        { label: 'Promotion', text: 'Latest replay-promotion attempt, including skipped or failed auto-promotion attempts after replay search, with the persisted attempt reason.' },
             { label: 'Promote delta', text: 'Score and replay P&L delta attached to the latest replay-promotion attempt, when available.' },
             { label: 'Promo base', text: 'Last applied replay-promotion baseline, including the persisted applied reason. This can be older than Promotion when the latest attempt was skipped or failed.' },
             { label: 'Shadow gate', text: 'Combined live-history gate: total shadow-history baseline plus the post-promotion shadow-history requirement.' },
@@ -5628,6 +5629,12 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const startupApiError = compactSingleLineText(botState.api_error);
     const shadowRestartPending = Boolean(botState.shadow_restart_pending);
     const shadowRestartMessage = String(botState.shadow_restart_message || '').trim() || 'shadow restart in progress';
+    const manualRetrainPending = Boolean(botState.manual_retrain_pending);
+    const manualRetrainRequestedAt = Math.max(0, Number(botState.manual_retrain_requested_at || 0));
+    const manualRetrainMessage = compactSingleLineText(botState.manual_retrain_message);
+    const manualTradePending = Boolean(botState.manual_trade_pending);
+    const manualTradeRequestedAt = Math.max(0, Number(botState.manual_trade_requested_at || 0));
+    const manualTradeMessage = compactSingleLineText(botState.manual_trade_message);
     const startupValue = useMemo(() => {
         if (startupFailed)
             return startupDetail || startupFailureMessage || 'startup failed';
@@ -5652,11 +5659,39 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         ? theme.red
         : startupApiError
             ? theme.red
-            : shadowRestartPending
-                ? theme.yellow
+        : shadowRestartPending
+            ? theme.yellow
         : (botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail
             ? theme.yellow
             : theme.green;
+    const manualRequestValue = useMemo(() => {
+        const parts = [];
+        if (manualRetrainPending) {
+            const retrainParts = ['retrain'];
+            if (manualRetrainMessage)
+                retrainParts.push(manualRetrainMessage);
+            if (manualRetrainRequestedAt > 0)
+                retrainParts.push(secondsAgo(manualRetrainRequestedAt));
+            parts.push(retrainParts.join(' '));
+        }
+        if (manualTradePending) {
+            const tradeParts = ['trade'];
+            if (manualTradeMessage)
+                tradeParts.push(manualTradeMessage);
+            if (manualTradeRequestedAt > 0)
+                tradeParts.push(secondsAgo(manualTradeRequestedAt));
+            parts.push(tradeParts.join(' '));
+        }
+        return parts.length > 0 ? parts.join(' | ') : '-';
+    }, [
+        manualRetrainMessage,
+        manualRetrainPending,
+        manualRetrainRequestedAt,
+        manualTradeMessage,
+        manualTradePending,
+        manualTradeRequestedAt
+    ]);
+    const manualRequestColor = manualRetrainPending || manualTradePending ? theme.yellow : theme.dim;
     const replaySearchStatusText = replaySearchStatusLabel(botState.last_replay_search_status);
     const replaySearchStatusRaw = String(botState.last_replay_search_status || '').trim().toLowerCase();
     const replaySearchTriggerText = compactSingleLineText(botState.last_replay_search_trigger);
@@ -5956,6 +5991,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         { label: 'Contract', value: contractLabel, color: contractColor },
         { label: 'Fallback', value: fallbackLabel, color: fallbackColor },
         { label: 'Startup', value: startupValue, color: startupColor },
+        { label: 'Manual req', value: manualRequestValue, color: manualRequestColor },
         {
             label: 'Replay search',
             value: replaySearchValue,

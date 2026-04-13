@@ -628,6 +628,75 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("wallet n 40%", stderr.getvalue())
         self.assertIn("wallet pnl 45%", stderr.getvalue())
 
+    def test_main_can_limit_top_market_concentration(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 64.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "win_rate": 0.6,
+                    "market_concentration": {
+                        "market_count": 4,
+                        "top_accepted_market_id": "market-b",
+                        "top_accepted_count": 4,
+                        "top_accepted_share": 0.40,
+                        "top_accepted_total_pnl_usd": 16.0,
+                        "top_abs_pnl_market_id": "market-c",
+                        "top_abs_pnl_usd": 28.0,
+                        "top_abs_pnl_share": 0.45,
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 78.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.6,
+                "market_concentration": {
+                    "market_count": 2,
+                    "top_accepted_market_id": "market-a",
+                    "top_accepted_count": 7,
+                    "top_accepted_share": 0.70,
+                    "top_accepted_total_pnl_usd": 50.0,
+                    "top_abs_pnl_market_id": "market-a",
+                    "top_abs_pnl_usd": 58.0,
+                    "top_abs_pnl_share": 0.82,
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--max-top-market-accepted-share",
+            "0.60",
+            "--max-top-market-abs-pnl-share",
+            "0.60",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["top_market_accepted_share", "top_market_abs_pnl_share"])
+        self.assertEqual(payload["constraints"]["max_top_market_accepted_share"], 0.6)
+        self.assertEqual(payload["constraints"]["max_top_market_abs_pnl_share"], 0.6)
+        self.assertIn("market n 40%", stderr.getvalue())
+        self.assertIn("market pnl 45%", stderr.getvalue())
+
     def test_main_can_penalize_pause_guard_reject_share_in_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -1086,6 +1155,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "trade_count": 4,
                     "win_rate": 0.80,
                     "trader_concentration": {"trader_count": 1, "top_accepted_share": 1.0, "top_abs_pnl_share": 1.0},
+                    "market_concentration": {"market_count": 1, "top_accepted_share": 1.0, "top_abs_pnl_share": 1.0},
                     "signal_mode_summary": {"xgboost": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 80.0, "win_count": 3}},
                 }
             if min_conf >= 0.60:
@@ -1100,6 +1170,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "trade_count": 12,
                     "win_rate": 0.62,
                     "trader_concentration": {"trader_count": 3, "top_accepted_share": 0.5, "top_abs_pnl_share": 0.5},
+                    "market_concentration": {"market_count": 3, "top_accepted_share": 0.5, "top_abs_pnl_share": 0.5},
                     "signal_mode_summary": {"heuristic": {"accepted_count": 6, "resolved_count": 12, "trade_count": 12, "total_pnl_usd": 60.0, "win_count": 7}, "xgboost": {"accepted_count": 6, "resolved_count": 0, "trade_count": 0, "total_pnl_usd": 0.0, "win_count": 0}},
                 }
             return {
@@ -1113,6 +1184,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "trade_count": 12,
                 "win_rate": 0.62,
                 "trader_concentration": {"trader_count": 2, "top_accepted_share": 0.75, "top_abs_pnl_share": 0.75},
+                "market_concentration": {"market_count": 2, "top_accepted_share": 0.75, "top_abs_pnl_share": 0.75},
                 "signal_mode_summary": {"heuristic": {"accepted_count": 12, "resolved_count": 12, "trade_count": 12, "total_pnl_usd": 40.0, "win_count": 7}},
             }
 
@@ -1181,6 +1253,7 @@ class ReplaySearchTest(unittest.TestCase):
             current_result_json = json.loads(run_row[12])
             self.assertEqual(current_result_json["signal_mode_summary"]["heuristic"]["accepted_count"], 12)
             self.assertEqual(current_result_json["trader_concentration"]["top_accepted_share"], 0.75)
+            self.assertEqual(current_result_json["market_concentration"]["top_accepted_share"], 0.75)
             self.assertEqual(current_result_json["score_breakdown"]["score_usd"], -110.0)
             self.assertEqual(
                 json.loads(run_row[13]),
@@ -1188,6 +1261,8 @@ class ReplaySearchTest(unittest.TestCase):
                     "max_drawdown_pct": 0.1,
                     "max_heuristic_accepted_share": 0.0,
                     "max_pause_guard_reject_share": 0.0,
+                    "max_top_market_accepted_share": 0.0,
+                    "max_top_market_abs_pnl_share": 0.0,
                     "max_top_trader_accepted_share": 0.0,
                     "max_top_trader_abs_pnl_share": 0.0,
                     "max_worst_window_drawdown_pct": 0.0,

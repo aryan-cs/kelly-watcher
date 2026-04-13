@@ -273,6 +273,13 @@ def _trader_concentration(result: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
+def _market_concentration(result: dict[str, Any]) -> dict[str, Any]:
+    raw = result.get("market_concentration")
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
 def _clamp_fraction(raw: float) -> float:
     return min(max(float(raw), 0.0), 1.0)
 
@@ -305,12 +312,15 @@ def _constraint_failures(
     max_pause_guard_reject_share: float,
     max_top_trader_accepted_share: float,
     max_top_trader_abs_pnl_share: float,
+    max_top_market_accepted_share: float,
+    max_top_market_abs_pnl_share: float,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
     resolved_count = int(result.get("resolved_count") or 0)
     signal_mode_summary = _signal_mode_summary(result)
     trader_concentration = _trader_concentration(result)
+    market_concentration = _market_concentration(result)
     raw_win_rate = result.get("win_rate")
     win_rate = float(raw_win_rate) if raw_win_rate is not None else None
     drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
@@ -371,6 +381,10 @@ def _constraint_failures(
         failures.append("top_trader_accepted_share")
     if max_top_trader_abs_pnl_share > 0 and float(trader_concentration.get("top_abs_pnl_share") or 0.0) > max_top_trader_abs_pnl_share:
         failures.append("top_trader_abs_pnl_share")
+    if max_top_market_accepted_share > 0 and float(market_concentration.get("top_accepted_share") or 0.0) > max_top_market_accepted_share:
+        failures.append("top_market_accepted_share")
+    if max_top_market_abs_pnl_share > 0 and float(market_concentration.get("top_abs_pnl_share") or 0.0) > max_top_market_abs_pnl_share:
+        failures.append("top_market_abs_pnl_share")
     return failures
 
 
@@ -396,13 +410,20 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         pause_guard_share = _pause_guard_reject_share(row["result"])
         pause_suffix = f" | pause {pause_guard_share * 100:.0f}%" if pause_guard_share > 0 else ""
         trader_concentration = _trader_concentration(row["result"])
+        market_concentration = _market_concentration(row["result"])
         concentration_parts: list[str] = []
         top_accepted_share = float(trader_concentration.get("top_accepted_share") or 0.0)
         top_abs_pnl_share = float(trader_concentration.get("top_abs_pnl_share") or 0.0)
+        top_market_accepted_share = float(market_concentration.get("top_accepted_share") or 0.0)
+        top_market_abs_pnl_share = float(market_concentration.get("top_abs_pnl_share") or 0.0)
         if top_accepted_share > 0:
             concentration_parts.append(f"wallet n {top_accepted_share * 100:.0f}%")
         if top_abs_pnl_share > 0:
             concentration_parts.append(f"wallet pnl {top_abs_pnl_share * 100:.0f}%")
+        if top_market_accepted_share > 0:
+            concentration_parts.append(f"market n {top_market_accepted_share * 100:.0f}%")
+        if top_market_abs_pnl_share > 0:
+            concentration_parts.append(f"market pnl {top_market_abs_pnl_share * 100:.0f}%")
         concentration_suffix = f" | {' / '.join(concentration_parts)}" if concentration_parts else ""
         window_count = int(row["result"].get("window_count") or 0)
         window_suffix = ""
@@ -570,6 +591,7 @@ def _aggregate_window_results(
         for mode, values in signal_mode_totals.items()
     }
     trader_concentration_rows = [row.get("trader_concentration") for row in window_results if isinstance(row.get("trader_concentration"), dict)]
+    market_concentration_rows = [row.get("market_concentration") for row in window_results if isinstance(row.get("market_concentration"), dict)]
     top_accepted_window = max(
         trader_concentration_rows,
         key=lambda row: float((row or {}).get("top_accepted_share") or 0.0),
@@ -590,6 +612,27 @@ def _aggregate_window_results(
         "top_abs_pnl_usd": round(float((top_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
         "trader_count": max((int((row or {}).get("trader_count") or 0) for row in trader_concentration_rows), default=0),
+    }
+    top_market_accepted_window = max(
+        market_concentration_rows,
+        key=lambda row: float((row or {}).get("top_accepted_share") or 0.0),
+        default=None,
+    )
+    top_market_abs_pnl_window = max(
+        market_concentration_rows,
+        key=lambda row: float((row or {}).get("top_abs_pnl_share") or 0.0),
+        default=None,
+    )
+    market_concentration = {
+        "window_mode": "max_window",
+        "top_accepted_market_id": str((top_market_accepted_window or {}).get("top_accepted_market_id") or ""),
+        "top_accepted_count": int((top_market_accepted_window or {}).get("top_accepted_count") or 0),
+        "top_accepted_share": round(float((top_market_accepted_window or {}).get("top_accepted_share") or 0.0), 6),
+        "top_accepted_total_pnl_usd": round(float((top_market_accepted_window or {}).get("top_accepted_total_pnl_usd") or 0.0), 6),
+        "top_abs_pnl_market_id": str((top_market_abs_pnl_window or {}).get("top_abs_pnl_market_id") or ""),
+        "top_abs_pnl_usd": round(float((top_market_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
+        "top_abs_pnl_share": round(float((top_market_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
+        "market_count": max((int((row or {}).get("market_count") or 0) for row in market_concentration_rows), default=0),
     }
     return {
         "window_count": len(window_results),
@@ -614,6 +657,7 @@ def _aggregate_window_results(
         "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
         "signal_mode_summary": signal_mode_summary,
         "trader_concentration": trader_concentration,
+        "market_concentration": market_concentration,
     }
 
 
@@ -946,6 +990,8 @@ def main() -> None:
     parser.add_argument("--max-pause-guard-reject-share", type=float, default=0.0, help="Maximum fraction of replay trades allowed to be rejected by daily-loss or live-drawdown pause guards.")
     parser.add_argument("--max-top-trader-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single trader.")
     parser.add_argument("--max-top-trader-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single trader.")
+    parser.add_argument("--max-top-market-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single market.")
+    parser.add_argument("--max-top-market-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single market.")
     args = parser.parse_args()
 
     base_policy = _load_base_policy(args)
@@ -1003,6 +1049,8 @@ def main() -> None:
         max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
         max_top_trader_accepted_share=_clamp_fraction(args.max_top_trader_accepted_share),
         max_top_trader_abs_pnl_share=_clamp_fraction(args.max_top_trader_abs_pnl_share),
+        max_top_market_accepted_share=_clamp_fraction(args.max_top_market_accepted_share),
+        max_top_market_abs_pnl_share=_clamp_fraction(args.max_top_market_abs_pnl_share),
     )
     if int(current_result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
         current_constraint_failures.append("positive_window_count")
@@ -1084,6 +1132,8 @@ def main() -> None:
             max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
             max_top_trader_accepted_share=_clamp_fraction(args.max_top_trader_accepted_share),
             max_top_trader_abs_pnl_share=_clamp_fraction(args.max_top_trader_abs_pnl_share),
+            max_top_market_accepted_share=_clamp_fraction(args.max_top_market_accepted_share),
+            max_top_market_abs_pnl_share=_clamp_fraction(args.max_top_market_abs_pnl_share),
         )
         if int(result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
             constraint_failures.append("positive_window_count")
@@ -1141,6 +1191,8 @@ def main() -> None:
         "max_pause_guard_reject_share": _clamp_fraction(args.max_pause_guard_reject_share),
         "max_top_trader_accepted_share": _clamp_fraction(args.max_top_trader_accepted_share),
         "max_top_trader_abs_pnl_share": _clamp_fraction(args.max_top_trader_abs_pnl_share),
+        "max_top_market_accepted_share": _clamp_fraction(args.max_top_market_accepted_share),
+        "max_top_market_abs_pnl_share": _clamp_fraction(args.max_top_market_abs_pnl_share),
     }
     finished_at = int(time.time())
     search_run_id = _persist_search_results(

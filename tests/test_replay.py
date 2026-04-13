@@ -394,6 +394,109 @@ class ReplayTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_run_replay_reports_market_concentration(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="market-a-1",
+                    market_id="shared-market",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.70,
+                    price_at_signal=0.68,
+                    actual_entry_price=0.68,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=12.0,
+                    placed_at=1_700_020_000,
+                    resolved_at=1_700_020_100,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.85},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="market-a-2",
+                    market_id="shared-market",
+                    trader_address="0xbbb",
+                    signal_mode="heuristic",
+                    confidence=0.72,
+                    price_at_signal=0.69,
+                    actual_entry_price=0.69,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=10.0,
+                    placed_at=1_700_020_200,
+                    resolved_at=1_700_020_300,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.86},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="market-b-1",
+                    market_id="single-market",
+                    trader_address="0xccc",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=-35.0,
+                    placed_at=1_700_020_400,
+                    resolved_at=1_700_020_500,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.88},
+                        "min_confidence": 0.55,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                    label="market-concentration",
+                )
+
+                self.assertEqual(result["accepted_count"], 3)
+                self.assertEqual(result["market_concentration"]["market_count"], 2)
+                self.assertEqual(result["market_concentration"]["top_accepted_market_id"], "shared-market")
+                self.assertEqual(result["market_concentration"]["top_accepted_count"], 2)
+                self.assertAlmostEqual(result["market_concentration"]["top_accepted_share"], 2 / 3, places=6)
+                self.assertGreater(result["market_concentration"]["top_accepted_total_pnl_usd"], 0.0)
+                self.assertEqual(result["market_concentration"]["top_abs_pnl_market_id"], "single-market")
+                self.assertGreater(result["market_concentration"]["top_abs_pnl_usd"], abs(result["market_concentration"]["top_accepted_total_pnl_usd"]))
+                self.assertGreater(result["market_concentration"]["top_abs_pnl_share"], 0.5)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_run_replay_can_filter_by_time_window(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

@@ -718,6 +718,7 @@ def _simulate(
     segment_metric_rows = _build_segment_metric_rows(replay_rows)
     signal_mode_summary = _segment_summary(segment_metric_rows, segment_kind="signal_mode")
     trader_concentration = _trader_concentration(segment_metric_rows)
+    market_concentration = _market_concentration(segment_metric_rows)
     _insert_segment_metrics(conn, run_id, segment_metric_rows)
     conn.commit()
 
@@ -740,6 +741,7 @@ def _simulate(
         "segment_leaders": _segment_leaders(segment_metric_rows),
         "signal_mode_summary": signal_mode_summary,
         "trader_concentration": trader_concentration,
+        "market_concentration": market_concentration,
     }
 
 
@@ -1049,6 +1051,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
         segment_values = {
             "signal_mode": str(row["signal_mode"] or ""),
             "trader_address": str(row["trader_address"] or ""),
+            "market_id": str(row["market_id"] or ""),
             "entry_price_band": _entry_price_band(_coalesce_float(row["entry_price"])),
             "source_status": str(row["source_status"] or ""),
             "time_to_close_band": str(row.get("time_to_close_band") or ""),
@@ -1163,21 +1166,48 @@ def _segment_summary(rows: list[dict[str, Any]], *, segment_kind: str) -> dict[s
 
 
 def _trader_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return _segment_concentration(
+        rows,
+        segment_kind="trader_address",
+        segment_count_key="trader_count",
+        count_key="top_accepted_trader_address",
+        pnl_key="top_abs_pnl_trader_address",
+    )
+
+
+def _market_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return _segment_concentration(
+        rows,
+        segment_kind="market_id",
+        segment_count_key="market_count",
+        count_key="top_accepted_market_id",
+        pnl_key="top_abs_pnl_market_id",
+    )
+
+
+def _segment_concentration(
+    rows: list[dict[str, Any]],
+    *,
+    segment_kind: str,
+    segment_count_key: str,
+    count_key: str,
+    pnl_key: str,
+) -> dict[str, Any]:
     trader_rows = [
         row
         for row in rows
-        if str(row.get("segment_kind") or "") == "trader_address"
+        if str(row.get("segment_kind") or "") == segment_kind
         and str(row.get("segment_value") or "")
         and int(row.get("accepted_count") or 0) > 0
     ]
     if not trader_rows:
         return {
-            "trader_count": 0,
-            "top_accepted_trader_address": "",
+            segment_count_key: 0,
+            count_key: "",
             "top_accepted_count": 0,
             "top_accepted_share": 0.0,
             "top_accepted_total_pnl_usd": 0.0,
-            "top_abs_pnl_trader_address": "",
+            pnl_key: "",
             "top_abs_pnl_usd": 0.0,
             "top_abs_pnl_share": 0.0,
         }
@@ -1202,15 +1232,15 @@ def _trader_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
     )
     top_abs_pnl_usd = abs(float(top_abs_pnl_row.get("total_pnl_usd") or 0.0))
     return {
-        "trader_count": len(trader_rows),
-        "top_accepted_trader_address": str(top_accepted_row.get("segment_value") or ""),
+        segment_count_key: len(trader_rows),
+        count_key: str(top_accepted_row.get("segment_value") or ""),
         "top_accepted_count": int(top_accepted_row.get("accepted_count") or 0),
         "top_accepted_share": round(
             float(int(top_accepted_row.get("accepted_count") or 0)) / float(total_accepted),
             6,
         ) if total_accepted > 0 else 0.0,
         "top_accepted_total_pnl_usd": round(float(top_accepted_row.get("total_pnl_usd") or 0.0), 6),
-        "top_abs_pnl_trader_address": str(top_abs_pnl_row.get("segment_value") or ""),
+        pnl_key: str(top_abs_pnl_row.get("segment_value") or ""),
         "top_abs_pnl_usd": round(top_abs_pnl_usd, 6),
         "top_abs_pnl_share": round(top_abs_pnl_usd / total_abs_pnl_usd, 6) if total_abs_pnl_usd > 0 else 0.0,
     }

@@ -68,6 +68,7 @@ def _score_breakdown(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     resolved_share_penalty: float,
+    mode_resolved_share_penalty: float,
     mode_loss_penalty: float,
     mode_inactivity_penalty: float,
     allow_heuristic: bool,
@@ -99,6 +100,20 @@ def _score_breakdown(
         for mode in enabled_modes
         if int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0) > 0
     )
+    mode_resolved_share_candidates = [
+        (
+            float(
+                max(
+                    int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)
+                    - int(signal_mode_summary.get(mode, {}).get("resolved_count") or 0),
+                    0,
+                )
+            ) / float(int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0))
+        )
+        for mode in enabled_modes
+        if int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0) > 0
+    ]
+    mode_resolved_share_risk = max(mode_resolved_share_candidates) if mode_resolved_share_candidates else 0.0
     mode_inactivity_share = max(
         (
             float(int(signal_mode_summary.get(mode, {}).get("inactive_window_count") or 0)) / float(window_count)
@@ -119,6 +134,7 @@ def _score_breakdown(
     worst_window_penalty_usd = worst_window_penalty * worst_window_loss_usd
     pause_guard_penalty_usd = initial_bankroll_usd * pause_guard_penalty * pause_guard_reject_share
     resolved_share_penalty_usd = initial_bankroll_usd * resolved_share_penalty * unresolved_share
+    mode_resolved_share_penalty_usd = initial_bankroll_usd * mode_resolved_share_penalty * mode_resolved_share_risk
     wallet_concentration_penalty_usd = initial_bankroll_usd * wallet_concentration_penalty * wallet_concentration_share
     market_concentration_penalty_usd = initial_bankroll_usd * market_concentration_penalty * market_concentration_share
     mode_inactivity_penalty_usd = initial_bankroll_usd * mode_inactivity_penalty * mode_inactivity_share
@@ -129,6 +145,7 @@ def _score_breakdown(
         - worst_window_penalty_usd
         - pause_guard_penalty_usd
         - resolved_share_penalty_usd
+        - mode_resolved_share_penalty_usd
         - mode_loss_penalty_usd
         - mode_inactivity_penalty_usd
         - wallet_concentration_penalty_usd
@@ -141,6 +158,7 @@ def _score_breakdown(
         "worst_window_penalty_usd": round(worst_window_penalty_usd, 6),
         "pause_guard_penalty_usd": round(pause_guard_penalty_usd, 6),
         "resolved_share_penalty_usd": round(resolved_share_penalty_usd, 6),
+        "mode_resolved_share_penalty_usd": round(mode_resolved_share_penalty_usd, 6),
         "mode_loss_penalty_usd": round(mode_loss_penalty_usd, 6),
         "mode_inactivity_penalty_usd": round(mode_inactivity_penalty_usd, 6),
         "wallet_concentration_penalty_usd": round(wallet_concentration_penalty_usd, 6),
@@ -158,6 +176,7 @@ def _score_result(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     resolved_share_penalty: float,
+    mode_resolved_share_penalty: float,
     mode_loss_penalty: float,
     mode_inactivity_penalty: float,
     allow_heuristic: bool,
@@ -174,6 +193,7 @@ def _score_result(
             worst_window_penalty=worst_window_penalty,
             pause_guard_penalty=pause_guard_penalty,
             resolved_share_penalty=resolved_share_penalty,
+            mode_resolved_share_penalty=mode_resolved_share_penalty,
             mode_loss_penalty=mode_loss_penalty,
             mode_inactivity_penalty=mode_inactivity_penalty,
             allow_heuristic=allow_heuristic,
@@ -193,6 +213,7 @@ def _with_score_breakdown(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     resolved_share_penalty: float,
+    mode_resolved_share_penalty: float,
     mode_loss_penalty: float,
     mode_inactivity_penalty: float,
     allow_heuristic: bool,
@@ -209,6 +230,7 @@ def _with_score_breakdown(
         worst_window_penalty=worst_window_penalty,
         pause_guard_penalty=pause_guard_penalty,
         resolved_share_penalty=resolved_share_penalty,
+        mode_resolved_share_penalty=mode_resolved_share_penalty,
         mode_loss_penalty=mode_loss_penalty,
         mode_inactivity_penalty=mode_inactivity_penalty,
         allow_heuristic=allow_heuristic,
@@ -814,6 +836,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             worst_window_penalty          REAL NOT NULL DEFAULT 0,
             pause_guard_penalty           REAL NOT NULL DEFAULT 0,
             resolved_share_penalty        REAL NOT NULL DEFAULT 0,
+            mode_resolved_share_penalty   REAL NOT NULL DEFAULT 0,
             mode_loss_penalty             REAL NOT NULL DEFAULT 0,
             mode_inactivity_penalty       REAL NOT NULL DEFAULT 0,
             wallet_concentration_penalty  REAL NOT NULL DEFAULT 0,
@@ -879,6 +902,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
             "pause_guard_penalty": "REAL NOT NULL DEFAULT 0",
             "resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
+            "mode_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_loss_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_inactivity_penalty": "REAL NOT NULL DEFAULT 0",
             "wallet_concentration_penalty": "REAL NOT NULL DEFAULT 0",
@@ -940,6 +964,7 @@ def _persist_search_results(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     resolved_share_penalty: float,
+    mode_resolved_share_penalty: float,
     mode_loss_penalty: float,
     mode_inactivity_penalty: float,
     wallet_concentration_penalty: float,
@@ -963,13 +988,13 @@ def _persist_search_results(
             INSERT INTO replay_search_runs (
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
-                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, resolved_share_penalty, mode_loss_penalty, mode_inactivity_penalty, wallet_concentration_penalty, market_concentration_penalty,
+                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, resolved_share_penalty, mode_resolved_share_penalty, mode_loss_penalty, mode_inactivity_penalty, wallet_concentration_penalty, market_concentration_penalty,
                 candidate_count, feasible_count, rejected_count, current_candidate_score, current_candidate_feasible,
                 current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
                 best_vs_current_pnl_usd, best_vs_current_score,
                 best_feasible_candidate_index, best_feasible_score,
                 best_feasible_total_pnl_usd, best_feasible_max_drawdown_pct
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 started_at,
@@ -987,6 +1012,7 @@ def _persist_search_results(
                 worst_window_penalty,
                 pause_guard_penalty,
                 resolved_share_penalty,
+                mode_resolved_share_penalty,
                 mode_loss_penalty,
                 mode_inactivity_penalty,
                 wallet_concentration_penalty,
@@ -1107,6 +1133,7 @@ def main() -> None:
     parser.add_argument("--worst-window-penalty", type=float, default=0.0, help="Penalty per dollar of worst-window loss magnitude.")
     parser.add_argument("--pause-guard-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay pause-guard reject share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved accepted-share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--mode-resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer unresolved-share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--mode-loss-penalty", type=float, default=0.0, help="Penalty per replay dollar lost by any active scorer path when ranking candidates.")
     parser.add_argument("--mode-inactivity-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer inactive-window share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--wallet-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay wallet concentration share in bankroll-dollar terms when ranking candidates.")
@@ -1176,6 +1203,7 @@ def main() -> None:
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
         resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+        mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
         mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
         allow_heuristic=bool(base_policy.allow_heuristic),
@@ -1232,6 +1260,7 @@ def main() -> None:
                 worst_window_penalty=max(args.worst_window_penalty, 0.0),
                 pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
                 resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+                mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
                 mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
                 mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
                 allow_heuristic=bool(base_policy.allow_heuristic),
@@ -1271,6 +1300,7 @@ def main() -> None:
                 worst_window_penalty=max(args.worst_window_penalty, 0.0),
                 pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
                 resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+                mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
                 mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
                 mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
                 allow_heuristic=bool(policy.allow_heuristic),
@@ -1286,6 +1316,7 @@ def main() -> None:
             worst_window_penalty=max(args.worst_window_penalty, 0.0),
             pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
             resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+            mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
             mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
             mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
             allow_heuristic=bool(policy.allow_heuristic),
@@ -1407,6 +1438,7 @@ def main() -> None:
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
         resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+        mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
         mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
         wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -1431,6 +1463,7 @@ def main() -> None:
                 "worst_window_penalty": max(args.worst_window_penalty, 0.0),
                 "pause_guard_penalty": max(args.pause_guard_penalty, 0.0),
                 "resolved_share_penalty": max(args.resolved_share_penalty, 0.0),
+                "mode_resolved_share_penalty": max(args.mode_resolved_share_penalty, 0.0),
                 "mode_loss_penalty": max(args.mode_loss_penalty, 0.0),
                 "mode_inactivity_penalty": max(args.mode_inactivity_penalty, 0.0),
                 "wallet_concentration_penalty": max(args.wallet_concentration_penalty, 0.0),

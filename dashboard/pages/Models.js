@@ -69,8 +69,8 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search run', text: 'How recently the latest persisted replay search finished.' },
             { label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.' },
             { label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.' },
-            { label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window, pause-guard, resolved-coverage, scorer-loss, scorer-inactivity, and concentration terms.' },
-            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, resolved-coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
+            { label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window, pause-guard, global coverage, scorer coverage, scorer-loss, scorer-inactivity, and concentration terms.' },
+            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, global coverage, scorer coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
             { label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.' },
             { label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.' },
             { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
@@ -84,15 +84,15 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
-            { label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer-loss and scorer-inactivity pressure.' },
+            { label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer coverage, scorer-loss, and scorer-inactivity pressure.' },
             { label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.' },
             { label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.' },
             { label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.' },
             { label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.' },
             { label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.' },
             { label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.' },
-            { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, resolved-coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
-            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including resolved-coverage and scorer inactivity.' },
+            { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, global coverage, scorer coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
+            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including global coverage, scorer coverage, and scorer inactivity.' },
             { label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.' },
             { label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
             { label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
@@ -366,6 +366,7 @@ WITH latest_search AS (
     worst_window_penalty,
     pause_guard_penalty,
     resolved_share_penalty,
+    mode_resolved_share_penalty,
     mode_loss_penalty,
     mode_inactivity_penalty,
     wallet_concentration_penalty,
@@ -416,6 +417,7 @@ SELECT
   latest_search.worst_window_penalty,
   latest_search.pause_guard_penalty,
   latest_search.resolved_share_penalty,
+  latest_search.mode_resolved_share_penalty,
   latest_search.mode_loss_penalty,
   latest_search.mode_inactivity_penalty,
   latest_search.wallet_concentration_penalty,
@@ -1505,6 +1507,7 @@ function replaySearchScoreBreakdownSummary(raw) {
         const worstWindowPenaltyUsd = Number(breakdown.worst_window_penalty_usd || 0);
         const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0);
         const resolvedSharePenaltyUsd = Number(breakdown.resolved_share_penalty_usd || 0);
+        const modeResolvedSharePenaltyUsd = Number(breakdown.mode_resolved_share_penalty_usd || 0);
         const modeLossPenaltyUsd = Number(breakdown.mode_loss_penalty_usd || 0);
         const modeInactivityPenaltyUsd = Number(breakdown.mode_inactivity_penalty_usd || 0);
         const walletConcentrationPenaltyUsd = Number(breakdown.wallet_concentration_penalty_usd || 0);
@@ -1521,6 +1524,8 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`pause ${formatDollar(-pauseGuardPenaltyUsd)}`);
         if (Math.abs(resolvedSharePenaltyUsd) > 1e-9)
             parts.push(`cov ${formatDollar(-resolvedSharePenaltyUsd)}`);
+        if (Math.abs(modeResolvedSharePenaltyUsd) > 1e-9)
+            parts.push(`m-cov ${formatDollar(-modeResolvedSharePenaltyUsd)}`);
         if (Math.abs(modeLossPenaltyUsd) > 1e-9)
             parts.push(`mode ${formatDollar(-modeLossPenaltyUsd)}`);
         if (Math.abs(modeInactivityPenaltyUsd) > 1e-9)
@@ -1549,6 +1554,7 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('worst', row.worst_window_penalty);
     pushIfActive('pause', row.pause_guard_penalty);
     pushIfActive('cov', row.resolved_share_penalty);
+    pushIfActive('m-cov', row.mode_resolved_share_penalty);
     pushIfActive('mode', row.mode_loss_penalty);
     pushIfActive('idle', row.mode_inactivity_penalty);
     pushIfActive('wallet', row.wallet_concentration_penalty);
@@ -1575,6 +1581,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 worst_window_penalty_usd: Number(breakdown.worst_window_penalty_usd || 0),
                 pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0),
                 resolved_share_penalty_usd: Number(breakdown.resolved_share_penalty_usd || 0),
+                mode_resolved_share_penalty_usd: Number(breakdown.mode_resolved_share_penalty_usd || 0),
                 mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
                 mode_inactivity_penalty_usd: Number(breakdown.mode_inactivity_penalty_usd || 0),
                 wallet_concentration_penalty_usd: Number(breakdown.wallet_concentration_penalty_usd || 0),
@@ -1596,6 +1603,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const worstDelta = current.worst_window_penalty_usd - best.worst_window_penalty_usd;
     const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd;
     const coverageDelta = current.resolved_share_penalty_usd - best.resolved_share_penalty_usd;
+    const modeCoverageDelta = current.mode_resolved_share_penalty_usd - best.mode_resolved_share_penalty_usd;
     const modeDelta = current.mode_loss_penalty_usd - best.mode_loss_penalty_usd;
     const inactivityDelta = current.mode_inactivity_penalty_usd - best.mode_inactivity_penalty_usd;
     const walletDelta = current.wallet_concentration_penalty_usd - best.wallet_concentration_penalty_usd;
@@ -1612,6 +1620,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`pause ${formatDollar(pauseDelta)}`);
     if (Math.abs(coverageDelta) > 1e-9)
         parts.push(`cov ${formatDollar(coverageDelta)}`);
+    if (Math.abs(modeCoverageDelta) > 1e-9)
+        parts.push(`m-cov ${formatDollar(modeCoverageDelta)}`);
     if (Math.abs(modeDelta) > 1e-9)
         parts.push(`mode ${formatDollar(modeDelta)}`);
     if (Math.abs(inactivityDelta) > 1e-9)
@@ -1868,8 +1878,11 @@ function replaySearchModePenaltySummary(row) {
     if (!row)
         return '-';
     const parts = [];
+    const modeResolvedSharePenalty = Math.max(Number(row.mode_resolved_share_penalty || 0), 0);
     const modeLossPenalty = Math.max(Number(row.mode_loss_penalty || 0), 0);
     const modeInactivityPenalty = Math.max(Number(row.mode_inactivity_penalty || 0), 0);
+    if (modeResolvedSharePenalty > 0)
+        parts.push(`cov ${modeResolvedSharePenalty.toFixed(2)}x`);
     if (modeLossPenalty > 0)
         parts.push(`loss ${modeLossPenalty.toFixed(2)}x`);
     if (modeInactivityPenalty > 0)

@@ -35,6 +35,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("current_candidate_result_json", columns)
         self.assertIn("pause_guard_penalty", columns)
         self.assertIn("resolved_share_penalty", columns)
+        self.assertIn("mode_resolved_share_penalty", columns)
         self.assertIn("mode_loss_penalty", columns)
         self.assertIn("mode_inactivity_penalty", columns)
         self.assertIn("wallet_concentration_penalty", columns)
@@ -112,6 +113,7 @@ class ReplaySearchTest(unittest.TestCase):
             worst_window_penalty=0.0,
             pause_guard_penalty=0.0,
             resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
             mode_loss_penalty=0.0,
             mode_inactivity_penalty=0.25,
             allow_heuristic=True,
@@ -143,6 +145,7 @@ class ReplaySearchTest(unittest.TestCase):
             worst_window_penalty=0.0,
             pause_guard_penalty=0.0,
             resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
             mode_loss_penalty=1.0,
             mode_inactivity_penalty=0.0,
             allow_heuristic=True,
@@ -168,6 +171,7 @@ class ReplaySearchTest(unittest.TestCase):
             worst_window_penalty=0.0,
             pause_guard_penalty=0.0,
             resolved_share_penalty=0.5,
+            mode_resolved_share_penalty=0.0,
             mode_loss_penalty=0.0,
             mode_inactivity_penalty=0.0,
             allow_heuristic=True,
@@ -177,6 +181,40 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(breakdown["resolved_share_penalty_usd"], 0.0)
+        self.assertEqual(breakdown["score_usd"], 20.0)
+
+    def test_score_breakdown_ignores_mode_resolved_share_penalty_without_mode_activity(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 0,
+                        "resolved_count": 0,
+                        "trade_count": 0,
+                        "total_pnl_usd": 0.0,
+                    }
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.5,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_resolved_share_penalty_usd"], 0.0)
         self.assertEqual(breakdown["score_usd"], 20.0)
 
     def test_constraint_failures_ignores_disabled_scorer_guards(self) -> None:
@@ -1114,6 +1152,65 @@ class ReplaySearchTest(unittest.TestCase):
         rejected_breakdown = rejected["result"]["score_breakdown"]
         self.assertEqual(best_breakdown["resolved_share_penalty_usd"], 0.0)
         self.assertGreater(rejected_breakdown["resolved_share_penalty_usd"], 0.0)
+
+    def test_main_can_penalize_low_mode_resolved_share_in_ranking(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 70.0,
+                    "max_drawdown_pct": 0.04,
+                    "accepted_count": 8,
+                    "resolved_count": 6,
+                    "rejected_count": 0,
+                    "trade_count": 8,
+                    "win_rate": 0.625,
+                    "signal_mode_summary": {
+                        "heuristic": {"accepted_count": 4, "resolved_count": 3, "trade_count": 4, "total_pnl_usd": 24.0, "win_count": 3},
+                        "xgboost": {"accepted_count": 4, "resolved_count": 3, "trade_count": 4, "total_pnl_usd": 46.0, "win_count": 2},
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 74.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 8,
+                "resolved_count": 6,
+                "rejected_count": 0,
+                "trade_count": 8,
+                "win_rate": 0.625,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 24.0, "win_count": 3},
+                    "xgboost": {"accepted_count": 4, "resolved_count": 2, "trade_count": 4, "total_pnl_usd": 50.0, "win_count": 2},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--mode-resolved-share-penalty",
+            "0.1",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["mode_resolved_share_penalty"], 0.1)
+        self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.65)
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertGreater(best_breakdown["mode_resolved_share_penalty_usd"], 0.0)
+        self.assertGreater(rejected_breakdown["mode_resolved_share_penalty_usd"], best_breakdown["mode_resolved_share_penalty_usd"])
 
     def test_main_mode_loss_penalty_ignores_disabled_scorer_paths(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -2210,6 +2307,7 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertIn("best_feasible_total_pnl_usd", run_columns)
             self.assertIn("pause_guard_penalty", run_columns)
             self.assertIn("resolved_share_penalty", run_columns)
+            self.assertIn("mode_resolved_share_penalty", run_columns)
             self.assertIn("mode_loss_penalty", run_columns)
             self.assertIn("mode_inactivity_penalty", run_columns)
             self.assertIn("wallet_concentration_penalty", run_columns)
@@ -2596,6 +2694,91 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertGreater(
                 current_candidate_json["score_breakdown"]["resolved_share_penalty_usd"],
                 best_candidate_json["score_breakdown"]["resolved_share_penalty_usd"],
+            )
+
+    def test_main_persists_nonzero_mode_resolved_share_penalty(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.60:
+                return {
+                    "run_id": 1,
+                    "total_pnl_usd": 60.0,
+                    "max_drawdown_pct": 0.04,
+                    "accepted_count": 8,
+                    "resolved_count": 6,
+                    "rejected_count": 0,
+                    "unresolved_count": 2,
+                    "trade_count": 8,
+                    "win_rate": 0.625,
+                    "signal_mode_summary": {
+                        "heuristic": {"accepted_count": 4, "resolved_count": 3, "trade_count": 4, "total_pnl_usd": 18.0, "win_count": 2},
+                        "xgboost": {"accepted_count": 4, "resolved_count": 3, "trade_count": 4, "total_pnl_usd": 42.0, "win_count": 3},
+                    },
+                }
+            return {
+                "run_id": 2,
+                "total_pnl_usd": 62.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 8,
+                "resolved_count": 6,
+                "rejected_count": 0,
+                "unresolved_count": 2,
+                "trade_count": 8,
+                "win_rate": 0.625,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 24.0, "win_count": 3},
+                    "xgboost": {"accepted_count": 4, "resolved_count": 2, "trade_count": 4, "total_pnl_usd": 38.0, "win_count": 2},
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "replay_search_mode_resolved_share_penalty.db"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--db",
+                str(db_path),
+                "--grid-json",
+                json.dumps({"min_confidence": [0.60]}),
+                "--mode-resolved-share-penalty",
+                "0.25",
+            ]
+            with (
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                run_row = conn.execute(
+                    """
+                    SELECT mode_resolved_share_penalty, current_candidate_result_json
+                    FROM replay_search_runs
+                    """
+                ).fetchone()
+                candidate_rows = conn.execute(
+                    """
+                    SELECT is_current_policy, result_json
+                    FROM replay_search_candidates
+                    ORDER BY candidate_index ASC
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertIsNotNone(run_row)
+            self.assertEqual(run_row[0], 0.25)
+            current_result_json = json.loads(run_row[1])
+            self.assertGreater(current_result_json["score_breakdown"]["mode_resolved_share_penalty_usd"], 0.0)
+            current_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 1))
+            best_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 0))
+            self.assertGreater(
+                current_candidate_json["score_breakdown"]["mode_resolved_share_penalty_usd"],
+                best_candidate_json["score_breakdown"]["mode_resolved_share_penalty_usd"],
             )
 
     def test_main_dedupes_current_candidate_when_grid_matches_base_policy(self) -> None:

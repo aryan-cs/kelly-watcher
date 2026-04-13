@@ -2019,7 +2019,7 @@ function replaySearchHasParticipation(payload: Record<string, unknown>): boolean
   if (Number(payload.resolved_size_usd || 0) > 0) return true
   if (Math.abs(Number(payload.total_pnl_usd || 0)) > 1e-9) return true
   if (Number(payload.peak_open_exposure_usd || 0) > 0) return true
-  if (Number(payload.window_end_open_exposure_usd || 0) > 0) return true
+  if (replaySearchWindowEndOpenExposureUsdFromPayload(payload) > 0) return true
   if (Number(payload.window_end_live_guard_triggered || 0) > 0) return true
   if (Number(payload.window_end_daily_guard_triggered || 0) > 0) return true
   return false

@@ -2265,7 +2265,7 @@ function replaySearchHasParticipation(payload) {
     return true;
   if (Number(payload.peak_open_exposure_usd || 0) > 0)
     return true;
-  if (Number(payload.window_end_open_exposure_usd || 0) > 0)
+  if (replaySearchWindowEndOpenExposureUsdFromPayload(payload) > 0)
     return true;
   if (Number(payload.window_end_live_guard_triggered || 0) > 0)
     return true;

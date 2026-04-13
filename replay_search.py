@@ -2004,15 +2004,15 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             ),
             6,
         )
-    if "peak_equity_usd" not in enriched and window_count == 1:
+    if enriched.get("peak_equity_usd") is None and window_count == 1:
         final_equity_usd = float(enriched.get("final_equity_usd") or initial_bankroll_usd)
         enriched["peak_equity_usd"] = round(max(initial_bankroll_usd, final_equity_usd), 6)
-    if "min_equity_usd" not in enriched and window_count == 1:
+    if enriched.get("min_equity_usd") is None and window_count == 1:
         final_equity_usd = float(enriched.get("final_equity_usd") or initial_bankroll_usd)
         enriched["min_equity_usd"] = round(min(initial_bankroll_usd, final_equity_usd), 6)
-    if "peak_open_exposure_usd" not in enriched:
+    if enriched.get("peak_open_exposure_usd") is None:
         enriched["peak_open_exposure_usd"] = 0.0
-    if "max_open_exposure_share" not in enriched:
+    if enriched.get("max_open_exposure_share") is None:
         enriched["max_open_exposure_share"] = 0.0
     if enriched.get("window_end_open_exposure_usd") is None:
         final_bankroll_raw = enriched.get("final_bankroll_usd")
@@ -2054,31 +2054,31 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
         )
     if enriched.get("carry_window_count") is None:
         enriched["carry_window_count"] = 1 if float(enriched.get("window_end_open_exposure_usd") or 0.0) > 0 else 0
-    if "live_guard_window_count" not in enriched:
+    if enriched.get("live_guard_window_count") is None:
         enriched["live_guard_window_count"] = 1 if int(enriched.get("window_end_live_guard_triggered") or 0) > 0 else 0
-    if "daily_guard_window_count" not in enriched:
+    if enriched.get("daily_guard_window_count") is None:
         enriched["daily_guard_window_count"] = 1 if int(enriched.get("window_end_daily_guard_triggered") or 0) > 0 else 0
-    if "daily_guard_restart_window_count" not in enriched:
+    if enriched.get("daily_guard_restart_window_count") is None:
         enriched["daily_guard_restart_window_count"] = 0
-    if "daily_guard_restart_window_opportunity_count" not in enriched:
+    if enriched.get("daily_guard_restart_window_opportunity_count") is None:
         enriched["daily_guard_restart_window_opportunity_count"] = 0
-    if "live_guard_restart_window_count" not in enriched:
+    if enriched.get("live_guard_restart_window_count") is None:
         enriched["live_guard_restart_window_count"] = 0
-    if "live_guard_restart_window_opportunity_count" not in enriched:
+    if enriched.get("live_guard_restart_window_opportunity_count") is None:
         enriched["live_guard_restart_window_opportunity_count"] = 0
-    if "positive_window_count" not in enriched and window_count == 1:
+    if enriched.get("positive_window_count") is None and window_count == 1:
         enriched["positive_window_count"] = 1 if total_pnl_usd > 0 else 0
-    if "negative_window_count" not in enriched and window_count == 1:
+    if enriched.get("negative_window_count") is None and window_count == 1:
         enriched["negative_window_count"] = 1 if total_pnl_usd < 0 else 0
-    if "active_window_count" not in enriched:
+    if enriched.get("active_window_count") is None:
         if window_count == 1:
             enriched["active_window_count"] = 1 if _window_has_participation(enriched) else 0
-        elif "inactive_window_count" in enriched:
+        elif enriched.get("inactive_window_count") is not None:
             enriched["active_window_count"] = max(window_count - int(enriched.get("inactive_window_count") or 0), 0)
-    if "inactive_window_count" not in enriched:
+    if enriched.get("inactive_window_count") is None:
         if window_count == 1:
             enriched["inactive_window_count"] = 0 if _window_has_participation(enriched) else 1
-        elif "active_window_count" in enriched:
+        elif enriched.get("active_window_count") is not None:
             enriched["inactive_window_count"] = max(window_count - int(enriched.get("active_window_count") or 0), 0)
     if enriched.get("carry_window_share") is None:
         carry_window_count = int(enriched.get("carry_window_count") or 0)
@@ -2092,9 +2092,9 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             enriched["carry_window_share"] = 0.0
-    if "carry_restart_window_count" not in enriched:
+    if enriched.get("carry_restart_window_count") is None:
         enriched["carry_restart_window_count"] = 0
-    if "carry_restart_window_opportunity_count" not in enriched:
+    if enriched.get("carry_restart_window_opportunity_count") is None:
         enriched["carry_restart_window_opportunity_count"] = 0
     if enriched.get("carry_restart_window_share") is None:
         carry_restart_window_count = int(enriched.get("carry_restart_window_count") or 0)
@@ -2106,7 +2106,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             enriched["carry_restart_window_share"] = 0.0
-    if "daily_guard_restart_window_share" not in enriched:
+    if enriched.get("daily_guard_restart_window_share") is None:
         daily_guard_restart_window_count = int(enriched.get("daily_guard_restart_window_count") or 0)
         daily_guard_restart_window_opportunity_count = int(enriched.get("daily_guard_restart_window_opportunity_count") or 0)
         if daily_guard_restart_window_opportunity_count > 0:
@@ -2116,7 +2116,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             enriched["daily_guard_restart_window_share"] = 0.0
-    if "live_guard_restart_window_share" not in enriched:
+    if enriched.get("live_guard_restart_window_share") is None:
         live_guard_restart_window_count = int(enriched.get("live_guard_restart_window_count") or 0)
         live_guard_restart_window_opportunity_count = int(enriched.get("live_guard_restart_window_opportunity_count") or 0)
         if live_guard_restart_window_opportunity_count > 0:
@@ -2126,7 +2126,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             enriched["live_guard_restart_window_share"] = 0.0
-    if "live_guard_window_share" not in enriched:
+    if enriched.get("live_guard_window_share") is None:
         live_guard_window_count = int(enriched.get("live_guard_window_count") or 0)
         active_window_count = int(enriched.get("active_window_count") or 0)
         if window_count == 1:
@@ -2138,7 +2138,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             enriched["live_guard_window_share"] = 0.0
-    if "daily_guard_window_share" not in enriched:
+    if enriched.get("daily_guard_window_share") is None:
         daily_guard_window_count = int(enriched.get("daily_guard_window_count") or 0)
         active_window_count = int(enriched.get("active_window_count") or 0)
         if window_count == 1:
@@ -2150,32 +2150,32 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             enriched["daily_guard_window_share"] = 0.0
-    if "worst_active_window_accepted_count" not in enriched and window_count == 1:
+    if enriched.get("worst_active_window_accepted_count") is None and window_count == 1:
         enriched["worst_active_window_accepted_count"] = accepted_count if accepted_count > 0 else 0
-    if "worst_active_window_accepted_size_usd" not in enriched and window_count == 1:
+    if enriched.get("worst_active_window_accepted_size_usd") is None and window_count == 1:
         enriched["worst_active_window_accepted_size_usd"] = round(accepted_size_usd, 6) if accepted_size_usd > 0 else 0.0
-    if "worst_accepting_window_accepted_count" not in enriched:
+    if enriched.get("worst_accepting_window_accepted_count") is None:
         if enriched.get("worst_active_window_accepted_count") is not None:
             enriched["worst_accepting_window_accepted_count"] = int(enriched.get("worst_active_window_accepted_count") or 0)
         elif window_count == 1:
             enriched["worst_accepting_window_accepted_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
-    if "worst_accepting_window_accepted_size_usd" not in enriched:
+    if enriched.get("worst_accepting_window_accepted_size_usd") is None:
         if enriched.get("worst_active_window_accepted_size_usd") is not None:
             enriched["worst_accepting_window_accepted_size_usd"] = round(float(enriched.get("worst_active_window_accepted_size_usd") or 0.0), 6)
         elif window_count == 1:
             enriched["worst_accepting_window_accepted_size_usd"] = round(accepted_size_usd, 6) if accepted_size_usd > 0 else 0.0
-    if "worst_active_window_accepted_count" not in enriched and enriched.get("worst_accepting_window_accepted_count") is not None:
+    if enriched.get("worst_active_window_accepted_count") is None and enriched.get("worst_accepting_window_accepted_count") is not None:
         enriched["worst_active_window_accepted_count"] = int(enriched.get("worst_accepting_window_accepted_count") or 0)
-    if "worst_active_window_accepted_size_usd" not in enriched and enriched.get("worst_accepting_window_accepted_size_usd") is not None:
+    if enriched.get("worst_active_window_accepted_size_usd") is None and enriched.get("worst_accepting_window_accepted_size_usd") is not None:
         enriched["worst_active_window_accepted_size_usd"] = round(float(enriched.get("worst_accepting_window_accepted_size_usd") or 0.0), 6)
-    if "accepted_window_count" not in enriched:
+    if enriched.get("accepted_window_count") is None:
         if window_count == 1:
             enriched["accepted_window_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
         elif accepted_count > 0 or accepted_size_usd > 0:
             enriched["accepted_window_count"] = 1
         else:
             enriched["accepted_window_count"] = 0
-    if "max_non_accepting_active_window_streak" not in enriched:
+    if enriched.get("max_non_accepting_active_window_streak") is None:
         if window_count == 1:
             enriched["max_non_accepting_active_window_streak"] = 0
         else:
@@ -2187,7 +2187,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
                 if int(enriched.get("accepted_window_count") or 0) > 0
                 else 0
             )
-    if "non_accepting_active_window_episode_count" not in enriched:
+    if enriched.get("non_accepting_active_window_episode_count") is None:
         if window_count == 1:
             enriched["non_accepting_active_window_episode_count"] = 0
         else:
@@ -2196,7 +2196,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
                 if int(enriched.get("max_non_accepting_active_window_streak") or 0) > 0
                 else 0
             )
-    if "post_accept_active_window_count" not in enriched:
+    if enriched.get("post_accept_active_window_count") is None:
         if window_count == 1:
             enriched["post_accept_active_window_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
         else:
@@ -2210,17 +2210,17 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
                     enriched.get("non_accepting_active_window_episode_count") or 0
                 ),
             )
-    if "max_accepting_window_accepted_share" not in enriched:
+    if enriched.get("max_accepting_window_accepted_share") is None:
         enriched["max_accepting_window_accepted_share"] = 1.0 if enriched.get("accepted_window_count") else 0.0
-    if "max_accepting_window_accepted_size_share" not in enriched:
+    if enriched.get("max_accepting_window_accepted_size_share") is None:
         enriched["max_accepting_window_accepted_size_share"] = 1.0 if accepted_size_usd > 0 else 0.0
-    if "top_two_accepting_window_accepted_share" not in enriched:
+    if enriched.get("top_two_accepting_window_accepted_share") is None:
         enriched["top_two_accepting_window_accepted_share"] = 1.0 if enriched.get("accepted_window_count") else 0.0
-    if "top_two_accepting_window_accepted_size_share" not in enriched:
+    if enriched.get("top_two_accepting_window_accepted_size_share") is None:
         enriched["top_two_accepting_window_accepted_size_share"] = 1.0 if accepted_size_usd > 0 else 0.0
-    if "accepting_window_accepted_concentration_index" not in enriched:
+    if enriched.get("accepting_window_accepted_concentration_index") is None:
         enriched["accepting_window_accepted_concentration_index"] = 1.0 if enriched.get("accepted_window_count") else 0.0
-    if "accepting_window_accepted_size_concentration_index" not in enriched:
+    if enriched.get("accepting_window_accepted_size_concentration_index") is None:
         enriched["accepting_window_accepted_size_concentration_index"] = 1.0 if accepted_size_usd > 0 else 0.0
     return enriched
 

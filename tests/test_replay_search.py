@@ -1226,6 +1226,21 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(daily_guarded["daily_guard_window_count"], 1)
         self.assertEqual(daily_guarded["daily_guard_window_share"], 1.0)
 
+    def test_window_equity_summary_uses_equity_pnl_fallback_before_final_bankroll(self) -> None:
+        start_equity, final_equity, peak_equity, min_equity = replay_search._window_equity_summary(
+            {
+                "initial_bankroll_usd": 100.0,
+                "total_pnl_usd": 5.0,
+                "final_bankroll_usd": 90.0,
+            },
+            default_start_equity=100.0,
+        )
+
+        self.assertEqual(start_equity, 100.0)
+        self.assertEqual(final_equity, 105.0)
+        self.assertEqual(peak_equity, 105.0)
+        self.assertEqual(min_equity, 100.0)
+
     def test_aggregate_window_results_tracks_max_window_end_open_exposure_share(self) -> None:
         result = replay_search._aggregate_window_results(
             [

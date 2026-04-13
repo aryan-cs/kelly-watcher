@@ -1801,19 +1801,36 @@ def _window_has_participation(result: dict[str, Any]) -> bool:
     return False
 
 
+def _fallback_final_equity_usd(
+    result: dict[str, Any],
+    *,
+    start_equity: float,
+) -> float:
+    raw_final_equity = result.get("final_equity_usd")
+    if raw_final_equity is not None:
+        return float(raw_final_equity or 0.0)
+    raw_total_pnl = result.get("total_pnl_usd")
+    if raw_total_pnl is not None:
+        return start_equity + float(raw_total_pnl or 0.0)
+    raw_final_bankroll = result.get("final_bankroll_usd")
+    if raw_final_bankroll is not None:
+        return float(raw_final_bankroll or 0.0)
+    return start_equity
+
+
 def _window_equity_summary(
     result: dict[str, Any],
     *,
     default_start_equity: float,
 ) -> tuple[float, float, float, float]:
     start_equity = max(float(result.get("initial_bankroll_usd") or default_start_equity), 0.0)
-    final_equity = result.get("final_equity_usd")
-    if final_equity is None:
-        if result.get("final_bankroll_usd") is not None:
-            final_equity = result.get("final_bankroll_usd")
-        else:
-            final_equity = start_equity + float(result.get("total_pnl_usd") or 0.0)
-    final_equity_value = max(float(final_equity or 0.0), 0.0)
+    final_equity_value = max(
+        _fallback_final_equity_usd(
+            result,
+            start_equity=start_equity,
+        ),
+        0.0,
+    )
     peak_equity_value = max(
         float(result.get("peak_equity_usd") or max(start_equity, final_equity_value)),
         0.0,
@@ -1980,7 +1997,13 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
     initial_bankroll_usd = max(float(enriched.get("initial_bankroll_usd") or 0.0), 0.0)
     enriched.setdefault("window_count", window_count)
     if enriched.get("final_equity_usd") is None and window_count == 1:
-        enriched["final_equity_usd"] = round(initial_bankroll_usd + total_pnl_usd, 6)
+        enriched["final_equity_usd"] = round(
+            _fallback_final_equity_usd(
+                enriched,
+                start_equity=initial_bankroll_usd,
+            ),
+            6,
+        )
     if "peak_equity_usd" not in enriched and window_count == 1:
         final_equity_usd = float(enriched.get("final_equity_usd") or initial_bankroll_usd)
         enriched["peak_equity_usd"] = round(max(initial_bankroll_usd, final_equity_usd), 6)

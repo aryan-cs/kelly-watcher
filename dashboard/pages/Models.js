@@ -2296,11 +2296,37 @@ function replaySearchAcceptedWindowCountFromPayload(payload) {
   return 0;
 }
 function replaySearchAcceptedWindowShareFromPayload(payload) {
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload);
-  const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload);
-  if (activeWindowCount > 0)
-    return acceptedWindowCount / activeWindowCount;
-  return acceptedWindowCount > 0 ? 1 : 0;
+    const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload);
+    const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload);
+    if (activeWindowCount > 0)
+        return acceptedWindowCount / activeWindowCount;
+    return acceptedWindowCount > 0 ? 1 : 0;
+}
+function replaySearchWorstActiveWindowAcceptedCountFromPayload(payload) {
+    if (payload.worst_accepting_window_accepted_count != null) {
+        return Number(payload.worst_accepting_window_accepted_count || 0);
+    }
+    if (payload.worst_active_window_accepted_count != null) {
+        return Number(payload.worst_active_window_accepted_count || 0);
+    }
+    if (Number(payload.window_count || 0) <= 1) {
+        const acceptedCount = Number(payload.accepted_count || 0);
+        return acceptedCount > 0 ? acceptedCount : 0;
+    }
+    return 0;
+}
+function replaySearchWorstActiveWindowAcceptedSizeUsdFromPayload(payload) {
+    if (payload.worst_accepting_window_accepted_size_usd != null) {
+        return Number(payload.worst_accepting_window_accepted_size_usd || 0);
+    }
+    if (payload.worst_active_window_accepted_size_usd != null) {
+        return Number(payload.worst_active_window_accepted_size_usd || 0);
+    }
+    if (Number(payload.window_count || 0) <= 1) {
+        const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
+        return acceptedSizeUsd > 0 ? acceptedSizeUsd : 0;
+    }
+    return 0;
 }
 function replaySearchWorstWindowPnlFromPayload(payload) {
   if (payload.worst_window_pnl_usd != null)
@@ -2443,11 +2469,37 @@ function replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount) {
   return 0;
 }
 function replaySearchModeAcceptedWindowShareFromPayload(payload, windowCount) {
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
-  const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount);
-  if (activeWindowCount > 0)
-    return acceptedWindowCount / activeWindowCount;
-  return acceptedWindowCount > 0 ? 1 : 0;
+    const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
+    const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount);
+    if (activeWindowCount > 0)
+        return acceptedWindowCount / activeWindowCount;
+    return acceptedWindowCount > 0 ? 1 : 0;
+}
+function replaySearchModeWorstActiveWindowAcceptedCountFromPayload(payload, windowCount) {
+    if (payload.worst_accepting_window_accepted_count != null) {
+        return Number(payload.worst_accepting_window_accepted_count || 0);
+    }
+    if (payload.worst_active_window_accepted_count != null) {
+        return Number(payload.worst_active_window_accepted_count || 0);
+    }
+    if (windowCount <= 1) {
+        const acceptedCount = Number(payload.accepted_count || 0);
+        return acceptedCount > 0 ? acceptedCount : 0;
+    }
+    return 0;
+}
+function replaySearchModeWorstActiveWindowAcceptedSizeUsdFromPayload(payload, windowCount) {
+    if (payload.worst_accepting_window_accepted_size_usd != null) {
+        return Number(payload.worst_accepting_window_accepted_size_usd || 0);
+    }
+    if (payload.worst_active_window_accepted_size_usd != null) {
+        return Number(payload.worst_active_window_accepted_size_usd || 0);
+    }
+    if (windowCount <= 1) {
+        const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
+        return acceptedSizeUsd > 0 ? acceptedSizeUsd : 0;
+    }
+    return 0;
 }
 function replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, windowCount) {
   if (payload.max_non_accepting_active_window_streak != null)
@@ -3229,10 +3281,8 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
             const totalPnlUsd = Number(payload.total_pnl_usd || 0);
             const worstWindowPnlUsd = replaySearchWorstWindowPnlFromPayload(payload);
       const worstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(payload);
-            const worstActiveWindowAcceptedCount = payload.worst_accepting_window_accepted_count == null && payload.worst_active_window_accepted_count == null
-                ? null
-                : Number(payload.worst_accepting_window_accepted_count ?? payload.worst_active_window_accepted_count);
-            const worstActiveWindowAcceptedSizeUsd = Number(payload.worst_accepting_window_accepted_size_usd ?? payload.worst_active_window_accepted_size_usd ?? 0);
+            const worstActiveWindowAcceptedCount = replaySearchModeWorstActiveWindowAcceptedCountFromPayload(payload, windowCount);
+            const worstActiveWindowAcceptedSizeUsd = replaySearchModeWorstActiveWindowAcceptedSizeUsdFromPayload(payload, windowCount);
             const inactiveWindowCount = Number(payload.inactive_window_count || 0);
             const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount);
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
@@ -3797,8 +3847,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
     const globalMaxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(resultParsed);
     const globalTopTwoAcceptingWindowAcceptedShare = replaySearchTopTwoAcceptingWindowAcceptedShareFromPayload(resultParsed);
     const globalTopTwoAcceptingWindowAcceptedSizeShare = replaySearchTopTwoAcceptingWindowAcceptedSizeShareFromPayload(resultParsed);
-        const globalWorstActiveWindowAcceptedCount = Number(resultParsed.worst_accepting_window_accepted_count ?? resultParsed.worst_active_window_accepted_count ?? 0);
-        const globalWorstActiveWindowAcceptedSizeUsd = Number(resultParsed.worst_accepting_window_accepted_size_usd ?? resultParsed.worst_active_window_accepted_size_usd ?? 0);
+        const globalWorstActiveWindowAcceptedCount = replaySearchWorstActiveWindowAcceptedCountFromPayload(resultParsed);
+        const globalWorstActiveWindowAcceptedSizeUsd = replaySearchWorstActiveWindowAcceptedSizeUsdFromPayload(resultParsed);
         const globalWorstWindowPnl = replaySearchWorstWindowPnlFromPayload(resultParsed);
         const globalWorstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(resultParsed);
         const globalWorstWindowResolvedSizeShare = replaySearchWorstActiveWindowResolvedSizeShareFromPayload(resultParsed);
@@ -4020,10 +4070,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0;
             const resolvedSizeShare = acceptedSizeUsd > 0 ? resolvedSizeUsd / acceptedSizeUsd : 0;
             const worstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(payload);
-            const worstActiveWindowAcceptedCount = payload.worst_accepting_window_accepted_count == null && payload.worst_active_window_accepted_count == null
-                ? null
-                : Number(payload.worst_accepting_window_accepted_count ?? payload.worst_active_window_accepted_count);
-            const worstActiveWindowAcceptedSizeUsd = Number(payload.worst_accepting_window_accepted_size_usd ?? payload.worst_active_window_accepted_size_usd ?? 0);
+            const worstActiveWindowAcceptedCount = replaySearchModeWorstActiveWindowAcceptedCountFromPayload(payload, Number(resultParsed.window_count || 0));
+            const worstActiveWindowAcceptedSizeUsd = replaySearchModeWorstActiveWindowAcceptedSizeUsdFromPayload(payload, Number(resultParsed.window_count || 0));
       const inactiveWindowCount = Number(payload.inactive_window_count || 0);
       const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, Number(resultParsed.window_count || 0));
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, Number(resultParsed.window_count || 0));
@@ -4184,8 +4232,8 @@ function replaySearchWindowSummary(latestSearch) {
         const inactiveWindowCount = Number(parsed.inactive_window_count || 0);
         const maxAcceptingWindowAcceptedShare = replaySearchMaxAcceptingWindowAcceptedShareFromPayload(parsed);
         const maxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(parsed);
-        const worstActiveWindowAcceptedCount = Number(parsed.worst_accepting_window_accepted_count ?? parsed.worst_active_window_accepted_count ?? 0);
-        const worstActiveWindowAcceptedSizeUsd = Number(parsed.worst_accepting_window_accepted_size_usd ?? parsed.worst_active_window_accepted_size_usd ?? 0);
+        const worstActiveWindowAcceptedCount = replaySearchWorstActiveWindowAcceptedCountFromPayload(parsed);
+        const worstActiveWindowAcceptedSizeUsd = replaySearchWorstActiveWindowAcceptedSizeUsdFromPayload(parsed);
         const carryWindowCount = Number(parsed.carry_window_count || 0);
         const carryRestartWindowCount = Number(parsed.carry_restart_window_count || 0);
         const carryRestartWindowOpportunityCount = Number(parsed.carry_restart_window_opportunity_count || 0);

@@ -651,6 +651,32 @@ def init_db() -> None:
             FOREIGN KEY (replay_search_run_id) REFERENCES replay_search_runs(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS replay_promotions (
+            id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+            requested_at                 INTEGER NOT NULL,
+            finished_at                  INTEGER NOT NULL DEFAULT 0,
+            applied_at                   INTEGER NOT NULL DEFAULT 0,
+            trigger                      TEXT NOT NULL DEFAULT '',
+            scope                        TEXT NOT NULL DEFAULT 'shadow_only',
+            source_mode                  TEXT NOT NULL DEFAULT '',
+            status                       TEXT NOT NULL DEFAULT '',
+            reason                       TEXT NOT NULL DEFAULT '',
+            replay_search_run_id         INTEGER,
+            replay_search_candidate_id   INTEGER,
+            config_json                  TEXT NOT NULL DEFAULT '{}',
+            previous_config_json         TEXT NOT NULL DEFAULT '{}',
+            updated_keys_json            TEXT NOT NULL DEFAULT '[]',
+            candidate_result_json        TEXT NOT NULL DEFAULT '{}',
+            score                        REAL,
+            score_delta                  REAL,
+            total_pnl_usd                REAL,
+            pnl_delta_usd                REAL,
+            shadow_resolved_count        INTEGER NOT NULL DEFAULT 0,
+            shadow_resolved_since_previous INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (replay_search_run_id) REFERENCES replay_search_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY (replay_search_candidate_id) REFERENCES replay_search_candidates(id) ON DELETE SET NULL
+        );
+
         CREATE TABLE IF NOT EXISTS belief_priors (
             feature_name TEXT NOT NULL,
             bucket       TEXT NOT NULL,
@@ -778,6 +804,8 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_segment_metrics_run_kind ON segment_metrics(replay_run_id, segment_kind);
         CREATE INDEX IF NOT EXISTS idx_replay_search_runs_finished_at ON replay_search_runs(finished_at DESC);
         CREATE INDEX IF NOT EXISTS idx_replay_search_candidates_run_id ON replay_search_candidates(replay_search_run_id);
+        CREATE INDEX IF NOT EXISTS idx_replay_promotions_applied_at ON replay_promotions(applied_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_replay_promotions_run_id ON replay_promotions(replay_search_run_id);
         """
     )
     _ensure_table_columns(
@@ -913,6 +941,32 @@ def init_db() -> None:
             "worst_window_pnl_usd": "REAL",
             "worst_window_drawdown_pct": "REAL",
             "window_pnl_stddev_usd": "REAL",
+        },
+    )
+    _ensure_table_columns(
+        conn,
+        "replay_promotions",
+        {
+            "requested_at": "INTEGER NOT NULL DEFAULT 0",
+            "finished_at": "INTEGER NOT NULL DEFAULT 0",
+            "applied_at": "INTEGER NOT NULL DEFAULT 0",
+            "trigger": "TEXT NOT NULL DEFAULT ''",
+            "scope": "TEXT NOT NULL DEFAULT 'shadow_only'",
+            "source_mode": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT ''",
+            "reason": "TEXT NOT NULL DEFAULT ''",
+            "replay_search_run_id": "INTEGER",
+            "replay_search_candidate_id": "INTEGER",
+            "config_json": "TEXT NOT NULL DEFAULT '{}'",
+            "previous_config_json": "TEXT NOT NULL DEFAULT '{}'",
+            "updated_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+            "candidate_result_json": "TEXT NOT NULL DEFAULT '{}'",
+            "score": "REAL",
+            "score_delta": "REAL",
+            "total_pnl_usd": "REAL",
+            "pnl_delta_usd": "REAL",
+            "shadow_resolved_count": "INTEGER NOT NULL DEFAULT 0",
+            "shadow_resolved_since_previous": "INTEGER NOT NULL DEFAULT 0",
         },
     )
     _ensure_table_columns(

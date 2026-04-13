@@ -1,0 +1,14 @@
+{
+  "max_bet_fraction": [
+    0.03,
+    0.04
+  ],
+  "max_total_open_exposure_fraction": [
+    0.2,
+    0.25
+  ],
+  "min_confidence": [
+    0.55,
+    0.6
+  ]
+}

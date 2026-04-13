@@ -159,6 +159,55 @@ def _insert_open_position_for_stop_loss_test(
     conn.close()
 
 
+def _insert_resolved_shadow_trade_for_promotion_test(
+    *,
+    trade_id: str,
+    resolved_at: int,
+    market_id: str = "market-promotion",
+    question: str = "Will the promotion gate pass?",
+    trader_address: str = "0xabc",
+    side: str = "yes",
+    signal_size_usd: float = 10.0,
+    entry_price: float = 0.4,
+    entry_shares: float = 25.0,
+    shadow_pnl_usd: float = 1.5,
+) -> None:
+    placed_at = int(resolved_at) - 120
+    conn = db.get_conn()
+    conn.execute(
+        """
+        INSERT INTO trade_log (
+            trade_id, market_id, question, trader_address, side, source_action,
+            price_at_signal, signal_size_usd, confidence, kelly_fraction,
+            real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
+            actual_entry_size_usd, shadow_pnl_usd, resolved_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            trade_id,
+            market_id,
+            question,
+            trader_address,
+            side,
+            "buy",
+            entry_price,
+            signal_size_usd,
+            0.7,
+            0.1,
+            0,
+            0,
+            placed_at,
+            entry_price,
+            entry_shares,
+            signal_size_usd,
+            shadow_pnl_usd,
+            resolved_at,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
 class RuntimeFixesTest(unittest.TestCase):
     def test_send_alert_suppresses_non_trade_notifications(self) -> None:
         client = Mock()
@@ -498,6 +547,117 @@ class RuntimeFixesTest(unittest.TestCase):
 
             self.assertEqual(snapshot["safe_values"]["HEURISTIC_MIN_ENTRY_PRICE"], "0.50")
             self.assertIn("HEURISTIC_MIN_ENTRY_PRICE=0.50", env_path.read_text(encoding="utf-8"))
+
+    def test_dashboard_config_snapshot_includes_replay_search_constraints_file_after_write(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / "save" / ".env.dev"
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            repo_env_path = Path(tmpdir) / ".env.dev"
+            env_example_path = Path(tmpdir) / ".env.example"
+            repo_env_path.write_text("REPLAY_SEARCH_CONSTRAINTS_FILE=old.json\n", encoding="utf-8")
+            env_example_path.write_text("", encoding="utf-8")
+
+            with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                dashboard_api, "REPO_ROOT", Path(tmpdir)
+            ), patch.object(
+                dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
+            ):
+                dashboard_api._write_env_value("REPLAY_SEARCH_CONSTRAINTS_FILE", "replay_search_specs/constraints.json")
+                snapshot = dashboard_api._config_snapshot()
+
+            self.assertEqual(
+                snapshot["safe_values"]["REPLAY_SEARCH_CONSTRAINTS_FILE"],
+                "replay_search_specs/constraints.json",
+            )
+            self.assertIn(
+                "REPLAY_SEARCH_CONSTRAINTS_FILE=replay_search_specs/constraints.json",
+                env_path.read_text(encoding="utf-8"),
+            )
+
+    def test_build_replay_search_command_includes_file_backed_specs_and_inline_overrides(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            base_policy_path = tmp_path / "base_policy.json"
+            grid_path = tmp_path / "grid.json"
+            constraints_path = tmp_path / "constraints.json"
+            db_path = tmp_path / "data" / "trading.db"
+            base_policy_path.write_text(
+                json.dumps({"mode": "shadow", "min_confidence": 0.57}),
+                encoding="utf-8",
+            )
+            grid_path.write_text(
+                json.dumps({"min_confidence": [0.55, 0.6]}),
+                encoding="utf-8",
+            )
+            constraints_path.write_text(
+                json.dumps({"min_accepted_count": 5}),
+                encoding="utf-8",
+            )
+
+            with patch.object(config, "ENV_PATH", tmp_path / ".env"), patch.dict(
+                "os.environ",
+                {
+                    "REPLAY_SEARCH_LABEL_PREFIX": "nightly",
+                    "REPLAY_SEARCH_NOTES": "overnight sweep",
+                    "REPLAY_SEARCH_TOP": "7",
+                    "REPLAY_SEARCH_MAX_COMBOS": "123",
+                    "REPLAY_SEARCH_WINDOW_DAYS": "21",
+                    "REPLAY_SEARCH_WINDOW_COUNT": "4",
+                    "REPLAY_SEARCH_BASE_POLICY_FILE": str(base_policy_path),
+                    "REPLAY_SEARCH_BASE_POLICY_JSON": json.dumps(
+                        {"min_confidence": 0.58, "max_bet_fraction": 0.03}
+                    ),
+                    "REPLAY_SEARCH_GRID_FILE": str(grid_path),
+                    "REPLAY_SEARCH_GRID_JSON": json.dumps(
+                        {"max_bet_fraction": [0.03, 0.04]}
+                    ),
+                    "REPLAY_SEARCH_CONSTRAINTS_FILE": str(constraints_path),
+                    "REPLAY_SEARCH_CONSTRAINTS_JSON": json.dumps(
+                        {"max_drawdown_pct": 0.1}
+                    ),
+                },
+                clear=True,
+            ), patch.object(main, "DB_PATH", db_path):
+                command = main._build_replay_search_command()
+
+        def _arg_value(flag: str) -> str:
+            index = command.index(flag)
+            return command[index + 1]
+
+        self.assertEqual(command[0], sys.executable)
+        self.assertTrue(command[1].endswith("replay_search.py"))
+        self.assertEqual(_arg_value("--db"), str(db_path))
+        self.assertEqual(_arg_value("--label-prefix"), "nightly")
+        self.assertEqual(_arg_value("--notes"), "overnight sweep")
+        self.assertEqual(_arg_value("--top"), "7")
+        self.assertEqual(_arg_value("--max-combos"), "123")
+        self.assertEqual(_arg_value("--window-days"), "21")
+        self.assertEqual(_arg_value("--window-count"), "4")
+        self.assertEqual(_arg_value("--base-policy-file"), str(base_policy_path))
+        self.assertEqual(_arg_value("--grid-file"), str(grid_path))
+        self.assertEqual(_arg_value("--constraints-file"), str(constraints_path))
+        self.assertEqual(
+            json.loads(_arg_value("--base-policy-json")),
+            {
+                "max_bet_fraction": 0.03,
+                "min_confidence": 0.58,
+                "mode": "shadow",
+            },
+        )
+        self.assertEqual(
+            json.loads(_arg_value("--grid-json")),
+            {
+                "max_bet_fraction": [0.03, 0.04],
+                "min_confidence": [0.55, 0.6],
+            },
+        )
+        self.assertEqual(
+            json.loads(_arg_value("--constraints-json")),
+            {
+                "max_drawdown_pct": 0.1,
+                "min_accepted_count": 5,
+            },
+        )
 
     def test_dashboard_spawn_shadow_restart_process_writes_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -2117,6 +2277,198 @@ class RuntimeFixesTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 main._validate_startup()
         self.assertIn("MAX_MARKET_EXPOSURE_FRACTION must be numeric", str(ctx.exception))
+
+    def test_validate_startup_blocks_live_until_post_promotion_shadow_history_is_available(self) -> None:
+        valid_wallet = "0x1111111111111111111111111111111111111111"
+        watched_wallet = "0x2222222222222222222222222222222222222222"
+
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    run_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_runs (
+                                started_at, finished_at, label_prefix, status,
+                                base_policy_json, grid_json, constraints_json
+                            ) VALUES (?,?,?,?,?,?,?)
+                            """,
+                            (
+                                1_700_000_110,
+                                1_700_000_115,
+                                "scheduled",
+                                "completed",
+                                "{}",
+                                "{}",
+                                "{}",
+                            ),
+                        ).lastrowid
+                        or 0
+                    )
+                    candidate_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_candidates (
+                                replay_search_run_id, candidate_index, score
+                            ) VALUES (?,?,?)
+                            """,
+                            (run_id, 0, 42.0),
+                        ).lastrowid
+                        or 0
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                _insert_resolved_shadow_trade_for_promotion_test(
+                    trade_id="shadow-before-promotion",
+                    resolved_at=1_700_000_100,
+                )
+                promotion_id = main._insert_replay_promotion(
+                    {
+                        "requested_at": 1_700_000_120,
+                        "finished_at": 1_700_000_140,
+                        "applied_at": 1_700_000_150,
+                        "trigger": "scheduled_replay_search",
+                        "scope": "shadow_only",
+                        "source_mode": "shadow",
+                        "status": "applied",
+                        "reason": "auto-promoted best feasible replay candidate",
+                        "replay_search_run_id": run_id,
+                        "replay_search_candidate_id": candidate_id,
+                        "config_json": {"MIN_CONFIDENCE": 0.6},
+                        "previous_config_json": {"MIN_CONFIDENCE": 0.55},
+                        "updated_keys_json": ["MIN_CONFIDENCE"],
+                        "candidate_result_json": {"score_breakdown": {"score_usd": 42.0}},
+                        "score": 42.0,
+                        "score_delta": 5.5,
+                        "total_pnl_usd": 120.0,
+                        "pnl_delta_usd": 18.0,
+                        "shadow_resolved_count": 1,
+                        "shadow_resolved_since_previous": 1,
+                    }
+                )
+                _insert_resolved_shadow_trade_for_promotion_test(
+                    trade_id="shadow-after-promotion",
+                    resolved_at=1_700_000_200,
+                )
+
+                conn = db.get_conn()
+                try:
+                    promotion_row = conn.execute(
+                        """
+                        SELECT trigger, scope, source_mode, status, replay_search_run_id,
+                               replay_search_candidate_id, config_json, previous_config_json,
+                               updated_keys_json, candidate_result_json, score_delta,
+                               pnl_delta_usd, shadow_resolved_count, shadow_resolved_since_previous
+                        FROM replay_promotions
+                        WHERE id=?
+                        """,
+                        (promotion_id,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "USE_REAL_MONEY": "true",
+                        "POLYGON_PRIVATE_KEY": "0xabc123",
+                        "POLYGON_WALLET_ADDRESS": valid_wallet,
+                        "LIVE_REQUIRE_SHADOW_HISTORY": "false",
+                        "LIVE_MIN_SHADOW_RESOLVED_SINCE_PROMOTION": "2",
+                    },
+                    clear=False,
+                ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch("main.send_alert"):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        main._validate_startup()
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        self.assertIsNotNone(promotion_row)
+        assert promotion_row is not None
+        self.assertEqual(promotion_row["trigger"], "scheduled_replay_search")
+        self.assertEqual(promotion_row["scope"], "shadow_only")
+        self.assertEqual(promotion_row["source_mode"], "shadow")
+        self.assertEqual(promotion_row["status"], "applied")
+        self.assertGreater(int(promotion_row["replay_search_run_id"]), 0)
+        self.assertGreater(int(promotion_row["replay_search_candidate_id"]), 0)
+        self.assertEqual(json.loads(promotion_row["config_json"]), {"MIN_CONFIDENCE": 0.6})
+        self.assertEqual(json.loads(promotion_row["previous_config_json"]), {"MIN_CONFIDENCE": 0.55})
+        self.assertEqual(json.loads(promotion_row["updated_keys_json"]), ["MIN_CONFIDENCE"])
+        self.assertEqual(
+            json.loads(promotion_row["candidate_result_json"]),
+            {"score_breakdown": {"score_usd": 42.0}},
+        )
+        self.assertAlmostEqual(float(promotion_row["score_delta"]), 5.5)
+        self.assertAlmostEqual(float(promotion_row["pnl_delta_usd"]), 18.0)
+        self.assertEqual(int(promotion_row["shadow_resolved_count"]), 1)
+        self.assertEqual(int(promotion_row["shadow_resolved_since_previous"]), 1)
+        self.assertIn(
+            "1 resolved shadow trades since last replay promotion at 1700000150 < required 2",
+            str(ctx.exception),
+        )
+
+    def test_build_replay_search_command_includes_file_specs_and_json_overlays(self) -> None:
+        with (
+            patch.object(main, "replay_search_label_prefix", return_value="scheduled"),
+            patch.object(main, "replay_search_top", return_value=10),
+            patch.object(main, "replay_search_max_combos", return_value=256),
+            patch.object(main, "replay_search_window_days", return_value=14),
+            patch.object(main, "replay_search_window_count", return_value=6),
+            patch.object(main, "replay_search_notes", return_value="nightly"),
+            patch.object(main, "replay_search_base_policy_file", return_value="replay_search_specs/base_policy.json"),
+            patch.object(main, "replay_search_grid_file", return_value="replay_search_specs/grid.json"),
+            patch.object(main, "replay_search_constraints_file", return_value="replay_search_specs/constraints.json"),
+            patch.object(main, "replay_search_base_policy", return_value={"mode": "shadow", "min_confidence": 0.66}),
+            patch.object(main, "replay_search_grid", return_value={"min_confidence": [0.62, 0.66]}),
+            patch.object(main, "replay_search_constraints", return_value={"min_accepted_count": 12}),
+        ):
+            command = main._build_replay_search_command()
+
+        self.assertIn("--base-policy-file", command)
+        self.assertIn("replay_search_specs/base_policy.json", command)
+        self.assertIn("--grid-file", command)
+        self.assertIn("replay_search_specs/grid.json", command)
+        self.assertIn("--constraints-file", command)
+        self.assertIn("replay_search_specs/constraints.json", command)
+        self.assertIn("--base-policy-json", command)
+        self.assertIn(json.dumps({"mode": "shadow", "min_confidence": 0.66}, separators=(",", ":"), sort_keys=True), command)
+        self.assertIn("--grid-json", command)
+        self.assertIn(json.dumps({"min_confidence": [0.62, 0.66]}, separators=(",", ":"), sort_keys=True), command)
+        self.assertIn("--constraints-json", command)
+        self.assertIn(json.dumps({"min_accepted_count": 12}, separators=(",", ":"), sort_keys=True), command)
+
+    def test_validate_startup_blocks_live_until_post_promotion_shadow_history_is_ready(self) -> None:
+        valid_wallet = "0x1111111111111111111111111111111111111111"
+        watched_wallet = "0x2222222222222222222222222222222222222222"
+        with patch.dict(
+            "os.environ",
+            {
+                "USE_REAL_MONEY": "true",
+                "POLYGON_PRIVATE_KEY": "0xabc123",
+                "POLYGON_WALLET_ADDRESS": valid_wallet,
+                "LIVE_MIN_SHADOW_RESOLVED_SINCE_PROMOTION": "20",
+            },
+            clear=False,
+        ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch(
+            "main._resolved_shadow_trade_count", return_value=999
+        ), patch(
+            "main._resolved_shadow_trade_count_since_last_promotion",
+            return_value=(5, {"applied_at": 1_700_000_000}),
+        ), patch("main.send_alert"):
+            with self.assertRaises(RuntimeError) as ctx:
+                main._validate_startup()
+
+        self.assertIn("LIVE mode is blocked until post-promotion shadow history is available", str(ctx.exception))
+        self.assertIn("5 resolved shadow trades since last replay promotion at 1700000000 < required 20", str(ctx.exception))
 
     def test_entry_risk_does_not_block_only_because_many_positions_are_open(self) -> None:
         executor = object.__new__(PolymarketExecutor)

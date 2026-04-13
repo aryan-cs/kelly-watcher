@@ -8077,6 +8077,65 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["mode_worst_active_window_accepted_size_penalty_usd"], 180.0)
         self.assertEqual(breakdown["score_usd"], -160.0)
 
+    def test_score_breakdown_fails_closed_on_legacy_mode_sparse_count_penalty(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 3,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 120.0,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 120.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": 4,
+                        "worst_active_window_accepted_size_usd": 60.0,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "accepted_size_usd": 200.0,
+                        "resolved_count": 6,
+                        "resolved_size_usd": 200.0,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": None,
+                        "worst_active_window_accepted_size_usd": None,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            worst_active_window_accepted_size_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.1,
+            mode_worst_active_window_accepted_size_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_worst_active_window_accepted_penalty_usd"], 300.0)
+        self.assertEqual(breakdown["score_usd"], -280.0)
+
     def test_score_breakdown_fails_closed_on_legacy_mode_sparse_size_penalty(self) -> None:
         breakdown = replay_search._score_breakdown(
             {
@@ -8103,8 +8162,8 @@ class ReplaySearchTest(unittest.TestCase):
                         "trade_count": 6,
                         "total_pnl_usd": 8.0,
                         "inactive_window_count": 0,
-                        "worst_active_window_accepted_count": 2,
-                        "worst_active_window_accepted_size_usd": 40.0,
+                        "worst_active_window_accepted_count": None,
+                        "worst_active_window_accepted_size_usd": None,
                     },
                 },
             },
@@ -8133,8 +8192,8 @@ class ReplaySearchTest(unittest.TestCase):
             market_concentration_penalty=0.0,
         )
 
-        self.assertEqual(breakdown["mode_worst_active_window_accepted_size_penalty_usd"], 0.0)
-        self.assertEqual(breakdown["score_usd"], 20.0)
+        self.assertEqual(breakdown["mode_worst_active_window_accepted_size_penalty_usd"], 300.0)
+        self.assertEqual(breakdown["score_usd"], -280.0)
 
     def test_score_breakdown_ignores_disabled_mode_worst_active_window_depth(self) -> None:
         breakdown = replay_search._score_breakdown(
@@ -9107,6 +9166,287 @@ class ReplaySearchTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Unknown replay policy key"):
             replay_search._load_grid(Args())
+
+    def test_load_base_policy_merges_file_and_inline_json_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_policy_path = Path(tmpdir) / "base_policy.json"
+            base_policy_path.write_text(
+                json.dumps({"allow_heuristic": False, "min_confidence": 0.61}),
+                encoding="utf-8",
+            )
+
+            class Args:
+                base_policy_file = str(base_policy_path)
+                base_policy_json = json.dumps({"min_confidence": 0.67, "allow_xgboost": False})
+
+            policy = replay_search._load_base_policy(Args())
+
+        self.assertFalse(policy.allow_heuristic)
+        self.assertFalse(policy.allow_xgboost)
+        self.assertAlmostEqual(policy.min_confidence, 0.67, places=6)
+
+    def test_load_grid_merges_file_and_inline_json_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            grid_path = Path(tmpdir) / "grid.json"
+            grid_path.write_text(
+                json.dumps({"min_confidence": [0.60], "max_bet_fraction": [0.02]}),
+                encoding="utf-8",
+            )
+
+            class Args:
+                grid_file = str(grid_path)
+                grid_json = json.dumps({"max_bet_fraction": [0.05], "max_total_open_exposure_fraction": [0.1]})
+
+            grid = replay_search._load_grid(Args())
+
+        self.assertEqual(grid["min_confidence"], [0.60])
+        self.assertEqual(grid["max_bet_fraction"], [0.05])
+        self.assertEqual(grid["max_total_open_exposure_fraction"], [0.1])
+
+    def test_main_supports_constraints_json_payload(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            accepted_count = 3 if min_conf >= 0.65 else 1
+            return {
+                "run_id": 2 if min_conf >= 0.65 else 1,
+                "total_pnl_usd": 12.0 if min_conf >= 0.65 else 10.0,
+                "max_drawdown_pct": 0.02,
+                "accepted_count": accepted_count,
+                "resolved_count": accepted_count,
+                "win_rate": 0.6,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--constraints-json",
+            json.dumps({"min_accepted_count": 2}),
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(payload["constraints"]["min_accepted_count"], 2)
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        self.assertEqual(rejected["constraint_failures"], ["accepted_count"])
+        self.assertIn("reject accepted_count", stderr.getvalue())
+
+    def test_main_supports_constraints_file_payload(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            total_pnl_usd = 12.0 if min_conf >= 0.65 else 8.0
+            return {
+                "run_id": 2 if min_conf >= 0.65 else 1,
+                "total_pnl_usd": total_pnl_usd,
+                "max_drawdown_pct": 0.02,
+                "accepted_count": 4,
+                "resolved_count": 4,
+                "win_rate": 0.6,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            constraints_path = Path(tmpdir) / "constraints.json"
+            constraints_path.write_text(json.dumps({"min_total_pnl_usd": 10.0}), encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--grid-json",
+                json.dumps({"min_confidence": [0.60, 0.65]}),
+                "--constraints-file",
+                str(constraints_path),
+            ]
+            with (
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(payload["constraints"]["min_total_pnl_usd"], 10.0)
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        self.assertEqual(rejected["constraint_failures"], ["total_pnl_usd"])
+        self.assertIn("reject total_pnl_usd", stderr.getvalue())
+
+    def test_main_accepts_checked_in_replay_search_specs_from_env_example_paths(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        env_example_values: dict[str, str] = {}
+        for raw_line in (repo_root / ".env.example").read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            env_example_values[key.strip()] = value.strip()
+
+        base_policy_path = repo_root / env_example_values["REPLAY_SEARCH_BASE_POLICY_FILE"]
+        grid_path = repo_root / env_example_values["REPLAY_SEARCH_GRID_FILE"]
+        constraints_path = repo_root / env_example_values["REPLAY_SEARCH_CONSTRAINTS_FILE"]
+        expected_grid = json.loads(grid_path.read_text(encoding="utf-8"))
+        expected_constraints = json.loads(constraints_path.read_text(encoding="utf-8"))
+        expected_candidate_count = 1
+        for values in expected_grid.values():
+            expected_candidate_count *= len(values)
+
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            return {
+                "run_id": int(min_conf * 100),
+                "total_pnl_usd": 40.0 + min_conf * 10.0,
+                "max_drawdown_pct": 0.05,
+                "accepted_count": 12,
+                "resolved_count": 12,
+                "accepted_size_usd": 120.0,
+                "resolved_size_usd": 120.0,
+                "win_rate": 0.6,
+                "active_window_count": 1,
+                "accepted_window_count": 1,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "replay_search_specs.db"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--db",
+                str(db_path),
+                "--base-policy-file",
+                str(base_policy_path),
+                "--grid-file",
+                str(grid_path),
+                "--constraints-file",
+                str(constraints_path),
+                "--max-combos",
+                "64",
+                "--top",
+                "2",
+            ]
+            with (
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["base_policy"]["mode"], "shadow")
+        self.assertEqual(payload["grid"], expected_grid)
+        self.assertEqual(
+            {key: payload["constraints"][key] for key in expected_constraints},
+            expected_constraints,
+        )
+        self.assertEqual(payload["candidate_count"], expected_candidate_count)
+        self.assertEqual(payload["feasible_count"], expected_candidate_count)
+        self.assertGreater(len(payload["ranked"]), 1)
+        self.assertIn("Replay sweep top candidates:", stderr.getvalue())
+
+    def test_main_merges_constraints_file_and_json_payloads(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            accepted_count = 4 if min_conf >= 0.65 else 1
+            total_pnl_usd = 12.0 if min_conf >= 0.65 else 8.0
+            return {
+                "run_id": 2 if min_conf >= 0.65 else 1,
+                "total_pnl_usd": total_pnl_usd,
+                "max_drawdown_pct": 0.02,
+                "accepted_count": accepted_count,
+                "resolved_count": accepted_count,
+                "win_rate": 0.6,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            constraints_path = Path(tmpdir) / "constraints.json"
+            constraints_path.write_text(json.dumps({"min_total_pnl_usd": 10.0}), encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--grid-json",
+                json.dumps({"min_confidence": [0.60, 0.65]}),
+                "--constraints-file",
+                str(constraints_path),
+                "--constraints-json",
+                json.dumps({"min_accepted_count": 2}),
+            ]
+            with (
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(payload["constraints"]["min_total_pnl_usd"], 10.0)
+        self.assertEqual(payload["constraints"]["min_accepted_count"], 2)
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        self.assertEqual(rejected["constraint_failures"], ["accepted_count", "total_pnl_usd"])
+        self.assertIn("reject accepted_count,total_pnl_usd", stderr.getvalue())
+
+    def test_main_cli_constraints_override_constraints_json_payload(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            accepted_count = 3 if min_conf >= 0.65 else 1
+            return {
+                "run_id": 2 if min_conf >= 0.65 else 1,
+                "total_pnl_usd": 12.0 if min_conf >= 0.65 else 10.0,
+                "max_drawdown_pct": 0.02,
+                "accepted_count": accepted_count,
+                "resolved_count": accepted_count,
+                "win_rate": 0.6,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--constraints-json",
+            json.dumps({"min_accepted_count": 4}),
+            "--min-accepted-count",
+            "2",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["constraints"]["min_accepted_count"], 2)
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        self.assertIn("reject accepted_count", stderr.getvalue())
+
+    def test_main_rejects_unknown_constraints_payload_keys(self) -> None:
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60]}),
+            "--constraints-json",
+            json.dumps({"not_a_real_constraint": 1}),
+        ]
+        with (
+            patch("sys.argv", argv),
+            self.assertRaisesRegex(ValueError, "Unknown replay-search constraint key"),
+        ):
+            replay_search.main()
 
     def test_main_supports_list_valued_segment_filter_overrides(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):

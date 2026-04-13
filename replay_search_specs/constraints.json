@@ -1,0 +1,10 @@
+{
+  "max_drawdown_pct": 0.1,
+  "min_accepted_count": 4,
+  "min_accepted_window_share": 0.5,
+  "min_accepted_windows": 1,
+  "min_active_windows": 1,
+  "min_resolved_count": 4,
+  "min_resolved_share": 0.75,
+  "min_resolved_size_share": 0.75
+}

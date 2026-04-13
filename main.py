@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import signal
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -37,6 +39,7 @@ from config import (
     heuristic_max_entry_price,
     heuristic_min_time_to_close_seconds,
     hot_wallet_count,
+    live_min_shadow_resolved_since_promotion,
     live_min_shadow_resolved,
     live_require_shadow_history,
     max_bet_fraction,
@@ -60,6 +63,23 @@ from config import (
     model_min_time_to_close_seconds,
     poll_interval,
     private_key,
+    replay_auto_promote,
+    replay_auto_promote_min_pnl_delta_usd,
+    replay_auto_promote_min_score_delta,
+    replay_search_base_cadence,
+    replay_search_base_policy,
+    replay_search_base_policy_file,
+    replay_search_constraints,
+    replay_search_constraints_file,
+    replay_search_grid,
+    replay_search_grid_file,
+    replay_search_hour_local,
+    replay_search_label_prefix,
+    replay_search_max_combos,
+    replay_search_notes,
+    replay_search_top,
+    replay_search_window_count,
+    replay_search_window_days,
     retrain_base_cadence,
     retrain_early_check_seconds,
     retrain_hour_local,
@@ -87,7 +107,7 @@ from config import (
     watched_wallets,
     xgboost_allowed_entry_price_bands,
 )
-from dashboard_api import DashboardApiServer, start_dashboard_api_server
+from dashboard_api import DashboardApiServer, _write_env_value, start_dashboard_api_server
 from db import DB_PATH, get_conn, init_db
 from dedup import DedupeCache
 from economics import EntryEconomics
@@ -2126,6 +2146,301 @@ def _resolved_shadow_trade_count() -> int:
         conn.close()
 
 
+def _resolved_shadow_trade_count_since(since_ts: int) -> int:
+    if since_ts <= 0:
+        return _resolved_shadow_trade_count()
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS n
+            FROM trade_log
+            WHERE real_money=0
+              AND resolved_at IS NOT NULL
+              AND resolved_at > ?
+              AND {RESOLVED_EXECUTED_ENTRY_SQL}
+            """,
+            (int(since_ts),),
+        ).fetchone()
+        return int(row["n"] or 0)
+    finally:
+        conn.close()
+
+
+def _compact_json(payload: Any) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _json_object_or_empty(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _env_value_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        return _compact_json(value)
+    return str(value)
+
+
+def _latest_applied_replay_promotion() -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM replay_promotions
+            WHERE status='applied'
+              AND applied_at > 0
+            ORDER BY applied_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def _resolved_shadow_trade_count_since_last_promotion() -> tuple[int, dict[str, Any] | None]:
+    promotion = _latest_applied_replay_promotion()
+    since_ts = int((promotion or {}).get("applied_at") or 0)
+    return _resolved_shadow_trade_count_since(since_ts), promotion
+
+
+def _latest_replay_search_run_id() -> int:
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) AS id FROM replay_search_runs").fetchone()
+        return int(row["id"] or 0)
+    finally:
+        conn.close()
+
+
+def _load_replay_search_run_after(after_id: int) -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM replay_search_runs
+            WHERE id > ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(after_id),),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def _load_replay_search_candidate(
+    replay_search_run_id: int,
+    *,
+    candidate_index: int | None = None,
+    current_policy: bool = False,
+    feasible_only: bool = False,
+) -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        if current_policy:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM replay_search_candidates
+                WHERE replay_search_run_id=?
+                  AND is_current_policy=1
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (int(replay_search_run_id),),
+            ).fetchone()
+        elif candidate_index is not None:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM replay_search_candidates
+                WHERE replay_search_run_id=?
+                  AND candidate_index=?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (int(replay_search_run_id), int(candidate_index)),
+            ).fetchone()
+        elif feasible_only:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM replay_search_candidates
+                WHERE replay_search_run_id=?
+                  AND feasible=1
+                ORDER BY score DESC, candidate_index ASC, id ASC
+                LIMIT 1
+                """,
+                (int(replay_search_run_id),),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM replay_search_candidates
+                WHERE replay_search_run_id=?
+                ORDER BY score DESC, candidate_index ASC, id ASC
+                LIMIT 1
+                """,
+                (int(replay_search_run_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def _insert_replay_promotion(payload: dict[str, Any]) -> int:
+    record = {
+        "requested_at": int(payload.get("requested_at") or 0),
+        "finished_at": int(payload.get("finished_at") or 0),
+        "applied_at": int(payload.get("applied_at") or 0),
+        "trigger": str(payload.get("trigger") or ""),
+        "scope": str(payload.get("scope") or "shadow_only"),
+        "source_mode": str(payload.get("source_mode") or ""),
+        "status": str(payload.get("status") or ""),
+        "reason": str(payload.get("reason") or ""),
+        "replay_search_run_id": payload.get("replay_search_run_id"),
+        "replay_search_candidate_id": payload.get("replay_search_candidate_id"),
+        "config_json": _compact_json(_json_object_or_empty(payload.get("config_json"))),
+        "previous_config_json": _compact_json(_json_object_or_empty(payload.get("previous_config_json"))),
+        "updated_keys_json": _compact_json(payload.get("updated_keys_json") or []),
+        "candidate_result_json": _compact_json(_json_object_or_empty(payload.get("candidate_result_json"))),
+        "score": payload.get("score"),
+        "score_delta": payload.get("score_delta"),
+        "total_pnl_usd": payload.get("total_pnl_usd"),
+        "pnl_delta_usd": payload.get("pnl_delta_usd"),
+        "shadow_resolved_count": int(payload.get("shadow_resolved_count") or 0),
+        "shadow_resolved_since_previous": int(payload.get("shadow_resolved_since_previous") or 0),
+    }
+    conn = get_conn()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO replay_promotions (
+                requested_at, finished_at, applied_at, trigger, scope, source_mode, status, reason,
+                replay_search_run_id, replay_search_candidate_id, config_json, previous_config_json, updated_keys_json,
+                candidate_result_json, score, score_delta, total_pnl_usd, pnl_delta_usd,
+                shadow_resolved_count, shadow_resolved_since_previous
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                record["requested_at"],
+                record["finished_at"],
+                record["applied_at"],
+                record["trigger"],
+                record["scope"],
+                record["source_mode"],
+                record["status"],
+                record["reason"],
+                record["replay_search_run_id"],
+                record["replay_search_candidate_id"],
+                record["config_json"],
+                record["previous_config_json"],
+                record["updated_keys_json"],
+                record["candidate_result_json"],
+                record["score"],
+                record["score_delta"],
+                record["total_pnl_usd"],
+                record["pnl_delta_usd"],
+                record["shadow_resolved_count"],
+                record["shadow_resolved_since_previous"],
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def _apply_env_config_payload(config_payload: dict[str, Any]) -> None:
+    prepared: list[tuple[str, str]] = []
+    for raw_key, raw_value in sorted(config_payload.items()):
+        key = str(raw_key or "").strip().upper()
+        if not key:
+            continue
+        prepared.append((key, _env_value_text(raw_value)))
+    if not prepared:
+        raise ValueError("Promotion config payload is empty")
+    for key, value in prepared:
+        _write_env_value(key, value)
+        os.environ[key] = value
+
+
+def _normalize_replay_search_flag_name(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        raise ValueError("Replay-search constraint key cannot be blank")
+    if raw.startswith("--"):
+        return raw
+    return "--" + raw.lstrip("-").replace("_", "-")
+
+
+def _replay_search_flag_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (dict, list, tuple)):
+        return _compact_json(value)
+    return str(value)
+
+
+def _build_replay_search_command() -> list[str]:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parent / "replay_search.py"),
+        "--db",
+        str(DB_PATH),
+        "--label-prefix",
+        replay_search_label_prefix(),
+        "--top",
+        str(replay_search_top()),
+        "--max-combos",
+        str(replay_search_max_combos()),
+        "--window-days",
+        str(replay_search_window_days()),
+        "--window-count",
+        str(replay_search_window_count()),
+    ]
+    notes = replay_search_notes()
+    if notes:
+        command.extend(["--notes", notes])
+    base_policy_file = replay_search_base_policy_file()
+    if base_policy_file:
+        command.extend(["--base-policy-file", base_policy_file])
+    base_policy = replay_search_base_policy()
+    if base_policy:
+        command.extend(["--base-policy-json", _compact_json(base_policy)])
+    grid_file = replay_search_grid_file()
+    if grid_file:
+        command.extend(["--grid-file", grid_file])
+    grid = replay_search_grid()
+    if grid:
+        command.extend(["--grid-json", _compact_json(grid)])
+    constraints_file = replay_search_constraints_file()
+    if constraints_file:
+        command.extend(["--constraints-file", constraints_file])
+    constraints = replay_search_constraints()
+    if constraints:
+        command.extend(["--constraints-json", _compact_json(constraints)])
+    return command
+
+
 def _weighted_open_entry_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
     total_weight = 0.0
     confidence_total = 0.0
@@ -2814,7 +3129,23 @@ def _validate_startup() -> None:
     max_horizon_seconds = _capture_config(max_market_horizon_seconds)
     _capture_config(max_source_trade_age_seconds)
     total_open_exposure_limit = _capture_config(max_total_open_exposure_fraction)
+    retrain_hour_value = _capture_config(retrain_hour_local)
     _capture_config(retrain_min_samples)
+    replay_search_cadence = _capture_config(replay_search_base_cadence)
+    replay_search_hour = _capture_config(replay_search_hour_local)
+    replay_search_window_days_value = _capture_config(replay_search_window_days)
+    replay_search_window_count_value = _capture_config(replay_search_window_count)
+    _capture_config(replay_search_label_prefix)
+    _capture_config(replay_search_notes)
+    _capture_config(replay_search_top)
+    _capture_config(replay_search_max_combos)
+    _capture_config(replay_search_base_policy)
+    replay_search_grid_value = _capture_config(replay_search_grid)
+    _capture_config(replay_search_constraints)
+    auto_promote_enabled = _capture_config(replay_auto_promote)
+    auto_promote_min_score = _capture_config(replay_auto_promote_min_score_delta)
+    auto_promote_min_pnl = _capture_config(replay_auto_promote_min_pnl_delta_usd)
+    live_min_shadow_since_promotion = _capture_config(live_min_shadow_resolved_since_promotion)
 
     if (
         cold_start_min_observed is not None
@@ -2901,6 +3232,33 @@ def _validate_startup() -> None:
             "EXPOSURE_OVERRIDE_MIN_AVG_RETURN must be between -1 and 1, "
             f"got {exposure_override_min_avg_return_value}"
         )
+    if (
+        replay_search_window_days_value is not None
+        and replay_search_window_days_value == 0
+        and replay_search_window_count_value is not None
+        and replay_search_window_count_value != 1
+    ):
+        warnings.append(
+            "REPLAY_SEARCH_WINDOW_COUNT has no effect while REPLAY_SEARCH_WINDOW_DAYS is 0; replay search will use the full history"
+        )
+    if replay_search_cadence not in {None, "off"} and replay_search_grid_value == {}:
+        warnings.append(
+            "REPLAY_SEARCH_BASE_CADENCE is enabled but the replay-search grid config is empty, so scheduled replay search will only re-evaluate the current policy"
+        )
+    if replay_search_hour is not None and retrain_hour_value is not None and replay_search_hour == retrain_hour_value:
+        warnings.append(
+            "REPLAY_SEARCH_HOUR_LOCAL matches RETRAIN_HOUR_LOCAL; scheduled replay search and retrain may compete for the same hour"
+        )
+    if auto_promote_enabled and replay_search_cadence == "off":
+        warnings.append("REPLAY_AUTO_PROMOTE is enabled but REPLAY_SEARCH_BASE_CADENCE is off")
+    if auto_promote_min_score is not None and auto_promote_min_score < 0:
+        warnings.append(
+            f"REPLAY_AUTO_PROMOTE_MIN_SCORE_DELTA is {auto_promote_min_score:.4f}; negative thresholds will allow score regressions"
+        )
+    if auto_promote_min_pnl is not None and auto_promote_min_pnl < 0:
+        warnings.append(
+            f"REPLAY_AUTO_PROMOTE_MIN_PNL_DELTA_USD is {auto_promote_min_pnl:.2f}; negative thresholds will allow lower replay P&L promotions"
+        )
 
     if use_real_money():
         our_wallet = wallet_address()
@@ -2957,6 +3315,20 @@ def _validate_startup() -> None:
             if resolved < minimum:
                 errors.append(
                     f"LIVE mode is blocked until shadow history is available: {resolved} resolved shadow trades < required {minimum}"
+                )
+        if auto_promote_enabled:
+            warnings.append("REPLAY_AUTO_PROMOTE is enabled, but scheduled auto-promotion only applies in shadow mode")
+        if live_min_shadow_since_promotion is None:
+            live_min_shadow_since_promotion = 0
+        if live_min_shadow_since_promotion > 0:
+            resolved_since_promotion, last_promotion = _resolved_shadow_trade_count_since_last_promotion()
+            if resolved_since_promotion < live_min_shadow_since_promotion:
+                baseline = "initial policy"
+                if last_promotion is not None:
+                    baseline = f"last replay promotion at {int(last_promotion.get('applied_at') or 0)}"
+                errors.append(
+                    "LIVE mode is blocked until post-promotion shadow history is available: "
+                    f"{resolved_since_promotion} resolved shadow trades since {baseline} < required {live_min_shadow_since_promotion}"
                 )
 
     for warning in warnings:
@@ -3112,6 +3484,32 @@ def main() -> None:
         "last_retrain_min_samples": 0,
         "last_retrain_trigger": "",
         "last_retrain_deployed": False,
+        "replay_search_in_progress": False,
+        "replay_search_started_at": 0,
+        "last_replay_search_started_at": 0,
+        "last_replay_search_finished_at": 0,
+        "last_replay_search_status": "",
+        "last_replay_search_message": "",
+        "last_replay_search_trigger": "",
+        "last_replay_search_run_id": 0,
+        "last_replay_search_candidate_count": 0,
+        "last_replay_search_feasible_count": 0,
+        "last_replay_search_best_score": None,
+        "last_replay_search_best_pnl_usd": None,
+        "last_replay_search_scope": "shadow_only",
+        "last_replay_promotion_id": 0,
+        "last_replay_promotion_at": 0,
+        "last_replay_promotion_status": "",
+        "last_replay_promotion_message": "",
+        "last_replay_promotion_scope": "shadow_only",
+        "last_replay_promotion_run_id": 0,
+        "last_replay_promotion_candidate_id": 0,
+        "last_replay_promotion_score_delta": None,
+        "last_replay_promotion_pnl_delta_usd": None,
+        "resolved_shadow_trade_count": 0,
+        "resolved_shadow_since_last_promotion": 0,
+        "live_min_shadow_resolved_since_last_promotion": 0,
+        "live_shadow_history_ready": True,
         "loaded_scorer": "heuristic",
         "loaded_model_backend": "heuristic",
         "model_artifact_exists": False,
@@ -3127,10 +3525,26 @@ def main() -> None:
         "model_prediction_mode": "",
         "model_loaded_at": 0,
     }
+    latest_promotion = _latest_applied_replay_promotion()
+    if latest_promotion is not None:
+        bot_state_snapshot.update(
+            {
+                "last_replay_promotion_id": int(latest_promotion.get("id") or 0),
+                "last_replay_promotion_at": int(latest_promotion.get("applied_at") or 0),
+                "last_replay_promotion_status": str(latest_promotion.get("status") or ""),
+                "last_replay_promotion_message": str(latest_promotion.get("reason") or ""),
+                "last_replay_promotion_scope": str(latest_promotion.get("scope") or "shadow_only"),
+                "last_replay_promotion_run_id": int(latest_promotion.get("replay_search_run_id") or 0),
+                "last_replay_promotion_candidate_id": int(latest_promotion.get("replay_search_candidate_id") or 0),
+                "last_replay_promotion_score_delta": latest_promotion.get("score_delta"),
+                "last_replay_promotion_pnl_delta_usd": latest_promotion.get("pnl_delta_usd"),
+            }
+        )
     last_activity_write_at = 0.0
     current_loop_started_at = 0
     bot_state_lock = threading.Lock()
     retrain_lock = threading.Lock()
+    replay_search_lock = threading.Lock()
 
     def _persist_bot_state(**updates: object) -> None:
         with bot_state_lock:
@@ -3159,6 +3573,384 @@ def main() -> None:
         if engine is None:
             return
         _persist_bot_state(**engine.runtime_info())
+
+    def _persist_replay_promotion_state(result: dict[str, Any]) -> None:
+        _persist_bot_state(
+            last_replay_promotion_id=int(result.get("promotion_id") or 0),
+            last_replay_promotion_at=int(result.get("applied_at") or 0),
+            last_replay_promotion_status=str(result.get("status") or ""),
+            last_replay_promotion_message=str(result.get("message") or ""),
+            last_replay_promotion_scope=str(result.get("scope") or "shadow_only"),
+            last_replay_promotion_run_id=int(result.get("run_id") or 0),
+            last_replay_promotion_candidate_id=int(result.get("candidate_id") or 0),
+            last_replay_promotion_score_delta=result.get("score_delta"),
+            last_replay_promotion_pnl_delta_usd=result.get("pnl_delta_usd"),
+        )
+
+    def _refresh_shadow_history_state() -> None:
+        total_resolved_shadow = _resolved_shadow_trade_count()
+        resolved_since_promotion, _ = _resolved_shadow_trade_count_since_last_promotion()
+        required_since_promotion = max(live_min_shadow_resolved_since_promotion(), 0)
+        _persist_bot_state(
+            resolved_shadow_trade_count=total_resolved_shadow,
+            resolved_shadow_since_last_promotion=resolved_since_promotion,
+            live_min_shadow_resolved_since_last_promotion=required_since_promotion,
+            live_shadow_history_ready=resolved_since_promotion >= required_since_promotion,
+        )
+
+    def _record_replay_promotion(
+        *,
+        trigger: str,
+        run_row: dict[str, Any],
+        candidate_row: dict[str, Any] | None,
+        current_candidate_row: dict[str, Any] | None,
+        status: str,
+        reason: str,
+        applied_at: int = 0,
+        score_delta: float | None = None,
+        pnl_delta_usd: float | None = None,
+    ) -> dict[str, Any]:
+        candidate_config = _json_object_or_empty((candidate_row or {}).get("config_json"))
+        previous_config = _json_object_or_empty((current_candidate_row or {}).get("config_json"))
+        updated_keys = sorted(
+            key
+            for key in set(candidate_config) | set(previous_config)
+            if _env_value_text(candidate_config.get(key)) != _env_value_text(previous_config.get(key))
+        )
+        total_resolved_shadow = _resolved_shadow_trade_count()
+        resolved_since_previous, _ = _resolved_shadow_trade_count_since_last_promotion()
+        promotion_id = _insert_replay_promotion(
+            {
+                "requested_at": int(time.time()),
+                "finished_at": int(time.time()),
+                "applied_at": int(applied_at or 0),
+                "trigger": trigger,
+                "scope": "shadow_only",
+                "source_mode": "live" if use_real_money() else "shadow",
+                "status": status,
+                "reason": reason,
+                "replay_search_run_id": run_row.get("id"),
+                "replay_search_candidate_id": (candidate_row or {}).get("id"),
+                "config_json": candidate_config,
+                "previous_config_json": previous_config,
+                "updated_keys_json": updated_keys,
+                "candidate_result_json": (candidate_row or {}).get("result_json"),
+                "score": (candidate_row or {}).get("score"),
+                "score_delta": score_delta,
+                "total_pnl_usd": (candidate_row or {}).get("total_pnl_usd"),
+                "pnl_delta_usd": pnl_delta_usd,
+                "shadow_resolved_count": total_resolved_shadow,
+                "shadow_resolved_since_previous": resolved_since_previous,
+            }
+        )
+        return {
+            "promotion_id": promotion_id,
+            "applied_at": int(applied_at or 0),
+            "status": status,
+            "message": reason,
+            "scope": "shadow_only",
+            "run_id": int(run_row.get("id") or 0),
+            "candidate_id": int((candidate_row or {}).get("id") or 0),
+            "score_delta": score_delta,
+            "pnl_delta_usd": pnl_delta_usd,
+            "updated_keys": updated_keys,
+        }
+
+    def _maybe_auto_promote_replay_candidate(*, trigger: str, run_row: dict[str, Any]) -> dict[str, Any]:
+        nonlocal engine
+        run_id = int(run_row.get("id") or 0)
+        current_candidate_row = _load_replay_search_candidate(run_id, current_policy=True) if run_id > 0 else None
+        best_candidate_index = run_row.get("best_feasible_candidate_index")
+        if best_candidate_index is None:
+            best_candidate_row = _load_replay_search_candidate(run_id, feasible_only=True) if run_id > 0 else None
+        else:
+            best_candidate_row = _load_replay_search_candidate(
+                run_id,
+                candidate_index=int(best_candidate_index),
+            ) if run_id > 0 else None
+        best_config = _json_object_or_empty((best_candidate_row or {}).get("config_json"))
+        current_config = _json_object_or_empty((current_candidate_row or {}).get("config_json"))
+        current_feasible = bool((current_candidate_row or {}).get("feasible"))
+        score_delta = (
+            float(run_row.get("best_vs_current_score"))
+            if run_row.get("best_vs_current_score") is not None
+            else None
+        )
+        pnl_delta_usd = (
+            float(run_row.get("best_vs_current_pnl_usd"))
+            if run_row.get("best_vs_current_pnl_usd") is not None
+            else None
+        )
+
+        if not replay_auto_promote():
+            result = _record_replay_promotion(
+                trigger=trigger,
+                run_row=run_row,
+                candidate_row=best_candidate_row,
+                current_candidate_row=current_candidate_row,
+                status="disabled",
+                reason="Auto-promotion disabled by config",
+                score_delta=score_delta,
+                pnl_delta_usd=pnl_delta_usd,
+            )
+            _persist_replay_promotion_state(result)
+            return result
+
+        if use_real_money():
+            result = _record_replay_promotion(
+                trigger=trigger,
+                run_row=run_row,
+                candidate_row=best_candidate_row,
+                current_candidate_row=current_candidate_row,
+                status="skipped_live_mode",
+                reason="Auto-promotion is blocked while live trading is enabled",
+                score_delta=score_delta,
+                pnl_delta_usd=pnl_delta_usd,
+            )
+            _persist_replay_promotion_state(result)
+            return result
+
+        if best_candidate_row is None or not bool(best_candidate_row.get("feasible")):
+            result = _record_replay_promotion(
+                trigger=trigger,
+                run_row=run_row,
+                candidate_row=best_candidate_row,
+                current_candidate_row=current_candidate_row,
+                status="skipped_no_feasible_candidate",
+                reason="Replay search did not produce a feasible promotion candidate",
+                score_delta=score_delta,
+                pnl_delta_usd=pnl_delta_usd,
+            )
+            _persist_replay_promotion_state(result)
+            return result
+
+        if not best_config:
+            result = _record_replay_promotion(
+                trigger=trigger,
+                run_row=run_row,
+                candidate_row=best_candidate_row,
+                current_candidate_row=current_candidate_row,
+                status="skipped_no_config",
+                reason="Best feasible candidate did not persist a promotion config payload",
+                score_delta=score_delta,
+                pnl_delta_usd=pnl_delta_usd,
+            )
+            _persist_replay_promotion_state(result)
+            return result
+
+        if current_config and _compact_json(current_config) == _compact_json(best_config):
+            result = _record_replay_promotion(
+                trigger=trigger,
+                run_row=run_row,
+                candidate_row=best_candidate_row,
+                current_candidate_row=current_candidate_row,
+                status="skipped_unchanged",
+                reason="Best feasible replay candidate matches the current policy config",
+                score_delta=score_delta,
+                pnl_delta_usd=pnl_delta_usd,
+            )
+            _persist_replay_promotion_state(result)
+            return result
+
+        if current_feasible:
+            score_threshold = replay_auto_promote_min_score_delta()
+            if score_delta is None or score_delta <= score_threshold:
+                result = _record_replay_promotion(
+                    trigger=trigger,
+                    run_row=run_row,
+                    candidate_row=best_candidate_row,
+                    current_candidate_row=current_candidate_row,
+                    status="skipped_score_delta",
+                    reason=(
+                        "Best feasible replay score delta did not clear the promotion threshold "
+                        f"({0.0 if score_delta is None else score_delta:.6f} <= {score_threshold:.6f})"
+                    ),
+                    score_delta=score_delta,
+                    pnl_delta_usd=pnl_delta_usd,
+                )
+                _persist_replay_promotion_state(result)
+                return result
+
+            pnl_threshold = replay_auto_promote_min_pnl_delta_usd()
+            if pnl_delta_usd is not None and pnl_delta_usd < pnl_threshold:
+                result = _record_replay_promotion(
+                    trigger=trigger,
+                    run_row=run_row,
+                    candidate_row=best_candidate_row,
+                    current_candidate_row=current_candidate_row,
+                    status="skipped_pnl_delta",
+                    reason=(
+                        f"Best feasible replay P&L delta ${pnl_delta_usd:.2f} is below the promotion threshold ${pnl_threshold:.2f}"
+                    ),
+                    score_delta=score_delta,
+                    pnl_delta_usd=pnl_delta_usd,
+                )
+                _persist_replay_promotion_state(result)
+                return result
+
+        try:
+            _apply_env_config_payload(best_config)
+            engine = SignalEngine()
+            applied_at = int(time.time())
+            message = (
+                "Applied replay promotion "
+                f"(run={run_id}, candidate={int(best_candidate_row.get('id') or 0)}, "
+                f"score_delta={score_delta if score_delta is not None else 0.0:.6f}, "
+                f"pnl_delta=${pnl_delta_usd if pnl_delta_usd is not None else 0.0:.2f})"
+            )
+            logger.info(message)
+            result = _record_replay_promotion(
+                trigger=trigger,
+                run_row=run_row,
+                candidate_row=best_candidate_row,
+                current_candidate_row=current_candidate_row,
+                status="applied",
+                reason=message,
+                applied_at=applied_at,
+                score_delta=score_delta,
+                pnl_delta_usd=pnl_delta_usd,
+            )
+            _persist_runtime_truth()
+            _persist_replay_promotion_state(result)
+            _refresh_shadow_history_state()
+            return result
+        except Exception as exc:
+            message = f"Replay auto-promotion failed: {exc}"
+            logger.exception(message)
+            result = _record_replay_promotion(
+                trigger=trigger,
+                run_row=run_row,
+                candidate_row=best_candidate_row,
+                current_candidate_row=current_candidate_row,
+                status="failed",
+                reason=message,
+                score_delta=score_delta,
+                pnl_delta_usd=pnl_delta_usd,
+            )
+            _persist_replay_promotion_state(result)
+            return result
+
+    def _run_replay_search_job(trigger: str) -> bool:
+        if not replay_search_lock.acquire(blocking=False):
+            message = f"Replay search request ignored: already running ({trigger})"
+            logger.info(message)
+            _persist_bot_state(
+                last_replay_search_status="already_running",
+                last_replay_search_message=message,
+                last_replay_search_trigger=trigger,
+                last_replay_search_scope="shadow_only",
+            )
+            return False
+
+        started_at = int(time.time())
+        _persist_bot_state(
+            replay_search_in_progress=True,
+            replay_search_started_at=started_at,
+            last_replay_search_started_at=started_at,
+            last_replay_search_status="running",
+            last_replay_search_message=f"Replay search running ({trigger})",
+            last_replay_search_trigger=trigger,
+            last_replay_search_scope="shadow_only",
+        )
+        _heartbeat(force=True)
+        try:
+            previous_run_id = _latest_replay_search_run_id()
+            command = _build_replay_search_command()
+            logger.info("Running replay search (%s): %s", trigger, command)
+            completed = subprocess.run(
+                command,
+                cwd=str(Path(__file__).resolve().parent),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            finished_at = int(time.time())
+            run_row = _load_replay_search_run_after(previous_run_id)
+            stderr_tail = " | ".join(
+                line.strip()
+                for line in str(completed.stderr or "").splitlines()[-3:]
+                if line.strip()
+            )
+            if completed.returncode != 0:
+                message = f"Replay search failed with exit code {completed.returncode}"
+                if stderr_tail:
+                    message = f"{message}: {stderr_tail}"
+                logger.error(message)
+                _persist_bot_state(
+                    replay_search_in_progress=False,
+                    replay_search_started_at=0,
+                    last_replay_search_finished_at=finished_at,
+                    last_replay_search_status="failed",
+                    last_replay_search_message=message,
+                    last_replay_search_trigger=trigger,
+                    last_replay_search_scope="shadow_only",
+                    last_replay_search_run_id=int((run_row or {}).get('id') or 0),
+                    last_replay_search_candidate_count=int((run_row or {}).get('candidate_count') or 0),
+                    last_replay_search_feasible_count=int((run_row or {}).get('feasible_count') or 0),
+                    last_replay_search_best_score=(run_row or {}).get("best_feasible_score"),
+                    last_replay_search_best_pnl_usd=(run_row or {}).get("best_feasible_total_pnl_usd"),
+                )
+                return False
+
+            if run_row is None:
+                message = "Replay search completed without persisting a replay_search_runs row"
+                logger.error(message)
+                _persist_bot_state(
+                    replay_search_in_progress=False,
+                    replay_search_started_at=0,
+                    last_replay_search_finished_at=finished_at,
+                    last_replay_search_status="failed",
+                    last_replay_search_message=message,
+                    last_replay_search_trigger=trigger,
+                    last_replay_search_scope="shadow_only",
+                )
+                return False
+
+            promotion_result = _maybe_auto_promote_replay_candidate(trigger=trigger, run_row=run_row)
+            message = (
+                "Replay search completed "
+                f"(run={int(run_row.get('id') or 0)}, "
+                f"candidates={int(run_row.get('candidate_count') or 0)}, "
+                f"feasible={int(run_row.get('feasible_count') or 0)})"
+            )
+            if promotion_result.get("status") == "applied":
+                message += "; promotion applied"
+            elif promotion_result.get("status") not in {"disabled", ""}:
+                message += f"; promotion {promotion_result.get('status')}"
+            if stderr_tail:
+                message += f" [{stderr_tail}]"
+            _persist_bot_state(
+                replay_search_in_progress=False,
+                replay_search_started_at=0,
+                last_replay_search_finished_at=finished_at,
+                last_replay_search_status=str(run_row.get("status") or "completed"),
+                last_replay_search_message=message,
+                last_replay_search_trigger=trigger,
+                last_replay_search_scope="shadow_only",
+                last_replay_search_run_id=int(run_row.get("id") or 0),
+                last_replay_search_candidate_count=int(run_row.get("candidate_count") or 0),
+                last_replay_search_feasible_count=int(run_row.get("feasible_count") or 0),
+                last_replay_search_best_score=run_row.get("best_feasible_score"),
+                last_replay_search_best_pnl_usd=run_row.get("best_feasible_total_pnl_usd"),
+            )
+            return True
+        except Exception as exc:
+            finished_at = int(time.time())
+            message = f"Replay search failed: {exc}"
+            logger.exception(message)
+            _persist_bot_state(
+                replay_search_in_progress=False,
+                replay_search_started_at=0,
+                last_replay_search_finished_at=finished_at,
+                last_replay_search_status="failed",
+                last_replay_search_message=message,
+                last_replay_search_trigger=trigger,
+                last_replay_search_scope="shadow_only",
+            )
+            return False
+        finally:
+            _heartbeat(force=True)
+            replay_search_lock.release()
 
     def _run_retrain_job(trigger: str) -> bool:
         if not retrain_lock.acquire(blocking=False):
@@ -3196,6 +3988,8 @@ def main() -> None:
                 last_retrain_deployed=bool(report.get("deployed")),
             )
             _persist_runtime_truth()
+            if bool(report.get("ok")):
+                _run_replay_search_job(f"post_retrain_{trigger}")
             return bool(report.get("ok"))
         except Exception as exc:
             finished_at = int(time.time())
@@ -3272,6 +4066,7 @@ def main() -> None:
     initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
     if use_real_money() and not initial_live_sync_ok:
         raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
+    _refresh_shadow_history_state()
 
     def _refresh_watchlist() -> None:
         refresh_trader_cache(watchlist.active_wallets())
@@ -3280,7 +4075,11 @@ def main() -> None:
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(
-        lambda: (_resolve_trades_and_alert(), dedup.load_from_db(rebuild_shadow_positions=False)),
+        lambda: (
+            _resolve_trades_and_alert(),
+            dedup.load_from_db(rebuild_shadow_positions=False),
+            _refresh_shadow_history_state(),
+        ),
         "interval",
         minutes=2,
         id="resolve_trades",
@@ -3307,6 +4106,22 @@ def main() -> None:
             lambda: _run_retrain_job("scheduled"),
             "cron",
             **retrain_trigger,
+        )
+    replay_search_cadence = replay_search_base_cadence()
+    replay_search_hour = replay_search_hour_local()
+    replay_search_trigger = {"hour": replay_search_hour, "minute": 0, "id": "scheduled_replay_search"}
+    if replay_search_cadence == "weekly":
+        scheduler.add_job(
+            lambda: _run_replay_search_job("scheduled"),
+            "cron",
+            day_of_week="mon",
+            **replay_search_trigger,
+        )
+    elif replay_search_cadence == "daily":
+        scheduler.add_job(
+            lambda: _run_replay_search_job("scheduled"),
+            "cron",
+            **replay_search_trigger,
         )
     scheduler.add_job(
         lambda: should_retrain_early(engine) and _run_retrain_job("early"),

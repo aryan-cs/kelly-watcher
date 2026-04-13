@@ -26,6 +26,22 @@ export interface BotState {
   last_retrain_min_samples?: number
   last_retrain_trigger?: string
   last_retrain_deployed?: boolean
+  last_replay_search_status?: string
+  last_replay_search_candidate_count?: number
+  last_replay_search_scope?: string
+  last_replay_promotion_id?: number
+  last_replay_promotion_at?: number
+  last_replay_promotion_status?: string
+  last_replay_promotion_message?: string
+  last_replay_promotion_scope?: string
+  last_replay_promotion_run_id?: number
+  last_replay_promotion_candidate_id?: number
+  last_replay_promotion_score_delta?: number | null
+  last_replay_promotion_pnl_delta_usd?: number | null
+  resolved_shadow_trade_count?: number
+  resolved_shadow_since_last_promotion?: number
+  live_min_shadow_resolved_since_last_promotion?: number
+  live_shadow_history_ready?: boolean
   loaded_scorer?: string
   loaded_model_backend?: string
   heuristic_enabled?: boolean

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import dotenv_values
 
@@ -174,6 +176,46 @@ def _get_env_file_csv_choices(name: str, *, default: str = "", allowed: tuple[st
         seen.add(value)
         ordered.append(value)
     return tuple(ordered)
+
+
+def _get_env_file_json_object(name: str, *, default: str = "{}") -> dict[str, Any]:
+    raw = _get_env_file_value(name)
+    if raw is None:
+        raw = _get(name, default)
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{name} must be a JSON object, got invalid JSON") from exc
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise ConfigError(f"{name} must be a JSON object")
+    return payload
+
+
+def _load_json_object_file(path_text: str) -> dict[str, Any]:
+    text = str(path_text or "").strip()
+    if not text:
+        return {}
+    path = Path(text)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ConfigError(f"{path} does not exist") from exc
+    except OSError as exc:
+        raise ConfigError(f"Could not read {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path} must contain a JSON object, got invalid JSON") from exc
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise ConfigError(f"{path} must contain a JSON object")
+    return payload
 
 
 def use_real_money() -> bool:
@@ -711,6 +753,20 @@ def live_min_shadow_resolved() -> int:
     return _get_bounded_int("LIVE_MIN_SHADOW_RESOLVED", "50", minimum=0)
 
 
+def replay_search_base_policy_file() -> str:
+    raw = _get_env_file_value("REPLAY_SEARCH_BASE_POLICY_FILE") or _get("REPLAY_SEARCH_BASE_POLICY_FILE", "")
+    return str(raw or "").strip()
+
+
+def replay_search_grid_file() -> str:
+    raw = _get_env_file_value("REPLAY_SEARCH_GRID_FILE") or _get("REPLAY_SEARCH_GRID_FILE", "")
+    return str(raw or "").strip()
+
+
+def replay_search_constraints_file() -> str:
+    raw = _get_env_file_value("REPLAY_SEARCH_CONSTRAINTS_FILE") or _get("REPLAY_SEARCH_CONSTRAINTS_FILE", "")
+    return str(raw or "").strip()
+
 def telegram_bot_token() -> str:
     return _get("TELEGRAM_BOT_TOKEN")
 
@@ -754,6 +810,104 @@ def retrain_min_samples() -> int:
         return max(int(raw), 1)
     except ValueError:
         return 200
+
+
+def replay_search_base_cadence() -> str:
+    raw = (_get_env_file_value("REPLAY_SEARCH_BASE_CADENCE") or _get("REPLAY_SEARCH_BASE_CADENCE", "off")).lower()
+    return raw if raw in {"off", "daily", "weekly"} else "off"
+
+
+def replay_search_hour_local() -> int:
+    raw = (
+        _get_env_file_value("REPLAY_SEARCH_SCHEDULE_HOUR_LOCAL")
+        or _get_env_file_value("REPLAY_SEARCH_HOUR_LOCAL")
+        or _get("REPLAY_SEARCH_SCHEDULE_HOUR_LOCAL", "")
+        or _get("REPLAY_SEARCH_HOUR_LOCAL", "5")
+    )
+    try:
+        return min(max(int(raw), 0), 23)
+    except ValueError:
+        return 5
+
+
+def replay_search_label_prefix() -> str:
+    return str(_get_env_file_value("REPLAY_SEARCH_LABEL_PREFIX") or _get("REPLAY_SEARCH_LABEL_PREFIX", "scheduled")).strip() or "scheduled"
+
+
+def replay_search_notes() -> str:
+    return str(_get_env_file_value("REPLAY_SEARCH_NOTES") or _get("REPLAY_SEARCH_NOTES", "")).strip()
+
+
+def replay_search_base_policy() -> dict[str, Any]:
+    payload = _load_json_object_file(replay_search_base_policy_file())
+    payload.update(_get_env_file_json_object("REPLAY_SEARCH_BASE_POLICY_JSON"))
+    return payload
+
+
+def replay_search_grid() -> dict[str, Any]:
+    payload = _load_json_object_file(replay_search_grid_file())
+    payload.update(_get_env_file_json_object("REPLAY_SEARCH_GRID_JSON"))
+    return payload
+
+
+def replay_search_constraints() -> dict[str, Any]:
+    payload = _load_json_object_file(replay_search_constraints_file())
+    payload.update(_get_env_file_json_object("REPLAY_SEARCH_CONSTRAINTS_JSON"))
+    return payload
+
+
+def replay_search_top() -> int:
+    raw = _get_env_file_value("REPLAY_SEARCH_TOP") or _get("REPLAY_SEARCH_TOP", "10")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 10
+
+
+def replay_search_max_combos() -> int:
+    raw = _get_env_file_value("REPLAY_SEARCH_MAX_COMBOS") or _get("REPLAY_SEARCH_MAX_COMBOS", "256")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 256
+
+
+def replay_search_window_days() -> int:
+    raw = _get_env_file_value("REPLAY_SEARCH_WINDOW_DAYS") or _get("REPLAY_SEARCH_WINDOW_DAYS", "14")
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return 14
+
+
+def replay_search_window_count() -> int:
+    raw = _get_env_file_value("REPLAY_SEARCH_WINDOW_COUNT") or _get("REPLAY_SEARCH_WINDOW_COUNT", "6")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 6
+
+
+def replay_auto_promote() -> bool:
+    if _get_env_file_value("REPLAY_AUTO_PROMOTE_ENABLED") is not None or _get("REPLAY_AUTO_PROMOTE_ENABLED"):
+        return _get_env_file_bool("REPLAY_AUTO_PROMOTE_ENABLED", "false")
+    return _get_env_file_bool("REPLAY_AUTO_PROMOTE", "false")
+
+
+def replay_auto_promote_min_score_delta() -> float:
+    return _get_env_file_bounded_float("REPLAY_AUTO_PROMOTE_MIN_SCORE_DELTA", "0")
+
+
+def replay_auto_promote_min_pnl_delta_usd() -> float:
+    return _get_env_file_bounded_float("REPLAY_AUTO_PROMOTE_MIN_PNL_DELTA_USD", "0")
+
+
+def live_min_shadow_resolved_since_promotion() -> int:
+    raw = _get_env_file_value("LIVE_MIN_SHADOW_RESOLVED_SINCE_PROMOTION") or _get("LIVE_MIN_SHADOW_RESOLVED_SINCE_PROMOTION", "0")
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return 0
 
 
 def entry_price_band_label(value: float | None) -> str:

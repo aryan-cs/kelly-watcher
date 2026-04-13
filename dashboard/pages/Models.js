@@ -949,6 +949,80 @@ function retrainRunStateColor(status, deployed) {
         return theme.yellow;
     return theme.white;
 }
+function replaySearchScopeLabel(scope) {
+    const normalized = String(scope || '').trim().toLowerCase();
+    if (!normalized)
+        return '-';
+    if (normalized === 'shadow_only')
+        return 'shadow only';
+    return normalized.replace(/_/g, ' ');
+}
+function replaySearchStatusLabel(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized)
+        return '-';
+    if (normalized === 'already_running')
+        return 'Busy';
+    if (normalized === 'running')
+        return 'Running';
+    if (normalized === 'completed')
+        return 'Done';
+    if (normalized === 'failed')
+        return 'Failed';
+    return normalized.replace(/_/g, ' ');
+}
+function replaySearchStatusColor(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized)
+        return theme.dim;
+    if (normalized === 'completed')
+        return theme.green;
+    if (normalized === 'running')
+        return theme.blue;
+    if (normalized === 'already_running')
+        return theme.yellow;
+    if (normalized === 'failed')
+        return theme.red;
+    return theme.white;
+}
+function replayPromotionStatusLabel(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized)
+        return '-';
+    if (normalized === 'applied')
+        return 'Applied';
+    if (normalized === 'failed')
+        return 'Failed';
+    if (normalized === 'disabled')
+        return 'Disabled';
+    if (normalized === 'skipped_live_mode')
+        return 'Skip live';
+    if (normalized === 'skipped_no_feasible_candidate')
+        return 'Skip no cand';
+    if (normalized === 'skipped_no_config')
+        return 'Skip no cfg';
+    if (normalized === 'skipped_unchanged')
+        return 'Skip same';
+    if (normalized === 'skipped_score_delta')
+        return 'Skip score';
+    if (normalized === 'skipped_pnl_delta')
+        return 'Skip pnl';
+    return normalized.replace(/_/g, ' ');
+}
+function replayPromotionStatusColor(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized)
+        return theme.dim;
+    if (normalized === 'applied')
+        return theme.green;
+    if (normalized === 'failed')
+        return theme.red;
+    if (normalized === 'disabled')
+        return theme.dim;
+    if (normalized.startsWith('skipped_'))
+        return theme.yellow;
+    return theme.white;
+}
 function sharedHoldoutComparison(row) {
     const message = String(row?.message || '').trim();
     if (!message)
@@ -2308,6 +2382,22 @@ function replaySearchAcceptedWindowShareFromPayload(payload) {
         return acceptedWindowCount / activeWindowCount;
     return acceptedWindowCount > 0 ? 1 : 0;
 }
+function replaySearchPositiveWindowCountFromPayload(payload) {
+  if (payload.positive_window_count != null)
+    return Math.max(Number(payload.positive_window_count || 0), 0);
+  const windowCount = Number(payload.window_count || 0);
+  if (windowCount <= 1)
+    return Number(payload.total_pnl_usd || 0) > 0 ? 1 : 0;
+  return 0;
+}
+function replaySearchNegativeWindowCountFromPayload(payload) {
+  if (payload.negative_window_count != null)
+    return Math.max(Number(payload.negative_window_count || 0), 0);
+  const windowCount = Number(payload.window_count || 0);
+  if (windowCount <= 1)
+    return Number(payload.total_pnl_usd || 0) < 0 ? 1 : 0;
+  return 0;
+}
 function replaySearchWorstActiveWindowAcceptedCountFromPayload(payload) {
     if (payload.worst_accepting_window_accepted_count != null) {
         return Number(payload.worst_accepting_window_accepted_count || 0);
@@ -2333,6 +2423,33 @@ function replaySearchWorstActiveWindowAcceptedSizeUsdFromPayload(payload) {
         return acceptedSizeUsd > 0 ? acceptedSizeUsd : 0;
     }
     return 0;
+}
+function replaySearchLegacyModeActiveWindowMixFallback(modeValue, totalValue, windowCount) {
+  if (totalValue <= 0)
+    return { min: 1, max: 0 };
+  if (windowCount <= 1) {
+    const share = modeValue / totalValue;
+    return { min: share, max: share };
+  }
+  if (modeValue <= 0)
+    return { min: 0, max: 0 };
+  if (modeValue >= totalValue)
+    return { min: 1, max: 1 };
+  return { min: 0, max: 1 };
+}
+function replaySearchModeActiveWindowAcceptedShareFromPayload(payload, mode, windowCount, totalAcceptedCount) {
+  const key = mode === 'heuristic' ? 'max_active_window_accepted_share' : 'min_active_window_accepted_share';
+  if (payload[key] != null)
+    return Number(payload[key] || 0);
+  const fallback = replaySearchLegacyModeActiveWindowMixFallback(Number(payload.accepted_count || 0), totalAcceptedCount, windowCount);
+  return mode === 'heuristic' ? fallback.max : fallback.min;
+}
+function replaySearchModeActiveWindowAcceptedSizeShareFromPayload(payload, mode, windowCount, totalAcceptedSizeUsd) {
+  const key = mode === 'heuristic' ? 'max_active_window_accepted_size_share' : 'min_active_window_accepted_size_share';
+  if (payload[key] != null)
+    return Number(payload[key] || 0);
+  const fallback = replaySearchLegacyModeActiveWindowMixFallback(Number(payload.accepted_size_usd || 0), totalAcceptedSizeUsd, windowCount);
+  return mode === 'heuristic' ? fallback.max : fallback.min;
 }
 function replaySearchWorstWindowPnlFromPayload(payload) {
   if (payload.worst_window_pnl_usd != null)
@@ -2422,7 +2539,7 @@ function replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload) {
   if (activeWindowCount <= 0)
     return 0;
   if (acceptedWindowCount <= 0)
-    return activeWindowCount;
+    return 0;
   return Math.max(activeWindowCount - acceptedWindowCount, 0);
 }
 function replaySearchNonAcceptingActiveWindowEpisodeCountFromPayload(payload) {
@@ -2543,7 +2660,7 @@ function replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, w
   if (activeWindowCount <= 0)
     return 0;
   if (acceptedWindowCount <= 0)
-    return activeWindowCount;
+    return 0;
   return Math.max(activeWindowCount - acceptedWindowCount, 0);
 }
 function replaySearchModeNonAcceptingActiveWindowEpisodeCountFromPayload(payload, windowCount) {
@@ -2629,6 +2746,32 @@ function replaySearchCarryRestartWindowShareFromPayload(payload) {
   if (opportunityCount <= 0)
     return 0;
     return Number(payload.carry_restart_window_count || 0) / opportunityCount;
+}
+function replaySearchCarryWindowSummaryFromPayload(payload) {
+  const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload);
+  const explicitCount = payload.carry_window_count == null ? null : Math.max(Number(payload.carry_window_count || 0), 0);
+  if (explicitCount != null) {
+    if (activeWindowCount > 0)
+      return `${formatCount(explicitCount)}/${formatCount(activeWindowCount)}`;
+    if (explicitCount > 0)
+      return 'yes';
+    return '';
+  }
+  return replaySearchCarryWindowShareFromPayload(payload) > 0 ? 'yes' : '';
+}
+function replaySearchCarryRestartSummaryFromPayload(payload) {
+  const explicitCount = payload.carry_restart_window_count == null ? null : Math.max(Number(payload.carry_restart_window_count || 0), 0);
+  const explicitOpportunityCount = payload.carry_restart_window_opportunity_count == null
+    ? null
+    : Math.max(Number(payload.carry_restart_window_opportunity_count || 0), 0);
+  if (explicitCount != null && explicitOpportunityCount != null) {
+    if (explicitOpportunityCount > 0)
+      return `${formatCount(explicitCount)}/${formatCount(explicitOpportunityCount)}`;
+    if (explicitCount > 0)
+      return 'yes';
+    return '';
+  }
+  return replaySearchCarryRestartWindowShareFromPayload(payload) > 0 ? 'yes' : '';
 }
 function replaySearchDailyGuardWindowShareFromPayload(payload) {
   if (payload.daily_guard_window_share != null)
@@ -3397,8 +3540,8 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
             const sizeShareLimit = Number(constraints[mode === 'heuristic' ? 'max_heuristic_accepted_size_share' : 'min_xgboost_accepted_size_share'] || 0);
             const activeWindowShareLimit = Number(constraints[mode === 'heuristic' ? 'max_heuristic_active_window_accepted_share' : 'min_xgboost_active_window_accepted_share'] || 0);
             const activeWindowSizeShareLimit = Number(constraints[mode === 'heuristic' ? 'max_heuristic_active_window_accepted_size_share' : 'min_xgboost_active_window_accepted_size_share'] || 0);
-            const activeWindowShare = Number(payload[mode === 'heuristic' ? 'max_active_window_accepted_share' : 'min_active_window_accepted_share'] ?? acceptedShare);
-            const activeWindowSizeShare = Number(payload[mode === 'heuristic' ? 'max_active_window_accepted_size_share' : 'min_active_window_accepted_size_share'] ?? acceptedSizeShare);
+            const activeWindowShare = replaySearchModeActiveWindowAcceptedShareFromPayload(payload, mode, windowCount, totalAccepted);
+            const activeWindowSizeShare = replaySearchModeActiveWindowAcceptedSizeShareFromPayload(payload, mode, windowCount, totalAcceptedSizeUsd);
       const worstWindowResolvedSizeShare = replaySearchWorstActiveWindowResolvedSizeShareFromPayload(payload);
             if (minAccepted > 0) {
                 hasActiveGuard = true;
@@ -3924,7 +4067,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalWinRate = resultParsed.win_rate == null ? null : Number(resultParsed.win_rate);
         const globalTotalPnl = Number(resultParsed.total_pnl_usd || 0);
         const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0);
-        const globalPositiveWindows = Number(resultParsed.positive_window_count || 0);
+        const globalPositiveWindows = replaySearchPositiveWindowCountFromPayload(resultParsed);
         const globalActiveWindows = replaySearchActiveWindowCountFromPayload(resultParsed);
         const globalInactiveWindows = replaySearchInactiveWindowCountFromPayload(resultParsed);
         const globalAcceptedWindows = replaySearchAcceptedWindowCountFromPayload(resultParsed);
@@ -4159,7 +4302,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             const resolvedSizeUsd = Number(payload.resolved_size_usd || 0);
             const winRate = payload.win_rate == null ? null : Number(payload.win_rate);
             const totalPnlUsd = Number(payload.total_pnl_usd || 0);
-            const positiveWindowCount = Number(payload.positive_window_count || 0);
+            const positiveWindowCount = replaySearchPositiveWindowCountFromPayload(payload);
             const worstWindowPnlUsd = replaySearchWorstWindowPnlFromPayload(payload);
             const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0;
             const resolvedSizeShare = acceptedSizeUsd > 0 ? resolvedSizeUsd / acceptedSizeUsd : 0;
@@ -4180,8 +4323,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
       const acceptingWindowAcceptedSizeConcentrationIndex = replaySearchAcceptingWindowAcceptedSizeConcentrationIndexFromPayload(payload);
       const acceptedShare = acceptedTotal > 0 ? acceptedCount / acceptedTotal : 0;
             const acceptedSizeShare = acceptedSizeTotal > 0 ? acceptedSizeUsd / acceptedSizeTotal : 0;
-            const activeWindowShare = Number(payload[mode === 'heuristic' ? 'max_active_window_accepted_share' : 'min_active_window_accepted_share'] ?? acceptedShare);
-            const activeWindowSizeShare = Number(payload[mode === 'heuristic' ? 'max_active_window_accepted_size_share' : 'min_active_window_accepted_size_share'] ?? acceptedSizeShare);
+            const activeWindowShare = replaySearchModeActiveWindowAcceptedShareFromPayload(payload, mode, Number(resultParsed.window_count || 0), acceptedTotal);
+            const activeWindowSizeShare = replaySearchModeActiveWindowAcceptedSizeShareFromPayload(payload, mode, Number(resultParsed.window_count || 0), acceptedSizeTotal);
             const minModeAccepted = Number(constraints[`min_${mode}_accepted_count`] || 0);
             const minModeResolved = Number(constraints[`min_${mode}_resolved_count`] || 0);
             const minModeResolvedShare = Number(constraints[`min_${mode}_resolved_share`] || 0);
@@ -4314,8 +4457,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
 function replaySearchWindowSummary(latestSearch) {
     if (!latestSearch)
         return '-';
-    const positive = formatCount(latestSearch.positive_window_count);
-    const negative = formatCount(latestSearch.negative_window_count);
+    let positive = formatCount(latestSearch.positive_window_count);
+    let negative = formatCount(latestSearch.negative_window_count);
     const worst = replaySearchHasProvenWorstWindowPnlFromSummaryRow(latestSearch)
         ? formatDollar(replaySearchWorstWindowPnlFromSummaryRow(latestSearch))
         : 'worst unproven';
@@ -4325,6 +4468,8 @@ function replaySearchWindowSummary(latestSearch) {
         const parsed = JSON.parse(latestSearch.result_json);
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
             return `${positive}+ / ${negative}- | ${worst}`;
+        positive = formatCount(replaySearchPositiveWindowCountFromPayload(parsed));
+        negative = formatCount(replaySearchNegativeWindowCountFromPayload(parsed));
         const windowCount = Number(parsed.window_count || 0);
         const activeWindowCount = replaySearchActiveWindowCountFromPayload(parsed);
         const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(parsed);
@@ -4336,12 +4481,11 @@ function replaySearchWindowSummary(latestSearch) {
         const maxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(parsed);
         const worstActiveWindowAcceptedCount = replaySearchWorstActiveWindowAcceptedCountFromPayload(parsed);
         const worstActiveWindowAcceptedSizeUsd = replaySearchWorstActiveWindowAcceptedSizeUsdFromPayload(parsed);
-        const carryWindowCount = Number(parsed.carry_window_count || 0);
-        const carryRestartWindowCount = Number(parsed.carry_restart_window_count || 0);
-        const carryRestartWindowOpportunityCount = Number(parsed.carry_restart_window_opportunity_count || 0);
         const carryShare = replaySearchWindowEndOpenExposureShareFromPayload(parsed);
         const avgCarryShare = replaySearchAvgWindowEndOpenExposureShareFromPayload(parsed);
         const carryUsd = replaySearchWindowEndOpenExposureUsdFromPayload(parsed);
+        const carryWindowSummary = replaySearchCarryWindowSummaryFromPayload(parsed);
+        const carryRestartSummary = replaySearchCarryRestartSummaryFromPayload(parsed);
         const topTwoAcceptingWindowAcceptedShare = replaySearchTopTwoAcceptingWindowAcceptedShareFromPayload(parsed);
         const topTwoAcceptingWindowAcceptedSizeShare = replaySearchTopTwoAcceptingWindowAcceptedSizeShareFromPayload(parsed);
         const acceptingWindowAcceptedConcentrationIndex = replaySearchAcceptingWindowAcceptedConcentrationIndexFromPayload(parsed);
@@ -4349,12 +4493,8 @@ function replaySearchWindowSummary(latestSearch) {
         const carrySuffix = carryShare > 0 || carryUsd > 0
             ? ` | carry ${formatPct(carryShare, 0)} | carry avg ${formatPct(avgCarryShare, 0)} | carry$ ${formatDollar(carryUsd)}`
             : '';
-        const carryFreqSuffix = activeWindowCount > 0
-            ? ` | carry-freq ${formatCount(carryWindowCount)}/${formatCount(activeWindowCount)}`
-            : (carryWindowCount > 0 ? ' | carry-freq yes' : '');
-        const carryRestartSuffix = carryRestartWindowOpportunityCount > 0
-            ? ` | carry-rst ${formatCount(carryRestartWindowCount)}/${formatCount(carryRestartWindowOpportunityCount)}`
-            : (carryRestartWindowCount > 0 ? ' | carry-rst yes' : '');
+        const carryFreqSuffix = carryWindowSummary ? ` | carry-freq ${carryWindowSummary}` : '';
+        const carryRestartSuffix = carryRestartSummary ? ` | carry-rst ${carryRestartSummary}` : '';
         const topTwoAcceptSuffix = topTwoAcceptingWindowAcceptedShare > 0
             ? ` | top2-acc ${formatPct(topTwoAcceptingWindowAcceptedShare, 0)}`
             : '';
@@ -5464,6 +5604,80 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         : fallbackLabel === 'No artifact'
             ? theme.yellow
             : theme.red;
+    const replaySearchStatusText = replaySearchStatusLabel(botState.last_replay_search_status);
+    const replaySearchScopeText = replaySearchScopeLabel(botState.last_replay_search_scope);
+    const replaySearchCandidateCount = Math.max(0, Number(botState.last_replay_search_candidate_count || 0));
+    const replaySearchValue = useMemo(() => {
+        if (replaySearchStatusText === '-' && replaySearchCandidateCount <= 0)
+            return '-';
+        const parts = [];
+        if (replaySearchStatusText !== '-')
+            parts.push(replaySearchStatusText);
+        if (replaySearchScopeText !== '-')
+            parts.push(replaySearchScopeText);
+        if (replaySearchCandidateCount > 0 || parts.length > 0)
+            parts.push(`${formatCount(replaySearchCandidateCount)} cand`);
+        return parts.length ? parts.join(' | ') : '-';
+    }, [replaySearchCandidateCount, replaySearchScopeText, replaySearchStatusText]);
+    const replaySearchValueColor = replaySearchStatusColor(botState.last_replay_search_status);
+    const promotionStatusText = replayPromotionStatusLabel(botState.last_replay_promotion_status);
+    const promotionScopeText = replaySearchScopeLabel(botState.last_replay_promotion_scope);
+    const promotionAppliedAt = Math.max(0, Number(botState.last_replay_promotion_at || 0));
+    const promotionValue = useMemo(() => {
+        if (promotionStatusText === '-' && promotionAppliedAt <= 0)
+            return '-';
+        const parts = [];
+        if (promotionStatusText !== '-')
+            parts.push(promotionStatusText);
+        if (promotionScopeText !== '-')
+            parts.push(promotionScopeText);
+        if (promotionAppliedAt > 0)
+            parts.push(secondsAgo(promotionAppliedAt));
+        return parts.length ? parts.join(' | ') : '-';
+    }, [promotionAppliedAt, promotionScopeText, promotionStatusText]);
+    const promotionValueColor = replayPromotionStatusColor(botState.last_replay_promotion_status);
+    const promotionScoreDeltaRaw = botState.last_replay_promotion_score_delta;
+    const promotionScoreDelta = promotionScoreDeltaRaw == null ? null : Number(promotionScoreDeltaRaw);
+    const safePromotionScoreDelta = promotionScoreDelta != null && Number.isFinite(promotionScoreDelta) ? promotionScoreDelta : null;
+    const promotionPnlDeltaRaw = botState.last_replay_promotion_pnl_delta_usd;
+    const promotionPnlDelta = promotionPnlDeltaRaw == null ? null : Number(promotionPnlDeltaRaw);
+    const safePromotionPnlDelta = promotionPnlDelta != null && Number.isFinite(promotionPnlDelta) ? promotionPnlDelta : null;
+    const promotionRunId = Math.max(0, Number(botState.last_replay_promotion_run_id || 0));
+    const promotionCandidateId = Math.max(0, Number(botState.last_replay_promotion_candidate_id || 0));
+    const promotionDeltaValue = useMemo(() => {
+        const parts = [];
+        if (safePromotionScoreDelta != null)
+            parts.push(`score ${formatPointDelta(safePromotionScoreDelta, 2)}`);
+        if (safePromotionPnlDelta != null)
+            parts.push(`pnl ${formatDollar(safePromotionPnlDelta)}`);
+        if (!parts.length && promotionRunId > 0)
+            parts.push(`run ${formatCount(promotionRunId)}`);
+        if (!parts.length && promotionCandidateId > 0)
+            parts.push(`cand ${formatCount(promotionCandidateId)}`);
+        return parts.length ? parts.join(' | ') : '-';
+    }, [promotionCandidateId, promotionRunId, safePromotionPnlDelta, safePromotionScoreDelta]);
+    const promotionDeltaColor = safePromotionPnlDelta != null
+        ? dollarColor(safePromotionPnlDelta)
+        : safePromotionScoreDelta != null
+            ? signedMetricColor(safePromotionScoreDelta)
+            : promotionValueColor;
+    const resolvedShadowTradeCount = Math.max(0, Number(botState.resolved_shadow_trade_count || 0));
+    const resolvedShadowSincePromotion = Math.max(0, Number(botState.resolved_shadow_since_last_promotion || 0));
+    const minShadowSincePromotion = Math.max(0, Number(botState.live_min_shadow_resolved_since_last_promotion || 0));
+    const shadowHistoryReady = Boolean(botState.live_shadow_history_ready);
+    const shadowValidationValue = useMemo(() => {
+        if (minShadowSincePromotion <= 0) {
+            return `not required | ${formatCount(resolvedShadowTradeCount)} total`;
+        }
+        return `${shadowHistoryReady ? 'ready' : 'need'} ${formatCount(resolvedShadowSincePromotion)}/${formatCount(minShadowSincePromotion)} | ${formatCount(resolvedShadowTradeCount)} total`;
+    }, [minShadowSincePromotion, resolvedShadowSincePromotion, resolvedShadowTradeCount, shadowHistoryReady]);
+    const shadowValidationColor = minShadowSincePromotion <= 0
+        ? theme.dim
+        : shadowHistoryReady
+            ? theme.green
+            : resolvedShadowSincePromotion > 0
+                ? theme.yellow
+                : theme.red;
     const recentActiveMode = useMemo(() => recentSignalModes.reduce((best, row) => {
         if (best == null)
             return row.mode;
@@ -5606,6 +5820,26 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         },
         { label: 'Contract', value: contractLabel, color: contractColor },
         { label: 'Fallback', value: fallbackLabel, color: fallbackColor },
+        {
+            label: 'Replay search',
+            value: replaySearchValue,
+            color: replaySearchValueColor
+        },
+        {
+            label: 'Promotion',
+            value: promotionValue,
+            color: promotionValueColor
+        },
+        {
+            label: 'Promote delta',
+            value: promotionDeltaValue,
+            color: promotionDeltaColor
+        },
+        {
+            label: 'Shadow gate',
+            value: shadowValidationValue,
+            color: shadowValidationColor
+        },
         { label: 'Trained', value: latest ? formatShortDateTime(latest.trained_at) : '-' },
         { label: 'Model age', value: latest ? secondsAgo(latest.trained_at) : '-' },
         { label: 'Samples', value: formatCount(latest?.n_samples) },
@@ -5629,8 +5863,16 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         fallbackLabel,
         featureCount,
         latest,
+        promotionDeltaColor,
+        promotionDeltaValue,
+        promotionValue,
+        promotionValueColor,
+        replaySearchValue,
+        replaySearchValueColor,
         scorerConfigColor,
         scorerConfigLabel,
+        shadowValidationColor,
+        shadowValidationValue,
         loadedScorerColor,
         loadedScorerLabel
     ]);

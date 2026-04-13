@@ -15,11 +15,21 @@ from runtime_paths import TRADING_DB_PATH
 
 
 def _load_payload(*, file_path: str, inline_json: str) -> dict[str, Any] | None:
+    payload: dict[str, Any] = {}
+    has_payload = False
     if file_path:
-        return json.loads(Path(file_path).read_text(encoding="utf-8"))
+        file_payload = json.loads(Path(file_path).read_text(encoding="utf-8"))
+        if not isinstance(file_payload, dict):
+            raise ValueError("File payload must be a JSON object")
+        payload.update(file_payload)
+        has_payload = True
     if inline_json:
-        return json.loads(inline_json)
-    return None
+        inline_payload = json.loads(inline_json)
+        if not isinstance(inline_payload, dict):
+            raise ValueError("Inline payload must be a JSON object")
+        payload.update(inline_payload)
+        has_payload = True
+    return payload if has_payload else None
 
 
 def _load_base_policy(args: argparse.Namespace) -> ReplayPolicy:
@@ -49,6 +59,22 @@ def _load_grid(args: argparse.Namespace) -> dict[str, list[Any]]:
     if not grid:
         raise ValueError("Grid payload must include at least one varying key")
     return grid
+
+
+def _argv_has_option(raw_argv: list[str], option: str) -> bool:
+    option_prefix = f"{option}="
+    return any(token == option or token.startswith(option_prefix) for token in raw_argv)
+
+
+def _coerce_argparse_value(
+    parser: argparse.ArgumentParser,
+    option: str,
+    value: Any,
+) -> Any:
+    action = parser._option_string_actions.get(option)
+    if action is None or value is None or action.type is None:
+        return value
+    return action.type(value)
 
 
 def _iter_policy_overrides(grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
@@ -244,33 +270,60 @@ def _score_breakdown(
         and avg_active_window_accepted_size_usd > 0
         else 0.0
     )
-    mode_worst_active_window_accepted_candidates = [
-        1.0 / float(int(signal_mode_summary.get(mode, {}).get("worst_active_window_accepted_count") or 0))
-        for mode in enabled_modes
-        if int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0) > 0
-        and int(signal_mode_summary.get(mode, {}).get("worst_active_window_accepted_count") or 0) > 0
-    ]
     mode_accepted_window_counts = {
         mode: _mode_accepted_window_count(signal_mode_summary, mode, window_count)
         for mode in enabled_modes
     }
-    mode_worst_active_window_accepted_size_candidates = [
-        max(
-            1.0 - min(
-                float(signal_mode_summary.get(mode, {}).get("worst_active_window_accepted_size_usd") or 0.0)
-                / (
-                    float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0)
-                    / float(mode_accepted_window_counts.get(mode, 0))
-                ),
-                1.0,
-            ),
-            0.0,
+    mode_worst_active_window_accepted_candidates: list[float] = []
+    mode_worst_active_window_accepted_size_candidates: list[float] = []
+    for mode in enabled_modes:
+        mode_payload = signal_mode_summary.get(mode, {})
+        mode_accepted_count = int(mode_payload.get("accepted_count") or 0)
+        if mode_accepted_count > 0:
+            if not _mode_has_proven_worst_active_window_accepted_count(
+                signal_mode_summary,
+                mode,
+                window_count,
+            ):
+                mode_worst_active_window_accepted_candidates.append(1.0)
+            else:
+                mode_worst_active_window_accepted_count = int(
+                    mode_payload.get("worst_active_window_accepted_count") or 0
+                )
+                mode_worst_active_window_accepted_candidates.append(
+                    1.0 / float(mode_worst_active_window_accepted_count)
+                    if mode_worst_active_window_accepted_count > 0
+                    else 1.0
+                )
+        mode_accepted_size_usd = float(mode_payload.get("accepted_size_usd") or 0.0)
+        if mode_accepted_size_usd <= 0:
+            continue
+        if not _mode_has_proven_worst_active_window_accepted_size_usd(
+            signal_mode_summary,
+            mode,
+            window_count,
+        ):
+            mode_worst_active_window_accepted_size_candidates.append(1.0)
+            continue
+        mode_accepted_window_count = mode_accepted_window_counts.get(mode, 0)
+        if mode_accepted_window_count <= 1:
+            continue
+        mode_worst_active_window_accepted_size_usd = float(
+            mode_payload.get("worst_active_window_accepted_size_usd") or 0.0
         )
-        for mode in enabled_modes
-        if float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0) > 0
-        and float(signal_mode_summary.get(mode, {}).get("worst_active_window_accepted_size_usd") or 0.0) > 0
-        and mode_accepted_window_counts.get(mode, 0) > 1
-    ]
+        if mode_worst_active_window_accepted_size_usd <= 0:
+            mode_worst_active_window_accepted_size_candidates.append(1.0)
+            continue
+        mode_worst_active_window_accepted_size_candidates.append(
+            max(
+                1.0 - min(
+                    mode_worst_active_window_accepted_size_usd
+                    / (mode_accepted_size_usd / float(mode_accepted_window_count)),
+                    1.0,
+                ),
+                0.0,
+            )
+        )
     mode_worst_active_window_accepted_risk = (
         max(mode_worst_active_window_accepted_candidates)
         if mode_worst_active_window_accepted_candidates else 0.0
@@ -1687,6 +1740,32 @@ def _mode_has_proven_worst_window_pnl(
     return max(int(window_count), 1) <= 1
 
 
+def _mode_has_proven_worst_active_window_accepted_count(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> bool:
+    payload = signal_mode_summary.get(mode, {})
+    if payload.get("worst_accepting_window_accepted_count") is not None:
+        return True
+    if payload.get("worst_active_window_accepted_count") is not None:
+        return True
+    return max(int(window_count), 1) <= 1 and int(payload.get("accepted_count") or 0) > 0
+
+
+def _mode_has_proven_worst_active_window_accepted_size_usd(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> bool:
+    payload = signal_mode_summary.get(mode, {})
+    if payload.get("worst_accepting_window_accepted_size_usd") is not None:
+        return True
+    if payload.get("worst_active_window_accepted_size_usd") is not None:
+        return True
+    return max(int(window_count), 1) <= 1 and float(payload.get("accepted_size_usd") or 0.0) > 0
+
+
 def _worst_window_resolved_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
     raw_value = signal_mode_summary.get(mode, {}).get("worst_window_resolved_share")
     if raw_value is None:
@@ -3089,6 +3168,26 @@ def _constraint_failures(
     heuristic_worst_active_window_accepted_size_usd = signal_mode_summary.get("heuristic", {}).get("worst_active_window_accepted_size_usd")
     xgboost_worst_active_window_accepted_count = signal_mode_summary.get("xgboost", {}).get("worst_active_window_accepted_count")
     xgboost_worst_active_window_accepted_size_usd = signal_mode_summary.get("xgboost", {}).get("worst_active_window_accepted_size_usd")
+    heuristic_has_proven_worst_active_window_accepted_count = _mode_has_proven_worst_active_window_accepted_count(
+        signal_mode_summary,
+        "heuristic",
+        mode_window_count,
+    )
+    heuristic_has_proven_worst_active_window_accepted_size_usd = _mode_has_proven_worst_active_window_accepted_size_usd(
+        signal_mode_summary,
+        "heuristic",
+        mode_window_count,
+    )
+    xgboost_has_proven_worst_active_window_accepted_count = _mode_has_proven_worst_active_window_accepted_count(
+        signal_mode_summary,
+        "xgboost",
+        mode_window_count,
+    )
+    xgboost_has_proven_worst_active_window_accepted_size_usd = _mode_has_proven_worst_active_window_accepted_size_usd(
+        signal_mode_summary,
+        "xgboost",
+        mode_window_count,
+    )
     if allow_heuristic and max_heuristic_inactive_window_count >= 0 and heuristic_inactive_window_count > max_heuristic_inactive_window_count:
         failures.append("heuristic_inactive_window_count")
     if allow_xgboost and max_xgboost_inactive_window_count >= 0 and xgboost_inactive_window_count > max_xgboost_inactive_window_count:
@@ -3223,28 +3322,40 @@ def _constraint_failures(
         allow_heuristic
         and min_heuristic_worst_active_window_accepted_count > 0
         and int(signal_mode_summary.get("heuristic", {}).get("accepted_count") or 0) > 0
-        and int(heuristic_worst_active_window_accepted_count or 0) < min_heuristic_worst_active_window_accepted_count
+        and (
+            not heuristic_has_proven_worst_active_window_accepted_count
+            or int(heuristic_worst_active_window_accepted_count or 0) < min_heuristic_worst_active_window_accepted_count
+        )
     ):
         failures.append("heuristic_worst_active_window_accepted_count")
     if (
         allow_xgboost
         and min_xgboost_worst_active_window_accepted_count > 0
         and int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) > 0
-        and int(xgboost_worst_active_window_accepted_count or 0) < min_xgboost_worst_active_window_accepted_count
+        and (
+            not xgboost_has_proven_worst_active_window_accepted_count
+            or int(xgboost_worst_active_window_accepted_count or 0) < min_xgboost_worst_active_window_accepted_count
+        )
     ):
         failures.append("xgboost_worst_active_window_accepted_count")
     if (
         allow_heuristic
         and min_heuristic_worst_active_window_accepted_size_usd > 0
         and float(signal_mode_summary.get("heuristic", {}).get("accepted_size_usd") or 0.0) > 0
-        and float(heuristic_worst_active_window_accepted_size_usd or 0.0) < min_heuristic_worst_active_window_accepted_size_usd
+        and (
+            not heuristic_has_proven_worst_active_window_accepted_size_usd
+            or float(heuristic_worst_active_window_accepted_size_usd or 0.0) < min_heuristic_worst_active_window_accepted_size_usd
+        )
     ):
         failures.append("heuristic_worst_active_window_accepted_size_usd")
     if (
         allow_xgboost
         and min_xgboost_worst_active_window_accepted_size_usd > 0
         and float(signal_mode_summary.get("xgboost", {}).get("accepted_size_usd") or 0.0) > 0
-        and float(xgboost_worst_active_window_accepted_size_usd or 0.0) < min_xgboost_worst_active_window_accepted_size_usd
+        and (
+            not xgboost_has_proven_worst_active_window_accepted_size_usd
+            or float(xgboost_worst_active_window_accepted_size_usd or 0.0) < min_xgboost_worst_active_window_accepted_size_usd
+        )
     ):
         failures.append("xgboost_worst_active_window_accepted_size_usd")
     mix_modes_enabled = allow_heuristic and allow_xgboost
@@ -3578,6 +3689,144 @@ def _evaluate_candidate(
 
 def _resolve_db_path(raw_path: str) -> Path | None:
     return Path(raw_path) if raw_path else Path(TRADING_DB_PATH)
+
+
+def _search_constraints_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "min_accepted_count": max(args.min_accepted_count, 0),
+        "min_resolved_count": max(args.min_resolved_count, 0),
+        "min_resolved_share": _clamp_fraction(args.min_resolved_share),
+        "min_resolved_size_share": _clamp_fraction(args.min_resolved_size_share),
+        "min_win_rate": max(args.min_win_rate, 0.0),
+        "min_total_pnl_usd": float(args.min_total_pnl_usd),
+        "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
+        "max_open_exposure_share": _clamp_fraction(args.max_open_exposure_share),
+        "max_window_end_open_exposure_share": _clamp_fraction(args.max_window_end_open_exposure_share),
+        "max_avg_window_end_open_exposure_share": _clamp_fraction(args.max_avg_window_end_open_exposure_share),
+        "max_carry_window_share": _clamp_fraction(args.max_carry_window_share),
+        "min_positive_windows": max(args.min_positive_windows, 0),
+        "min_active_windows": max(args.min_active_windows, 0),
+        "max_inactive_windows": int(args.max_inactive_windows),
+        "min_accepted_windows": max(args.min_accepted_windows, 0),
+        "min_accepted_window_share": _clamp_fraction(args.min_accepted_window_share),
+        "max_non_accepting_active_window_streak": int(args.max_non_accepting_active_window_streak),
+        "max_non_accepting_active_window_episodes": int(args.max_non_accepting_active_window_episodes),
+        "max_accepting_window_accepted_share": _clamp_fraction(args.max_accepting_window_accepted_share),
+        "max_accepting_window_accepted_size_share": _clamp_fraction(args.max_accepting_window_accepted_size_share),
+        "max_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_top_two_accepting_window_accepted_share),
+        "max_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_top_two_accepting_window_accepted_size_share),
+        "max_accepting_window_accepted_concentration_index": _clamp_fraction(args.max_accepting_window_accepted_concentration_index),
+        "max_accepting_window_accepted_size_concentration_index": _clamp_fraction(args.max_accepting_window_accepted_size_concentration_index),
+        "min_worst_active_window_accepted_count": max(args.min_worst_active_window_accepted_count, 0),
+        "min_worst_active_window_accepted_size_usd": max(args.min_worst_active_window_accepted_size_usd, 0.0),
+        "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
+        "min_worst_window_resolved_share": _clamp_fraction(args.min_worst_window_resolved_share),
+        "min_worst_window_resolved_size_share": _clamp_fraction(args.min_worst_window_resolved_size_share),
+        "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
+        "min_heuristic_accepted_count": max(args.min_heuristic_accepted_count, 0),
+        "min_xgboost_accepted_count": max(args.min_xgboost_accepted_count, 0),
+        "min_heuristic_resolved_count": max(args.min_heuristic_resolved_count, 0),
+        "min_xgboost_resolved_count": max(args.min_xgboost_resolved_count, 0),
+        "min_heuristic_win_rate": _clamp_fraction(args.min_heuristic_win_rate),
+        "min_xgboost_win_rate": _clamp_fraction(args.min_xgboost_win_rate),
+        "min_heuristic_resolved_share": _clamp_fraction(args.min_heuristic_resolved_share),
+        "min_xgboost_resolved_share": _clamp_fraction(args.min_xgboost_resolved_share),
+        "min_heuristic_resolved_size_share": _clamp_fraction(args.min_heuristic_resolved_size_share),
+        "min_xgboost_resolved_size_share": _clamp_fraction(args.min_xgboost_resolved_size_share),
+        "min_heuristic_pnl_usd": float(args.min_heuristic_pnl_usd),
+        "min_xgboost_pnl_usd": float(args.min_xgboost_pnl_usd),
+        "min_heuristic_worst_window_pnl_usd": float(args.min_heuristic_worst_window_pnl_usd),
+        "min_xgboost_worst_window_pnl_usd": float(args.min_xgboost_worst_window_pnl_usd),
+        "min_heuristic_worst_window_resolved_share": _clamp_fraction(args.min_heuristic_worst_window_resolved_share),
+        "min_xgboost_worst_window_resolved_share": _clamp_fraction(args.min_xgboost_worst_window_resolved_share),
+        "min_heuristic_worst_window_resolved_size_share": _clamp_fraction(args.min_heuristic_worst_window_resolved_size_share),
+        "min_xgboost_worst_window_resolved_size_share": _clamp_fraction(args.min_xgboost_worst_window_resolved_size_share),
+        "min_heuristic_positive_windows": max(args.min_heuristic_positive_windows, 0),
+        "min_xgboost_positive_windows": max(args.min_xgboost_positive_windows, 0),
+        "min_heuristic_worst_active_window_accepted_count": max(args.min_heuristic_worst_active_window_accepted_count, 0),
+        "min_heuristic_worst_active_window_accepted_size_usd": max(args.min_heuristic_worst_active_window_accepted_size_usd, 0.0),
+        "min_xgboost_worst_active_window_accepted_count": max(args.min_xgboost_worst_active_window_accepted_count, 0),
+        "min_xgboost_worst_active_window_accepted_size_usd": max(args.min_xgboost_worst_active_window_accepted_size_usd, 0.0),
+        "max_heuristic_inactive_windows": int(args.max_heuristic_inactive_windows),
+        "max_xgboost_inactive_windows": int(args.max_xgboost_inactive_windows),
+        "min_heuristic_accepted_windows": max(args.min_heuristic_accepted_windows, 0),
+        "min_heuristic_accepted_window_share": _clamp_fraction(args.min_heuristic_accepted_window_share),
+        "max_heuristic_non_accepting_active_window_streak": int(args.max_heuristic_non_accepting_active_window_streak),
+        "max_heuristic_non_accepting_active_window_episodes": int(args.max_heuristic_non_accepting_active_window_episodes),
+        "max_heuristic_accepting_window_accepted_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
+        "max_heuristic_accepting_window_accepted_size_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
+        "max_heuristic_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_share),
+        "max_heuristic_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_size_share),
+        "max_heuristic_accepting_window_accepted_concentration_index": _clamp_fraction(args.max_heuristic_accepting_window_accepted_concentration_index),
+        "max_heuristic_accepting_window_accepted_size_concentration_index": _clamp_fraction(args.max_heuristic_accepting_window_accepted_size_concentration_index),
+        "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
+        "max_heuristic_accepted_size_share": _clamp_fraction(args.max_heuristic_accepted_size_share),
+        "max_heuristic_active_window_accepted_share": _clamp_fraction(args.max_heuristic_active_window_accepted_share),
+        "max_heuristic_active_window_accepted_size_share": _clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
+        "min_xgboost_accepted_windows": max(args.min_xgboost_accepted_windows, 0),
+        "min_xgboost_accepted_window_share": _clamp_fraction(args.min_xgboost_accepted_window_share),
+        "max_xgboost_non_accepting_active_window_streak": int(args.max_xgboost_non_accepting_active_window_streak),
+        "max_xgboost_non_accepting_active_window_episodes": int(args.max_xgboost_non_accepting_active_window_episodes),
+        "max_xgboost_accepting_window_accepted_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
+        "max_xgboost_accepting_window_accepted_size_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
+        "max_xgboost_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_share),
+        "max_xgboost_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_size_share),
+        "max_xgboost_accepting_window_accepted_concentration_index": _clamp_fraction(args.max_xgboost_accepting_window_accepted_concentration_index),
+        "max_xgboost_accepting_window_accepted_size_concentration_index": _clamp_fraction(args.max_xgboost_accepting_window_accepted_size_concentration_index),
+        "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
+        "min_xgboost_accepted_size_share": _clamp_fraction(args.min_xgboost_accepted_size_share),
+        "min_xgboost_active_window_accepted_share": _clamp_fraction(args.min_xgboost_active_window_accepted_share),
+        "min_xgboost_active_window_accepted_size_share": _clamp_fraction(args.min_xgboost_active_window_accepted_size_share),
+        "max_pause_guard_reject_share": _clamp_fraction(args.max_pause_guard_reject_share),
+        "max_daily_guard_window_share": _clamp_fraction(args.max_daily_guard_window_share),
+        "max_live_guard_window_share": _clamp_fraction(args.max_live_guard_window_share),
+        "max_daily_guard_restart_window_share": _clamp_fraction(args.max_daily_guard_restart_window_share),
+        "max_live_guard_restart_window_share": _clamp_fraction(args.max_live_guard_restart_window_share),
+        "max_carry_restart_window_share": _clamp_fraction(args.max_carry_restart_window_share),
+        "min_trader_count": max(args.min_trader_count, 0),
+        "min_market_count": max(args.min_market_count, 0),
+        "min_entry_price_band_count": max(args.min_entry_price_band_count, 0),
+        "min_time_to_close_band_count": max(args.min_time_to_close_band_count, 0),
+        "max_top_trader_accepted_share": _clamp_fraction(args.max_top_trader_accepted_share),
+        "max_top_trader_abs_pnl_share": _clamp_fraction(args.max_top_trader_abs_pnl_share),
+        "max_top_trader_size_share": _clamp_fraction(args.max_top_trader_size_share),
+        "max_top_market_accepted_share": _clamp_fraction(args.max_top_market_accepted_share),
+        "max_top_market_abs_pnl_share": _clamp_fraction(args.max_top_market_abs_pnl_share),
+        "max_top_market_size_share": _clamp_fraction(args.max_top_market_size_share),
+        "max_top_entry_price_band_accepted_share": _clamp_fraction(args.max_top_entry_price_band_accepted_share),
+        "max_top_entry_price_band_abs_pnl_share": _clamp_fraction(args.max_top_entry_price_band_abs_pnl_share),
+        "max_top_entry_price_band_size_share": _clamp_fraction(args.max_top_entry_price_band_size_share),
+        "max_top_time_to_close_band_accepted_share": _clamp_fraction(args.max_top_time_to_close_band_accepted_share),
+        "max_top_time_to_close_band_abs_pnl_share": _clamp_fraction(args.max_top_time_to_close_band_abs_pnl_share),
+        "max_top_time_to_close_band_size_share": _clamp_fraction(args.max_top_time_to_close_band_size_share),
+    }
+
+
+def _apply_constraints_payload(
+    args: argparse.Namespace,
+    *,
+    parser: argparse.ArgumentParser,
+    raw_argv: list[str],
+) -> None:
+    payload = _load_payload(
+        file_path=args.constraints_file,
+        inline_json=args.constraints_json,
+    )
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise ValueError("Constraint payload must be a JSON object")
+    allowed_keys = set(_search_constraints_from_args(args).keys())
+    normalized_payload = {str(key): value for key, value in payload.items()}
+    unknown_keys = sorted(key for key in normalized_payload if key not in allowed_keys)
+    if unknown_keys:
+        joined_unknown_keys = ", ".join(unknown_keys)
+        raise ValueError(f"Unknown replay-search constraint key(s): {joined_unknown_keys}")
+    for key, value in normalized_payload.items():
+        option = f"--{key.replace('_', '-')}"
+        if _argv_has_option(raw_argv, option):
+            continue
+        setattr(args, key, _coerce_argparse_value(parser, option, value))
 
 
 def _latest_trade_ts(*, db_path: Path | None, mode: str) -> int:
@@ -4927,6 +5176,8 @@ def main() -> None:
     parser.add_argument("--base-policy-json", default="", help="Inline JSON payload with base replay policy overrides.")
     parser.add_argument("--grid-file", default="", help="JSON file describing the parameter grid to sweep.")
     parser.add_argument("--grid-json", default="", help="Inline JSON object describing the parameter grid to sweep.")
+    parser.add_argument("--constraints-file", default="", help="JSON file with replay-search constraint overrides.")
+    parser.add_argument("--constraints-json", default="", help="Inline JSON object with replay-search constraint overrides.")
     parser.add_argument("--top", type=int, default=10, help="How many ranked candidates to print in the stderr summary.")
     parser.add_argument(
         "--drawdown-penalty",
@@ -5104,7 +5355,9 @@ def main() -> None:
     parser.add_argument("--max-top-time-to-close-band-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single time-to-close band.")
     parser.add_argument("--max-top-time-to-close-band-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single time-to-close band.")
     parser.add_argument("--max-top-time-to-close-band-size-share", type=float, default=0.0, help="Maximum fraction of deployed replay dollars allowed to come from a single time-to-close band.")
+    raw_argv = sys.argv[1:]
     args = parser.parse_args()
+    _apply_constraints_payload(args, parser=parser, raw_argv=raw_argv)
 
     base_policy = _load_base_policy(args)
     grid = _load_grid(args)
@@ -5667,114 +5920,7 @@ def main() -> None:
     )
     feasible = [row for row in ranked if not row["constraint_failures"]]
     rejected = [row for row in ranked if row["constraint_failures"]]
-    constraints = {
-        "min_accepted_count": max(args.min_accepted_count, 0),
-        "min_resolved_count": max(args.min_resolved_count, 0),
-        "min_resolved_share": _clamp_fraction(args.min_resolved_share),
-        "min_resolved_size_share": _clamp_fraction(args.min_resolved_size_share),
-        "min_win_rate": max(args.min_win_rate, 0.0),
-        "min_total_pnl_usd": float(args.min_total_pnl_usd),
-        "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
-        "max_open_exposure_share": _clamp_fraction(args.max_open_exposure_share),
-        "max_window_end_open_exposure_share": _clamp_fraction(args.max_window_end_open_exposure_share),
-        "max_avg_window_end_open_exposure_share": _clamp_fraction(args.max_avg_window_end_open_exposure_share),
-        "max_carry_window_share": _clamp_fraction(args.max_carry_window_share),
-        "min_positive_windows": max(args.min_positive_windows, 0),
-        "min_active_windows": max(args.min_active_windows, 0),
-        "max_inactive_windows": int(args.max_inactive_windows),
-        "min_accepted_windows": max(args.min_accepted_windows, 0),
-        "min_accepted_window_share": _clamp_fraction(args.min_accepted_window_share),
-        "max_non_accepting_active_window_streak": int(args.max_non_accepting_active_window_streak),
-        "max_non_accepting_active_window_episodes": int(args.max_non_accepting_active_window_episodes),
-        "max_accepting_window_accepted_share": _clamp_fraction(args.max_accepting_window_accepted_share),
-        "max_accepting_window_accepted_size_share": _clamp_fraction(args.max_accepting_window_accepted_size_share),
-        "max_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_top_two_accepting_window_accepted_share),
-        "max_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_top_two_accepting_window_accepted_size_share),
-        "max_accepting_window_accepted_concentration_index": _clamp_fraction(args.max_accepting_window_accepted_concentration_index),
-        "max_accepting_window_accepted_size_concentration_index": _clamp_fraction(args.max_accepting_window_accepted_size_concentration_index),
-        "min_worst_active_window_accepted_count": max(args.min_worst_active_window_accepted_count, 0),
-        "min_worst_active_window_accepted_size_usd": max(args.min_worst_active_window_accepted_size_usd, 0.0),
-        "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
-        "min_worst_window_resolved_share": _clamp_fraction(args.min_worst_window_resolved_share),
-        "min_worst_window_resolved_size_share": _clamp_fraction(args.min_worst_window_resolved_size_share),
-        "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),
-        "min_heuristic_accepted_count": max(args.min_heuristic_accepted_count, 0),
-        "min_xgboost_accepted_count": max(args.min_xgboost_accepted_count, 0),
-        "min_heuristic_resolved_count": max(args.min_heuristic_resolved_count, 0),
-        "min_xgboost_resolved_count": max(args.min_xgboost_resolved_count, 0),
-        "min_heuristic_win_rate": _clamp_fraction(args.min_heuristic_win_rate),
-        "min_xgboost_win_rate": _clamp_fraction(args.min_xgboost_win_rate),
-        "min_heuristic_resolved_share": _clamp_fraction(args.min_heuristic_resolved_share),
-        "min_xgboost_resolved_share": _clamp_fraction(args.min_xgboost_resolved_share),
-        "min_heuristic_resolved_size_share": _clamp_fraction(args.min_heuristic_resolved_size_share),
-        "min_xgboost_resolved_size_share": _clamp_fraction(args.min_xgboost_resolved_size_share),
-        "min_heuristic_pnl_usd": float(args.min_heuristic_pnl_usd),
-        "min_xgboost_pnl_usd": float(args.min_xgboost_pnl_usd),
-        "min_heuristic_worst_window_pnl_usd": float(args.min_heuristic_worst_window_pnl_usd),
-        "min_xgboost_worst_window_pnl_usd": float(args.min_xgboost_worst_window_pnl_usd),
-        "min_heuristic_worst_window_resolved_share": _clamp_fraction(args.min_heuristic_worst_window_resolved_share),
-        "min_xgboost_worst_window_resolved_share": _clamp_fraction(args.min_xgboost_worst_window_resolved_share),
-        "min_heuristic_worst_window_resolved_size_share": _clamp_fraction(args.min_heuristic_worst_window_resolved_size_share),
-        "min_xgboost_worst_window_resolved_size_share": _clamp_fraction(args.min_xgboost_worst_window_resolved_size_share),
-        "min_heuristic_positive_windows": max(args.min_heuristic_positive_windows, 0),
-        "min_xgboost_positive_windows": max(args.min_xgboost_positive_windows, 0),
-        "min_heuristic_worst_active_window_accepted_count": max(args.min_heuristic_worst_active_window_accepted_count, 0),
-        "min_heuristic_worst_active_window_accepted_size_usd": max(args.min_heuristic_worst_active_window_accepted_size_usd, 0.0),
-        "min_xgboost_worst_active_window_accepted_count": max(args.min_xgboost_worst_active_window_accepted_count, 0),
-        "min_xgboost_worst_active_window_accepted_size_usd": max(args.min_xgboost_worst_active_window_accepted_size_usd, 0.0),
-        "max_heuristic_inactive_windows": int(args.max_heuristic_inactive_windows),
-        "max_xgboost_inactive_windows": int(args.max_xgboost_inactive_windows),
-        "min_heuristic_accepted_windows": max(args.min_heuristic_accepted_windows, 0),
-        "min_heuristic_accepted_window_share": _clamp_fraction(args.min_heuristic_accepted_window_share),
-        "max_heuristic_non_accepting_active_window_streak": int(args.max_heuristic_non_accepting_active_window_streak),
-        "max_heuristic_non_accepting_active_window_episodes": int(args.max_heuristic_non_accepting_active_window_episodes),
-        "max_heuristic_accepting_window_accepted_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
-        "max_heuristic_accepting_window_accepted_size_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
-        "max_heuristic_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_share),
-        "max_heuristic_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_size_share),
-        "max_heuristic_accepting_window_accepted_concentration_index": _clamp_fraction(args.max_heuristic_accepting_window_accepted_concentration_index),
-        "max_heuristic_accepting_window_accepted_size_concentration_index": _clamp_fraction(args.max_heuristic_accepting_window_accepted_size_concentration_index),
-        "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
-        "max_heuristic_accepted_size_share": _clamp_fraction(args.max_heuristic_accepted_size_share),
-        "max_heuristic_active_window_accepted_share": _clamp_fraction(args.max_heuristic_active_window_accepted_share),
-        "max_heuristic_active_window_accepted_size_share": _clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
-        "min_xgboost_accepted_windows": max(args.min_xgboost_accepted_windows, 0),
-        "min_xgboost_accepted_window_share": _clamp_fraction(args.min_xgboost_accepted_window_share),
-        "max_xgboost_non_accepting_active_window_streak": int(args.max_xgboost_non_accepting_active_window_streak),
-        "max_xgboost_non_accepting_active_window_episodes": int(args.max_xgboost_non_accepting_active_window_episodes),
-        "max_xgboost_accepting_window_accepted_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
-        "max_xgboost_accepting_window_accepted_size_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
-        "max_xgboost_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_share),
-        "max_xgboost_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_size_share),
-        "max_xgboost_accepting_window_accepted_concentration_index": _clamp_fraction(args.max_xgboost_accepting_window_accepted_concentration_index),
-        "max_xgboost_accepting_window_accepted_size_concentration_index": _clamp_fraction(args.max_xgboost_accepting_window_accepted_size_concentration_index),
-        "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
-        "min_xgboost_accepted_size_share": _clamp_fraction(args.min_xgboost_accepted_size_share),
-        "min_xgboost_active_window_accepted_share": _clamp_fraction(args.min_xgboost_active_window_accepted_share),
-        "min_xgboost_active_window_accepted_size_share": _clamp_fraction(args.min_xgboost_active_window_accepted_size_share),
-        "max_pause_guard_reject_share": _clamp_fraction(args.max_pause_guard_reject_share),
-        "max_daily_guard_window_share": _clamp_fraction(args.max_daily_guard_window_share),
-        "max_live_guard_window_share": _clamp_fraction(args.max_live_guard_window_share),
-        "max_daily_guard_restart_window_share": _clamp_fraction(args.max_daily_guard_restart_window_share),
-        "max_live_guard_restart_window_share": _clamp_fraction(args.max_live_guard_restart_window_share),
-        "max_carry_restart_window_share": _clamp_fraction(args.max_carry_restart_window_share),
-        "min_trader_count": max(args.min_trader_count, 0),
-        "min_market_count": max(args.min_market_count, 0),
-        "min_entry_price_band_count": max(args.min_entry_price_band_count, 0),
-        "min_time_to_close_band_count": max(args.min_time_to_close_band_count, 0),
-        "max_top_trader_accepted_share": _clamp_fraction(args.max_top_trader_accepted_share),
-        "max_top_trader_abs_pnl_share": _clamp_fraction(args.max_top_trader_abs_pnl_share),
-        "max_top_trader_size_share": _clamp_fraction(args.max_top_trader_size_share),
-        "max_top_market_accepted_share": _clamp_fraction(args.max_top_market_accepted_share),
-        "max_top_market_abs_pnl_share": _clamp_fraction(args.max_top_market_abs_pnl_share),
-        "max_top_market_size_share": _clamp_fraction(args.max_top_market_size_share),
-        "max_top_entry_price_band_accepted_share": _clamp_fraction(args.max_top_entry_price_band_accepted_share),
-        "max_top_entry_price_band_abs_pnl_share": _clamp_fraction(args.max_top_entry_price_band_abs_pnl_share),
-        "max_top_entry_price_band_size_share": _clamp_fraction(args.max_top_entry_price_band_size_share),
-        "max_top_time_to_close_band_accepted_share": _clamp_fraction(args.max_top_time_to_close_band_accepted_share),
-        "max_top_time_to_close_band_abs_pnl_share": _clamp_fraction(args.max_top_time_to_close_band_abs_pnl_share),
-        "max_top_time_to_close_band_size_share": _clamp_fraction(args.max_top_time_to_close_band_size_share),
-    }
+    constraints = _search_constraints_from_args(args)
     finished_at = int(time.time())
     search_run_id = _persist_search_results(
         db_path=db_path,

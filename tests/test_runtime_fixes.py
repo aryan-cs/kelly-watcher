@@ -739,6 +739,107 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(int(row["id"]), wanted_id)
         self.assertNotEqual(int(row["id"]), other_id)
 
+    def test_latest_replay_search_state_payload_loads_latest_persisted_run_for_restart(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO replay_search_runs (
+                            started_at, finished_at, request_token, label_prefix, status,
+                            base_policy_json, grid_json, constraints_json,
+                            candidate_count, feasible_count, best_feasible_score, best_feasible_total_pnl_usd
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (100, 110, "older", "scheduled", "completed", "{}", "{}", "{}", 4, 1, 0.25, 3.0),
+                    )
+                    latest_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_runs (
+                                started_at, finished_at, request_token, label_prefix, status,
+                                base_policy_json, grid_json, constraints_json,
+                                candidate_count, feasible_count, best_feasible_score, best_feasible_total_pnl_usd
+                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (200, 230, "latest", "manual", "completed", "{}", "{}", "{}", 17, 6, 1.75, 42.5),
+                        ).lastrowid
+                        or 0
+                    )
+                    conn.commit()
+                    row = main._latest_replay_search_run()
+                    payload = main._latest_replay_search_state_payload(row)
+                finally:
+                    conn.close()
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        assert row is not None
+        self.assertEqual(int(row["id"]), latest_id)
+        self.assertEqual(payload["last_replay_search_started_at"], 200)
+        self.assertEqual(payload["last_replay_search_finished_at"], 230)
+        self.assertEqual(payload["last_replay_search_status"], "completed")
+        self.assertEqual(payload["last_replay_search_trigger"], "")
+        self.assertEqual(payload["last_replay_search_scope"], "shadow_only")
+        self.assertEqual(payload["last_replay_search_run_id"], latest_id)
+        self.assertEqual(payload["last_replay_search_candidate_count"], 17)
+        self.assertEqual(payload["last_replay_search_feasible_count"], 6)
+        self.assertAlmostEqual(float(payload["last_replay_search_best_score"]), 1.75)
+        self.assertAlmostEqual(float(payload["last_replay_search_best_pnl_usd"]), 42.5)
+        self.assertEqual(
+            payload["last_replay_search_message"],
+            f"Replay search completed (run={latest_id}, candidates=17, feasible=6)",
+        )
+
+    def test_latest_replay_search_run_uses_started_at_when_finished_at_missing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO replay_search_runs (
+                            started_at, finished_at, request_token, label_prefix, status,
+                            base_policy_json, grid_json, constraints_json
+                        ) VALUES (?,?,?,?,?,?,?,?)
+                        """,
+                        (100, 180, "older", "scheduled", "completed", "{}", "{}", "{}"),
+                    )
+                    expected_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_runs (
+                                started_at, finished_at, request_token, label_prefix, status,
+                                base_policy_json, grid_json, constraints_json
+                            ) VALUES (?,?,?,?,?,?,?,?)
+                            """,
+                            (250, 0, "latest", "scheduled", "failed", "{}", "{}", "{}"),
+                        ).lastrowid
+                        or 0
+                    )
+                    conn.commit()
+                    row = main._latest_replay_search_run()
+                finally:
+                    conn.close()
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        assert row is not None
+        self.assertEqual(int(row["id"]), expected_id)
+
     def test_dashboard_spawn_shadow_restart_process_writes_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"

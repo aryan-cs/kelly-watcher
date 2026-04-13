@@ -2290,6 +2290,34 @@ def _replay_search_transient_status_state(
 PROMOTABLE_REPLAY_CONFIG_KEYS = frozenset(str(key).strip().upper() for key in REPLAY_POLICY_CONFIG_KEY_MAP.values())
 
 
+def _latest_replay_search_state_payload(run_row: dict[str, Any] | None) -> dict[str, object]:
+    row = run_row or {}
+    run_id = int(row.get("id") or 0)
+    candidate_count = int(row.get("candidate_count") or 0)
+    feasible_count = int(row.get("feasible_count") or 0)
+    status = str(row.get("status") or "").strip()
+    status_text = status or "completed"
+    message = ""
+    if run_id > 0:
+        message = (
+            f"Replay search {status_text} "
+            f"(run={run_id}, candidates={candidate_count}, feasible={feasible_count})"
+        )
+    return {
+        "last_replay_search_started_at": int(row.get("started_at") or 0),
+        "last_replay_search_finished_at": int(row.get("finished_at") or 0),
+        "last_replay_search_status": status,
+        "last_replay_search_message": message,
+        "last_replay_search_trigger": "",
+        "last_replay_search_scope": "shadow_only",
+        "last_replay_search_run_id": run_id,
+        "last_replay_search_candidate_count": candidate_count,
+        "last_replay_search_feasible_count": feasible_count,
+        "last_replay_search_best_score": row.get("best_feasible_score"),
+        "last_replay_search_best_pnl_usd": row.get("best_feasible_total_pnl_usd"),
+    }
+
+
 def _latest_replay_promotion() -> dict[str, Any] | None:
     conn = get_conn()
     try:
@@ -2468,6 +2496,27 @@ def _latest_replay_search_run_id() -> int:
     try:
         row = conn.execute("SELECT COALESCE(MAX(id), 0) AS id FROM replay_search_runs").fetchone()
         return int(row["id"] or 0)
+    finally:
+        conn.close()
+
+
+def _latest_replay_search_run() -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM replay_search_runs
+            ORDER BY
+                CASE
+                    WHEN finished_at > 0 THEN finished_at
+                    ELSE started_at
+                END DESC,
+                id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
     finally:
         conn.close()
 
@@ -3859,8 +3908,11 @@ def main() -> None:
         "model_prediction_mode": "",
         "model_loaded_at": 0,
     }
+    latest_replay_search = _latest_replay_search_run()
     latest_promotion = _latest_applied_replay_promotion()
     latest_promotion_attempt = _latest_replay_promotion()
+    if latest_replay_search is not None:
+        bot_state_snapshot.update(_latest_replay_search_state_payload(latest_replay_search))
     if latest_promotion_attempt is not None:
         bot_state_snapshot.update(_latest_replay_promotion_state_payload(latest_promotion_attempt))
     if latest_promotion is not None:

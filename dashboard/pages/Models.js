@@ -69,8 +69,8 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search run', text: 'How recently the latest persisted replay search finished.' },
             { label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.' },
             { label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.' },
-            { label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-loss, scorer-inactivity, and concentration terms.' },
-            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
+            { label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, active-window depth, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-window depth, scorer-loss, scorer-inactivity, and concentration terms.' },
+            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, active-window depth, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-window depth, scorer-loss, scorer-inactivity, and concentration penalties.' },
             { label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.' },
             { label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, sparsest active-window depth, and the worst window P&L for the latest best feasible search candidate.' },
             { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
@@ -86,7 +86,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, resolved-count, resolved-share, win-rate, total P&L, worst-window P&L, worst-window resolved-share, and accepted-share guardrails from the latest replay search, if any.' },
-            { label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer coverage, scorer worst-window coverage, scorer-loss, and scorer-inactivity pressure.' },
+            { label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer coverage, scorer worst-window coverage, scorer active-window depth, scorer-loss, and scorer-inactivity pressure.' },
             { label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.' },
             { label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.' },
             { label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.' },
@@ -371,6 +371,8 @@ WITH latest_search AS (
     worst_window_resolved_share_penalty,
     mode_resolved_share_penalty,
     mode_worst_window_resolved_share_penalty,
+    worst_active_window_accepted_penalty,
+    mode_worst_active_window_accepted_penalty,
     mode_loss_penalty,
     mode_inactivity_penalty,
     window_inactivity_penalty,
@@ -427,6 +429,8 @@ SELECT
   latest_search.worst_window_resolved_share_penalty,
   latest_search.mode_resolved_share_penalty,
   latest_search.mode_worst_window_resolved_share_penalty,
+  latest_search.worst_active_window_accepted_penalty,
+  latest_search.mode_worst_active_window_accepted_penalty,
   latest_search.mode_loss_penalty,
   latest_search.mode_inactivity_penalty,
   latest_search.window_inactivity_penalty,
@@ -1569,8 +1573,10 @@ function replaySearchScoreBreakdownSummary(raw) {
         const resolvedSharePenaltyUsd = Number(breakdown.resolved_share_penalty_usd || 0);
         const windowInactivityPenaltyUsd = Number(breakdown.window_inactivity_penalty_usd || 0);
         const worstWindowResolvedSharePenaltyUsd = Number(breakdown.worst_window_resolved_share_penalty_usd || 0);
+        const worstActiveWindowAcceptedPenaltyUsd = Number(breakdown.worst_active_window_accepted_penalty_usd || 0);
         const modeResolvedSharePenaltyUsd = Number(breakdown.mode_resolved_share_penalty_usd || 0);
         const modeWorstWindowResolvedSharePenaltyUsd = Number(breakdown.mode_worst_window_resolved_share_penalty_usd || 0);
+        const modeWorstActiveWindowAcceptedPenaltyUsd = Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0);
         const modeLossPenaltyUsd = Number(breakdown.mode_loss_penalty_usd || 0);
         const modeInactivityPenaltyUsd = Number(breakdown.mode_inactivity_penalty_usd || 0);
         const walletConcentrationPenaltyUsd = Number(breakdown.wallet_concentration_penalty_usd || 0);
@@ -1593,10 +1599,14 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`w-idle ${formatDollar(-windowInactivityPenaltyUsd)}`);
         if (Math.abs(worstWindowResolvedSharePenaltyUsd) > 1e-9)
             parts.push(`w-cov ${formatDollar(-worstWindowResolvedSharePenaltyUsd)}`);
+        if (Math.abs(worstActiveWindowAcceptedPenaltyUsd) > 1e-9)
+            parts.push(`w-act ${formatDollar(-worstActiveWindowAcceptedPenaltyUsd)}`);
         if (Math.abs(modeResolvedSharePenaltyUsd) > 1e-9)
             parts.push(`m-cov ${formatDollar(-modeResolvedSharePenaltyUsd)}`);
         if (Math.abs(modeWorstWindowResolvedSharePenaltyUsd) > 1e-9)
             parts.push(`mw-cov ${formatDollar(-modeWorstWindowResolvedSharePenaltyUsd)}`);
+        if (Math.abs(modeWorstActiveWindowAcceptedPenaltyUsd) > 1e-9)
+            parts.push(`mw-act ${formatDollar(-modeWorstActiveWindowAcceptedPenaltyUsd)}`);
         if (Math.abs(modeLossPenaltyUsd) > 1e-9)
             parts.push(`mode ${formatDollar(-modeLossPenaltyUsd)}`);
         if (Math.abs(modeInactivityPenaltyUsd) > 1e-9)
@@ -1631,8 +1641,10 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('cov', row.resolved_share_penalty);
     pushIfActive('w-idle', row.window_inactivity_penalty);
     pushIfActive('w-cov', row.worst_window_resolved_share_penalty);
+    pushIfActive('w-act', row.worst_active_window_accepted_penalty);
     pushIfActive('m-cov', row.mode_resolved_share_penalty);
     pushIfActive('mw-cov', row.mode_worst_window_resolved_share_penalty);
+    pushIfActive('mw-act', row.mode_worst_active_window_accepted_penalty);
     pushIfActive('mode', row.mode_loss_penalty);
     pushIfActive('idle', row.mode_inactivity_penalty);
     pushIfActive('wallet', row.wallet_concentration_penalty);
@@ -1663,8 +1675,10 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 resolved_share_penalty_usd: Number(breakdown.resolved_share_penalty_usd || 0),
                 window_inactivity_penalty_usd: Number(breakdown.window_inactivity_penalty_usd || 0),
                 worst_window_resolved_share_penalty_usd: Number(breakdown.worst_window_resolved_share_penalty_usd || 0),
+                worst_active_window_accepted_penalty_usd: Number(breakdown.worst_active_window_accepted_penalty_usd || 0),
                 mode_resolved_share_penalty_usd: Number(breakdown.mode_resolved_share_penalty_usd || 0),
                 mode_worst_window_resolved_share_penalty_usd: Number(breakdown.mode_worst_window_resolved_share_penalty_usd || 0),
+                mode_worst_active_window_accepted_penalty_usd: Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0),
                 mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
                 mode_inactivity_penalty_usd: Number(breakdown.mode_inactivity_penalty_usd || 0),
                 wallet_concentration_penalty_usd: Number(breakdown.wallet_concentration_penalty_usd || 0),
@@ -1690,8 +1704,10 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const coverageDelta = current.resolved_share_penalty_usd - best.resolved_share_penalty_usd;
     const windowInactivityDelta = current.window_inactivity_penalty_usd - best.window_inactivity_penalty_usd;
     const worstCoverageDelta = current.worst_window_resolved_share_penalty_usd - best.worst_window_resolved_share_penalty_usd;
+    const worstActiveDepthDelta = current.worst_active_window_accepted_penalty_usd - best.worst_active_window_accepted_penalty_usd;
     const modeCoverageDelta = current.mode_resolved_share_penalty_usd - best.mode_resolved_share_penalty_usd;
     const modeWorstCoverageDelta = current.mode_worst_window_resolved_share_penalty_usd - best.mode_worst_window_resolved_share_penalty_usd;
+    const modeWorstActiveDepthDelta = current.mode_worst_active_window_accepted_penalty_usd - best.mode_worst_active_window_accepted_penalty_usd;
     const modeDelta = current.mode_loss_penalty_usd - best.mode_loss_penalty_usd;
     const inactivityDelta = current.mode_inactivity_penalty_usd - best.mode_inactivity_penalty_usd;
     const walletDelta = current.wallet_concentration_penalty_usd - best.wallet_concentration_penalty_usd;
@@ -1714,10 +1730,14 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`w-idle ${formatDollar(windowInactivityDelta)}`);
     if (Math.abs(worstCoverageDelta) > 1e-9)
         parts.push(`w-cov ${formatDollar(worstCoverageDelta)}`);
+    if (Math.abs(worstActiveDepthDelta) > 1e-9)
+        parts.push(`w-act ${formatDollar(worstActiveDepthDelta)}`);
     if (Math.abs(modeCoverageDelta) > 1e-9)
         parts.push(`m-cov ${formatDollar(modeCoverageDelta)}`);
     if (Math.abs(modeWorstCoverageDelta) > 1e-9)
         parts.push(`mw-cov ${formatDollar(modeWorstCoverageDelta)}`);
+    if (Math.abs(modeWorstActiveDepthDelta) > 1e-9)
+        parts.push(`mw-act ${formatDollar(modeWorstActiveDepthDelta)}`);
     if (Math.abs(modeDelta) > 1e-9)
         parts.push(`mode ${formatDollar(modeDelta)}`);
     if (Math.abs(inactivityDelta) > 1e-9)
@@ -2182,12 +2202,15 @@ function replaySearchModePenaltySummary(row) {
     const parts = [];
     const modeResolvedSharePenalty = Math.max(Number(row.mode_resolved_share_penalty || 0), 0);
     const modeWorstWindowResolvedSharePenalty = Math.max(Number(row.mode_worst_window_resolved_share_penalty || 0), 0);
+    const modeWorstActiveWindowAcceptedPenalty = Math.max(Number(row.mode_worst_active_window_accepted_penalty || 0), 0);
     const modeLossPenalty = Math.max(Number(row.mode_loss_penalty || 0), 0);
     const modeInactivityPenalty = Math.max(Number(row.mode_inactivity_penalty || 0), 0);
     if (modeResolvedSharePenalty > 0)
         parts.push(`cov ${modeResolvedSharePenalty.toFixed(2)}x`);
     if (modeWorstWindowResolvedSharePenalty > 0)
         parts.push(`w-cov ${modeWorstWindowResolvedSharePenalty.toFixed(2)}x`);
+    if (modeWorstActiveWindowAcceptedPenalty > 0)
+        parts.push(`w-act ${modeWorstActiveWindowAcceptedPenalty.toFixed(2)}x`);
     if (modeLossPenalty > 0)
         parts.push(`loss ${modeLossPenalty.toFixed(2)}x`);
     if (modeInactivityPenalty > 0)

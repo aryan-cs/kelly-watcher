@@ -38,6 +38,8 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("worst_window_resolved_share_penalty", columns)
         self.assertIn("mode_resolved_share_penalty", columns)
         self.assertIn("mode_worst_window_resolved_share_penalty", columns)
+        self.assertIn("worst_active_window_accepted_penalty", columns)
+        self.assertIn("mode_worst_active_window_accepted_penalty", columns)
         self.assertIn("mode_loss_penalty", columns)
         self.assertIn("mode_inactivity_penalty", columns)
         self.assertIn("window_inactivity_penalty", columns)
@@ -114,6 +116,8 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         argv = [
             "replay_search.py",
+            "--base-policy-json",
+            json.dumps({"allow_heuristic": False}),
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
         ]
@@ -249,6 +253,126 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(breakdown["window_inactivity_penalty_usd"], 0.0)
         self.assertEqual(breakdown["score_usd"], -15.0)
+
+    def test_score_breakdown_penalizes_global_worst_active_window_depth(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 2,
+                "active_window_count": 2,
+                "inactive_window_count": 0,
+                "accepted_count": 5,
+                "resolved_count": 5,
+                "worst_active_window_accepted_count": 2,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.1,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["worst_active_window_accepted_penalty_usd"], 150.0)
+        self.assertEqual(breakdown["score_usd"], -130.0)
+
+    def test_score_breakdown_penalizes_mode_worst_active_window_depth(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 2,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": 4,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "resolved_count": 6,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": 2,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.1,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_worst_active_window_accepted_penalty_usd"], 150.0)
+        self.assertEqual(breakdown["score_usd"], -130.0)
+
+    def test_score_breakdown_ignores_disabled_mode_worst_active_window_depth(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 2,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "resolved_count": 6,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": 1,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.1,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=False,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_worst_active_window_accepted_penalty_usd"], 0.0)
+        self.assertEqual(breakdown["score_usd"], 20.0)
 
     def test_score_breakdown_ignores_disabled_scorer_losses(self) -> None:
         breakdown = replay_search._score_breakdown(
@@ -561,6 +685,8 @@ class ReplaySearchTest(unittest.TestCase):
         stderr = io.StringIO()
         argv = [
             "replay_search.py",
+            "--base-policy-json",
+            json.dumps({"allow_heuristic": False}),
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--drawdown-penalty",
@@ -1419,6 +1545,8 @@ class ReplaySearchTest(unittest.TestCase):
         stderr = io.StringIO()
         argv = [
             "replay_search.py",
+            "--base-policy-json",
+            json.dumps({"allow_heuristic": False}),
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -1481,6 +1609,8 @@ class ReplaySearchTest(unittest.TestCase):
         stderr = io.StringIO()
         argv = [
             "replay_search.py",
+            "--base-policy-json",
+            json.dumps({"allow_heuristic": False}),
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -1507,6 +1637,62 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["result"]["worst_active_window_accepted_count"], 1)
         self.assertEqual(payload["constraints"]["min_worst_active_window_accepted_count"], 2)
         self.assertIn("reject worst_active_window_accepted_count", stderr.getvalue())
+
+    def test_main_can_penalize_worst_active_window_depth_in_ranking(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                accepted_count = 9 if start_ts == 1 else 2
+                total_pnl = 28.0 if start_ts == 1 else 24.0
+            else:
+                accepted_count = 6
+                total_pnl = 23.0 if start_ts == 1 else 22.0
+            return {
+                "run_id": 1 if start_ts == 1 else 2,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": total_pnl,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": accepted_count,
+                "resolved_count": accepted_count,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": accepted_count,
+                "win_rate": 0.6,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--worst-active-window-accepted-penalty",
+            "0.02",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["worst_active_window_accepted_penalty"], 0.02)
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertGreater(rejected_breakdown["worst_active_window_accepted_penalty_usd"], 0.0)
+        self.assertGreater(rejected_breakdown["worst_active_window_accepted_penalty_usd"], best_breakdown["worst_active_window_accepted_penalty_usd"])
+        self.assertGreater(best_breakdown["score_usd"], rejected_breakdown["score_usd"])
+        self.assertIn("worst-act 2", stderr.getvalue())
 
     def test_main_uses_worst_active_window_counts_for_distinct_concentration_floors(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -3422,6 +3608,71 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["result"]["signal_mode_summary"]["xgboost"]["worst_active_window_accepted_count"], 3)
         self.assertIn("reject xgboost_inactive_window_count", stderr.getvalue())
 
+    def test_main_can_penalize_mode_worst_active_window_depth_in_ranking(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                xgboost_accepted = 6 if start_ts == 1 else 2
+                xgboost_pnl = 14.0 if start_ts == 1 else 10.0
+                heuristic_pnl = 4.0
+            else:
+                xgboost_accepted = 4
+                xgboost_pnl = 10.0 if start_ts == 1 else 9.0
+                heuristic_pnl = 4.0
+            total_pnl = heuristic_pnl + xgboost_pnl
+            return {
+                "run_id": 1 if start_ts == 1 else 2,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": total_pnl,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": xgboost_accepted + 2,
+                "resolved_count": xgboost_accepted + 2,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": xgboost_accepted + 2,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 2, "resolved_count": 2, "trade_count": 2, "total_pnl_usd": heuristic_pnl, "win_count": 1},
+                    "xgboost": {"accepted_count": xgboost_accepted, "resolved_count": xgboost_accepted, "trade_count": xgboost_accepted, "total_pnl_usd": xgboost_pnl, "win_count": max(xgboost_accepted - 1, 1)},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--base-policy-json",
+            json.dumps({"allow_heuristic": False}),
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--mode-worst-active-window-accepted-penalty",
+            "0.02",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["mode_worst_active_window_accepted_penalty"], 0.02)
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertGreater(rejected_breakdown["mode_worst_active_window_accepted_penalty_usd"], 0.0)
+        self.assertGreater(rejected_breakdown["mode_worst_active_window_accepted_penalty_usd"], best_breakdown["mode_worst_active_window_accepted_penalty_usd"])
+        self.assertGreater(best_breakdown["score_usd"], rejected_breakdown["score_usd"])
+        self.assertEqual(rejected["result"]["signal_mode_summary"]["xgboost"]["worst_active_window_accepted_count"], 2)
+
     def test_main_counts_fully_absent_mode_windows_as_inactive(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -3928,6 +4179,8 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertIn("worst_window_resolved_share_penalty", run_columns)
             self.assertIn("mode_resolved_share_penalty", run_columns)
             self.assertIn("mode_worst_window_resolved_share_penalty", run_columns)
+            self.assertIn("worst_active_window_accepted_penalty", run_columns)
+            self.assertIn("mode_worst_active_window_accepted_penalty", run_columns)
             self.assertIn("mode_loss_penalty", run_columns)
             self.assertIn("mode_inactivity_penalty", run_columns)
             self.assertIn("window_inactivity_penalty", run_columns)
@@ -4352,6 +4605,170 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertGreater(
                 current_candidate_json["score_breakdown"]["window_inactivity_penalty_usd"],
                 best_candidate_json["score_breakdown"]["window_inactivity_penalty_usd"],
+            )
+
+    def test_main_persists_nonzero_worst_active_window_accepted_penalty(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.60:
+                accepted_count = 8 if start_ts == 1 else 8
+                total_pnl = 60.0 if start_ts == 1 else 55.0
+            else:
+                accepted_count = 7 if start_ts == 1 else 2
+                total_pnl = 52.0 if start_ts == 1 else 48.0
+            return {
+                "run_id": 1 if start_ts == 1 else 2,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": total_pnl,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": accepted_count,
+                "resolved_count": accepted_count,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": accepted_count,
+                "win_rate": 0.625,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "replay_search_worst_active_window_accepted_penalty.db"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--db",
+                str(db_path),
+                "--base-policy-json",
+                json.dumps({"min_confidence": 0.55, "allow_heuristic": False}),
+                "--grid-json",
+                json.dumps({"min_confidence": [0.60]}),
+                "--window-days",
+                "30",
+                "--window-count",
+                "2",
+                "--worst-active-window-accepted-penalty",
+                "0.25",
+            ]
+            with (
+                patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                run_row = conn.execute(
+                    """
+                    SELECT worst_active_window_accepted_penalty, current_candidate_result_json
+                    FROM replay_search_runs
+                    """
+                ).fetchone()
+                candidate_rows = conn.execute(
+                    """
+                    SELECT is_current_policy, result_json
+                    FROM replay_search_candidates
+                    ORDER BY candidate_index ASC
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertIsNotNone(run_row)
+            self.assertEqual(run_row[0], 0.25)
+            current_result_json = json.loads(run_row[1])
+            self.assertGreater(current_result_json["score_breakdown"]["worst_active_window_accepted_penalty_usd"], 0.0)
+            current_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 1))
+            best_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 0))
+            self.assertGreater(
+                current_candidate_json["score_breakdown"]["worst_active_window_accepted_penalty_usd"],
+                best_candidate_json["score_breakdown"]["worst_active_window_accepted_penalty_usd"],
+            )
+
+    def test_main_persists_nonzero_mode_worst_active_window_accepted_penalty(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.60:
+                xgboost_accepted = 5
+                xgboost_pnl = 18.0 if start_ts == 1 else 16.0
+            else:
+                xgboost_accepted = 6 if start_ts == 1 else 2
+                xgboost_pnl = 20.0 if start_ts == 1 else 12.0
+            return {
+                "run_id": 1 if start_ts == 1 else 2,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 4.0 + xgboost_pnl,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 2 + xgboost_accepted,
+                "resolved_count": 2 + xgboost_accepted,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 2 + xgboost_accepted,
+                "win_rate": 0.625,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 2, "resolved_count": 2, "trade_count": 2, "total_pnl_usd": 4.0, "win_count": 1},
+                    "xgboost": {"accepted_count": xgboost_accepted, "resolved_count": xgboost_accepted, "trade_count": xgboost_accepted, "total_pnl_usd": xgboost_pnl, "win_count": max(xgboost_accepted - 1, 1)},
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "replay_search_mode_worst_active_window_accepted_penalty.db"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--db",
+                str(db_path),
+                "--base-policy-json",
+                json.dumps({"min_confidence": 0.55, "allow_heuristic": False}),
+                "--grid-json",
+                json.dumps({"min_confidence": [0.60]}),
+                "--window-days",
+                "30",
+                "--window-count",
+                "2",
+                "--mode-worst-active-window-accepted-penalty",
+                "0.25",
+            ]
+            with (
+                patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                run_row = conn.execute(
+                    """
+                    SELECT mode_worst_active_window_accepted_penalty, current_candidate_result_json
+                    FROM replay_search_runs
+                    """
+                ).fetchone()
+                candidate_rows = conn.execute(
+                    """
+                    SELECT is_current_policy, result_json
+                    FROM replay_search_candidates
+                    ORDER BY candidate_index ASC
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertIsNotNone(run_row)
+            self.assertEqual(run_row[0], 0.25)
+            current_result_json = json.loads(run_row[1])
+            self.assertGreater(current_result_json["score_breakdown"]["mode_worst_active_window_accepted_penalty_usd"], 0.0)
+            current_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 1))
+            best_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 0))
+            self.assertGreater(
+                current_candidate_json["score_breakdown"]["mode_worst_active_window_accepted_penalty_usd"],
+                best_candidate_json["score_breakdown"]["mode_worst_active_window_accepted_penalty_usd"],
             )
 
     def test_main_persists_nonzero_resolved_share_penalty(self) -> None:

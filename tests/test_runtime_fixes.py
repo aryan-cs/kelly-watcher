@@ -3428,11 +3428,18 @@ class RuntimeFixesTest(unittest.TestCase):
                         "replay_search_candidate_id": None,
                     }
                 )
+                _insert_resolved_shadow_trade_for_promotion_test(
+                    trade_id="shadow-after-promotion",
+                    resolved_at=400,
+                )
 
                 with (
                     patch("main.use_real_money", return_value=False),
                     patch("main.poll_interval", return_value=5.0),
                     patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
+                    patch("main.live_require_shadow_history", return_value=True),
+                    patch("main.live_min_shadow_resolved", return_value=2),
+                    patch("main.live_min_shadow_resolved_since_promotion", return_value=1),
                 ):
                     main._persist_startup_failure_state(
                         detail="startup failed: belief sync exploded",
@@ -3442,7 +3449,14 @@ class RuntimeFixesTest(unittest.TestCase):
 
                 payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
                 self.assertTrue(payload["startup_failed"])
-                self.assertFalse(payload["shadow_history_state_known"])
+                self.assertTrue(payload["shadow_history_state_known"])
+                self.assertEqual(payload["resolved_shadow_trade_count"], 1)
+                self.assertEqual(payload["resolved_shadow_since_last_promotion"], 1)
+                self.assertTrue(payload["live_require_shadow_history_enabled"])
+                self.assertEqual(payload["live_min_shadow_resolved"], 2)
+                self.assertFalse(payload["live_shadow_history_total_ready"])
+                self.assertEqual(payload["live_min_shadow_resolved_since_last_promotion"], 1)
+                self.assertTrue(payload["live_shadow_history_ready"])
                 self.assertEqual(payload["last_retrain_status"], "deployed")
                 self.assertEqual(payload["last_retrain_message"], "latest retrain")
                 self.assertEqual(payload["last_replay_search_status"], "completed")

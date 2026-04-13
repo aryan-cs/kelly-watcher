@@ -628,6 +628,24 @@ def _persist_startup_failure_state(
             row = None
         if row is not None:
             state.update(payload_builder(row))
+    try:
+        total_resolved_shadow = _resolved_shadow_trade_count()
+        resolved_since_promotion, last_promotion = _resolved_shadow_trade_count_since_last_promotion()
+        require_total_history = live_require_shadow_history()
+        minimum_total = live_min_shadow_resolved() if require_total_history else 0
+        minimum_since_promotion = max(live_min_shadow_resolved_since_promotion(), 0)
+        state.update(
+            _shadow_history_state_payload(
+                total_resolved_shadow=total_resolved_shadow,
+                resolved_since_promotion=resolved_since_promotion,
+                last_promotion=last_promotion,
+                require_total_history=require_total_history,
+                minimum_total=minimum_total,
+                minimum_since_promotion=minimum_since_promotion,
+            )
+        )
+    except Exception:
+        pass
     _write_bot_state(replace=True, **state)
 
 

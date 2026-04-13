@@ -304,6 +304,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.'},
       {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.'},
+      {label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer-loss and scorer-inactivity pressure.'},
       {label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.'},
       {label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.'},
       {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.'},
@@ -1671,7 +1672,8 @@ interface ReplaySearchTraderConcentrationSummary {
 function replaySearchTraderConcentrationSummary(
   bestRaw: string | null | undefined,
   currentRaw: string | null | undefined,
-  constraintsRaw: string | null | undefined
+  constraintsRaw: string | null | undefined,
+  penalty: number | null | undefined
 ): ReplaySearchTraderConcentrationSummary {
   const parse = (raw: string | null | undefined): {acceptedShare: number | null; absPnlShare: number | null} => {
     if (!raw) return {acceptedShare: null, absPnlShare: null}
@@ -1721,6 +1723,8 @@ function replaySearchTraderConcentrationSummary(
   if (limits.accepted > 0 || limits.pnl > 0) {
     parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`)
   }
+  const resolvedPenalty = Math.max(Number(penalty || 0), 0)
+  if (resolvedPenalty > 0) parts.push(`pen ${resolvedPenalty.toFixed(2)}x`)
   const overLimit =
     (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
     || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl))
@@ -1740,7 +1744,8 @@ interface ReplaySearchMarketConcentrationSummary {
 function replaySearchMarketConcentrationSummary(
   bestRaw: string | null | undefined,
   currentRaw: string | null | undefined,
-  constraintsRaw: string | null | undefined
+  constraintsRaw: string | null | undefined,
+  penalty: number | null | undefined
 ): ReplaySearchMarketConcentrationSummary {
   const parse = (raw: string | null | undefined): {acceptedShare: number | null; absPnlShare: number | null} => {
     if (!raw) return {acceptedShare: null, absPnlShare: null}
@@ -1790,6 +1795,8 @@ function replaySearchMarketConcentrationSummary(
   if (limits.accepted > 0 || limits.pnl > 0) {
     parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`)
   }
+  const resolvedPenalty = Math.max(Number(penalty || 0), 0)
+  if (resolvedPenalty > 0) parts.push(`pen ${resolvedPenalty.toFixed(2)}x`)
   const overLimit =
     (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
     || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl))
@@ -1872,6 +1879,16 @@ function replaySearchPauseGuardSummary(
     bestShare,
     overLimit: (bestShare != null && bestShare > maxShare && maxShare > 0) || (currentShare != null && currentShare > maxShare && maxShare > 0)
   }
+}
+
+function replaySearchModePenaltySummary(row: ReplaySearchSummaryRow | undefined): string {
+  if (!row) return '-'
+  const parts: string[] = []
+  const modeLossPenalty = Math.max(Number(row.mode_loss_penalty || 0), 0)
+  const modeInactivityPenalty = Math.max(Number(row.mode_inactivity_penalty || 0), 0)
+  if (modeLossPenalty > 0) parts.push(`loss ${modeLossPenalty.toFixed(2)}x`)
+  if (modeInactivityPenalty > 0) parts.push(`idle ${modeInactivityPenalty.toFixed(2)}x`)
+  return parts.length ? parts.join(' | ') : 'none'
 }
 
 interface ReplaySearchModeRiskSummary {
@@ -2930,24 +2947,28 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => replaySearchTraderConcentrationSummary(
       latestReplaySearch?.result_json,
       latestReplaySearch?.current_candidate_result_json,
-      latestReplaySearch?.constraints_json
+      latestReplaySearch?.constraints_json,
+      latestReplaySearch?.wallet_concentration_penalty
     ),
     [
       latestReplaySearch?.constraints_json,
       latestReplaySearch?.current_candidate_result_json,
-      latestReplaySearch?.result_json
+      latestReplaySearch?.result_json,
+      latestReplaySearch?.wallet_concentration_penalty
     ]
   )
   const replaySearchMarketConcentration = useMemo(
     () => replaySearchMarketConcentrationSummary(
       latestReplaySearch?.result_json,
       latestReplaySearch?.current_candidate_result_json,
-      latestReplaySearch?.constraints_json
+      latestReplaySearch?.constraints_json,
+      latestReplaySearch?.market_concentration_penalty
     ),
     [
       latestReplaySearch?.constraints_json,
       latestReplaySearch?.current_candidate_result_json,
-      latestReplaySearch?.result_json
+      latestReplaySearch?.result_json,
+      latestReplaySearch?.market_concentration_penalty
     ]
   )
   const replayLabStats = useMemo<CompactStatItem[]>(
@@ -3126,6 +3147,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         label: 'Mode guard',
         value: replaySearchModeFloorSummary(latestReplaySearch?.constraints_json),
         color: latestReplaySearch?.constraints_json ? theme.white : theme.dim
+      },
+      {
+        label: 'Mode pen',
+        value: replaySearchModePenaltySummary(latestReplaySearch),
+        color: latestReplaySearch ? theme.white : theme.dim
       },
       {
         label: 'Best headroom',

@@ -84,6 +84,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
+            { label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer-loss and scorer-inactivity pressure.' },
             { label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.' },
             { label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.' },
             { label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.' },
@@ -1526,7 +1527,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`market ${formatDollar(marketDelta)}`);
     return parts.join(' | ');
 }
-function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraintsRaw) {
+function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
     const parse = (raw) => {
         if (!raw)
             return { acceptedShare: null, absPnlShare: null };
@@ -1580,6 +1581,9 @@ function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraints
     if (limits.accepted > 0 || limits.pnl > 0) {
         parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`);
     }
+    const resolvedPenalty = Math.max(Number(penalty || 0), 0);
+    if (resolvedPenalty > 0)
+        parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
     const overLimit = (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
     return {
@@ -1588,7 +1592,7 @@ function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraints
         overLimit
     };
 }
-function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraintsRaw) {
+function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
     const parse = (raw) => {
         if (!raw)
             return { acceptedShare: null, absPnlShare: null };
@@ -1642,6 +1646,9 @@ function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraints
     if (limits.accepted > 0 || limits.pnl > 0) {
         parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`);
     }
+    const resolvedPenalty = Math.max(Number(penalty || 0), 0);
+    if (resolvedPenalty > 0)
+        parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
     const overLimit = (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
     return {
@@ -1758,6 +1765,18 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw) {
     catch {
         return { summary: '-', breachCount: 0, hasActiveGuard: false };
     }
+}
+function replaySearchModePenaltySummary(row) {
+    if (!row)
+        return '-';
+    const parts = [];
+    const modeLossPenalty = Math.max(Number(row.mode_loss_penalty || 0), 0);
+    const modeInactivityPenalty = Math.max(Number(row.mode_inactivity_penalty || 0), 0);
+    if (modeLossPenalty > 0)
+        parts.push(`loss ${modeLossPenalty.toFixed(2)}x`);
+    if (modeInactivityPenalty > 0)
+        parts.push(`idle ${modeInactivityPenalty.toFixed(2)}x`);
+    return parts.length ? parts.join(' | ') : 'none';
 }
 function replaySearchFailureSummary(raw, feasible) {
     if (Number(feasible || 0) > 0)
@@ -2484,15 +2503,17 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         latestReplaySearch?.pause_guard_penalty,
         latestReplaySearch?.result_json
     ]);
-    const replaySearchTraderConcentration = useMemo(() => replaySearchTraderConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [
+    const replaySearchTraderConcentration = useMemo(() => replaySearchTraderConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.wallet_concentration_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
-        latestReplaySearch?.result_json
+        latestReplaySearch?.result_json,
+        latestReplaySearch?.wallet_concentration_penalty
     ]);
-    const replaySearchMarketConcentration = useMemo(() => replaySearchMarketConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [
+    const replaySearchMarketConcentration = useMemo(() => replaySearchMarketConcentrationSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.market_concentration_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
-        latestReplaySearch?.result_json
+        latestReplaySearch?.result_json,
+        latestReplaySearch?.market_concentration_penalty
     ]);
     const replayLabStats = useMemo(() => [
         {
@@ -2669,6 +2690,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             label: 'Mode guard',
             value: replaySearchModeFloorSummary(latestReplaySearch?.constraints_json),
             color: latestReplaySearch?.constraints_json ? theme.white : theme.dim
+        },
+        {
+            label: 'Mode pen',
+            value: replaySearchModePenaltySummary(latestReplaySearch),
+            color: latestReplaySearch ? theme.white : theme.dim
         },
         {
             label: 'Best headroom',

@@ -368,6 +368,8 @@ def _clamp_fraction(raw: float) -> float:
 def _constraint_failures(
     result: dict[str, Any],
     *,
+    allow_heuristic: bool,
+    allow_xgboost: bool,
     min_accepted_count: int,
     min_resolved_count: int,
     min_win_rate: float,
@@ -422,47 +424,47 @@ def _constraint_failures(
         failures.append("worst_window_pnl_usd")
     if max_worst_window_drawdown_pct > 0 and worst_window_drawdown_pct > max_worst_window_drawdown_pct:
         failures.append("worst_window_drawdown_pct")
-    if int(signal_mode_summary.get("heuristic", {}).get("accepted_count") or 0) < max(min_heuristic_accepted_count, 0):
+    if allow_heuristic and int(signal_mode_summary.get("heuristic", {}).get("accepted_count") or 0) < max(min_heuristic_accepted_count, 0):
         failures.append("heuristic_accepted_count")
-    if int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) < max(min_xgboost_accepted_count, 0):
+    if allow_xgboost and int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) < max(min_xgboost_accepted_count, 0):
         failures.append("xgboost_accepted_count")
-    if int(signal_mode_summary.get("heuristic", {}).get("resolved_count") or 0) < max(min_heuristic_resolved_count, 0):
+    if allow_heuristic and int(signal_mode_summary.get("heuristic", {}).get("resolved_count") or 0) < max(min_heuristic_resolved_count, 0):
         failures.append("heuristic_resolved_count")
-    if int(signal_mode_summary.get("xgboost", {}).get("resolved_count") or 0) < max(min_xgboost_resolved_count, 0):
+    if allow_xgboost and int(signal_mode_summary.get("xgboost", {}).get("resolved_count") or 0) < max(min_xgboost_resolved_count, 0):
         failures.append("xgboost_resolved_count")
     heuristic_win_rate = signal_mode_summary.get("heuristic", {}).get("win_rate")
     xgboost_win_rate = signal_mode_summary.get("xgboost", {}).get("win_rate")
-    if min_heuristic_win_rate > 0 and (heuristic_win_rate is None or float(heuristic_win_rate) < min_heuristic_win_rate):
+    if allow_heuristic and min_heuristic_win_rate > 0 and (heuristic_win_rate is None or float(heuristic_win_rate) < min_heuristic_win_rate):
         failures.append("heuristic_win_rate")
-    if min_xgboost_win_rate > 0 and (xgboost_win_rate is None or float(xgboost_win_rate) < min_xgboost_win_rate):
+    if allow_xgboost and min_xgboost_win_rate > 0 and (xgboost_win_rate is None or float(xgboost_win_rate) < min_xgboost_win_rate):
         failures.append("xgboost_win_rate")
-    if min_heuristic_resolved_share > 0 and _resolved_share(signal_mode_summary, "heuristic") < min_heuristic_resolved_share:
+    if allow_heuristic and min_heuristic_resolved_share > 0 and _resolved_share(signal_mode_summary, "heuristic") < min_heuristic_resolved_share:
         failures.append("heuristic_resolved_share")
-    if min_xgboost_resolved_share > 0 and _resolved_share(signal_mode_summary, "xgboost") < min_xgboost_resolved_share:
+    if allow_xgboost and min_xgboost_resolved_share > 0 and _resolved_share(signal_mode_summary, "xgboost") < min_xgboost_resolved_share:
         failures.append("xgboost_resolved_share")
-    if float(signal_mode_summary.get("heuristic", {}).get("total_pnl_usd") or 0.0) < min_heuristic_pnl_usd:
+    if allow_heuristic and float(signal_mode_summary.get("heuristic", {}).get("total_pnl_usd") or 0.0) < min_heuristic_pnl_usd:
         failures.append("heuristic_total_pnl_usd")
-    if float(signal_mode_summary.get("xgboost", {}).get("total_pnl_usd") or 0.0) < min_xgboost_pnl_usd:
+    if allow_xgboost and float(signal_mode_summary.get("xgboost", {}).get("total_pnl_usd") or 0.0) < min_xgboost_pnl_usd:
         failures.append("xgboost_total_pnl_usd")
-    if _worst_window_pnl(signal_mode_summary, "heuristic") < min_heuristic_worst_window_pnl_usd:
+    if allow_heuristic and _worst_window_pnl(signal_mode_summary, "heuristic") < min_heuristic_worst_window_pnl_usd:
         failures.append("heuristic_worst_window_pnl_usd")
-    if _worst_window_pnl(signal_mode_summary, "xgboost") < min_xgboost_worst_window_pnl_usd:
+    if allow_xgboost and _worst_window_pnl(signal_mode_summary, "xgboost") < min_xgboost_worst_window_pnl_usd:
         failures.append("xgboost_worst_window_pnl_usd")
-    if int(signal_mode_summary.get("heuristic", {}).get("positive_window_count") or 0) < max(min_heuristic_positive_window_count, 0):
+    if allow_heuristic and int(signal_mode_summary.get("heuristic", {}).get("positive_window_count") or 0) < max(min_heuristic_positive_window_count, 0):
         failures.append("heuristic_positive_window_count")
-    if int(signal_mode_summary.get("xgboost", {}).get("positive_window_count") or 0) < max(min_xgboost_positive_window_count, 0):
+    if allow_xgboost and int(signal_mode_summary.get("xgboost", {}).get("positive_window_count") or 0) < max(min_xgboost_positive_window_count, 0):
         failures.append("xgboost_positive_window_count")
     heuristic_inactive_window_count = int(signal_mode_summary.get("heuristic", {}).get("inactive_window_count") or 0)
     xgboost_inactive_window_count = int(signal_mode_summary.get("xgboost", {}).get("inactive_window_count") or 0)
-    if max_heuristic_inactive_window_count >= 0 and heuristic_inactive_window_count > max_heuristic_inactive_window_count:
+    if allow_heuristic and max_heuristic_inactive_window_count >= 0 and heuristic_inactive_window_count > max_heuristic_inactive_window_count:
         failures.append("heuristic_inactive_window_count")
-    if max_xgboost_inactive_window_count >= 0 and xgboost_inactive_window_count > max_xgboost_inactive_window_count:
+    if allow_xgboost and max_xgboost_inactive_window_count >= 0 and xgboost_inactive_window_count > max_xgboost_inactive_window_count:
         failures.append("xgboost_inactive_window_count")
     heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
     xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
-    if max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
+    if allow_heuristic and max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
         failures.append("heuristic_accepted_share")
-    if min_xgboost_accepted_share > 0 and xgboost_accepted_share < min_xgboost_accepted_share:
+    if allow_xgboost and min_xgboost_accepted_share > 0 and xgboost_accepted_share < min_xgboost_accepted_share:
         failures.append("xgboost_accepted_share")
     if max_pause_guard_reject_share > 0 and _pause_guard_reject_share(result) > max_pause_guard_reject_share:
         failures.append("pause_guard_reject_share")
@@ -1153,6 +1155,8 @@ def main() -> None:
     )
     current_constraint_failures = _constraint_failures(
         current_result,
+        allow_heuristic=bool(base_policy.allow_heuristic),
+        allow_xgboost=bool(base_policy.allow_xgboost),
         min_accepted_count=args.min_accepted_count,
         min_resolved_count=args.min_resolved_count,
         min_win_rate=max(args.min_win_rate, 0.0),
@@ -1256,6 +1260,8 @@ def main() -> None:
         )
         constraint_failures = _constraint_failures(
             result,
+            allow_heuristic=bool(policy.allow_heuristic),
+            allow_xgboost=bool(policy.allow_xgboost),
             min_accepted_count=args.min_accepted_count,
             min_resolved_count=args.min_resolved_count,
             min_win_rate=max(args.min_win_rate, 0.0),

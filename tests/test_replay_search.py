@@ -151,6 +151,61 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["mode_loss_penalty_usd"], 0.0)
         self.assertEqual(breakdown["score_usd"], 20.0)
 
+    def test_constraint_failures_ignores_disabled_scorer_guards(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "win_rate": 0.625,
+                "max_drawdown_pct": 0.04,
+                "worst_window_pnl_usd": 40.0,
+                "worst_window_drawdown_pct": 0.04,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 8,
+                        "resolved_count": 8,
+                        "trade_count": 8,
+                        "total_pnl_usd": 40.0,
+                        "win_count": 5,
+                        "positive_window_count": 1,
+                    }
+                },
+            },
+            allow_heuristic=False,
+            allow_xgboost=True,
+            min_accepted_count=0,
+            min_resolved_count=0,
+            min_win_rate=0.0,
+            max_drawdown_pct=0.0,
+            min_worst_window_pnl_usd=-1_000_000_000.0,
+            max_worst_window_drawdown_pct=0.0,
+            min_heuristic_accepted_count=1,
+            min_xgboost_accepted_count=1,
+            min_heuristic_resolved_count=1,
+            min_xgboost_resolved_count=1,
+            min_heuristic_win_rate=0.5,
+            min_xgboost_win_rate=0.5,
+            min_heuristic_resolved_share=0.5,
+            min_xgboost_resolved_share=0.5,
+            min_heuristic_pnl_usd=1.0,
+            min_xgboost_pnl_usd=1.0,
+            min_heuristic_worst_window_pnl_usd=1.0,
+            min_xgboost_worst_window_pnl_usd=1.0,
+            min_heuristic_positive_window_count=1,
+            min_xgboost_positive_window_count=1,
+            max_heuristic_inactive_window_count=0,
+            max_xgboost_inactive_window_count=-1,
+            max_heuristic_accepted_share=0.5,
+            min_xgboost_accepted_share=0.5,
+            max_pause_guard_reject_share=0.0,
+            max_top_trader_accepted_share=0.0,
+            max_top_trader_abs_pnl_share=0.0,
+            max_top_market_accepted_share=0.0,
+            max_top_market_abs_pnl_share=0.0,
+        )
+
+        self.assertEqual(failures, [])
+
     def test_main_filters_infeasible_candidates_from_best_feasible_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes=""):
             payload = policy.as_dict()
@@ -1014,6 +1069,63 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(best_breakdown["mode_loss_penalty_usd"], 0.0)
         self.assertGreater(rejected_breakdown["mode_loss_penalty_usd"], 0.0)
         self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
+        self.assertIn("allow_heuristic=False", stderr.getvalue())
+
+    def test_main_mode_specific_constraints_ignore_disabled_scorer_paths(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            allow_heuristic = bool(policy.as_dict()["allow_heuristic"])
+            if allow_heuristic:
+                return {
+                    "run_id": 1,
+                    "total_pnl_usd": 22.0,
+                    "max_drawdown_pct": 0.04,
+                    "accepted_count": 8,
+                    "resolved_count": 8,
+                    "rejected_count": 0,
+                    "trade_count": 8,
+                    "win_rate": 0.625,
+                    "signal_mode_summary": {
+                        "heuristic": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 8.0, "win_count": 2},
+                        "xgboost": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 14.0, "win_count": 3},
+                    },
+                }
+            return {
+                "run_id": 2,
+                "total_pnl_usd": 60.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "rejected_count": 0,
+                "trade_count": 8,
+                "win_rate": 0.625,
+                "signal_mode_summary": {
+                    "xgboost": {"accepted_count": 8, "resolved_count": 8, "trade_count": 8, "total_pnl_usd": 60.0, "win_count": 5},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"allow_heuristic": [True, False]}),
+            "--min-heuristic-accepted-count",
+            "1",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["allow_heuristic"], False)
+        best_row = payload["ranked"][0]
+        self.assertEqual(best_row["constraint_failures"], [])
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["allow_heuristic"] is True)
+        self.assertEqual(rejected["constraint_failures"], [])
         self.assertIn("allow_heuristic=False", stderr.getvalue())
 
     def test_main_can_penalize_scorer_inactivity_in_ranking(self) -> None:

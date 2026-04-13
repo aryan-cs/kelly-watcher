@@ -6109,16 +6109,19 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const startupFailed = Boolean(botState.startup_failed || botState.startup_validation_failed)
   const startupDetail = String(botState.startup_detail || '').trim()
   const startupFailureMessage = String(botState.startup_failure_message || botState.startup_validation_message || '').trim()
+  const startupApiError = compactSingleLineText(botState.api_error)
   const shadowRestartPending = Boolean(botState.shadow_restart_pending)
   const shadowRestartMessage = String(botState.shadow_restart_message || '').trim() || 'shadow restart in progress'
   const startupValue = useMemo(() => {
     if (startupFailed) return startupDetail || startupFailureMessage || 'startup failed'
+    if (startupApiError) return startupApiError
     if (shadowRestartPending) return shadowRestartMessage
     if ((botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail) return startupDetail
     return 'ready'
   }, [
     botState.last_poll_at,
     botState.started_at,
+    startupApiError,
     shadowRestartMessage,
     shadowRestartPending,
     startupDetail,
@@ -6127,6 +6130,8 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   ])
   const startupColor = startupFailed
     ? theme.red
+    : startupApiError
+      ? theme.red
     : shadowRestartPending
       ? theme.yellow
     : (botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail

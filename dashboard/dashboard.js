@@ -128,24 +128,24 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
     const startupInProgress = startedAt > 0 && lastPollAt <= 0;
     const backendDotColor = startupFailed
         ? theme.red
-        : shadowRestartPending
-            ? theme.yellow
         : apiError
             ? theme.red
-            : pollIsFresh
-            ? theme.green
-            : startupInProgress || (startedAt > 0 && activityIsFresh && loopInProgress)
+            : shadowRestartPending
                 ? theme.yellow
-                : theme.red;
+            : pollIsFresh
+                ? theme.green
+                : startupInProgress || (startedAt > 0 && activityIsFresh && loopInProgress)
+                    ? theme.yellow
+                    : theme.red;
     const backendStatusText = startupFailed
         ? startupFailureText
-        : shadowRestartPending
-            ? shadowRestartMessage
         : apiError
             ? apiIssueTag
+            : shadowRestartPending
+                ? shadowRestartMessage
             : startupInProgress && startupDetail
-            ? startupDetail
-            : describeBackendStatus({
+                ? startupDetail
+                : describeBackendStatus({
                 startedAt,
                 lastPollAt,
                 activityIsFresh,
@@ -171,10 +171,10 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
         : null;
     const footerStatusText = isRefreshing
         ? 'refreshing...'
-        : shadowRestartPending
-            ? shadowRestartMessage
         : apiError
             ? apiError
+            : shadowRestartPending
+                ? shadowRestartMessage
             : retrainInProgress
                 ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
                 : startupInProgress
@@ -182,10 +182,10 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
                     : recentRetrainText
                         ? `${recentRetrainText} | ${lastPollText}`
                         : lastPollText;
-    const footerStatusColor = shadowRestartPending
-        ? theme.yellow
-        : apiError
+    const footerStatusColor = apiError
         ? theme.red
+        : shadowRestartPending
+            ? theme.yellow
         : activeTransientNotice
             ? activeTransientNotice.tone === 'error'
                 ? theme.red

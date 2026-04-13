@@ -373,6 +373,7 @@ def _constraint_failures(
     min_accepted_count: int,
     min_resolved_count: int,
     min_win_rate: float,
+    min_total_pnl_usd: float,
     max_drawdown_pct: float,
     min_worst_window_pnl_usd: float,
     max_worst_window_drawdown_pct: float,
@@ -408,6 +409,7 @@ def _constraint_failures(
     market_concentration = _market_concentration(result)
     raw_win_rate = result.get("win_rate")
     win_rate = float(raw_win_rate) if raw_win_rate is not None else None
+    total_pnl_usd = float(result.get("total_pnl_usd") or 0.0)
     drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
     worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
     worst_window_drawdown_pct = float(result.get("worst_window_drawdown_pct") or 0.0)
@@ -418,6 +420,8 @@ def _constraint_failures(
         failures.append("resolved_count")
     if min_win_rate > 0 and (win_rate is None or win_rate < min_win_rate):
         failures.append("win_rate")
+    if total_pnl_usd < min_total_pnl_usd:
+        failures.append("total_pnl_usd")
     if max_drawdown_pct > 0 and drawdown_pct > max_drawdown_pct:
         failures.append("max_drawdown_pct")
     if worst_window_pnl_usd < min_worst_window_pnl_usd:
@@ -1091,6 +1095,7 @@ def main() -> None:
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-count", type=int, default=0, help="Minimum resolved trades required for a candidate to be feasible.")
     parser.add_argument("--min-win-rate", type=float, default=0.0, help="Minimum replay win rate required for a candidate to be feasible.")
+    parser.add_argument("--min-total-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum total replay P&L required for a candidate to be feasible.")
     parser.add_argument("--max-drawdown-pct", type=float, default=0.0, help="Maximum replay drawdown allowed for a candidate to be feasible.")
     parser.add_argument("--min-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed P&L for the worst replay window.")
     parser.add_argument("--max-worst-window-drawdown-pct", type=float, default=0.0, help="Maximum allowed drawdown for the worst replay window.")
@@ -1160,6 +1165,7 @@ def main() -> None:
         min_accepted_count=args.min_accepted_count,
         min_resolved_count=args.min_resolved_count,
         min_win_rate=max(args.min_win_rate, 0.0),
+        min_total_pnl_usd=float(args.min_total_pnl_usd),
         max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
         min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
         max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
@@ -1265,6 +1271,7 @@ def main() -> None:
             min_accepted_count=args.min_accepted_count,
             min_resolved_count=args.min_resolved_count,
             min_win_rate=max(args.min_win_rate, 0.0),
+            min_total_pnl_usd=float(args.min_total_pnl_usd),
             max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
             min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
             max_worst_window_drawdown_pct=max(args.max_worst_window_drawdown_pct, 0.0),
@@ -1325,6 +1332,7 @@ def main() -> None:
         "min_accepted_count": max(args.min_accepted_count, 0),
         "min_resolved_count": max(args.min_resolved_count, 0),
         "min_win_rate": max(args.min_win_rate, 0.0),
+        "min_total_pnl_usd": float(args.min_total_pnl_usd),
         "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
         "min_positive_windows": max(args.min_positive_windows, 0),
         "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,

@@ -2109,6 +2109,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'resolved'
         case 'win_rate':
           return 'win rate'
+        case 'total_pnl_usd':
+          return 'pnl'
         case 'max_drawdown_pct':
           return 'drawdown'
         case 'worst_window_pnl_usd':
@@ -2222,6 +2224,7 @@ function replaySearchHeadroomSummary(
     const globalAccepted = Number(resultParsed.accepted_count || 0)
     const globalResolved = Number(resultParsed.resolved_count || 0)
     const globalWinRate = resultParsed.win_rate == null ? null : Number(resultParsed.win_rate)
+    const globalTotalPnl = Number(resultParsed.total_pnl_usd || 0)
     const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0)
     const globalPositiveWindows = Number(resultParsed.positive_window_count || 0)
     const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0)
@@ -2244,6 +2247,7 @@ function replaySearchHeadroomSummary(
     const minAccepted = Number(constraints.min_accepted_count || 0)
     const minResolved = Number(constraints.min_resolved_count || 0)
     const minWinRate = Number(constraints.min_win_rate || 0)
+    const minTotalPnlUsd = Number(constraints.min_total_pnl_usd ?? -1_000_000_000)
     const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0)
     const maxPauseGuardRejectShare = Number(constraints.max_pause_guard_reject_share || 0)
     const maxTopTraderAcceptedShare = Number(constraints.max_top_trader_accepted_share || 0)
@@ -2261,6 +2265,7 @@ function replaySearchHeadroomSummary(
     if (minAccepted > 0) pushHeadroom('global', 'acc', globalAccepted, minAccepted, replayHeadroomCount, 'min')
     if (minResolved > 0) pushHeadroom('global', 'res', globalResolved, minResolved, replayHeadroomCount, 'min')
     if (minWinRate > 0 && globalWinRate != null) pushHeadroom('global', 'win', globalWinRate, minWinRate, replayHeadroomPctPoints, 'min')
+    if (minTotalPnlUsd > -999_999_999) pushHeadroom('global', 'pnl', globalTotalPnl, minTotalPnlUsd, formatDollar, 'min')
     if (maxDrawdownPct > 0) pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max')
     if (maxPauseGuardRejectShare > 0) pushHeadroom('global', 'pause', pauseGuardRejectShare, maxPauseGuardRejectShare, replayHeadroomPctPoints, 'max')
     if (maxTopTraderAcceptedShare > 0) pushHeadroom('global', 'wallet n', topTraderAcceptedShare, maxTopTraderAcceptedShare, replayHeadroomPctPoints, 'max')

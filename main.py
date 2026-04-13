@@ -1037,11 +1037,6 @@ def _consume_manual_retrain_request(run_retrain_job) -> bool:
             pass
         return False
 
-    try:
-        MANUAL_RETRAIN_REQUEST_FILE.unlink()
-    except FileNotFoundError:
-        pass
-
     requested_at = int(payload.get("requested_at") or 0)
     source = str(payload.get("source") or "unknown").strip().lower() or "unknown"
     request_id = str(payload.get("request_id") or "").strip()
@@ -1061,6 +1056,10 @@ def _consume_manual_retrain_request(run_retrain_job) -> bool:
         request_id or "-",
     )
     run_retrain_job(f"manual_{source}")
+    try:
+        MANUAL_RETRAIN_REQUEST_FILE.unlink()
+    except FileNotFoundError:
+        pass
     return True
 
 
@@ -1078,11 +1077,6 @@ def _consume_manual_trade_request(handle_request) -> bool:
         except FileNotFoundError:
             pass
         return False
-
-    try:
-        MANUAL_TRADE_REQUEST_FILE.unlink()
-    except FileNotFoundError:
-        pass
 
     now_ts = int(time.time())
     if request.requested_at > 0 and (now_ts - request.requested_at) > 900:
@@ -1103,6 +1097,10 @@ def _consume_manual_trade_request(handle_request) -> bool:
         request.request_id or "-",
     )
     handle_request(request)
+    try:
+        MANUAL_TRADE_REQUEST_FILE.unlink()
+    except FileNotFoundError:
+        pass
     return True
 
 

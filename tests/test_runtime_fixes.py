@@ -1175,6 +1175,98 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(request.request_id, "shadow-reset-1")
         self.assertFalse(request_file.exists())
 
+    def test_consume_manual_retrain_request_deletes_request_file_after_success(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "source": "dashboard_api",
+                        "request_id": "manual-retrain-1",
+                        "requested_at": int(time.time()),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_retrain_job = Mock(return_value=True)
+            with patch.object(main, "MANUAL_RETRAIN_REQUEST_FILE", request_file):
+                consumed = main._consume_manual_retrain_request(run_retrain_job)
+
+        self.assertTrue(consumed)
+        run_retrain_job.assert_called_once_with("manual_dashboard_api")
+        self.assertFalse(request_file.exists())
+
+    def test_consume_manual_retrain_request_keeps_request_file_when_handler_raises(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "source": "dashboard_api",
+                        "request_id": "manual-retrain-1",
+                        "requested_at": int(time.time()),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_retrain_job = Mock(side_effect=RuntimeError("retrain start exploded"))
+            with patch.object(main, "MANUAL_RETRAIN_REQUEST_FILE", request_file):
+                with self.assertRaisesRegex(RuntimeError, "retrain start exploded"):
+                    main._consume_manual_retrain_request(run_retrain_job)
+                self.assertTrue(request_file.exists())
+
+    def test_consume_manual_trade_request_deletes_request_file_after_success(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "token_id": "token-1",
+                        "side": "yes",
+                        "amount_usd": 12.5,
+                        "request_id": "manual-trade-1",
+                        "requested_at": int(time.time()),
+                        "source": "dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            handle_request = Mock(return_value=None)
+            with patch.object(main, "MANUAL_TRADE_REQUEST_FILE", request_file):
+                consumed = main._consume_manual_trade_request(handle_request)
+
+        self.assertTrue(consumed)
+        handle_request.assert_called_once()
+        self.assertFalse(request_file.exists())
+
+    def test_consume_manual_trade_request_keeps_request_file_when_handler_raises(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "token_id": "token-1",
+                        "side": "yes",
+                        "amount_usd": 12.5,
+                        "request_id": "manual-trade-1",
+                        "requested_at": int(time.time()),
+                        "source": "dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            handle_request = Mock(side_effect=RuntimeError("manual trade start exploded"))
+            with patch.object(main, "MANUAL_TRADE_REQUEST_FILE", request_file):
+                with self.assertRaisesRegex(RuntimeError, "manual trade start exploded"):
+                    main._consume_manual_trade_request(handle_request)
+                self.assertTrue(request_file.exists())
+
     def test_wait_for_next_poll_returns_when_shutdown_requested(self) -> None:
         stop_event = main.threading.Event()
         stop_event.set()

@@ -82,7 +82,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Market conc', text: 'Best and current replay-search dependence on markets, shown as distinct market count, top accepted-share, top deployed-dollar share, top absolute-P&L share, and any active floor, cap, or score penalty.' },
             { label: 'Entry conc', text: 'Best and current replay-search dependence on entry-price bands, shown as distinct band count, top accepted-share, top deployed-dollar share, top absolute-P&L share, and any active floor, cap, or score penalty.' },
             { label: 'Horizon conc', text: 'Best and current replay-search dependence on time-to-close bands, shown as distinct band count, top accepted-share, top deployed-dollar share, top absolute-P&L share, and any active floor, cap, or score penalty.' },
-            { label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap or ranking penalty.' },
+            { label: 'Pause guard', text: 'Replay-search dependence on daily-loss/live-drawdown rejects plus active windows that still end with the live drawdown guard effectively tripped.' },
             { label: 'Search modes', text: 'Accepted trade mix and deployed-dollar mix, plus count-weighted and deployed-dollar resolved coverage and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Current/base scorer accepted trade mix and deployed-dollar mix, plus count-weighted and deployed-dollar resolved evidence and replay P&L.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, resolved-count, count-weighted and deployed-dollar resolved-share, win-rate, total P&L, worst-window P&L, worst-window count-weighted coverage, worst-window deployed-dollar coverage, and aggregate plus active-window count-share and deployed-dollar-share guardrails from the latest replay search, if any.' },
@@ -365,9 +365,10 @@ WITH latest_search AS (
     best_feasible_score,
     drawdown_penalty,
     window_stddev_penalty,
-    worst_window_penalty,
-    pause_guard_penalty,
-    open_exposure_penalty,
+  worst_window_penalty,
+  pause_guard_penalty,
+  live_guard_window_penalty,
+  open_exposure_penalty,
     window_end_open_exposure_penalty,
     carry_window_penalty,
     resolved_share_penalty,
@@ -444,6 +445,7 @@ SELECT
   latest_search.window_stddev_penalty,
   latest_search.worst_window_penalty,
   latest_search.pause_guard_penalty,
+  latest_search.live_guard_window_penalty,
   latest_search.open_exposure_penalty,
   latest_search.window_end_open_exposure_penalty,
   latest_search.carry_window_penalty,
@@ -1579,8 +1581,8 @@ function replaySearchModeFloorSummary(raw, policyRaw) {
         return 'none';
     }
 }
-function replaySearchPauseGuardSummary(bestRaw, currentRaw, constraintsRaw, pauseGuardPenalty) {
-    const parseShare = (raw) => {
+function replaySearchPauseGuardSummary(bestRaw, currentRaw, constraintsRaw, pauseGuardPenalty, liveGuardWindowPenalty) {
+    const parseState = (raw) => {
         if (!raw)
             return null;
         try {
@@ -1589,73 +1591,115 @@ function replaySearchPauseGuardSummary(bestRaw, currentRaw, constraintsRaw, paus
                 return null;
             const payload = parsed;
             const tradeCount = Number(payload.trade_count || 0);
-            if (tradeCount <= 0)
-                return 0;
-            const rawRejectSummary = payload.reject_reason_summary;
-            if (!rawRejectSummary || typeof rawRejectSummary !== 'object' || Array.isArray(rawRejectSummary))
-                return 0;
-            const rejectSummary = rawRejectSummary;
-            const pauseCount = Number(rejectSummary.daily_loss_guard || 0) + Number(rejectSummary.live_drawdown_guard || 0);
-            return pauseCount / tradeCount;
+            const rejectShare = tradeCount > 0
+                ? (() => {
+                    const rawRejectSummary = payload.reject_reason_summary;
+                    if (!rawRejectSummary || typeof rawRejectSummary !== 'object' || Array.isArray(rawRejectSummary))
+                        return 0;
+                    const rejectSummary = rawRejectSummary;
+                    const pauseCount = Number(rejectSummary.daily_loss_guard || 0) + Number(rejectSummary.live_drawdown_guard || 0);
+                    return pauseCount / tradeCount;
+                })()
+                : 0;
+            return {
+                rejectShare,
+                liveGuardWindowShare: replaySearchLiveGuardWindowShareFromPayload(payload),
+                initialBankrollUsd: Number(payload.initial_bankroll_usd || 0)
+            };
         }
         catch {
             return null;
         }
     };
-    const bestShare = parseShare(bestRaw);
-    const currentShare = parseShare(currentRaw);
-    const maxShare = (() => {
+    const bestState = parseState(bestRaw);
+    const currentState = parseState(currentRaw);
+    const bestShare = (bestState === null || bestState === void 0 ? void 0 : bestState.rejectShare) ?? null;
+    const currentShare = (currentState === null || currentState === void 0 ? void 0 : currentState.rejectShare) ?? null;
+    const bestLiveGuardWindowShare = (bestState === null || bestState === void 0 ? void 0 : bestState.liveGuardWindowShare) ?? null;
+    const currentLiveGuardWindowShare = (currentState === null || currentState === void 0 ? void 0 : currentState.liveGuardWindowShare) ?? null;
+    const { maxShare, maxLiveGuardWindowShare } = (() => {
         if (!constraintsRaw)
-            return 0;
+            return { maxShare: 0, maxLiveGuardWindowShare: 0 };
         try {
             const parsed = JSON.parse(constraintsRaw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return 0;
-            return Number(parsed.max_pause_guard_reject_share || 0);
+                return { maxShare: 0, maxLiveGuardWindowShare: 0 };
+            return {
+                maxShare: Number(parsed.max_pause_guard_reject_share || 0),
+                maxLiveGuardWindowShare: Number(parsed.max_live_guard_window_share || 0)
+            };
         }
         catch {
-            return 0;
+            return { maxShare: 0, maxLiveGuardWindowShare: 0 };
         }
     })();
     const resolvedPauseGuardPenalty = Math.max(Number(pauseGuardPenalty || 0), 0);
-    const formatPenaltyCost = (raw, share) => {
-        if (resolvedPauseGuardPenalty <= 0 || share == null || !raw)
+    const resolvedLiveGuardWindowPenalty = Math.max(Number(liveGuardWindowPenalty || 0), 0);
+    const formatPenaltyCost = (initialBankrollUsd, penalty, share) => {
+        if (penalty <= 0 || share == null || initialBankrollUsd == null || initialBankrollUsd <= 0)
             return null;
-        try {
-            const parsed = JSON.parse(raw);
-            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return null;
-            const initialBankrollUsd = Number(parsed.initial_bankroll_usd || 0);
-            if (initialBankrollUsd <= 0)
-                return null;
-            return formatDollar(-(initialBankrollUsd * resolvedPauseGuardPenalty * share));
-        }
-        catch {
-            return null;
-        }
+        return formatDollar(-(initialBankrollUsd * penalty * share));
     };
-    if (bestShare == null && currentShare == null && maxShare <= 0 && resolvedPauseGuardPenalty <= 0) {
+    if (bestShare == null
+        && currentShare == null
+        && bestLiveGuardWindowShare == null
+        && currentLiveGuardWindowShare == null
+        && maxShare <= 0
+        && maxLiveGuardWindowShare <= 0
+        && resolvedPauseGuardPenalty <= 0
+        && resolvedLiveGuardWindowPenalty <= 0) {
         return { summary: '-', hasActiveGuard: false, currentShare: null, bestShare: null, overLimit: false };
     }
     const parts = [];
-    if (bestShare != null) {
-        const penaltyCost = formatPenaltyCost(bestRaw, bestShare);
-        parts.push(`best ${formatPct(bestShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`);
+    if (bestShare != null || bestLiveGuardWindowShare != null) {
+        const bestParts = [];
+        if (bestShare != null) {
+            const penaltyCost = formatPenaltyCost((bestState === null || bestState === void 0 ? void 0 : bestState.initialBankrollUsd) ?? null, resolvedPauseGuardPenalty, bestShare);
+            bestParts.push(`rej ${formatPct(bestShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`);
+        }
+        if (bestLiveGuardWindowShare != null) {
+            const penaltyCost = formatPenaltyCost((bestState === null || bestState === void 0 ? void 0 : bestState.initialBankrollUsd) ?? null, resolvedLiveGuardWindowPenalty, bestLiveGuardWindowShare);
+            bestParts.push(`p-freq ${formatPct(bestLiveGuardWindowShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`);
+        }
+        parts.push(`best ${bestParts.join(' ')}`);
     }
-    if (currentShare != null) {
-        const penaltyCost = formatPenaltyCost(currentRaw, currentShare);
-        parts.push(`cur ${formatPct(currentShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`);
+    if (currentShare != null || currentLiveGuardWindowShare != null) {
+        const currentParts = [];
+        if (currentShare != null) {
+            const penaltyCost = formatPenaltyCost((currentState === null || currentState === void 0 ? void 0 : currentState.initialBankrollUsd) ?? null, resolvedPauseGuardPenalty, currentShare);
+            currentParts.push(`rej ${formatPct(currentShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`);
+        }
+        if (currentLiveGuardWindowShare != null) {
+            const penaltyCost = formatPenaltyCost((currentState === null || currentState === void 0 ? void 0 : currentState.initialBankrollUsd) ?? null, resolvedLiveGuardWindowPenalty, currentLiveGuardWindowShare);
+            currentParts.push(`p-freq ${formatPct(currentLiveGuardWindowShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`);
+        }
+        parts.push(`cur ${currentParts.join(' ')}`);
     }
-    if (maxShare > 0)
-        parts.push(`max ${formatPct(maxShare, 0)}`);
-    if (resolvedPauseGuardPenalty > 0)
-        parts.push(`pen ${resolvedPauseGuardPenalty.toFixed(2)}x`);
+    if (maxShare > 0 || maxLiveGuardWindowShare > 0) {
+        const limitParts = [];
+        if (maxShare > 0)
+            limitParts.push(`max rej ${formatPct(maxShare, 0)}`);
+        if (maxLiveGuardWindowShare > 0)
+            limitParts.push(`max p-freq ${formatPct(maxLiveGuardWindowShare, 0)}`);
+        parts.push(limitParts.join(' '));
+    }
+    if (resolvedPauseGuardPenalty > 0 || resolvedLiveGuardWindowPenalty > 0) {
+        const penaltyParts = [];
+        if (resolvedPauseGuardPenalty > 0)
+            penaltyParts.push(`rej pen ${resolvedPauseGuardPenalty.toFixed(2)}x`);
+        if (resolvedLiveGuardWindowPenalty > 0)
+            penaltyParts.push(`p-freq pen ${resolvedLiveGuardWindowPenalty.toFixed(2)}x`);
+        parts.push(penaltyParts.join(' '));
+    }
     return {
         summary: parts.length ? parts.join(' | ') : '-',
-        hasActiveGuard: maxShare > 0,
+        hasActiveGuard: maxShare > 0 || maxLiveGuardWindowShare > 0,
         currentShare,
         bestShare,
-        overLimit: (bestShare != null && bestShare > maxShare && maxShare > 0) || (currentShare != null && currentShare > maxShare && maxShare > 0)
+        overLimit: (bestShare != null && bestShare > maxShare && maxShare > 0)
+            || (currentShare != null && currentShare > maxShare && maxShare > 0)
+            || (bestLiveGuardWindowShare != null && bestLiveGuardWindowShare > maxLiveGuardWindowShare && maxLiveGuardWindowShare > 0)
+            || (currentLiveGuardWindowShare != null && currentLiveGuardWindowShare > maxLiveGuardWindowShare && maxLiveGuardWindowShare > 0)
     };
 }
 function replaySearchScoreBreakdownSummary(raw) {
@@ -1675,6 +1719,7 @@ function replaySearchScoreBreakdownSummary(raw) {
         const windowStddevPenaltyUsd = Number(breakdown.window_stddev_penalty_usd || 0);
         const worstWindowPenaltyUsd = Number(breakdown.worst_window_penalty_usd || 0);
         const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0);
+        const liveGuardWindowPenaltyUsd = Number(breakdown.live_guard_window_penalty_usd || 0);
         const openExposurePenaltyUsd = Number(breakdown.open_exposure_penalty_usd || 0);
         const windowEndOpenExposurePenaltyUsd = Number(breakdown.window_end_open_exposure_penalty_usd || 0);
         const carryWindowPenaltyUsd = Number(breakdown.carry_window_penalty_usd || 0);
@@ -1717,6 +1762,8 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`worst ${formatDollar(-worstWindowPenaltyUsd)}`);
         if (Math.abs(pauseGuardPenaltyUsd) > 1e-9)
             parts.push(`pause ${formatDollar(-pauseGuardPenaltyUsd)}`);
+        if (Math.abs(liveGuardWindowPenaltyUsd) > 1e-9)
+            parts.push(`p-freq ${formatDollar(-liveGuardWindowPenaltyUsd)}`);
         if (Math.abs(openExposurePenaltyUsd) > 1e-9)
             parts.push(`exp ${formatDollar(-openExposurePenaltyUsd)}`);
         if (Math.abs(windowEndOpenExposurePenaltyUsd) > 1e-9)
@@ -1788,19 +1835,20 @@ function replaySearchScoreBreakdownSummary(raw) {
     }
 }
 function replaySearchScoreWeightSummary(row) {
-    if (!row)
-        return '-';
+  if (!row)
+    return '-';
     const parts = [];
     const pushIfActive = (label, value) => {
         const numeric = Number(value || 0);
         if (Math.abs(numeric) > 1e-9)
             parts.push(`${label} ${formatNumber(numeric, 2)}x`);
     };
-    pushIfActive('dd', row.drawdown_penalty);
-    pushIfActive('std', row.window_stddev_penalty);
-    pushIfActive('worst', row.worst_window_penalty);
-    pushIfActive('pause', row.pause_guard_penalty);
-    pushIfActive('exp', row.open_exposure_penalty);
+  pushIfActive('dd', row.drawdown_penalty);
+  pushIfActive('std', row.window_stddev_penalty);
+  pushIfActive('worst', row.worst_window_penalty);
+  pushIfActive('pause', row.pause_guard_penalty);
+  pushIfActive('p-freq', row.live_guard_window_penalty);
+  pushIfActive('exp', row.open_exposure_penalty);
     pushIfActive('carry', row.window_end_open_exposure_penalty);
     pushIfActive('c-freq', row.carry_window_penalty);
     pushIfActive('cov', row.resolved_share_penalty);
@@ -1834,6 +1882,34 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('hzn$', row.time_to_close_band_size_concentration_penalty);
     return parts.length ? parts.join(' | ') : 'none';
 }
+
+function replaySearchActiveWindowCountFromPayload(payload) {
+  const explicit = Number(payload.active_window_count || 0);
+  if (explicit > 0)
+    return explicit;
+  const windowCount = Number(payload.window_count || 0);
+  if (windowCount <= 1)
+    return Number(payload.accepted_count || 0) > 0 ? 1 : 0;
+  return Math.max(windowCount - Number(payload.inactive_window_count || 0), 0);
+}
+
+function replaySearchCarryWindowShareFromPayload(payload) {
+  if (payload.carry_window_share != null)
+    return Number(payload.carry_window_share || 0);
+  const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload);
+  if (activeWindowCount <= 0)
+    return 0;
+  return Number(payload.carry_window_count || 0) / activeWindowCount;
+}
+
+function replaySearchLiveGuardWindowShareFromPayload(payload) {
+  if (payload.live_guard_window_share != null)
+    return Number(payload.live_guard_window_share || 0);
+  const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload);
+  if (activeWindowCount <= 0)
+    return 0;
+  return Number(payload.live_guard_window_count || 0) / activeWindowCount;
+}
 function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     if (!bestRaw || !currentRaw)
         return '-';
@@ -1853,6 +1929,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 window_stddev_penalty_usd: Number(breakdown.window_stddev_penalty_usd || 0),
                 worst_window_penalty_usd: Number(breakdown.worst_window_penalty_usd || 0),
                 pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0),
+                live_guard_window_penalty_usd: Number(breakdown.live_guard_window_penalty_usd || 0),
                 open_exposure_penalty_usd: Number(breakdown.open_exposure_penalty_usd || 0),
                 window_end_open_exposure_penalty_usd: Number(breakdown.window_end_open_exposure_penalty_usd || 0),
                 carry_window_penalty_usd: Number(breakdown.carry_window_penalty_usd || 0),
@@ -1901,6 +1978,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const stddevDelta = current.window_stddev_penalty_usd - best.window_stddev_penalty_usd;
     const worstDelta = current.worst_window_penalty_usd - best.worst_window_penalty_usd;
     const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd;
+    const liveGuardWindowDelta = current.live_guard_window_penalty_usd - best.live_guard_window_penalty_usd;
     const openExposureDelta = current.open_exposure_penalty_usd - best.open_exposure_penalty_usd;
     const carryDelta = current.window_end_open_exposure_penalty_usd - best.window_end_open_exposure_penalty_usd;
     const carryWindowDelta = current.carry_window_penalty_usd - best.carry_window_penalty_usd;
@@ -1943,6 +2021,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`worst ${formatDollar(worstDelta)}`);
     if (Math.abs(pauseDelta) > 1e-9)
         parts.push(`pause ${formatDollar(pauseDelta)}`);
+    if (Math.abs(liveGuardWindowDelta) > 1e-9)
+        parts.push(`p-freq ${formatDollar(liveGuardWindowDelta)}`);
     if (Math.abs(openExposureDelta) > 1e-9)
         parts.push(`exp ${formatDollar(openExposureDelta)}`);
     if (Math.abs(carryDelta) > 1e-9)
@@ -2637,6 +2717,8 @@ function replaySearchFailureSummary(raw, feasible) {
                     return 'worst act$';
                 case 'pause_guard_reject_share':
                     return 'pause share';
+                case 'live_guard_window_share':
+                    return 'pause-freq';
                 case 'max_open_exposure_share':
                     return 'exposure';
                 case 'max_window_end_open_exposure_share':
@@ -2800,9 +2882,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0);
         const globalOpenExposureShare = Number(resultParsed.max_open_exposure_share || 0);
         const globalWindowEndOpenExposureShare = Number(resultParsed.max_window_end_open_exposure_share ?? resultParsed.window_end_open_exposure_share ?? 0);
-        const globalCarryWindowShare = Number(resultParsed.carry_window_share ?? (Number(resultParsed.window_count || 0) > 0
-            ? Number(resultParsed.carry_window_count || 0) / Math.max(Number(resultParsed.window_count || 0), 1)
-            : 0));
+        const globalCarryWindowShare = replaySearchCarryWindowShareFromPayload(resultParsed);
+        const globalLiveGuardWindowShare = replaySearchLiveGuardWindowShareFromPayload(resultParsed);
         const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
             ? resultParsed.reject_reason_summary
             : {};
@@ -2829,6 +2910,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const minTotalPnlUsd = Number(constraints.min_total_pnl_usd ?? -1000000000);
         const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0);
         const maxPauseGuardRejectShare = Number(constraints.max_pause_guard_reject_share || 0);
+        const maxLiveGuardWindowShare = Number(constraints.max_live_guard_window_share || 0);
         const maxOpenExposureShare = Number(constraints.max_open_exposure_share || 0);
         const maxWindowEndOpenExposureShare = Number(constraints.max_window_end_open_exposure_share || 0);
         const maxCarryWindowShare = Number(constraints.max_carry_window_share || 0);
@@ -2889,6 +2971,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max');
         if (maxPauseGuardRejectShare > 0)
             pushHeadroom('global', 'pause', pauseGuardRejectShare, maxPauseGuardRejectShare, replayHeadroomPctPoints, 'max');
+        if (maxLiveGuardWindowShare > 0)
+            pushHeadroom('global', 'pause-freq', globalLiveGuardWindowShare, maxLiveGuardWindowShare, replayHeadroomPctPoints, 'max');
         if (maxOpenExposureShare > 0)
             pushHeadroom('global', 'exp', globalOpenExposureShare, maxOpenExposureShare, replayHeadroomPctPoints, 'max');
         if (maxWindowEndOpenExposureShare > 0)
@@ -3580,9 +3664,10 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const replaySearchCurrentModeRisk = useMemo(() => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.base_policy_json), [latestReplaySearch?.base_policy_json, latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
     const replaySearchBestHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.policy_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.policy_json, latestReplaySearch?.result_json]);
     const replaySearchCurrentHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.base_policy_json), [latestReplaySearch?.base_policy_json, latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
-    const replaySearchPauseGuard = useMemo(() => replaySearchPauseGuardSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.pause_guard_penalty), [
+    const replaySearchPauseGuard = useMemo(() => replaySearchPauseGuardSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.pause_guard_penalty, latestReplaySearch?.live_guard_window_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
+        latestReplaySearch?.live_guard_window_penalty,
         latestReplaySearch?.pause_guard_penalty,
         latestReplaySearch?.result_json
     ]);

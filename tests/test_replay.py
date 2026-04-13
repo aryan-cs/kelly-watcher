@@ -914,6 +914,9 @@ class ReplayTest(unittest.TestCase):
                 rows = conn.execute(
                     "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
                 ).fetchall()
+                run_row = conn.execute(
+                    "SELECT window_end_live_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
+                ).fetchone()
                 conn.close()
 
                 self.assertEqual(
@@ -999,6 +1002,9 @@ class ReplayTest(unittest.TestCase):
                 rows = conn.execute(
                     "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
                 ).fetchall()
+                run_row = conn.execute(
+                    "SELECT window_end_live_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
+                ).fetchone()
                 conn.close()
 
                 self.assertEqual(
@@ -1100,6 +1106,9 @@ class ReplayTest(unittest.TestCase):
                 rows = conn.execute(
                     "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
                 ).fetchall()
+                run_row = conn.execute(
+                    "SELECT window_end_live_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
+                ).fetchone()
                 conn.close()
 
                 self.assertEqual(
@@ -1190,6 +1199,9 @@ class ReplayTest(unittest.TestCase):
                 rows = conn.execute(
                     "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
                 ).fetchall()
+                run_row = conn.execute(
+                    "SELECT window_end_live_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
+                ).fetchone()
                 conn.close()
 
                 self.assertEqual(
@@ -1200,6 +1212,8 @@ class ReplayTest(unittest.TestCase):
                     ],
                 )
                 self.assertEqual(result["reject_reason_summary"]["live_drawdown_guard"], 1)
+                self.assertEqual(result["window_end_live_guard_triggered"], 1)
+                self.assertEqual(int(run_row[0]), 1)
             finally:
                 db.DB_PATH = original_db_path
 

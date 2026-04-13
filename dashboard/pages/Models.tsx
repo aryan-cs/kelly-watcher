@@ -2140,7 +2140,8 @@ function replaySearchWorstWindowPnlFromSummaryRow(row: ReplaySearchSummaryRow | 
       // Fall back to the summary row value below.
     }
   }
-  return Number(row.worst_window_pnl_usd || 0)
+  if (row.worst_window_pnl_usd != null) return Number(row.worst_window_pnl_usd || 0)
+  return Math.min(Number(row.total_pnl_usd || 0), 0)
 }
 
 function replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload: Record<string, unknown>): number {

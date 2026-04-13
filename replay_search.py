@@ -1008,6 +1008,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "accepted_count": 0,
                 "accepted_size_usd": 0.0,
                 "accepted_window_count": 0,
+                "post_accept_active_window_count": 0,
                 "max_non_accepting_active_window_streak": None,
                 "non_accepting_active_window_episode_count": None,
                 "resolved_count": 0,
@@ -1191,6 +1192,14 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if result_window_count <= 1 and _mode_has_participation(raw_values)
             else max(result_window_count - resolved_inactive_window_count, 0)
         )
+        raw_post_accept_active_window_count = raw_values.get("post_accept_active_window_count")
+        resolved_post_accept_active_window_count = (
+            max(int(raw_post_accept_active_window_count), 0)
+            if raw_post_accept_active_window_count is not None
+            else 0
+            if resolved_active_window_count <= 0 or resolved_accepted_window_count <= 0
+            else resolved_active_window_count
+        )
         raw_max_non_accepting_active_window_streak = raw_values.get("max_non_accepting_active_window_streak")
         resolved_max_non_accepting_active_window_streak = (
             max(int(raw_max_non_accepting_active_window_streak), 0)
@@ -1263,6 +1272,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
         bucket["accepted_size_usd"] += float(raw_values.get("accepted_size_usd") or 0.0)
         bucket["accepted_window_count"] += resolved_accepted_window_count
+        bucket["post_accept_active_window_count"] += resolved_post_accept_active_window_count
         bucket["max_non_accepting_active_window_streak"] = (
             resolved_max_non_accepting_active_window_streak
             if bucket["max_non_accepting_active_window_streak"] is None
@@ -1384,6 +1394,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         )
         values["accepted_size_usd"] = round(float(values["accepted_size_usd"]), 6)
         values["accepted_window_count"] = int(values["accepted_window_count"])
+        values["post_accept_active_window_count"] = int(values["post_accept_active_window_count"])
         values["max_non_accepting_active_window_streak"] = (
             int(values["max_non_accepting_active_window_streak"])
             if values["max_non_accepting_active_window_streak"] is not None
@@ -1997,6 +2008,13 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             enriched["accepted_window_count"] = active_window_count
         else:
             enriched["accepted_window_count"] = 0
+    if "post_accept_active_window_count" not in enriched:
+        if window_count == 1:
+            enriched["post_accept_active_window_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
+        elif int(enriched.get("accepted_window_count") or 0) > 0:
+            enriched["post_accept_active_window_count"] = int(enriched.get("active_window_count") or 0)
+        else:
+            enriched["post_accept_active_window_count"] = 0
     if "max_non_accepting_active_window_streak" not in enriched:
         if window_count == 1:
             enriched["max_non_accepting_active_window_streak"] = 0
@@ -2079,6 +2097,16 @@ def _accepted_window_count(result: dict[str, Any]) -> int:
     return 0
 
 
+def _post_accept_active_window_count(result: dict[str, Any]) -> int:
+    active_window_count = _active_window_count(result)
+    if active_window_count <= 0:
+        return 0
+    raw_value = result.get("post_accept_active_window_count")
+    if raw_value is not None:
+        return min(max(int(raw_value), 0), active_window_count)
+    return active_window_count if _accepted_window_count(result) > 0 else 0
+
+
 def _accepted_window_share(result: dict[str, Any]) -> float:
     accepted_window_count = _accepted_window_count(result)
     active_window_count = _active_window_count(result)
@@ -2109,12 +2137,12 @@ def _max_non_accepting_active_window_streak(result: dict[str, Any]) -> int:
 
 
 def _non_accepting_active_window_streak_risk(result: dict[str, Any]) -> float:
-    active_window_count = _active_window_count(result)
-    if active_window_count <= 1:
+    post_accept_active_window_count = _post_accept_active_window_count(result)
+    if post_accept_active_window_count <= 1:
         return 0.0
     streak = _max_non_accepting_active_window_streak(result)
     return _clamp_fraction(
-        float(max(streak - 1, 0)) / float(max(active_window_count - 1, 1))
+        float(max(streak - 1, 0)) / float(max(post_accept_active_window_count - 1, 1))
     )
 
 
@@ -2126,12 +2154,12 @@ def _non_accepting_active_window_episode_count(result: dict[str, Any]) -> int:
 
 
 def _non_accepting_active_window_episode_risk(result: dict[str, Any]) -> float:
-    active_window_count = _active_window_count(result)
-    if active_window_count <= 1:
+    post_accept_active_window_count = _post_accept_active_window_count(result)
+    if post_accept_active_window_count <= 1:
         return 0.0
     episode_count = _non_accepting_active_window_episode_count(result)
     return _clamp_fraction(
-        float(max(episode_count - 1, 0)) / float(max(active_window_count - 1, 1))
+        float(max(episode_count - 1, 0)) / float(max(post_accept_active_window_count - 1, 1))
     )
 
 
@@ -2234,6 +2262,21 @@ def _mode_accepted_window_share(
     return 1.0 if accepted_window_count > 0 else 0.0
 
 
+def _mode_post_accept_active_window_count(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> int:
+    active_window_count = _mode_active_window_count(signal_mode_summary, mode, window_count)
+    if active_window_count <= 0:
+        return 0
+    payload = signal_mode_summary.get(mode, {})
+    raw_value = payload.get("post_accept_active_window_count")
+    if raw_value is not None:
+        return min(max(int(raw_value), 0), active_window_count)
+    return active_window_count if _mode_accepted_window_count(signal_mode_summary, mode, window_count) > 0 else 0
+
+
 def _mode_max_non_accepting_active_window_streak(
     signal_mode_summary: dict[str, dict[str, Any]],
     mode: str,
@@ -2257,12 +2300,12 @@ def _mode_non_accepting_active_window_streak_risk(
     mode: str,
     window_count: int,
 ) -> float:
-    active_window_count = _mode_active_window_count(signal_mode_summary, mode, window_count)
-    if active_window_count <= 1:
+    post_accept_active_window_count = _mode_post_accept_active_window_count(signal_mode_summary, mode, window_count)
+    if post_accept_active_window_count <= 1:
         return 0.0
     streak = _mode_max_non_accepting_active_window_streak(signal_mode_summary, mode, window_count)
     return _clamp_fraction(
-        float(max(streak - 1, 0)) / float(max(active_window_count - 1, 1))
+        float(max(streak - 1, 0)) / float(max(post_accept_active_window_count - 1, 1))
     )
 
 
@@ -2283,12 +2326,12 @@ def _mode_non_accepting_active_window_episode_risk(
     mode: str,
     window_count: int,
 ) -> float:
-    active_window_count = _mode_active_window_count(signal_mode_summary, mode, window_count)
-    if active_window_count <= 1:
+    post_accept_active_window_count = _mode_post_accept_active_window_count(signal_mode_summary, mode, window_count)
+    if post_accept_active_window_count <= 1:
         return 0.0
     episode_count = _mode_non_accepting_active_window_episode_count(signal_mode_summary, mode, window_count)
     return _clamp_fraction(
-        float(max(episode_count - 1, 0)) / float(max(active_window_count - 1, 1))
+        float(max(episode_count - 1, 0)) / float(max(post_accept_active_window_count - 1, 1))
     )
 
 
@@ -3390,6 +3433,7 @@ def _aggregate_window_results(
     active_window_count = len(active_rows)
     accepted_window_count = len(accepting_rows)
     inactive_window_count = max(len(window_results) - active_window_count, 0)
+    post_accept_active_window_count = 0
     max_non_accepting_active_window_streak = 0
     non_accepting_active_window_episode_count = 0
     current_non_accepting_active_window_streak = 0
@@ -3397,8 +3441,12 @@ def _aggregate_window_results(
     for row in window_results:
         if not _window_has_participation(row):
             continue
-        if int(row.get("accepted_count") or 0) > 0 or float(row.get("accepted_size_usd") or 0.0) > 0:
+        is_accepting_window = int(row.get("accepted_count") or 0) > 0 or float(row.get("accepted_size_usd") or 0.0) > 0
+        if is_accepting_window:
             seen_accepting_window = True
+        if seen_accepting_window:
+            post_accept_active_window_count += 1
+        if is_accepting_window:
             current_non_accepting_active_window_streak = 0
             continue
         if not seen_accepting_window:
@@ -3628,15 +3676,16 @@ def _aggregate_window_results(
                 mode,
                 {
                     "trade_count": 0.0,
-                "accepted_count": 0.0,
-                "accepted_size_usd": 0.0,
-                "accepted_window_count": 0.0,
-                "max_non_accepting_active_window_streak": 0.0,
-                "non_accepting_active_window_episode_count": 0.0,
-                "current_non_accepting_active_window_streak": 0.0,
-                "seen_accepting_window": False,
-                "resolved_count": 0.0,
-                "resolved_size_usd": 0.0,
+                    "accepted_count": 0.0,
+                    "accepted_size_usd": 0.0,
+                    "accepted_window_count": 0.0,
+                    "post_accept_active_window_count": 0.0,
+                    "max_non_accepting_active_window_streak": 0.0,
+                    "non_accepting_active_window_episode_count": 0.0,
+                    "current_non_accepting_active_window_streak": 0.0,
+                    "seen_accepting_window": False,
+                    "resolved_count": 0.0,
+                    "resolved_size_usd": 0.0,
                     "total_pnl_usd": 0.0,
                     "positive_window_count": 0.0,
                     "negative_window_count": 0.0,
@@ -3678,6 +3727,9 @@ def _aggregate_window_results(
             bucket["inactive_window_count"] += 1 if is_inactive_window else 0
             if is_accepting_window:
                 bucket["seen_accepting_window"] = True
+            if not is_inactive_window and bool(bucket.get("seen_accepting_window")):
+                bucket["post_accept_active_window_count"] += 1.0
+            if is_accepting_window:
                 bucket["current_non_accepting_active_window_streak"] = 0.0
             elif not is_inactive_window and bool(bucket.get("seen_accepting_window")):
                 if float(bucket["current_non_accepting_active_window_streak"]) <= 0:
@@ -3713,6 +3765,7 @@ def _aggregate_window_results(
             "accepted_count": int(values["accepted_count"]),
             "accepted_size_usd": round(values["accepted_size_usd"], 6),
             "accepted_window_count": int(values["accepted_window_count"]),
+            "post_accept_active_window_count": int(values["post_accept_active_window_count"]),
             "max_non_accepting_active_window_streak": int(values["max_non_accepting_active_window_streak"]),
             "non_accepting_active_window_episode_count": int(values["non_accepting_active_window_episode_count"]),
             "resolved_count": int(values["resolved_count"]),
@@ -4054,6 +4107,7 @@ def _aggregate_window_results(
         "negative_window_count": negative_window_count,
         "active_window_count": active_window_count,
         "accepted_window_count": accepted_window_count,
+        "post_accept_active_window_count": post_accept_active_window_count,
         "inactive_window_count": inactive_window_count,
         "max_non_accepting_active_window_streak": max_non_accepting_active_window_streak,
         "non_accepting_active_window_episode_count": non_accepting_active_window_episode_count,

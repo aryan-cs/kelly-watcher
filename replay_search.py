@@ -145,7 +145,7 @@ def _score_breakdown(
     daily_guard_restart_window_share = _daily_guard_restart_window_share(result)
     live_guard_restart_window_share = _live_guard_restart_window_share(result)
     window_pnl_stddev_usd = float(result.get("window_pnl_stddev_usd") or 0.0)
-    worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
+    worst_window_pnl_usd = _global_worst_window_pnl(result)
     worst_window_loss_usd = max(-worst_window_pnl_usd, 0.0)
     pause_guard_reject_share = _pause_guard_reject_share(result)
     accepted_count = int(result.get("accepted_count") or 0)
@@ -1571,6 +1571,16 @@ def _legacy_worst_window_pnl_fallback(total_pnl_usd: float, window_count: int) -
     return min(total_pnl_usd, 0.0)
 
 
+def _global_worst_window_pnl(result: dict[str, Any]) -> float:
+    raw_value = result.get("worst_window_pnl_usd")
+    if raw_value is not None:
+        return float(raw_value)
+    return _legacy_worst_window_pnl_fallback(
+        float(result.get("total_pnl_usd") or 0.0),
+        max(int(result.get("window_count") or 0), 0),
+    )
+
+
 def _worst_window_drawdown_pct(result: dict[str, Any]) -> float:
     raw_value = result.get("worst_window_drawdown_pct")
     if raw_value is not None:
@@ -2817,7 +2827,7 @@ def _constraint_failures(
     live_guard_window_share = _live_guard_window_share(result)
     daily_guard_restart_window_share = _daily_guard_restart_window_share(result)
     live_guard_restart_window_share = _live_guard_restart_window_share(result)
-    worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
+    worst_window_pnl_usd = _global_worst_window_pnl(result)
     worst_window_resolved_share = _global_worst_active_window_resolved_share(result)
     worst_window_resolved_size_share = _global_worst_active_window_resolved_size_share(result)
     worst_window_drawdown_pct = _worst_window_drawdown_pct(result)
@@ -3370,7 +3380,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
                 or row["result"].get("worst_active_window_accepted_size_usd")
                 or 0.0
             )
-            worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
+            worst_window_pnl_usd = _global_worst_window_pnl(row["result"])
             carry_summary = (
                 f"{carry_window_count}/{active_window_count}"
                 if active_window_count > 0

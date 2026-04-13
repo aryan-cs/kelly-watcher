@@ -297,9 +297,11 @@ def _request_payload_if_fresh(path: Path, max_age_seconds: int) -> dict[str, Any
         return None
 
     requested_at = int(payload.get("requested_at") or 0)
+    pickup_failed_at = int(payload.get("pickup_failed_at") or 0)
     now_ts = int(time.time())
-    if requested_at > 0:
-        is_fresh = (now_ts - requested_at) <= max_age_seconds
+    freshness_anchor = max(requested_at, pickup_failed_at)
+    if freshness_anchor > 0:
+        is_fresh = (now_ts - freshness_anchor) <= max_age_seconds
     else:
         is_fresh = _request_is_recent(path, max_age_seconds)
     if is_fresh:

@@ -628,6 +628,15 @@ def _record_manual_request_pickup_failure(path: Path, payload: dict[str, Any], e
         logger.warning("Failed to persist manual request pickup failure metadata for %s", path.name, exc_info=True)
 
 
+def _manual_request_age_seconds(payload: dict[str, Any], now_ts: int) -> int | None:
+    requested_at = int(payload.get("requested_at") or 0)
+    pickup_failed_at = int(payload.get("pickup_failed_at") or 0)
+    freshness_anchor = max(requested_at, pickup_failed_at)
+    if freshness_anchor <= 0:
+        return None
+    return max(now_ts - freshness_anchor, 0)
+
+
 def _persist_startup_failure_state(
     *,
     detail: str,
@@ -1063,18 +1072,18 @@ def _consume_manual_retrain_request(run_retrain_job) -> bool:
             pass
         return False
 
-    requested_at = int(payload.get("requested_at") or 0)
     source = str(payload.get("source") or "unknown").strip().lower() or "unknown"
     request_id = str(payload.get("request_id") or "").strip()
     now_ts = int(time.time())
     next_retry_at = int(payload.get("next_retry_at") or 0)
     if next_retry_at > now_ts:
         return False
-    if requested_at > 0 and (now_ts - requested_at) > 900:
+    request_age_seconds = _manual_request_age_seconds(payload, now_ts)
+    if request_age_seconds is not None and request_age_seconds > 900:
         logger.info(
             "Ignoring stale manual retrain request from %s (age=%ss, request_id=%s)",
             source,
-            now_ts - requested_at,
+            request_age_seconds,
             request_id or "-",
         )
         try:
@@ -1119,12 +1128,13 @@ def _consume_manual_trade_request(handle_request) -> bool:
     next_retry_at = int(payload.get("next_retry_at") or 0)
     if next_retry_at > now_ts:
         return False
-    if request.requested_at > 0 and (now_ts - request.requested_at) > 900:
+    request_age_seconds = _manual_request_age_seconds(payload, now_ts)
+    if request_age_seconds is not None and request_age_seconds > 900:
         logger.info(
             "Ignoring stale manual trade request from %s (action=%s age=%ss request_id=%s)",
             request.source,
             request.action,
-            now_ts - request.requested_at,
+            request_age_seconds,
             request.request_id or "-",
         )
         try:

@@ -1174,12 +1174,6 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         resolved_accepted_window_count = (
             int(raw_values.get("accepted_window_count") or 0)
             if raw_values.get("accepted_window_count") is not None
-            else max(result_window_count - resolved_inactive_window_count, 0)
-            if result_window_count > 1
-            and (
-                int(raw_values.get("accepted_count") or 0) > 0
-                or float(raw_values.get("accepted_size_usd") or 0.0) > 0
-            )
             else 1
             if (
                 int(raw_values.get("accepted_count") or 0) > 0
@@ -1191,14 +1185,6 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             1
             if result_window_count <= 1 and _mode_has_participation(raw_values)
             else max(result_window_count - resolved_inactive_window_count, 0)
-        )
-        raw_post_accept_active_window_count = raw_values.get("post_accept_active_window_count")
-        resolved_post_accept_active_window_count = (
-            max(int(raw_post_accept_active_window_count), 0)
-            if raw_post_accept_active_window_count is not None
-            else 0
-            if resolved_active_window_count <= 0 or resolved_accepted_window_count <= 0
-            else resolved_active_window_count
         )
         raw_max_non_accepting_active_window_streak = raw_values.get("max_non_accepting_active_window_streak")
         resolved_max_non_accepting_active_window_streak = (
@@ -1215,6 +1201,17 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             max(int(raw_non_accepting_active_window_episode_count), 0)
             if raw_non_accepting_active_window_episode_count is not None
             else 1 if resolved_max_non_accepting_active_window_streak > 0 else 0
+        )
+        raw_post_accept_active_window_count = raw_values.get("post_accept_active_window_count")
+        resolved_post_accept_active_window_count = (
+            max(int(raw_post_accept_active_window_count), 0)
+            if raw_post_accept_active_window_count is not None
+            else _conservative_post_accept_active_window_count(
+                active_window_count=resolved_active_window_count,
+                accepted_window_count=resolved_accepted_window_count,
+                max_non_accepting_active_window_streak=resolved_max_non_accepting_active_window_streak,
+                non_accepting_active_window_episode_count=resolved_non_accepting_active_window_episode_count,
+            )
         )
         raw_max_accepting_window_accepted_share = raw_values.get("max_accepting_window_accepted_share")
         resolved_max_accepting_window_accepted_share = (
@@ -2004,17 +2001,10 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
     if "accepted_window_count" not in enriched:
         if window_count == 1:
             enriched["accepted_window_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
-        elif active_window_count > 0 and (accepted_count > 0 or accepted_size_usd > 0):
-            enriched["accepted_window_count"] = active_window_count
+        elif accepted_count > 0 or accepted_size_usd > 0:
+            enriched["accepted_window_count"] = 1
         else:
             enriched["accepted_window_count"] = 0
-    if "post_accept_active_window_count" not in enriched:
-        if window_count == 1:
-            enriched["post_accept_active_window_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
-        elif int(enriched.get("accepted_window_count") or 0) > 0:
-            enriched["post_accept_active_window_count"] = int(enriched.get("active_window_count") or 0)
-        else:
-            enriched["post_accept_active_window_count"] = 0
     if "max_non_accepting_active_window_streak" not in enriched:
         if window_count == 1:
             enriched["max_non_accepting_active_window_streak"] = 0
@@ -2035,6 +2025,20 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
                 1
                 if int(enriched.get("max_non_accepting_active_window_streak") or 0) > 0
                 else 0
+            )
+    if "post_accept_active_window_count" not in enriched:
+        if window_count == 1:
+            enriched["post_accept_active_window_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
+        else:
+            enriched["post_accept_active_window_count"] = _conservative_post_accept_active_window_count(
+                active_window_count=int(enriched.get("active_window_count") or 0),
+                accepted_window_count=int(enriched.get("accepted_window_count") or 0),
+                max_non_accepting_active_window_streak=int(
+                    enriched.get("max_non_accepting_active_window_streak") or 0
+                ),
+                non_accepting_active_window_episode_count=int(
+                    enriched.get("non_accepting_active_window_episode_count") or 0
+                ),
             )
     if "max_accepting_window_accepted_share" not in enriched:
         enriched["max_accepting_window_accepted_share"] = 1.0 if enriched.get("accepted_window_count") else 0.0
@@ -2083,6 +2087,22 @@ def _active_window_count(result: dict[str, Any]) -> int:
     return max(window_count - int(result.get("inactive_window_count") or 0), 0)
 
 
+def _conservative_post_accept_active_window_count(
+    *,
+    active_window_count: int,
+    accepted_window_count: int,
+    max_non_accepting_active_window_streak: int,
+    non_accepting_active_window_episode_count: int,
+) -> int:
+    if active_window_count <= 0 or accepted_window_count <= 0:
+        return 0
+    lower_bound = accepted_window_count + max(
+        max(max_non_accepting_active_window_streak, 0),
+        max(non_accepting_active_window_episode_count, 0),
+    )
+    return min(max(lower_bound, accepted_window_count), active_window_count)
+
+
 def _accepted_window_count(result: dict[str, Any]) -> int:
     accepted_window_count = int(result.get("accepted_window_count") or 0)
     if accepted_window_count > 0:
@@ -2093,7 +2113,7 @@ def _accepted_window_count(result: dict[str, Any]) -> int:
     if window_count <= 1:
         return 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
     if accepted_count > 0 or accepted_size_usd > 0:
-        return max(_active_window_count(result), 1)
+        return 1
     return 0
 
 
@@ -2104,7 +2124,12 @@ def _post_accept_active_window_count(result: dict[str, Any]) -> int:
     raw_value = result.get("post_accept_active_window_count")
     if raw_value is not None:
         return min(max(int(raw_value), 0), active_window_count)
-    return active_window_count if _accepted_window_count(result) > 0 else 0
+    return _conservative_post_accept_active_window_count(
+        active_window_count=active_window_count,
+        accepted_window_count=_accepted_window_count(result),
+        max_non_accepting_active_window_streak=_max_non_accepting_active_window_streak(result),
+        non_accepting_active_window_episode_count=_non_accepting_active_window_episode_count(result),
+    )
 
 
 def _accepted_window_share(result: dict[str, Any]) -> float:
@@ -2246,7 +2271,7 @@ def _mode_accepted_window_count(
     if window_count <= 1:
         return 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
     if accepted_count > 0 or accepted_size_usd > 0:
-        return max(_mode_active_window_count(signal_mode_summary, mode, window_count), 1)
+        return 1
     return 0
 
 
@@ -2274,7 +2299,20 @@ def _mode_post_accept_active_window_count(
     raw_value = payload.get("post_accept_active_window_count")
     if raw_value is not None:
         return min(max(int(raw_value), 0), active_window_count)
-    return active_window_count if _mode_accepted_window_count(signal_mode_summary, mode, window_count) > 0 else 0
+    return _conservative_post_accept_active_window_count(
+        active_window_count=active_window_count,
+        accepted_window_count=_mode_accepted_window_count(signal_mode_summary, mode, window_count),
+        max_non_accepting_active_window_streak=_mode_max_non_accepting_active_window_streak(
+            signal_mode_summary,
+            mode,
+            window_count,
+        ),
+        non_accepting_active_window_episode_count=_mode_non_accepting_active_window_episode_count(
+            signal_mode_summary,
+            mode,
+            window_count,
+        ),
+    )
 
 
 def _mode_max_non_accepting_active_window_streak(

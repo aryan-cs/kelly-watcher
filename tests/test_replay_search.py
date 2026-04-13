@@ -43,7 +43,9 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("mode_worst_window_resolved_share_penalty", columns)
         self.assertIn("mode_worst_window_resolved_size_share_penalty", columns)
         self.assertIn("worst_active_window_accepted_penalty", columns)
+        self.assertIn("worst_active_window_accepted_size_penalty", columns)
         self.assertIn("mode_worst_active_window_accepted_penalty", columns)
+        self.assertIn("mode_worst_active_window_accepted_size_penalty", columns)
         self.assertIn("mode_loss_penalty", columns)
         self.assertIn("mode_inactivity_penalty", columns)
         self.assertIn("window_inactivity_penalty", columns)
@@ -164,6 +166,25 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(summary["xgboost"]["worst_active_window_accepted_count"], 4)
+
+    def test_signal_mode_summary_materializes_worst_active_window_accepted_size_usd(self) -> None:
+        summary = replay_search._signal_mode_summary(
+            {
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 96.0,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 96.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 9.0,
+                        "win_count": 2,
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(summary["xgboost"]["worst_active_window_accepted_size_usd"], 96.0)
 
     def test_score_breakdown_ignores_disabled_scorer_inactivity(self) -> None:
         breakdown = replay_search._score_breakdown(
@@ -298,6 +319,49 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(breakdown["worst_active_window_accepted_penalty_usd"], 150.0)
+        self.assertEqual(breakdown["score_usd"], -130.0)
+
+    def test_score_breakdown_penalizes_global_worst_active_window_deployed_dollars(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 2,
+                "active_window_count": 2,
+                "inactive_window_count": 0,
+                "accepted_count": 5,
+                "resolved_count": 5,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": 200.0,
+                "worst_active_window_accepted_count": 2,
+                "worst_active_window_accepted_size_usd": 50.0,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            worst_active_window_accepted_size_penalty=0.1,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_size_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["worst_active_window_accepted_size_penalty_usd"], 150.0)
         self.assertEqual(breakdown["score_usd"], -130.0)
 
     def test_score_breakdown_penalizes_low_breadth_counts(self) -> None:
@@ -448,6 +512,65 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(breakdown["mode_worst_active_window_accepted_penalty_usd"], 150.0)
         self.assertEqual(breakdown["score_usd"], -130.0)
+
+    def test_score_breakdown_penalizes_mode_worst_active_window_deployed_dollars(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 2,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 120.0,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 120.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": 4,
+                        "worst_active_window_accepted_size_usd": 60.0,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "accepted_size_usd": 200.0,
+                        "resolved_count": 6,
+                        "resolved_size_usd": 200.0,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": 2,
+                        "worst_active_window_accepted_size_usd": 40.0,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            worst_active_window_accepted_size_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_size_penalty=0.1,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_worst_active_window_accepted_size_penalty_usd"], 180.0)
+        self.assertEqual(breakdown["score_usd"], -160.0)
 
     def test_score_breakdown_ignores_disabled_mode_worst_active_window_depth(self) -> None:
         breakdown = replay_search._score_breakdown(
@@ -889,7 +1012,9 @@ class ReplaySearchTest(unittest.TestCase):
             min_heuristic_positive_window_count=1,
             min_xgboost_positive_window_count=1,
             min_heuristic_worst_active_window_accepted_count=1,
+            min_heuristic_worst_active_window_accepted_size_usd=0.0,
             min_xgboost_worst_active_window_accepted_count=1,
+            min_xgboost_worst_active_window_accepted_size_usd=0.0,
             max_heuristic_inactive_window_count=0,
             max_xgboost_inactive_window_count=-1,
             max_heuristic_accepted_share=0.5,
@@ -4922,6 +5047,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_accepted_count": 5,
                 "min_active_windows": 0,
                 "min_worst_active_window_accepted_count": 0,
+                "min_worst_active_window_accepted_size_usd": 0.0,
                 "min_entry_price_band_count": 0,
                 "min_heuristic_accepted_count": 0,
                 "min_heuristic_resolved_count": 0,
@@ -4931,6 +5057,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_heuristic_pnl_usd": 0.0,
                 "min_heuristic_positive_windows": 0,
                 "min_heuristic_worst_active_window_accepted_count": 0,
+                "min_heuristic_worst_active_window_accepted_size_usd": 0.0,
                 "min_heuristic_worst_window_pnl_usd": -1000000000.0,
                 "min_heuristic_worst_window_resolved_share": 0.0,
                 "min_heuristic_worst_window_resolved_size_share": 0.0,
@@ -4955,6 +5082,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_xgboost_pnl_usd": 0.0,
                 "min_xgboost_positive_windows": 0,
                 "min_xgboost_worst_active_window_accepted_count": 0,
+                "min_xgboost_worst_active_window_accepted_size_usd": 0.0,
                 "min_xgboost_worst_window_pnl_usd": -1000000000.0,
                 "min_xgboost_worst_window_resolved_share": 0.0,
                 "min_xgboost_worst_window_resolved_size_share": 0.0,

@@ -1117,11 +1117,12 @@ function replaySearchDeployGapSummary(rawPolicy, rawConfig) {
         return '-';
     }
 }
-function replaySearchModeMixSummary(raw) {
+function replaySearchModeMixSummary(raw, policyRaw) {
     if (!raw)
         return '-';
     try {
         const parsed = JSON.parse(raw);
+        const enabled = replaySearchEnabledModes(policyRaw);
         const rawSummary = parsed?.signal_mode_summary;
         if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary))
             return '-';
@@ -1138,6 +1139,13 @@ function replaySearchModeMixSummary(raw) {
                 };
             })
             .filter((entry) => Boolean(entry))
+            .filter((entry) => {
+            if (entry.mode === 'heuristic')
+                return enabled.heuristic;
+            if (entry.mode === 'xgboost')
+                return enabled.xgboost;
+            return true;
+        })
             .filter((entry) => entry.acceptedCount > 0)
             .sort((left, right) => {
             const leftPriority = left.mode === 'heuristic' ? 0 : left.mode === 'xgboost' ? 1 : 2;
@@ -1146,27 +1154,38 @@ function replaySearchModeMixSummary(raw) {
                 return leftPriority - rightPriority;
             return left.mode.localeCompare(right.mode);
         });
-        if (!entries.length)
-            return '-';
+        if (!entries.length) {
+            const parts = [];
+            if (!enabled.heuristic)
+                parts.push('Heuristic off');
+            if (!enabled.xgboost)
+                parts.push('XGBoost off');
+            return parts.length ? parts.join(' | ') : '-';
+        }
         const totalAccepted = entries.reduce((sum, entry) => sum + entry.acceptedCount, 0);
-        return entries
-        .map((entry) => {
+        const parts = entries
+            .map((entry) => {
             const share = totalAccepted > 0 ? `${Math.round((entry.acceptedCount / totalAccepted) * 100)}%` : '0%';
             const resolvedShare = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%';
             return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} cov ${resolvedShare} ${formatDollar(entry.totalPnlUsd)}`;
         })
-            .join(' | ');
+        if (!enabled.heuristic)
+            parts.push('Heuristic off');
+        if (!enabled.xgboost)
+            parts.push('XGBoost off');
+        return parts.join(' | ');
     }
     catch {
         return '-';
     }
 }
-function replaySearchModeShares(raw) {
+function replaySearchModeShares(raw, policyRaw) {
     const shares = new Map();
     if (!raw)
         return shares;
     try {
         const parsed = JSON.parse(raw);
+        const enabled = replaySearchEnabledModes(policyRaw);
         const rawSummary = parsed?.signal_mode_summary;
         if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary))
             return shares;
@@ -1181,6 +1200,13 @@ function replaySearchModeShares(raw) {
             };
         })
             .filter((entry) => Boolean(entry))
+            .filter((entry) => {
+            if (entry.mode === 'heuristic')
+                return enabled.heuristic;
+            if (entry.mode === 'xgboost')
+                return enabled.xgboost;
+            return true;
+        })
             .filter((entry) => entry.acceptedCount > 0);
         const totalAccepted = entries.reduce((sum, entry) => sum + entry.acceptedCount, 0);
         if (totalAccepted <= 0)
@@ -1194,13 +1220,23 @@ function replaySearchModeShares(raw) {
     }
     return shares;
 }
-function replaySearchModeDriftSummary(bestRaw, currentRaw) {
-    const bestShares = replaySearchModeShares(bestRaw);
-    const currentShares = replaySearchModeShares(currentRaw);
+function replaySearchModeDriftSummary(bestRaw, currentRaw, bestPolicyRaw, currentPolicyRaw) {
+    const bestShares = replaySearchModeShares(bestRaw, bestPolicyRaw);
+    const currentShares = replaySearchModeShares(currentRaw, currentPolicyRaw);
+    const bestEnabled = replaySearchEnabledModes(bestPolicyRaw);
+    const currentEnabled = replaySearchEnabledModes(currentPolicyRaw);
     if (!bestShares.size || !currentShares.size)
         return '-';
     const parts = [];
     for (const mode of ['heuristic', 'xgboost']) {
+        const bestModeEnabled = mode === 'heuristic' ? bestEnabled.heuristic : bestEnabled.xgboost;
+        const currentModeEnabled = mode === 'heuristic' ? currentEnabled.heuristic : currentEnabled.xgboost;
+        if (!bestModeEnabled && !currentModeEnabled)
+            continue;
+        if (bestModeEnabled !== currentModeEnabled) {
+            parts.push(`${modeLabel(mode)} ${bestModeEnabled ? 'on' : 'off'} vs ${currentModeEnabled ? 'on' : 'off'}`);
+            continue;
+        }
         if (!bestShares.has(mode) && !currentShares.has(mode))
             continue;
         const driftPctPoints = ((bestShares.get(mode) || 0) - (currentShares.get(mode) || 0)) * 100;
@@ -1210,11 +1246,12 @@ function replaySearchModeDriftSummary(bestRaw, currentRaw) {
     }
     return parts.length ? parts.join(' | ') : '-';
 }
-function replaySearchCurrentModeEvidenceSummary(raw) {
+function replaySearchCurrentModeEvidenceSummary(raw, policyRaw) {
     if (!raw)
         return '-';
     try {
         const parsed = JSON.parse(raw);
+        const enabled = replaySearchEnabledModes(policyRaw);
         const rawSummary = parsed?.signal_mode_summary;
         if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary))
             return '-';
@@ -1232,6 +1269,13 @@ function replaySearchCurrentModeEvidenceSummary(raw) {
             };
         })
             .filter((entry) => Boolean(entry))
+            .filter((entry) => {
+            if (entry.mode === 'heuristic')
+                return enabled.heuristic;
+            if (entry.mode === 'xgboost')
+                return enabled.xgboost;
+            return true;
+        })
             .filter((entry) => entry.acceptedCount > 0)
             .sort((left, right) => {
             const leftPriority = left.mode === 'heuristic' ? 0 : left.mode === 'xgboost' ? 1 : 2;
@@ -1240,15 +1284,25 @@ function replaySearchCurrentModeEvidenceSummary(raw) {
                 return leftPriority - rightPriority;
             return left.mode.localeCompare(right.mode);
         });
-        if (!entries.length)
-            return '-';
-        return entries
+        if (!entries.length) {
+            const parts = [];
+            if (!enabled.heuristic)
+                parts.push('Heuristic off');
+            if (!enabled.xgboost)
+                parts.push('XGBoost off');
+            return parts.length ? parts.join(' | ') : '-';
+        }
+        const parts = entries
             .map((entry) => {
             const coverage = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%';
             const rate = entry.winRate == null ? '-' : formatPct(entry.winRate, 0);
             return `${modeLabel(entry.mode)} ${formatCount(entry.resolvedCount)}r/${formatCount(entry.acceptedCount)}a ${coverage} ${rate} ${formatDollar(entry.totalPnlUsd)}`;
         })
-            .join(' | ');
+        if (!enabled.heuristic)
+            parts.push('Heuristic off');
+        if (!enabled.xgboost)
+            parts.push('XGBoost off');
+        return parts.join(' | ');
     }
     catch {
         return '-';
@@ -2715,12 +2769,12 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         },
         {
             label: 'Search modes',
-            value: replaySearchModeMixSummary(latestReplaySearch?.result_json),
+            value: replaySearchModeMixSummary(latestReplaySearch?.result_json, latestReplaySearch?.policy_json),
             color: latestReplaySearch?.result_json ? theme.white : theme.dim
         },
         {
             label: 'Cur evidence',
-            value: replaySearchCurrentModeEvidenceSummary(latestReplaySearch?.current_candidate_result_json),
+            value: replaySearchCurrentModeEvidenceSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.base_policy_json),
             color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
         },
         {
@@ -2761,7 +2815,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         },
         {
             label: 'Mode drift',
-            value: replaySearchModeDriftSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json),
+            value: replaySearchModeDriftSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.policy_json, latestReplaySearch?.base_policy_json),
             color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
         },
         {

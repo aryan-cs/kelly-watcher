@@ -193,6 +193,12 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(result["trader_concentration"]["top_accepted_share"], 1.0)
                 self.assertEqual(result["trader_concentration"]["top_abs_pnl_trader_address"], "0xaaa")
                 self.assertEqual(result["trader_concentration"]["top_abs_pnl_share"], 1.0)
+                self.assertEqual(result["entry_price_band_concentration"]["entry_price_band_count"], 1)
+                self.assertEqual(result["entry_price_band_concentration"]["top_accepted_entry_price_band"], "0.60-0.69")
+                self.assertEqual(result["entry_price_band_concentration"]["top_accepted_share"], 1.0)
+                self.assertEqual(result["time_to_close_band_concentration"]["time_to_close_band_count"], 1)
+                self.assertEqual(result["time_to_close_band_concentration"]["top_accepted_time_to_close_band"], "<=5m")
+                self.assertEqual(result["time_to_close_band_concentration"]["top_abs_pnl_share"], 1.0)
 
                 conn = sqlite3.connect(str(test_db_path))
                 conn.row_factory = sqlite3.Row

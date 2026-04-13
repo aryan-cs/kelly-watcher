@@ -389,6 +389,10 @@ class ReplaySearchTest(unittest.TestCase):
             max_top_trader_abs_pnl_share=0.0,
             max_top_market_accepted_share=0.0,
             max_top_market_abs_pnl_share=0.0,
+            max_top_entry_price_band_accepted_share=0.0,
+            max_top_entry_price_band_abs_pnl_share=0.0,
+            max_top_time_to_close_band_accepted_share=0.0,
+            max_top_time_to_close_band_abs_pnl_share=0.0,
         )
 
         self.assertEqual(failures, [])
@@ -1004,6 +1008,144 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["max_top_market_abs_pnl_share"], 0.6)
         self.assertIn("market n 40%", stderr.getvalue())
         self.assertIn("market pnl 45%", stderr.getvalue())
+
+    def test_main_can_limit_top_entry_price_band_concentration(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 60.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "win_rate": 0.6,
+                    "entry_price_band_concentration": {
+                        "entry_price_band_count": 3,
+                        "top_accepted_entry_price_band": "0.60-0.69",
+                        "top_accepted_count": 4,
+                        "top_accepted_share": 0.40,
+                        "top_accepted_total_pnl_usd": 18.0,
+                        "top_abs_pnl_entry_price_band": ">=0.70",
+                        "top_abs_pnl_usd": 26.0,
+                        "top_abs_pnl_share": 0.45,
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 72.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.6,
+                "entry_price_band_concentration": {
+                    "entry_price_band_count": 2,
+                    "top_accepted_entry_price_band": "0.60-0.69",
+                    "top_accepted_count": 7,
+                    "top_accepted_share": 0.70,
+                    "top_accepted_total_pnl_usd": 50.0,
+                    "top_abs_pnl_entry_price_band": "0.60-0.69",
+                    "top_abs_pnl_usd": 57.0,
+                    "top_abs_pnl_share": 0.79,
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--max-top-entry-price-band-accepted-share",
+            "0.60",
+            "--max-top-entry-price-band-abs-pnl-share",
+            "0.60",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["top_entry_price_band_accepted_share", "top_entry_price_band_abs_pnl_share"])
+        self.assertEqual(payload["constraints"]["max_top_entry_price_band_accepted_share"], 0.6)
+        self.assertEqual(payload["constraints"]["max_top_entry_price_band_abs_pnl_share"], 0.6)
+        self.assertIn("band n 40%", stderr.getvalue())
+        self.assertIn("band pnl 45%", stderr.getvalue())
+
+    def test_main_can_limit_top_time_to_close_band_concentration(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 58.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "win_rate": 0.6,
+                    "time_to_close_band_concentration": {
+                        "time_to_close_band_count": 4,
+                        "top_accepted_time_to_close_band": "2h-12h",
+                        "top_accepted_count": 4,
+                        "top_accepted_share": 0.40,
+                        "top_accepted_total_pnl_usd": 16.0,
+                        "top_abs_pnl_time_to_close_band": "12h-1d",
+                        "top_abs_pnl_usd": 25.0,
+                        "top_abs_pnl_share": 0.45,
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 70.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.6,
+                "time_to_close_band_concentration": {
+                    "time_to_close_band_count": 2,
+                    "top_accepted_time_to_close_band": "2h-12h",
+                    "top_accepted_count": 7,
+                    "top_accepted_share": 0.70,
+                    "top_accepted_total_pnl_usd": 48.0,
+                    "top_abs_pnl_time_to_close_band": "2h-12h",
+                    "top_abs_pnl_usd": 56.0,
+                    "top_abs_pnl_share": 0.80,
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--max-top-time-to-close-band-accepted-share",
+            "0.60",
+            "--max-top-time-to-close-band-abs-pnl-share",
+            "0.60",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["top_time_to_close_band_accepted_share", "top_time_to_close_band_abs_pnl_share"])
+        self.assertEqual(payload["constraints"]["max_top_time_to_close_band_accepted_share"], 0.6)
+        self.assertEqual(payload["constraints"]["max_top_time_to_close_band_abs_pnl_share"], 0.6)
+        self.assertIn("hzn n 40%", stderr.getvalue())
+        self.assertIn("hzn pnl 45%", stderr.getvalue())
 
     def test_main_can_penalize_pause_guard_reject_share_in_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -2938,6 +3080,10 @@ class ReplaySearchTest(unittest.TestCase):
                     "max_pause_guard_reject_share": 0.0,
                     "max_top_market_accepted_share": 0.0,
                     "max_top_market_abs_pnl_share": 0.0,
+                    "max_top_entry_price_band_accepted_share": 0.0,
+                    "max_top_entry_price_band_abs_pnl_share": 0.0,
+                    "max_top_time_to_close_band_accepted_share": 0.0,
+                    "max_top_time_to_close_band_abs_pnl_share": 0.0,
                     "max_top_trader_accepted_share": 0.0,
                     "max_top_trader_abs_pnl_share": 0.0,
                     "max_worst_window_drawdown_pct": 0.0,

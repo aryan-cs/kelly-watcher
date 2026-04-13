@@ -719,6 +719,8 @@ def _simulate(
     signal_mode_summary = _segment_summary(segment_metric_rows, segment_kind="signal_mode")
     trader_concentration = _trader_concentration(segment_metric_rows)
     market_concentration = _market_concentration(segment_metric_rows)
+    entry_price_band_concentration = _entry_price_band_concentration(segment_metric_rows)
+    time_to_close_band_concentration = _time_to_close_band_concentration(segment_metric_rows)
     _insert_segment_metrics(conn, run_id, segment_metric_rows)
     conn.commit()
 
@@ -742,6 +744,8 @@ def _simulate(
         "signal_mode_summary": signal_mode_summary,
         "trader_concentration": trader_concentration,
         "market_concentration": market_concentration,
+        "entry_price_band_concentration": entry_price_band_concentration,
+        "time_to_close_band_concentration": time_to_close_band_concentration,
     }
 
 
@@ -1182,6 +1186,26 @@ def _market_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
         segment_count_key="market_count",
         count_key="top_accepted_market_id",
         pnl_key="top_abs_pnl_market_id",
+    )
+
+
+def _entry_price_band_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return _segment_concentration(
+        rows,
+        segment_kind="entry_price_band",
+        segment_count_key="entry_price_band_count",
+        count_key="top_accepted_entry_price_band",
+        pnl_key="top_abs_pnl_entry_price_band",
+    )
+
+
+def _time_to_close_band_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return _segment_concentration(
+        rows,
+        segment_kind="time_to_close_band",
+        segment_count_key="time_to_close_band_count",
+        count_key="top_accepted_time_to_close_band",
+        pnl_key="top_abs_pnl_time_to_close_band",
     )
 
 

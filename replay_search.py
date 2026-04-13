@@ -516,6 +516,20 @@ def _market_concentration(result: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
+def _entry_price_band_concentration(result: dict[str, Any]) -> dict[str, Any]:
+    raw = result.get("entry_price_band_concentration")
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
+def _time_to_close_band_concentration(result: dict[str, Any]) -> dict[str, Any]:
+    raw = result.get("time_to_close_band_concentration")
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
 def _clamp_fraction(raw: float) -> float:
     return min(max(float(raw), 0.0), 1.0)
 
@@ -559,6 +573,10 @@ def _constraint_failures(
     max_top_trader_abs_pnl_share: float,
     max_top_market_accepted_share: float,
     max_top_market_abs_pnl_share: float,
+    max_top_entry_price_band_accepted_share: float,
+    max_top_entry_price_band_abs_pnl_share: float,
+    max_top_time_to_close_band_accepted_share: float,
+    max_top_time_to_close_band_abs_pnl_share: float,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
@@ -567,6 +585,8 @@ def _constraint_failures(
     signal_mode_summary = _signal_mode_summary(result)
     trader_concentration = _trader_concentration(result)
     market_concentration = _market_concentration(result)
+    entry_price_band_concentration = _entry_price_band_concentration(result)
+    time_to_close_band_concentration = _time_to_close_band_concentration(result)
     raw_win_rate = result.get("win_rate")
     win_rate = float(raw_win_rate) if raw_win_rate is not None else None
     total_pnl_usd = float(result.get("total_pnl_usd") or 0.0)
@@ -649,6 +669,14 @@ def _constraint_failures(
         failures.append("top_market_accepted_share")
     if max_top_market_abs_pnl_share > 0 and float(market_concentration.get("top_abs_pnl_share") or 0.0) > max_top_market_abs_pnl_share:
         failures.append("top_market_abs_pnl_share")
+    if max_top_entry_price_band_accepted_share > 0 and float(entry_price_band_concentration.get("top_accepted_share") or 0.0) > max_top_entry_price_band_accepted_share:
+        failures.append("top_entry_price_band_accepted_share")
+    if max_top_entry_price_band_abs_pnl_share > 0 and float(entry_price_band_concentration.get("top_abs_pnl_share") or 0.0) > max_top_entry_price_band_abs_pnl_share:
+        failures.append("top_entry_price_band_abs_pnl_share")
+    if max_top_time_to_close_band_accepted_share > 0 and float(time_to_close_band_concentration.get("top_accepted_share") or 0.0) > max_top_time_to_close_band_accepted_share:
+        failures.append("top_time_to_close_band_accepted_share")
+    if max_top_time_to_close_band_abs_pnl_share > 0 and float(time_to_close_band_concentration.get("top_abs_pnl_share") or 0.0) > max_top_time_to_close_band_abs_pnl_share:
+        failures.append("top_time_to_close_band_abs_pnl_share")
     return failures
 
 
@@ -675,11 +703,17 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         pause_suffix = f" | pause {pause_guard_share * 100:.0f}%" if pause_guard_share > 0 else ""
         trader_concentration = _trader_concentration(row["result"])
         market_concentration = _market_concentration(row["result"])
+        entry_price_band_concentration = _entry_price_band_concentration(row["result"])
+        time_to_close_band_concentration = _time_to_close_band_concentration(row["result"])
         concentration_parts: list[str] = []
         top_accepted_share = float(trader_concentration.get("top_accepted_share") or 0.0)
         top_abs_pnl_share = float(trader_concentration.get("top_abs_pnl_share") or 0.0)
         top_market_accepted_share = float(market_concentration.get("top_accepted_share") or 0.0)
         top_market_abs_pnl_share = float(market_concentration.get("top_abs_pnl_share") or 0.0)
+        top_entry_band_accepted_share = float(entry_price_band_concentration.get("top_accepted_share") or 0.0)
+        top_entry_band_abs_pnl_share = float(entry_price_band_concentration.get("top_abs_pnl_share") or 0.0)
+        top_horizon_accepted_share = float(time_to_close_band_concentration.get("top_accepted_share") or 0.0)
+        top_horizon_abs_pnl_share = float(time_to_close_band_concentration.get("top_abs_pnl_share") or 0.0)
         if top_accepted_share > 0:
             concentration_parts.append(f"wallet n {top_accepted_share * 100:.0f}%")
         if top_abs_pnl_share > 0:
@@ -688,6 +722,14 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             concentration_parts.append(f"market n {top_market_accepted_share * 100:.0f}%")
         if top_market_abs_pnl_share > 0:
             concentration_parts.append(f"market pnl {top_market_abs_pnl_share * 100:.0f}%")
+        if top_entry_band_accepted_share > 0:
+            concentration_parts.append(f"band n {top_entry_band_accepted_share * 100:.0f}%")
+        if top_entry_band_abs_pnl_share > 0:
+            concentration_parts.append(f"band pnl {top_entry_band_abs_pnl_share * 100:.0f}%")
+        if top_horizon_accepted_share > 0:
+            concentration_parts.append(f"hzn n {top_horizon_accepted_share * 100:.0f}%")
+        if top_horizon_abs_pnl_share > 0:
+            concentration_parts.append(f"hzn pnl {top_horizon_abs_pnl_share * 100:.0f}%")
         concentration_suffix = f" | {' / '.join(concentration_parts)}" if concentration_parts else ""
         window_count = int(row["result"].get("window_count") or 0)
         window_suffix = ""
@@ -899,6 +941,16 @@ def _aggregate_window_results(
     }
     trader_concentration_rows = [row.get("trader_concentration") for row in window_results if isinstance(row.get("trader_concentration"), dict)]
     market_concentration_rows = [row.get("market_concentration") for row in window_results if isinstance(row.get("market_concentration"), dict)]
+    entry_price_band_concentration_rows = [
+        row.get("entry_price_band_concentration")
+        for row in window_results
+        if isinstance(row.get("entry_price_band_concentration"), dict)
+    ]
+    time_to_close_band_concentration_rows = [
+        row.get("time_to_close_band_concentration")
+        for row in window_results
+        if isinstance(row.get("time_to_close_band_concentration"), dict)
+    ]
     top_accepted_window = max(
         trader_concentration_rows,
         key=lambda row: float((row or {}).get("top_accepted_share") or 0.0),
@@ -941,6 +993,48 @@ def _aggregate_window_results(
         "top_abs_pnl_share": round(float((top_market_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
         "market_count": max((int((row or {}).get("market_count") or 0) for row in market_concentration_rows), default=0),
     }
+    top_entry_price_band_accepted_window = max(
+        entry_price_band_concentration_rows,
+        key=lambda row: float((row or {}).get("top_accepted_share") or 0.0),
+        default=None,
+    )
+    top_entry_price_band_abs_pnl_window = max(
+        entry_price_band_concentration_rows,
+        key=lambda row: float((row or {}).get("top_abs_pnl_share") or 0.0),
+        default=None,
+    )
+    entry_price_band_concentration = {
+        "window_mode": "max_window",
+        "top_accepted_entry_price_band": str((top_entry_price_band_accepted_window or {}).get("top_accepted_entry_price_band") or ""),
+        "top_accepted_count": int((top_entry_price_band_accepted_window or {}).get("top_accepted_count") or 0),
+        "top_accepted_share": round(float((top_entry_price_band_accepted_window or {}).get("top_accepted_share") or 0.0), 6),
+        "top_accepted_total_pnl_usd": round(float((top_entry_price_band_accepted_window or {}).get("top_accepted_total_pnl_usd") or 0.0), 6),
+        "top_abs_pnl_entry_price_band": str((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_entry_price_band") or ""),
+        "top_abs_pnl_usd": round(float((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
+        "top_abs_pnl_share": round(float((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
+        "entry_price_band_count": max((int((row or {}).get("entry_price_band_count") or 0) for row in entry_price_band_concentration_rows), default=0),
+    }
+    top_time_to_close_band_accepted_window = max(
+        time_to_close_band_concentration_rows,
+        key=lambda row: float((row or {}).get("top_accepted_share") or 0.0),
+        default=None,
+    )
+    top_time_to_close_band_abs_pnl_window = max(
+        time_to_close_band_concentration_rows,
+        key=lambda row: float((row or {}).get("top_abs_pnl_share") or 0.0),
+        default=None,
+    )
+    time_to_close_band_concentration = {
+        "window_mode": "max_window",
+        "top_accepted_time_to_close_band": str((top_time_to_close_band_accepted_window or {}).get("top_accepted_time_to_close_band") or ""),
+        "top_accepted_count": int((top_time_to_close_band_accepted_window or {}).get("top_accepted_count") or 0),
+        "top_accepted_share": round(float((top_time_to_close_band_accepted_window or {}).get("top_accepted_share") or 0.0), 6),
+        "top_accepted_total_pnl_usd": round(float((top_time_to_close_band_accepted_window or {}).get("top_accepted_total_pnl_usd") or 0.0), 6),
+        "top_abs_pnl_time_to_close_band": str((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_time_to_close_band") or ""),
+        "top_abs_pnl_usd": round(float((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
+        "top_abs_pnl_share": round(float((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
+        "time_to_close_band_count": max((int((row or {}).get("time_to_close_band_count") or 0) for row in time_to_close_band_concentration_rows), default=0),
+    }
     return {
         "window_count": len(window_results),
         "window_results": window_results,
@@ -971,6 +1065,8 @@ def _aggregate_window_results(
         "signal_mode_summary": signal_mode_summary,
         "trader_concentration": trader_concentration,
         "market_concentration": market_concentration,
+        "entry_price_band_concentration": entry_price_band_concentration,
+        "time_to_close_band_concentration": time_to_close_band_concentration,
     }
 
 
@@ -1352,6 +1448,10 @@ def main() -> None:
     parser.add_argument("--max-top-trader-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single trader.")
     parser.add_argument("--max-top-market-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single market.")
     parser.add_argument("--max-top-market-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single market.")
+    parser.add_argument("--max-top-entry-price-band-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single entry-price band.")
+    parser.add_argument("--max-top-entry-price-band-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single entry-price band.")
+    parser.add_argument("--max-top-time-to-close-band-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single time-to-close band.")
+    parser.add_argument("--max-top-time-to-close-band-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single time-to-close band.")
     args = parser.parse_args()
 
     base_policy = _load_base_policy(args)
@@ -1430,6 +1530,10 @@ def main() -> None:
         max_top_trader_abs_pnl_share=_clamp_fraction(args.max_top_trader_abs_pnl_share),
         max_top_market_accepted_share=_clamp_fraction(args.max_top_market_accepted_share),
         max_top_market_abs_pnl_share=_clamp_fraction(args.max_top_market_abs_pnl_share),
+        max_top_entry_price_band_accepted_share=_clamp_fraction(args.max_top_entry_price_band_accepted_share),
+        max_top_entry_price_band_abs_pnl_share=_clamp_fraction(args.max_top_entry_price_band_abs_pnl_share),
+        max_top_time_to_close_band_accepted_share=_clamp_fraction(args.max_top_time_to_close_band_accepted_share),
+        max_top_time_to_close_band_abs_pnl_share=_clamp_fraction(args.max_top_time_to_close_band_abs_pnl_share),
     )
     if int(current_result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
         current_constraint_failures.append("positive_window_count")
@@ -1552,6 +1656,10 @@ def main() -> None:
             max_top_trader_abs_pnl_share=_clamp_fraction(args.max_top_trader_abs_pnl_share),
             max_top_market_accepted_share=_clamp_fraction(args.max_top_market_accepted_share),
             max_top_market_abs_pnl_share=_clamp_fraction(args.max_top_market_abs_pnl_share),
+            max_top_entry_price_band_accepted_share=_clamp_fraction(args.max_top_entry_price_band_accepted_share),
+            max_top_entry_price_band_abs_pnl_share=_clamp_fraction(args.max_top_entry_price_band_abs_pnl_share),
+            max_top_time_to_close_band_accepted_share=_clamp_fraction(args.max_top_time_to_close_band_accepted_share),
+            max_top_time_to_close_band_abs_pnl_share=_clamp_fraction(args.max_top_time_to_close_band_abs_pnl_share),
         )
         if int(result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
             constraint_failures.append("positive_window_count")
@@ -1618,6 +1726,10 @@ def main() -> None:
         "max_top_trader_abs_pnl_share": _clamp_fraction(args.max_top_trader_abs_pnl_share),
         "max_top_market_accepted_share": _clamp_fraction(args.max_top_market_accepted_share),
         "max_top_market_abs_pnl_share": _clamp_fraction(args.max_top_market_abs_pnl_share),
+        "max_top_entry_price_band_accepted_share": _clamp_fraction(args.max_top_entry_price_band_accepted_share),
+        "max_top_entry_price_band_abs_pnl_share": _clamp_fraction(args.max_top_entry_price_band_abs_pnl_share),
+        "max_top_time_to_close_band_accepted_share": _clamp_fraction(args.max_top_time_to_close_band_accepted_share),
+        "max_top_time_to_close_band_abs_pnl_share": _clamp_fraction(args.max_top_time_to_close_band_abs_pnl_share),
     }
     finished_at = int(time.time())
     search_run_id = _persist_search_results(

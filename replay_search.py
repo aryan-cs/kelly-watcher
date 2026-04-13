@@ -328,6 +328,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "best_window_pnl_usd": None,
                 "worst_window_resolved_share": None,
                 "worst_active_window_resolved_share": None,
+                "worst_active_window_accepted_count": None,
                 "win_count": 0,
                 "win_rate": None,
             },
@@ -356,6 +357,16 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             float(raw_worst_active_window_resolved_share)
             if raw_worst_active_window_resolved_share is not None
             else resolved_worst_window_resolved_share
+        )
+        raw_worst_active_window_accepted_count = raw_values.get("worst_active_window_accepted_count")
+        resolved_worst_active_window_accepted_count = (
+            int(raw_worst_active_window_accepted_count)
+            if raw_worst_active_window_accepted_count is not None
+            else (
+                int(raw_values.get("accepted_count") or 0)
+                if int(raw_values.get("accepted_count") or 0) > 0
+                else None
+            )
         )
         resolved_positive_window_count = (
             int(raw_values.get("positive_window_count") or 0)
@@ -394,6 +405,12 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if bucket["worst_active_window_resolved_share"] is None
             else min(float(bucket["worst_active_window_resolved_share"]), resolved_worst_active_window_resolved_share)
         )
+        if resolved_worst_active_window_accepted_count is not None:
+            bucket["worst_active_window_accepted_count"] = (
+                resolved_worst_active_window_accepted_count
+                if bucket["worst_active_window_accepted_count"] is None
+                else min(int(bucket["worst_active_window_accepted_count"]), resolved_worst_active_window_accepted_count)
+            )
         bucket["best_window_pnl_usd"] = (
             resolved_best_window_pnl_usd
             if bucket["best_window_pnl_usd"] is None
@@ -419,6 +436,11 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         values["worst_active_window_resolved_share"] = (
             round(float(values["worst_active_window_resolved_share"]), 6)
             if values["worst_active_window_resolved_share"] is not None
+            else None
+        )
+        values["worst_active_window_accepted_count"] = (
+            int(values["worst_active_window_accepted_count"])
+            if values["worst_active_window_accepted_count"] is not None
             else None
         )
         values["best_window_pnl_usd"] = (
@@ -624,6 +646,8 @@ def _constraint_failures(
     min_xgboost_worst_window_resolved_share: float,
     min_heuristic_positive_window_count: int,
     min_xgboost_positive_window_count: int,
+    min_heuristic_worst_active_window_accepted_count: int,
+    min_xgboost_worst_active_window_accepted_count: int,
     max_heuristic_inactive_window_count: int,
     max_xgboost_inactive_window_count: int,
     max_heuristic_accepted_share: float,
@@ -719,10 +743,26 @@ def _constraint_failures(
         failures.append("xgboost_positive_window_count")
     heuristic_inactive_window_count = int(signal_mode_summary.get("heuristic", {}).get("inactive_window_count") or 0)
     xgboost_inactive_window_count = int(signal_mode_summary.get("xgboost", {}).get("inactive_window_count") or 0)
+    heuristic_worst_active_window_accepted_count = signal_mode_summary.get("heuristic", {}).get("worst_active_window_accepted_count")
+    xgboost_worst_active_window_accepted_count = signal_mode_summary.get("xgboost", {}).get("worst_active_window_accepted_count")
     if allow_heuristic and max_heuristic_inactive_window_count >= 0 and heuristic_inactive_window_count > max_heuristic_inactive_window_count:
         failures.append("heuristic_inactive_window_count")
     if allow_xgboost and max_xgboost_inactive_window_count >= 0 and xgboost_inactive_window_count > max_xgboost_inactive_window_count:
         failures.append("xgboost_inactive_window_count")
+    if (
+        allow_heuristic
+        and min_heuristic_worst_active_window_accepted_count > 0
+        and int(signal_mode_summary.get("heuristic", {}).get("accepted_count") or 0) > 0
+        and int(heuristic_worst_active_window_accepted_count or 0) < min_heuristic_worst_active_window_accepted_count
+    ):
+        failures.append("heuristic_worst_active_window_accepted_count")
+    if (
+        allow_xgboost
+        and min_xgboost_worst_active_window_accepted_count > 0
+        and int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) > 0
+        and int(xgboost_worst_active_window_accepted_count or 0) < min_xgboost_worst_active_window_accepted_count
+    ):
+        failures.append("xgboost_worst_active_window_accepted_count")
     heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
     xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
     if allow_heuristic and max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
@@ -1000,23 +1040,27 @@ def _aggregate_window_results(
                     "window_pnls": [],
                     "window_resolved_shares": [],
                     "active_window_resolved_shares": [],
+                    "active_window_accepted_counts": [],
                     "win_count": 0.0,
                 },
             )
-            is_inactive_window = mode not in window_mode_summary
+            mode_accepted_count = int(values.get("accepted_count") or 0)
+            mode_resolved_count = int(values.get("resolved_count") or 0)
+            is_inactive_window = mode_accepted_count <= 0
             bucket["trade_count"] += int(values.get("trade_count") or 0)
-            bucket["accepted_count"] += int(values.get("accepted_count") or 0)
-            bucket["resolved_count"] += int(values.get("resolved_count") or 0)
+            bucket["accepted_count"] += mode_accepted_count
+            bucket["resolved_count"] += mode_resolved_count
             window_pnl_usd = float(values.get("total_pnl_usd") or 0.0)
             bucket["total_pnl_usd"] += window_pnl_usd
             bucket["positive_window_count"] += 1 if window_pnl_usd > 0 else 0
             bucket["negative_window_count"] += 1 if window_pnl_usd < 0 else 0
             bucket["inactive_window_count"] += 1 if is_inactive_window else 0
             bucket["window_pnls"].append(window_pnl_usd)
-            window_resolved_share = _resolved_share_from_counts(values.get("accepted_count"), values.get("resolved_count"))
+            window_resolved_share = _resolved_share_from_counts(mode_accepted_count, mode_resolved_count)
             bucket["window_resolved_shares"].append(window_resolved_share)
-            if not is_inactive_window:
+            if mode_accepted_count > 0:
                 bucket["active_window_resolved_shares"].append(window_resolved_share)
+                bucket["active_window_accepted_counts"].append(mode_accepted_count)
             bucket["win_count"] += int(values.get("win_count") or 0)
     signal_mode_summary = {
         mode: {
@@ -1033,6 +1077,11 @@ def _aggregate_window_results(
                 round(min(values["active_window_resolved_shares"]), 6)
                 if values["active_window_resolved_shares"]
                 else 1.0
+            ),
+            "worst_active_window_accepted_count": (
+                int(min(values["active_window_accepted_counts"]))
+                if values["active_window_accepted_counts"]
+                else None
             ),
             "best_window_pnl_usd": round(max(values["window_pnls"]), 6) if values["window_pnls"] else None,
             "win_count": int(values["win_count"]),
@@ -1587,6 +1636,8 @@ def main() -> None:
     parser.add_argument("--min-xgboost-worst-window-resolved-share", type=float, default=0.0, help="Minimum resolved-share required for xgboost in its worst replay window.")
     parser.add_argument("--min-heuristic-positive-windows", type=int, default=0, help="Minimum count of positive replay windows required from heuristic.")
     parser.add_argument("--min-xgboost-positive-windows", type=int, default=0, help="Minimum count of positive replay windows required from xgboost.")
+    parser.add_argument("--min-heuristic-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in heuristic's sparsest active replay window.")
+    parser.add_argument("--min-xgboost-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in xgboost's sparsest active replay window.")
     parser.add_argument("--max-heuristic-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where heuristic may be inactive before a candidate is rejected.")
     parser.add_argument("--max-xgboost-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where xgboost may be inactive before a candidate is rejected.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
@@ -1676,6 +1727,8 @@ def main() -> None:
         min_xgboost_worst_window_resolved_share=_clamp_fraction(args.min_xgboost_worst_window_resolved_share),
         min_heuristic_positive_window_count=max(args.min_heuristic_positive_windows, 0),
         min_xgboost_positive_window_count=max(args.min_xgboost_positive_windows, 0),
+        min_heuristic_worst_active_window_accepted_count=max(args.min_heuristic_worst_active_window_accepted_count, 0),
+        min_xgboost_worst_active_window_accepted_count=max(args.min_xgboost_worst_active_window_accepted_count, 0),
         max_heuristic_inactive_window_count=int(args.max_heuristic_inactive_windows),
         max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
@@ -1818,6 +1871,8 @@ def main() -> None:
             min_xgboost_worst_window_resolved_share=_clamp_fraction(args.min_xgboost_worst_window_resolved_share),
             min_heuristic_positive_window_count=max(args.min_heuristic_positive_windows, 0),
             min_xgboost_positive_window_count=max(args.min_xgboost_positive_windows, 0),
+            min_heuristic_worst_active_window_accepted_count=max(args.min_heuristic_worst_active_window_accepted_count, 0),
+            min_xgboost_worst_active_window_accepted_count=max(args.min_xgboost_worst_active_window_accepted_count, 0),
             max_heuristic_inactive_window_count=int(args.max_heuristic_inactive_windows),
             max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
@@ -1898,6 +1953,8 @@ def main() -> None:
         "min_xgboost_worst_window_resolved_share": _clamp_fraction(args.min_xgboost_worst_window_resolved_share),
         "min_heuristic_positive_windows": max(args.min_heuristic_positive_windows, 0),
         "min_xgboost_positive_windows": max(args.min_xgboost_positive_windows, 0),
+        "min_heuristic_worst_active_window_accepted_count": max(args.min_heuristic_worst_active_window_accepted_count, 0),
+        "min_xgboost_worst_active_window_accepted_count": max(args.min_xgboost_worst_active_window_accepted_count, 0),
         "max_heuristic_inactive_windows": int(args.max_heuristic_inactive_windows),
         "max_xgboost_inactive_windows": int(args.max_xgboost_inactive_windows),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),

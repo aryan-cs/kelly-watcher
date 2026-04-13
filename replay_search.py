@@ -643,6 +643,7 @@ def _constraint_failures(
     max_top_entry_price_band_abs_pnl_share: float,
     max_top_time_to_close_band_accepted_share: float,
     max_top_time_to_close_band_abs_pnl_share: float,
+    min_worst_active_window_accepted_count: int = 0,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
@@ -662,6 +663,7 @@ def _constraint_failures(
     worst_window_drawdown_pct = float(result.get("worst_window_drawdown_pct") or 0.0)
     active_window_count = int(result.get("active_window_count") or 0)
     inactive_window_count = int(result.get("inactive_window_count") or 0)
+    worst_active_window_accepted_count = int(result.get("worst_active_window_accepted_count") or 0)
 
     if accepted_count < max(min_accepted_count, 0):
         failures.append("accepted_count")
@@ -733,6 +735,8 @@ def _constraint_failures(
         failures.append("active_window_count")
     if max_inactive_window_count >= 0 and inactive_window_count > max_inactive_window_count:
         failures.append("inactive_window_count")
+    if worst_active_window_accepted_count < max(min_worst_active_window_accepted_count, 0):
+        failures.append("worst_active_window_accepted_count")
     if int(trader_concentration.get("trader_count") or 0) < max(min_trader_count, 0):
         failures.append("trader_count")
     if int(market_concentration.get("market_count") or 0) < max(min_market_count, 0):
@@ -816,10 +820,12 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         if window_count > 1:
             positive_window_count = int(row["result"].get("positive_window_count") or 0)
             active_window_count = int(row["result"].get("active_window_count") or 0)
+            worst_active_window_accepted_count = int(row["result"].get("worst_active_window_accepted_count") or 0)
             worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
             window_suffix = (
                 f" | windows {positive_window_count}/{window_count}+"
                 f" active {active_window_count}/{window_count}"
+                f" worst-act {worst_active_window_accepted_count}"
                 f" | worst {worst_window_pnl_usd:+.2f}"
             )
         print(
@@ -943,6 +949,10 @@ def _aggregate_window_results(
     negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
     active_window_count = sum(1 for row in window_results if int(row.get("accepted_count") or 0) > 0)
     inactive_window_count = max(len(window_results) - active_window_count, 0)
+    worst_active_window_accepted_count = min(
+        (int(row.get("accepted_count") or 0) for row in window_results if int(row.get("accepted_count") or 0) > 0),
+        default=0,
+    )
     worst_window_resolved_share = min(
         (
             _resolved_share_from_counts(row.get("accepted_count"), row.get("resolved_count"))
@@ -1167,6 +1177,7 @@ def _aggregate_window_results(
         "negative_window_count": negative_window_count,
         "active_window_count": active_window_count,
         "inactive_window_count": inactive_window_count,
+        "worst_active_window_accepted_count": worst_active_window_accepted_count,
         "window_avg_pnl_usd": round(window_avg_pnl_usd, 6),
         "window_pnl_stddev_usd": round(window_pnl_stddev_usd, 6),
         "worst_window_pnl_usd": round(min(pnl_values, default=0.0), 6),
@@ -1550,6 +1561,7 @@ def main() -> None:
     parser.add_argument("--min-positive-windows", type=int, default=0, help="Minimum count of positive-P&L windows required for feasibility.")
     parser.add_argument("--min-active-windows", type=int, default=0, help="Minimum count of active replay windows required for a candidate to be feasible.")
     parser.add_argument("--max-inactive-windows", type=int, default=-1, help="Maximum count of inactive replay windows allowed before a candidate is rejected.")
+    parser.add_argument("--min-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in the sparsest active replay window.")
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-count", type=int, default=0, help="Minimum resolved trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades that must be resolved.")
@@ -1671,6 +1683,7 @@ def main() -> None:
         max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
         min_active_window_count=max(args.min_active_windows, 0),
         max_inactive_window_count=int(args.max_inactive_windows),
+        min_worst_active_window_accepted_count=max(args.min_worst_active_window_accepted_count, 0),
         min_trader_count=max(args.min_trader_count, 0),
         min_market_count=max(args.min_market_count, 0),
         min_entry_price_band_count=max(args.min_entry_price_band_count, 0),
@@ -1812,6 +1825,7 @@ def main() -> None:
             max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
             min_active_window_count=max(args.min_active_windows, 0),
             max_inactive_window_count=int(args.max_inactive_windows),
+            min_worst_active_window_accepted_count=max(args.min_worst_active_window_accepted_count, 0),
             min_trader_count=max(args.min_trader_count, 0),
             min_market_count=max(args.min_market_count, 0),
             min_entry_price_band_count=max(args.min_entry_price_band_count, 0),
@@ -1864,6 +1878,7 @@ def main() -> None:
         "min_positive_windows": max(args.min_positive_windows, 0),
         "min_active_windows": max(args.min_active_windows, 0),
         "max_inactive_windows": int(args.max_inactive_windows),
+        "min_worst_active_window_accepted_count": max(args.min_worst_active_window_accepted_count, 0),
         "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
         "min_worst_window_resolved_share": _clamp_fraction(args.min_worst_window_resolved_share),
         "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),

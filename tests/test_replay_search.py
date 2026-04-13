@@ -1427,6 +1427,68 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_active_windows"], 2)
         self.assertIn("reject active_window_count", stderr.getvalue())
 
+    def test_main_can_require_minimum_worst_active_window_accepted_count(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 1 if start_ts == 1 else 2,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "total_pnl_usd": 18.0 if start_ts == 1 else 7.0,
+                    "max_drawdown_pct": 0.03,
+                    "accepted_count": 6 if start_ts == 1 else 1,
+                    "resolved_count": 6 if start_ts == 1 else 1,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 6 if start_ts == 1 else 1,
+                    "win_rate": 4 / 6 if start_ts == 1 else 1.0,
+                }
+            return {
+                "run_id": 3 if start_ts == 1 else 4,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 11.0 if start_ts == 1 else 9.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": 4,
+                "resolved_count": 4,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 4,
+                "win_rate": 0.75,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--min-worst-active-window-accepted-count",
+            "2",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        self.assertEqual(rejected["constraint_failures"], ["worst_active_window_accepted_count"])
+        self.assertEqual(rejected["result"]["active_window_count"], 2)
+        self.assertEqual(rejected["result"]["worst_active_window_accepted_count"], 1)
+        self.assertEqual(payload["constraints"]["min_worst_active_window_accepted_count"], 2)
+        self.assertIn("reject worst_active_window_accepted_count", stderr.getvalue())
+
     def test_main_uses_worst_active_window_counts_for_distinct_concentration_floors(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -3558,6 +3620,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "max_xgboost_inactive_windows": -1,
                     "min_accepted_count": 5,
                     "min_active_windows": 0,
+                    "min_worst_active_window_accepted_count": 0,
                     "min_entry_price_band_count": 0,
                     "min_heuristic_accepted_count": 0,
                     "min_heuristic_resolved_count": 0,

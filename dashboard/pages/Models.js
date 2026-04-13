@@ -72,7 +72,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-loss, scorer-inactivity, and concentration terms.' },
             { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
             { label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.' },
-            { label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, and the worst window P&L for the latest best feasible search candidate.' },
+            { label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, sparsest active-window depth, and the worst window P&L for the latest best feasible search candidate.' },
             { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
             { label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.' },
             { label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.' },
@@ -2219,6 +2219,8 @@ function replaySearchFailureSummary(raw, feasible) {
                     return 'active windows';
                 case 'inactive_window_count':
                     return 'inactive windows';
+                case 'worst_active_window_accepted_count':
+                    return 'worst act n';
                 case 'pause_guard_reject_share':
                     return 'pause share';
                 case 'trader_count':
@@ -2321,6 +2323,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalPositiveWindows = Number(resultParsed.positive_window_count || 0);
         const globalActiveWindows = Number(resultParsed.active_window_count || 0);
         const globalInactiveWindows = Number(resultParsed.inactive_window_count || 0);
+        const globalWorstActiveWindowAcceptedCount = Number(resultParsed.worst_active_window_accepted_count || 0);
         const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0);
         const globalWorstWindowResolvedShare = Number(resultParsed.worst_active_window_resolved_share ?? resultParsed.worst_window_resolved_share ?? globalResolvedShare);
         const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0);
@@ -2364,6 +2367,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const minPositiveWindows = Number(constraints.min_positive_windows || 0);
         const minActiveWindows = Number(constraints.min_active_windows || 0);
         const maxInactiveWindows = Number(constraints.max_inactive_windows ?? -1);
+        const minWorstActiveWindowAcceptedCount = Number(constraints.min_worst_active_window_accepted_count || 0);
         const minWorstWindowPnlUsd = Number(constraints.min_worst_window_pnl_usd ?? -1000000000);
         const minWorstWindowResolvedShare = Number(constraints.min_worst_window_resolved_share || 0);
         const maxWorstWindowDrawdownPct = Number(constraints.max_worst_window_drawdown_pct || 0);
@@ -2423,6 +2427,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             pushHeadroom('global', 'act', globalActiveWindows, minActiveWindows, replayHeadroomCount, 'min');
         if (maxInactiveWindows >= 0)
             pushHeadroom('global', 'idle', globalInactiveWindows, maxInactiveWindows, replayHeadroomCount, 'max');
+        if (minWorstActiveWindowAcceptedCount > 0)
+            pushHeadroom('global', 'worst act n', globalWorstActiveWindowAcceptedCount, minWorstActiveWindowAcceptedCount, replayHeadroomCount, 'min');
         if (minWorstWindowPnlUsd > -999999999)
             pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min');
         if (minWorstWindowResolvedShare > 0)
@@ -2523,9 +2529,10 @@ function replaySearchWindowSummary(latestSearch) {
         const windowCount = Number(parsed.window_count || 0);
         const activeWindowCount = Number(parsed.active_window_count || 0);
         const inactiveWindowCount = Number(parsed.inactive_window_count || 0);
+        const worstActiveWindowAcceptedCount = Number(parsed.worst_active_window_accepted_count || 0);
         if (windowCount <= 1)
             return `${positive}+ / ${negative}- | ${worst}`;
-        return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | idle ${formatCount(inactiveWindowCount)} | ${worst}`;
+        return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | idle ${formatCount(inactiveWindowCount)} | worst act ${formatCount(worstActiveWindowAcceptedCount)} | ${worst}`;
     }
     catch {
         return `${positive}+ / ${negative}- | ${worst}`;

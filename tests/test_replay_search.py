@@ -760,6 +760,28 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(summary["xgboost"]["worst_active_window_accepted_size_usd"], 96.0)
         self.assertEqual(summary["xgboost"]["worst_accepting_window_accepted_size_usd"], 96.0)
 
+    def test_signal_mode_summary_fails_closed_on_legacy_multi_window_mode_worst_active_depth(self) -> None:
+        summary = replay_search._signal_mode_summary(
+            {
+                "window_count": 4,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 96.0,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 96.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 9.0,
+                    }
+                },
+            }
+        )
+
+        self.assertIsNone(summary["xgboost"]["worst_active_window_accepted_count"])
+        self.assertIsNone(summary["xgboost"]["worst_accepting_window_accepted_count"])
+        self.assertIsNone(summary["xgboost"]["worst_active_window_accepted_size_usd"])
+        self.assertIsNone(summary["xgboost"]["worst_accepting_window_accepted_size_usd"])
+
     def test_with_window_activity_fields_materializes_worst_accepting_window_aliases(self) -> None:
         enriched = replay_search._with_window_activity_fields(
             {
@@ -5474,6 +5496,42 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(failures, ["xgboost_worst_window_pnl_usd"])
+
+    def test_constraint_failures_fail_closed_on_legacy_multi_window_mode_worst_active_depth(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "accepted_size_usd": 200.0,
+                "resolved_count": 8,
+                "resolved_size_usd": 200.0,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 96.0,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 96.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                    },
+                },
+            },
+            **self._constraint_defaults(
+                min_xgboost_worst_active_window_accepted_count=1,
+                min_xgboost_worst_active_window_accepted_size_usd=1.0,
+            ),
+        )
+
+        self.assertEqual(
+            failures,
+            [
+                "xgboost_worst_active_window_accepted_count",
+                "xgboost_worst_active_window_accepted_size_usd",
+            ],
+        )
 
     def test_constraint_failures_fail_closed_on_legacy_multi_window_worst_window_drawdown(self) -> None:
         failures = replay_search._constraint_failures(

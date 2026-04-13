@@ -1115,7 +1115,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if raw_worst_active_window_accepted_count is not None
             else (
                 int(raw_values.get("accepted_count") or 0)
-                if int(raw_values.get("accepted_count") or 0) > 0
+                if result_window_count <= 1 and int(raw_values.get("accepted_count") or 0) > 0
                 else None
             )
         )
@@ -1128,7 +1128,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if raw_worst_active_window_accepted_size_usd is not None
             else (
                 float(raw_values.get("accepted_size_usd") or 0.0)
-                if float(raw_values.get("accepted_size_usd") or 0.0) > 0
+                if result_window_count <= 1 and float(raw_values.get("accepted_size_usd") or 0.0) > 0
                 else None
             )
         )

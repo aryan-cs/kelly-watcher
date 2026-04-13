@@ -1112,6 +1112,20 @@ def _resolved_share_from_sizes(accepted_size_usd: Any, resolved_size_usd: Any) -
     return min(max(resolved / accepted, 0.0), 1.0)
 
 
+def _mode_has_participation(values: dict[str, Any]) -> bool:
+    if int(values.get("accepted_count") or 0) > 0:
+        return True
+    if float(values.get("accepted_size_usd") or 0.0) > 0:
+        return True
+    if int(values.get("resolved_count") or 0) > 0:
+        return True
+    if float(values.get("resolved_size_usd") or 0.0) > 0:
+        return True
+    if abs(float(values.get("total_pnl_usd") or 0.0)) > 1e-9:
+        return True
+    return False
+
+
 def _window_has_participation(result: dict[str, Any]) -> bool:
     if int(result.get("accepted_count") or 0) > 0:
         return True
@@ -2388,7 +2402,7 @@ def _aggregate_window_results(
             mode_accepted_size_usd = float(values.get("accepted_size_usd") or 0.0)
             mode_resolved_count = int(values.get("resolved_count") or 0)
             mode_resolved_size_usd = float(values.get("resolved_size_usd") or 0.0)
-            is_inactive_window = mode_accepted_count <= 0
+            is_inactive_window = not _mode_has_participation(values)
             bucket["trade_count"] += int(values.get("trade_count") or 0)
             bucket["accepted_count"] += mode_accepted_count
             bucket["accepted_size_usd"] += mode_accepted_size_usd

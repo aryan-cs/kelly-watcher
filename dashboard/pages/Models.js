@@ -26,7 +26,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Contract', text: 'Artifact contract versus runtime contract. A mismatch means the runtime will reject the model.' },
             { label: 'Fallback', text: 'Why the runtime is using heuristics instead of the model, if it is degraded.' },
             { label: 'Startup', text: 'Current startup state. Red means startup failed before the runtime reached its first stable polling loop.' },
-            { label: 'Replay search', text: 'Latest replay-search attempt and scope, including persisted feasible-candidate depth on completed runs and persisted failure detail on non-success runs. This is the search job status, not the promotion result.' },
+            { label: 'Replay search', text: 'Latest replay-search attempt, trigger, and scope, including persisted feasible-candidate depth on completed runs and persisted failure detail on non-success runs. This is the search job status, not the promotion result.' },
             { label: 'Promotion', text: 'Latest replay-promotion attempt, including skipped or failed auto-promotion attempts after replay search, with the persisted attempt reason.' },
             { label: 'Promote delta', text: 'Score and replay P&L delta attached to the latest replay-promotion attempt, when available.' },
             { label: 'Promo base', text: 'Last applied replay-promotion baseline, including the persisted applied reason. This can be older than Promotion when the latest attempt was skipped or failed.' },
@@ -5636,16 +5636,19 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             : theme.green;
     const replaySearchStatusText = replaySearchStatusLabel(botState.last_replay_search_status);
     const replaySearchStatusRaw = String(botState.last_replay_search_status || '').trim().toLowerCase();
+    const replaySearchTriggerText = compactSingleLineText(botState.last_replay_search_trigger);
     const replaySearchScopeText = replaySearchScopeLabel(botState.last_replay_search_scope);
     const replaySearchMessageText = compactSingleLineText(botState.last_replay_search_message);
     const replaySearchCandidateCount = Math.max(0, Number(botState.last_replay_search_candidate_count || 0));
     const replaySearchFeasibleCount = Math.max(0, Number(botState.last_replay_search_feasible_count || 0));
     const replaySearchValue = useMemo(() => {
-        if (replaySearchStatusText === '-' && replaySearchCandidateCount <= 0 && replaySearchFeasibleCount <= 0 && !replaySearchMessageText)
+        if (replaySearchStatusText === '-' && !replaySearchTriggerText && replaySearchCandidateCount <= 0 && replaySearchFeasibleCount <= 0 && !replaySearchMessageText)
             return '-';
         const parts = [];
         if (replaySearchStatusText !== '-')
             parts.push(replaySearchStatusText);
+        if (replaySearchTriggerText)
+            parts.push(replaySearchTriggerText);
         if (replaySearchScopeText !== '-')
             parts.push(replaySearchScopeText);
         const showCandidateCount = replaySearchCandidateCount > 0 || !['running', 'already_running'].includes(replaySearchStatusRaw);
@@ -5662,7 +5665,8 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         replaySearchMessageText,
         replaySearchScopeText,
         replaySearchStatusRaw,
-        replaySearchStatusText
+        replaySearchStatusText,
+        replaySearchTriggerText
     ]);
     const replaySearchValueColor = replaySearchStatusColor(botState.last_replay_search_status);
     const promotionStatusText = replayPromotionStatusLabel(botState.last_replay_promotion_status);

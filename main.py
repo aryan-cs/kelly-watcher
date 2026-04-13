@@ -2417,8 +2417,8 @@ def _latest_replay_search_state_payload(run_row: dict[str, Any] | None) -> dict[
     feasible_count = int(row.get("feasible_count") or 0)
     status = str(row.get("status") or "").strip()
     status_text = status or "completed"
-    message = ""
-    if run_id > 0:
+    message = str(row.get("status_message") or "").strip()
+    if not message and run_id > 0:
         message = (
             f"Replay search {status_text} "
             f"(run={run_id}, candidates={candidate_count}, feasible={feasible_count})"
@@ -2428,7 +2428,7 @@ def _latest_replay_search_state_payload(run_row: dict[str, Any] | None) -> dict[
         "last_replay_search_finished_at": int(row.get("finished_at") or 0),
         "last_replay_search_status": status,
         "last_replay_search_message": message,
-        "last_replay_search_trigger": "",
+        "last_replay_search_trigger": str(row.get("trigger") or ""),
         "last_replay_search_scope": "shadow_only",
         "last_replay_search_run_id": run_id,
         "last_replay_search_candidate_count": candidate_count,
@@ -2693,6 +2693,34 @@ def _load_replay_search_run_after(after_id: int, *, request_token: str = "") -> 
         conn.close()
 
 
+def _persist_replay_search_run_runtime_context(
+    run_id: int,
+    *,
+    trigger: str,
+    message: str,
+    status: str | None = None,
+) -> None:
+    if int(run_id or 0) <= 0:
+        return
+    assignments = ["trigger=?", "status_message=?"]
+    params: list[object] = [str(trigger or ""), str(message or "")]
+    if status is not None:
+        assignments.append("status=?")
+        params.append(str(status or ""))
+    params.append(int(run_id))
+    conn = get_conn()
+    try:
+        conn.execute(
+            f"UPDATE replay_search_runs SET {', '.join(assignments)} WHERE id=?",
+            tuple(params),
+        )
+        conn.commit()
+    except Exception:
+        logger.exception("Failed to persist replay-search runtime context for run %s", int(run_id))
+    finally:
+        conn.close()
+
+
 def _load_replay_search_candidate(
     replay_search_run_id: int,
     *,
@@ -2892,7 +2920,7 @@ def _replay_search_flag_value(value: Any) -> str:
     return str(value)
 
 
-def _build_replay_search_command(*, request_token: str = "") -> list[str]:
+def _build_replay_search_command(*, request_token: str = "", trigger: str = "") -> list[str]:
     command = [
         sys.executable,
         str(Path(__file__).resolve().parent / "replay_search.py"),
@@ -2911,6 +2939,8 @@ def _build_replay_search_command(*, request_token: str = "") -> list[str]:
     ]
     if request_token:
         command.extend(["--request-token", request_token])
+    if trigger:
+        command.extend(["--trigger", trigger])
     notes = replay_search_notes()
     if notes:
         command.extend(["--notes", notes])
@@ -4338,7 +4368,7 @@ def main() -> None:
         try:
             previous_run_id = _latest_replay_search_run_id()
             request_token = f"replay-search-{started_at}-{uuid.uuid4().hex}"
-            command = _build_replay_search_command(request_token=request_token)
+            command = _build_replay_search_command(request_token=request_token, trigger=trigger)
             logger.info("Running replay search (%s): %s", trigger, command)
             completed = subprocess.run(
                 command,
@@ -4359,6 +4389,20 @@ def main() -> None:
                 if stderr_tail:
                     message = f"{message}: {stderr_tail}"
                 logger.error(message)
+                if run_row is not None:
+                    run_id = int(run_row.get("id") or 0)
+                    _persist_replay_search_run_runtime_context(
+                        run_id,
+                        trigger=trigger,
+                        message=message,
+                        status="failed",
+                    )
+                    run_row = {
+                        **run_row,
+                        "trigger": trigger,
+                        "status_message": message,
+                        "status": "failed",
+                    }
                 _persist_bot_state(
                     replay_search_in_progress=False,
                     replay_search_started_at=0,
@@ -4405,6 +4449,17 @@ def main() -> None:
                 message += f"; promotion {promotion_result.get('status')}"
             if stderr_tail:
                 message += f" [{stderr_tail}]"
+            _persist_replay_search_run_runtime_context(
+                int(run_row.get("id") or 0),
+                trigger=trigger,
+                message=message,
+                status=str(run_row.get("status") or "completed"),
+            )
+            run_row = {
+                **run_row,
+                "trigger": trigger,
+                "status_message": message,
+            }
             _persist_bot_state(
                 replay_search_in_progress=False,
                 replay_search_started_at=0,

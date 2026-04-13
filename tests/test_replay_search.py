@@ -147,6 +147,8 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("current_candidate_constraint_failures_json", columns)
         self.assertIn("current_candidate_result_json", columns)
         self.assertIn("request_token", columns)
+        self.assertIn("trigger", columns)
+        self.assertIn("status_message", columns)
         self.assertIn("pause_guard_penalty", columns)
         self.assertIn("daily_guard_window_penalty", columns)
         self.assertIn("live_guard_window_penalty", columns)
@@ -9440,7 +9442,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
         self.assertEqual(payload["best_feasible"]["result"]["score_breakdown"]["worst_window_penalty_usd"], 0.0)
 
-    def test_main_persists_request_token_on_replay_search_run(self) -> None:
+    def test_main_persists_request_token_and_trigger_on_replay_search_run(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             return {
                 "run_id": 1,
@@ -9460,6 +9462,8 @@ class ReplaySearchTest(unittest.TestCase):
                 str(db_path),
                 "--request-token",
                 "req-123",
+                "--trigger",
+                "manual",
                 "--grid-json",
                 json.dumps({"min_confidence": [0.60]}),
             ]
@@ -9472,13 +9476,14 @@ class ReplaySearchTest(unittest.TestCase):
 
             conn = sqlite3.connect(str(db_path))
             try:
-                request_token = conn.execute(
-                    "SELECT request_token FROM replay_search_runs ORDER BY id DESC LIMIT 1"
-                ).fetchone()[0]
+                request_token, trigger = conn.execute(
+                    "SELECT request_token, trigger FROM replay_search_runs ORDER BY id DESC LIMIT 1"
+                ).fetchone()
             finally:
                 conn.close()
 
         self.assertEqual(request_token, "req-123")
+        self.assertEqual(trigger, "manual")
 
     def test_main_merges_score_weights_file_and_json_payloads(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
@@ -15021,6 +15026,8 @@ class ReplaySearchTest(unittest.TestCase):
                 conn.close()
 
             self.assertIn("constraints_json", run_columns)
+            self.assertIn("trigger", run_columns)
+            self.assertIn("status_message", run_columns)
             self.assertIn("current_candidate_result_json", run_columns)
             self.assertIn("best_feasible_total_pnl_usd", run_columns)
             self.assertIn("pause_guard_penalty", run_columns)

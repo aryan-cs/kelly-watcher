@@ -659,7 +659,7 @@ class RuntimeFixesTest(unittest.TestCase):
             },
         )
 
-    def test_build_replay_search_command_includes_request_token_override(self) -> None:
+    def test_build_replay_search_command_includes_request_token_and_trigger_override(self) -> None:
         with (
             patch.object(main, "replay_search_label_prefix", return_value="scheduled"),
             patch.object(main, "replay_search_top", return_value=10),
@@ -676,10 +676,12 @@ class RuntimeFixesTest(unittest.TestCase):
             patch.object(main, "replay_search_constraints", return_value={}),
             patch.object(main, "replay_search_score_weights", return_value={}),
         ):
-            command = main._build_replay_search_command(request_token="req-123")
+            command = main._build_replay_search_command(request_token="req-123", trigger="manual")
 
         self.assertIn("--request-token", command)
         self.assertIn("req-123", command)
+        self.assertIn("--trigger", command)
+        self.assertIn("manual", command)
 
     def test_load_replay_search_run_after_scopes_to_request_token(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -752,23 +754,31 @@ class RuntimeFixesTest(unittest.TestCase):
                     conn.execute(
                         """
                         INSERT INTO replay_search_runs (
-                            started_at, finished_at, request_token, label_prefix, status,
+                            started_at, finished_at, request_token, trigger, label_prefix, status, status_message,
                             base_policy_json, grid_json, constraints_json,
                             candidate_count, feasible_count, best_feasible_score, best_feasible_total_pnl_usd
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
-                        (100, 110, "older", "scheduled", "completed", "{}", "{}", "{}", 4, 1, 0.25, 3.0),
+                        (
+                            100, 110, "older", "scheduled", "scheduled", "completed",
+                            "Replay search completed (run=1, candidates=4, feasible=1)",
+                            "{}", "{}", "{}", 4, 1, 0.25, 3.0,
+                        ),
                     )
                     latest_id = int(
                         conn.execute(
                             """
                             INSERT INTO replay_search_runs (
-                                started_at, finished_at, request_token, label_prefix, status,
+                                started_at, finished_at, request_token, trigger, label_prefix, status, status_message,
                                 base_policy_json, grid_json, constraints_json,
                                 candidate_count, feasible_count, best_feasible_score, best_feasible_total_pnl_usd
-                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                             """,
-                            (200, 230, "latest", "manual", "completed", "{}", "{}", "{}", 17, 6, 1.75, 42.5),
+                            (
+                                200, 230, "latest", "manual", "manual", "completed",
+                                "Replay search completed (run=2, candidates=17, feasible=6); promotion applied",
+                                "{}", "{}", "{}", 17, 6, 1.75, 42.5,
+                            ),
                         ).lastrowid
                         or 0
                     )
@@ -786,7 +796,7 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(payload["last_replay_search_started_at"], 200)
         self.assertEqual(payload["last_replay_search_finished_at"], 230)
         self.assertEqual(payload["last_replay_search_status"], "completed")
-        self.assertEqual(payload["last_replay_search_trigger"], "")
+        self.assertEqual(payload["last_replay_search_trigger"], "manual")
         self.assertEqual(payload["last_replay_search_scope"], "shadow_only")
         self.assertEqual(payload["last_replay_search_run_id"], latest_id)
         self.assertEqual(payload["last_replay_search_candidate_count"], 17)
@@ -795,7 +805,7 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertAlmostEqual(float(payload["last_replay_search_best_pnl_usd"]), 42.5)
         self.assertEqual(
             payload["last_replay_search_message"],
-            f"Replay search completed (run={latest_id}, candidates=17, feasible=6)",
+            f"Replay search completed (run={latest_id}, candidates=17, feasible=6); promotion applied",
         )
 
     def test_latest_replay_search_run_uses_started_at_when_finished_at_missing(self) -> None:
@@ -839,6 +849,63 @@ class RuntimeFixesTest(unittest.TestCase):
 
         assert row is not None
         self.assertEqual(int(row["id"]), expected_id)
+
+    def test_persist_replay_search_run_runtime_context_updates_trigger_message_and_status(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    run_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_runs (
+                                started_at, finished_at, request_token, label_prefix, status,
+                                base_policy_json, grid_json, constraints_json
+                            ) VALUES (?,?,?,?,?,?,?,?)
+                            """,
+                            (100, 110, "req-1", "scheduled", "completed", "{}", "{}", "{}"),
+                        ).lastrowid
+                        or 0
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                main._persist_replay_search_run_runtime_context(
+                    run_id,
+                    trigger="post_retrain_manual",
+                    message="Replay search completed (run=1, candidates=4, feasible=2); promotion applied",
+                    status="completed",
+                )
+
+                conn = db.get_conn()
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT trigger, status_message, status
+                        FROM replay_search_runs
+                        WHERE id=?
+                        """,
+                        (run_id,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        assert row is not None
+        self.assertEqual(row["trigger"], "post_retrain_manual")
+        self.assertEqual(
+            row["status_message"],
+            "Replay search completed (run=1, candidates=4, feasible=2); promotion applied",
+        )
+        self.assertEqual(row["status"], "completed")
 
     def test_latest_retrain_state_payload_loads_latest_persisted_run_for_restart(self) -> None:
         with TemporaryDirectory() as tmpdir:

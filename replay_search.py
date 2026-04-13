@@ -4690,8 +4690,10 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             started_at                    INTEGER NOT NULL,
             finished_at                   INTEGER NOT NULL,
             request_token                 TEXT NOT NULL DEFAULT '',
+            trigger                       TEXT NOT NULL DEFAULT '',
             label_prefix                  TEXT NOT NULL DEFAULT '',
             status                        TEXT NOT NULL DEFAULT '',
+            status_message                TEXT NOT NULL DEFAULT '',
             base_policy_json              TEXT NOT NULL DEFAULT '{}',
             grid_json                     TEXT NOT NULL DEFAULT '{}',
             constraints_json              TEXT NOT NULL DEFAULT '{}',
@@ -4810,7 +4812,9 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
         "replay_search_runs",
         {
             "request_token": "TEXT NOT NULL DEFAULT ''",
+            "trigger": "TEXT NOT NULL DEFAULT ''",
             "status": "TEXT NOT NULL DEFAULT ''",
+            "status_message": "TEXT NOT NULL DEFAULT ''",
             "base_policy_json": "TEXT NOT NULL DEFAULT '{}'",
             "grid_json": "TEXT NOT NULL DEFAULT '{}'",
             "constraints_json": "TEXT NOT NULL DEFAULT '{}'",
@@ -4928,6 +4932,7 @@ def _persist_search_results(
     started_at: int,
     finished_at: int,
     request_token: str,
+    trigger: str,
     label_prefix: str,
     notes: str,
     base_policy: ReplayPolicy,
@@ -5013,8 +5018,10 @@ def _persist_search_results(
             started_at,
             finished_at,
             request_token,
+            trigger,
             label_prefix,
             "completed",
+            "",
             json.dumps(base_policy.as_dict(), sort_keys=True, separators=(",", ":")),
             json.dumps(grid, sort_keys=True, separators=(",", ":"), default=str),
             json.dumps(constraints, sort_keys=True, separators=(",", ":"), default=str),
@@ -5108,7 +5115,7 @@ def _persist_search_results(
         cursor = conn.execute(
             f"""
             INSERT INTO replay_search_runs (
-                started_at, finished_at, request_token, label_prefix, status, base_policy_json, grid_json,
+                started_at, finished_at, request_token, trigger, label_prefix, status, status_message, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
                 window_stddev_penalty, worst_window_penalty, pause_guard_penalty, daily_guard_window_penalty, live_guard_window_penalty, daily_guard_restart_window_penalty, live_guard_restart_window_penalty, open_exposure_penalty, window_end_open_exposure_penalty, avg_window_end_open_exposure_penalty, carry_window_penalty, carry_restart_window_penalty, resolved_share_penalty, resolved_size_share_penalty, worst_window_resolved_share_penalty, worst_window_resolved_size_share_penalty, mode_resolved_share_penalty, mode_resolved_size_share_penalty, mode_worst_window_resolved_share_penalty, mode_worst_window_resolved_size_share_penalty, mode_active_window_accepted_share_penalty, mode_active_window_accepted_size_share_penalty, worst_active_window_accepted_penalty, worst_active_window_accepted_size_penalty, mode_worst_active_window_accepted_penalty, mode_worst_active_window_accepted_size_penalty, mode_loss_penalty, mode_inactivity_penalty, mode_accepted_window_count_penalty, mode_accepted_window_share_penalty, mode_non_accepting_active_window_streak_penalty, mode_non_accepting_active_window_episode_penalty, mode_accepting_window_accepted_share_penalty, mode_accepting_window_accepted_size_share_penalty, mode_top_two_accepting_window_accepted_share_penalty, mode_top_two_accepting_window_accepted_size_share_penalty, mode_accepting_window_accepted_concentration_index_penalty, mode_accepting_window_accepted_size_concentration_index_penalty, window_inactivity_penalty, accepted_window_count_penalty, accepted_window_share_penalty, non_accepting_active_window_streak_penalty, non_accepting_active_window_episode_penalty, accepting_window_accepted_share_penalty, accepting_window_accepted_size_share_penalty, top_two_accepting_window_accepted_share_penalty, top_two_accepting_window_accepted_size_share_penalty, accepting_window_accepted_concentration_index_penalty, accepting_window_accepted_size_concentration_index_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
                 wallet_size_concentration_penalty, market_size_concentration_penalty, entry_price_band_size_concentration_penalty, time_to_close_band_size_concentration_penalty,
@@ -5199,6 +5206,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run a replay policy sweep over a parameter grid.")
     parser.add_argument("--db", default="", help="Path to a trading.db snapshot. Defaults to the runtime DB.")
     parser.add_argument("--request-token", default="", help="Opaque launcher token used to correlate the persisted replay-search run.")
+    parser.add_argument("--trigger", default="", help="Optional runtime trigger label persisted with the replay-search run.")
     parser.add_argument("--label-prefix", default="sweep", help="Label prefix stored with each replay run.")
     parser.add_argument("--notes", default="", help="Optional notes stored with each replay run.")
     parser.add_argument("--base-policy-file", default="", help="JSON file with base replay policy overrides.")
@@ -5959,6 +5967,7 @@ def main() -> None:
         started_at=started_at,
         finished_at=finished_at,
         request_token=args.request_token,
+        trigger=args.trigger,
         label_prefix=args.label_prefix,
         notes=args.notes,
         base_policy=base_policy,

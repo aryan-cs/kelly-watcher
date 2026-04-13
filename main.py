@@ -1054,6 +1054,10 @@ def _consume_manual_retrain_request(run_retrain_job) -> bool:
             now_ts - requested_at,
             request_id or "-",
         )
+        try:
+            MANUAL_RETRAIN_REQUEST_FILE.unlink()
+        except FileNotFoundError:
+            pass
         return False
 
     logger.info(
@@ -1093,6 +1097,10 @@ def _consume_manual_trade_request(handle_request) -> bool:
             now_ts - request.requested_at,
             request.request_id or "-",
         )
+        try:
+            MANUAL_TRADE_REQUEST_FILE.unlink()
+        except FileNotFoundError:
+            pass
         return False
 
     logger.info(

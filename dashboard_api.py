@@ -330,7 +330,7 @@ def _bot_state_snapshot() -> dict[str, Any]:
         manual_trade_requested_at=int(bot_state.get("manual_trade_requested_at") or 0),
         manual_trade_message=str(bot_state.get("manual_trade_message") or ""),
     )
-    if _request_is_recent(MANUAL_RETRAIN_REQUEST_FILE, 30):
+    if MANUAL_RETRAIN_REQUEST_FILE.exists():
         request_payload = _read_json_dict(MANUAL_RETRAIN_REQUEST_FILE)
         bot_state.update(
             manual_retrain_pending=True,
@@ -343,7 +343,7 @@ def _bot_state_snapshot() -> dict[str, Any]:
             shadow_restart_pending=True,
             shadow_restart_message=_shadow_restart_pending_message(str(request_payload.get("wallet_mode") or "")),
         )
-    if _request_is_recent(MANUAL_TRADE_REQUEST_FILE, 15):
+    if MANUAL_TRADE_REQUEST_FILE.exists():
         request_payload = _read_json_dict(MANUAL_TRADE_REQUEST_FILE)
         bot_state.update(
             manual_trade_pending=True,
@@ -388,7 +388,7 @@ def _manual_retrain_response() -> dict[str, Any]:
     if bool(bot_state.get("retrain_in_progress")):
         return {"ok": False, "message": "A retrain is already running."}
 
-    if _request_is_recent(MANUAL_RETRAIN_REQUEST_FILE, 30):
+    if MANUAL_RETRAIN_REQUEST_FILE.exists():
         return {
             "ok": True,
             "message": "Manual retrain already requested. Waiting for the bot to pick it up.",
@@ -459,7 +459,7 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "message": "Manual trade actions are unavailable while shadow restart is pending. Wait for the restart to finish first.",
         }
-    if _request_is_recent(MANUAL_TRADE_REQUEST_FILE, 15):
+    if MANUAL_TRADE_REQUEST_FILE.exists():
         return {
             "ok": True,
             "message": "A manual trade request is already pending. Waiting for the bot to pick it up.",
@@ -837,10 +837,31 @@ def _spawn_shadow_restart_process(wallet_mode: str) -> dict[str, Any]:
 
 
 def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
-    if _live_trading_enabled_in_config() or _current_bot_mode() == "live" or use_real_money():
+    bot_state = _bot_state_snapshot()
+    now = int(time.time())
+    started_at = int(bot_state.get("started_at") or 0)
+    last_activity_at = int(bot_state.get("last_activity_at") or 0)
+    current_mode = str(bot_state.get("mode") or "").strip().lower()
+
+    if _live_trading_enabled_in_config() or current_mode == "live" or use_real_money():
         return {
             "ok": False,
             "message": "Restart Shadow is blocked while live trading is enabled or the running bot is live.",
+        }
+    if started_at <= 0 or last_activity_at <= 0:
+        return {
+            "ok": False,
+            "message": "Restart Shadow is unavailable because bot state is missing. Start the bot first.",
+        }
+    if (now - last_activity_at) > _heartbeat_window_seconds(bot_state):
+        return {
+            "ok": False,
+            "message": "Restart Shadow is unavailable because the bot state looks stale. Restart or refresh the bot first.",
+        }
+    if bool(bot_state.get("shadow_restart_pending")) or SHADOW_RESET_REQUEST_FILE.exists():
+        return {
+            "ok": True,
+            "message": "Shadow reset already requested. Waiting for the bot to restart.",
         }
     result = _spawn_shadow_restart_process(wallet_mode)
     if not result.get("ok"):

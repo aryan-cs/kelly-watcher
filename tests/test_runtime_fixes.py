@@ -1176,11 +1176,71 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["manual_retrain_message"], "requested by dashboard_api")
         self.assertEqual(snapshot["session_id"], "abc123")
 
+    def test_dashboard_bot_state_snapshot_overlays_existing_manual_retrain_request_even_when_old(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            requested_at = int(time.time()) - 3600
+            bot_state_file.write_text(
+                json.dumps({"session_id": "abc123", "started_at": 100, "manual_retrain_pending": False}),
+                encoding="utf-8",
+            )
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "requested_at": requested_at,
+                        "source": "dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertTrue(snapshot["manual_retrain_pending"])
+        self.assertEqual(snapshot["manual_retrain_requested_at"], requested_at)
+        self.assertEqual(snapshot["manual_retrain_message"], "requested by dashboard_api")
+        self.assertEqual(snapshot["session_id"], "abc123")
+
     def test_dashboard_bot_state_snapshot_overlays_recent_manual_trade_request(self) -> None:
         with TemporaryDirectory() as tmpdir:
             bot_state_file = Path(tmpdir) / "bot_state.json"
             request_file = Path(tmpdir) / "manual_trade_request.json"
             requested_at = int(time.time())
+            bot_state_file.write_text(
+                json.dumps({"session_id": "abc123", "started_at": 100, "manual_trade_pending": False}),
+                encoding="utf-8",
+            )
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "requested_at": requested_at,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertTrue(snapshot["manual_trade_pending"])
+        self.assertEqual(snapshot["manual_trade_requested_at"], requested_at)
+        self.assertEqual(snapshot["manual_trade_message"], "buy more market-1")
+        self.assertEqual(snapshot["session_id"], "abc123")
+
+    def test_dashboard_bot_state_snapshot_overlays_existing_manual_trade_request_even_when_old(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            requested_at = int(time.time()) - 3600
             bot_state_file.write_text(
                 json.dumps({"session_id": "abc123", "started_at": 100, "manual_trade_pending": False}),
                 encoding="utf-8",
@@ -1225,6 +1285,34 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("shadow restart", str(result["message"]).lower())
         self.assertFalse(request_file.exists())
 
+    def test_dashboard_manual_retrain_response_blocks_when_request_file_already_exists(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "requested_at": int(time.time()) - 3600,
+                        "source": "dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+                "retrain_in_progress": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_retrain_response()
+
+        self.assertTrue(result["ok"])
+        self.assertIn("already requested", str(result["message"]).lower())
+
     def test_dashboard_manual_trade_response_blocks_while_shadow_restart_pending(self) -> None:
         with TemporaryDirectory() as tmpdir:
             request_file = Path(tmpdir) / "manual_trade_request.json"
@@ -1251,9 +1339,50 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("shadow restart", str(result["message"]).lower())
         self.assertFalse(request_file.exists())
 
+    def test_dashboard_manual_trade_response_blocks_when_request_file_already_exists(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "requested_at": int(time.time()) - 3600,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_trade_response(
+                    {
+                        "action": "buy_more",
+                        "marketId": "market-1",
+                        "tokenId": "token-1",
+                        "side": "yes",
+                        "amountUsd": 5.0,
+                    }
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("already pending", str(result["message"]).lower())
+
     def test_dashboard_launch_shadow_restart_queues_request(self) -> None:
+        bot_state = {
+            "started_at": 100,
+            "last_activity_at": int(time.time()),
+            "mode": "shadow",
+            "shadow_restart_pending": False,
+        }
         with patch.object(dashboard_api, "_live_trading_enabled_in_config", return_value=False), patch.object(
-            dashboard_api, "_current_bot_mode", return_value="shadow"
+            dashboard_api, "_bot_state_snapshot", return_value=bot_state
         ), patch.object(dashboard_api, "use_real_money", return_value=False), patch.object(
             dashboard_api, "_spawn_shadow_restart_process", return_value={"ok": True, "message": "queued"}
         ) as spawn_mock:
@@ -1262,6 +1391,44 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("wipe state and restart itself", result["message"])
         spawn_mock.assert_called_once_with("keep_all")
+
+    def test_dashboard_launch_shadow_restart_requires_fresh_bot_state(self) -> None:
+        bot_state = {
+            "started_at": 100,
+            "last_activity_at": int(time.time()) - 999,
+            "mode": "shadow",
+            "shadow_restart_pending": False,
+            "poll_interval": 1,
+        }
+        with patch.object(dashboard_api, "_live_trading_enabled_in_config", return_value=False), patch.object(
+            dashboard_api, "_bot_state_snapshot", return_value=bot_state
+        ), patch.object(dashboard_api, "use_real_money", return_value=False):
+            result = dashboard_api._launch_shadow_restart(wallet_mode="keep_all")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("looks stale", result["message"])
+
+    def test_dashboard_launch_shadow_restart_returns_existing_pending_state(self) -> None:
+        bot_state = {
+            "started_at": 100,
+            "last_activity_at": int(time.time()),
+            "mode": "shadow",
+            "shadow_restart_pending": True,
+        }
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "shadow_reset_request.json"
+            with patch.object(dashboard_api, "_live_trading_enabled_in_config", return_value=False), patch.object(
+                dashboard_api, "_bot_state_snapshot", return_value=bot_state
+            ), patch.object(dashboard_api, "use_real_money", return_value=False), patch.object(
+                dashboard_api, "SHADOW_RESET_REQUEST_FILE", request_file
+            ), patch.object(
+                dashboard_api, "_spawn_shadow_restart_process"
+            ) as spawn_mock:
+                result = dashboard_api._launch_shadow_restart(wallet_mode="keep_all")
+
+        self.assertTrue(result["ok"])
+        self.assertIn("already requested", str(result["message"]).lower())
+        spawn_mock.assert_not_called()
 
     def test_consume_shadow_reset_request_reads_valid_request(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -1328,6 +1495,26 @@ class RuntimeFixesTest(unittest.TestCase):
                     main._consume_manual_retrain_request(run_retrain_job)
                 self.assertTrue(request_file.exists())
 
+    def test_consume_manual_retrain_request_deletes_stale_request_file(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "source": "dashboard_api",
+                        "request_id": "manual-retrain-stale",
+                        "requested_at": int(time.time()) - 901,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(main, "MANUAL_RETRAIN_REQUEST_FILE", request_file):
+                consumed = main._consume_manual_retrain_request(Mock())
+
+        self.assertFalse(consumed)
+        self.assertFalse(request_file.exists())
+
     def test_consume_manual_trade_request_deletes_request_file_after_success(self) -> None:
         with TemporaryDirectory() as tmpdir:
             request_file = Path(tmpdir) / "manual_trade_request.json"
@@ -1377,6 +1564,30 @@ class RuntimeFixesTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "manual trade start exploded"):
                     main._consume_manual_trade_request(handle_request)
                 self.assertTrue(request_file.exists())
+
+    def test_consume_manual_trade_request_deletes_stale_request_file(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "token_id": "token-1",
+                        "side": "yes",
+                        "amount_usd": 12.5,
+                        "request_id": "manual-trade-stale",
+                        "requested_at": int(time.time()) - 901,
+                        "source": "dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(main, "MANUAL_TRADE_REQUEST_FILE", request_file):
+                consumed = main._consume_manual_trade_request(Mock())
+
+        self.assertFalse(consumed)
+        self.assertFalse(request_file.exists())
 
     def test_wait_for_next_poll_returns_when_shutdown_requested(self) -> None:
         stop_event = main.threading.Event()

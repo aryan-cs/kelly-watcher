@@ -898,6 +898,8 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "max_active_window_accepted_size_share": None,
                 "max_accepting_window_accepted_share": None,
                 "max_accepting_window_accepted_size_share": None,
+                "top_two_accepting_window_accepted_share": None,
+                "top_two_accepting_window_accepted_size_share": None,
                 "win_count": 0,
                 "win_rate": None,
             },
@@ -1081,6 +1083,26 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if resolved_accepted_window_count <= 1 and float(raw_values.get("accepted_size_usd") or 0.0) > 0
             else 0.0
         )
+        raw_top_two_accepting_window_accepted_share = raw_values.get("top_two_accepting_window_accepted_share")
+        resolved_top_two_accepting_window_accepted_share = (
+            _clamp_fraction(float(raw_top_two_accepting_window_accepted_share))
+            if raw_top_two_accepting_window_accepted_share is not None
+            else 1.0
+            if resolved_accepted_window_count <= 2 and int(raw_values.get("accepted_count") or 0) > 0
+            else resolved_max_accepting_window_accepted_share
+            if int(raw_values.get("accepted_count") or 0) > 0
+            else 0.0
+        )
+        raw_top_two_accepting_window_accepted_size_share = raw_values.get("top_two_accepting_window_accepted_size_share")
+        resolved_top_two_accepting_window_accepted_size_share = (
+            _clamp_fraction(float(raw_top_two_accepting_window_accepted_size_share))
+            if raw_top_two_accepting_window_accepted_size_share is not None
+            else 1.0
+            if resolved_accepted_window_count <= 2 and float(raw_values.get("accepted_size_usd") or 0.0) > 0
+            else resolved_max_accepting_window_accepted_size_share
+            if float(raw_values.get("accepted_size_usd") or 0.0) > 0
+            else 0.0
+        )
         bucket["trade_count"] += int(raw_values.get("trade_count") or 0)
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
         bucket["accepted_size_usd"] += float(raw_values.get("accepted_size_usd") or 0.0)
@@ -1172,6 +1194,16 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if bucket["max_accepting_window_accepted_size_share"] is None
             else max(float(bucket["max_accepting_window_accepted_size_share"]), resolved_max_accepting_window_accepted_size_share)
         )
+        bucket["top_two_accepting_window_accepted_share"] = (
+            resolved_top_two_accepting_window_accepted_share
+            if bucket["top_two_accepting_window_accepted_share"] is None
+            else max(float(bucket["top_two_accepting_window_accepted_share"]), resolved_top_two_accepting_window_accepted_share)
+        )
+        bucket["top_two_accepting_window_accepted_size_share"] = (
+            resolved_top_two_accepting_window_accepted_size_share
+            if bucket["top_two_accepting_window_accepted_size_share"] is None
+            else max(float(bucket["top_two_accepting_window_accepted_size_share"]), resolved_top_two_accepting_window_accepted_size_share)
+        )
         bucket["best_window_pnl_usd"] = (
             resolved_best_window_pnl_usd
             if bucket["best_window_pnl_usd"] is None
@@ -1260,6 +1292,16 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         values["max_accepting_window_accepted_size_share"] = (
             round(float(values["max_accepting_window_accepted_size_share"]), 6)
             if values["max_accepting_window_accepted_size_share"] is not None
+            else None
+        )
+        values["top_two_accepting_window_accepted_share"] = (
+            round(float(values["top_two_accepting_window_accepted_share"]), 6)
+            if values["top_two_accepting_window_accepted_share"] is not None
+            else None
+        )
+        values["top_two_accepting_window_accepted_size_share"] = (
+            round(float(values["top_two_accepting_window_accepted_size_share"]), 6)
+            if values["top_two_accepting_window_accepted_size_share"] is not None
             else None
         )
         values["best_window_pnl_usd"] = (
@@ -1792,6 +1834,10 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
         enriched["max_accepting_window_accepted_share"] = 1.0 if enriched.get("accepted_window_count") else 0.0
     if "max_accepting_window_accepted_size_share" not in enriched:
         enriched["max_accepting_window_accepted_size_share"] = 1.0 if accepted_size_usd > 0 else 0.0
+    if "top_two_accepting_window_accepted_share" not in enriched:
+        enriched["top_two_accepting_window_accepted_share"] = 1.0 if enriched.get("accepted_window_count") else 0.0
+    if "top_two_accepting_window_accepted_size_share" not in enriched:
+        enriched["top_two_accepting_window_accepted_size_share"] = 1.0 if accepted_size_usd > 0 else 0.0
     return enriched
 
 
@@ -1898,6 +1944,16 @@ def _max_accepting_window_accepted_share(result: dict[str, Any]) -> float:
     return 0.0
 
 
+def _top_two_accepting_window_accepted_share(result: dict[str, Any]) -> float:
+    raw_value = result.get("top_two_accepting_window_accepted_share")
+    if raw_value is not None:
+        return _clamp_fraction(float(raw_value or 0.0))
+    accepted_window_count = _accepted_window_count(result)
+    if accepted_window_count <= 2 and int(result.get("accepted_count") or 0) > 0:
+        return 1.0
+    return _max_accepting_window_accepted_share(result)
+
+
 def _max_accepting_window_accepted_size_share(result: dict[str, Any]) -> float:
     raw_value = result.get("max_accepting_window_accepted_size_share")
     if raw_value is not None:
@@ -1905,6 +1961,16 @@ def _max_accepting_window_accepted_size_share(result: dict[str, Any]) -> float:
     if _accepted_window_count(result) <= 1 and float(result.get("accepted_size_usd") or 0.0) > 0:
         return 1.0
     return 0.0
+
+
+def _top_two_accepting_window_accepted_size_share(result: dict[str, Any]) -> float:
+    raw_value = result.get("top_two_accepting_window_accepted_size_share")
+    if raw_value is not None:
+        return _clamp_fraction(float(raw_value or 0.0))
+    accepted_window_count = _accepted_window_count(result)
+    if accepted_window_count <= 2 and float(result.get("accepted_size_usd") or 0.0) > 0:
+        return 1.0
+    return _max_accepting_window_accepted_size_share(result)
 
 
 def _mode_active_window_count(
@@ -2020,6 +2086,22 @@ def _mode_max_accepting_window_accepted_share(
     return 1.0 if accepted_window_count <= 1 and accepted_count > 0 else 0.0
 
 
+def _mode_top_two_accepting_window_accepted_share(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> float:
+    payload = signal_mode_summary.get(mode, {})
+    raw_value = payload.get("top_two_accepting_window_accepted_share")
+    if raw_value is not None:
+        return _clamp_fraction(float(raw_value))
+    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
+    accepted_count = int(payload.get("accepted_count") or 0)
+    if accepted_window_count <= 2 and accepted_count > 0:
+        return 1.0
+    return _mode_max_accepting_window_accepted_share(signal_mode_summary, mode, window_count)
+
+
 def _mode_max_accepting_window_accepted_size_share(
     signal_mode_summary: dict[str, dict[str, Any]],
     mode: str,
@@ -2032,6 +2114,22 @@ def _mode_max_accepting_window_accepted_size_share(
     accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
     accepted_size_usd = float(payload.get("accepted_size_usd") or 0.0)
     return 1.0 if accepted_window_count <= 1 and accepted_size_usd > 0 else 0.0
+
+
+def _mode_top_two_accepting_window_accepted_size_share(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> float:
+    payload = signal_mode_summary.get(mode, {})
+    raw_value = payload.get("top_two_accepting_window_accepted_size_share")
+    if raw_value is not None:
+        return _clamp_fraction(float(raw_value))
+    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
+    accepted_size_usd = float(payload.get("accepted_size_usd") or 0.0)
+    if accepted_window_count <= 2 and accepted_size_usd > 0:
+        return 1.0
+    return _mode_max_accepting_window_accepted_size_share(signal_mode_summary, mode, window_count)
 
 
 def _carry_window_share(result: dict[str, Any]) -> float:
@@ -2216,6 +2314,8 @@ def _constraint_failures(
     max_non_accepting_active_window_episodes: int = -1,
     max_accepting_window_accepted_share: float = 0.0,
     max_accepting_window_accepted_size_share: float = 0.0,
+    max_top_two_accepting_window_accepted_share: float = 0.0,
+    max_top_two_accepting_window_accepted_size_share: float = 0.0,
     min_trader_count: int,
     min_market_count: int,
     min_entry_price_band_count: int,
@@ -2250,6 +2350,10 @@ def _constraint_failures(
     max_heuristic_accepting_window_accepted_size_share: float = 0.0,
     max_xgboost_accepting_window_accepted_share: float = 0.0,
     max_xgboost_accepting_window_accepted_size_share: float = 0.0,
+    max_heuristic_top_two_accepting_window_accepted_share: float = 0.0,
+    max_heuristic_top_two_accepting_window_accepted_size_share: float = 0.0,
+    max_xgboost_top_two_accepting_window_accepted_share: float = 0.0,
+    max_xgboost_top_two_accepting_window_accepted_size_share: float = 0.0,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
@@ -2290,6 +2394,8 @@ def _constraint_failures(
     non_accepting_active_window_episode_count = _non_accepting_active_window_episode_count(result)
     max_accepting_window_accepted_share_value = _max_accepting_window_accepted_share(result)
     max_accepting_window_accepted_size_share_value = _max_accepting_window_accepted_size_share(result)
+    top_two_accepting_window_accepted_share_value = _top_two_accepting_window_accepted_share(result)
+    top_two_accepting_window_accepted_size_share_value = _top_two_accepting_window_accepted_size_share(result)
     worst_active_window_accepted_count = int(result.get("worst_active_window_accepted_count") or 0)
     worst_active_window_accepted_size_usd = float(result.get("worst_active_window_accepted_size_usd") or 0.0)
 
@@ -2414,6 +2520,10 @@ def _constraint_failures(
     heuristic_max_accepting_window_accepted_size_share = _mode_max_accepting_window_accepted_size_share(signal_mode_summary, "heuristic", mode_window_count)
     xgboost_max_accepting_window_accepted_share = _mode_max_accepting_window_accepted_share(signal_mode_summary, "xgboost", mode_window_count)
     xgboost_max_accepting_window_accepted_size_share = _mode_max_accepting_window_accepted_size_share(signal_mode_summary, "xgboost", mode_window_count)
+    heuristic_top_two_accepting_window_accepted_share = _mode_top_two_accepting_window_accepted_share(signal_mode_summary, "heuristic", mode_window_count)
+    heuristic_top_two_accepting_window_accepted_size_share = _mode_top_two_accepting_window_accepted_size_share(signal_mode_summary, "heuristic", mode_window_count)
+    xgboost_top_two_accepting_window_accepted_share = _mode_top_two_accepting_window_accepted_share(signal_mode_summary, "xgboost", mode_window_count)
+    xgboost_top_two_accepting_window_accepted_size_share = _mode_top_two_accepting_window_accepted_size_share(signal_mode_summary, "xgboost", mode_window_count)
     heuristic_worst_active_window_accepted_count = signal_mode_summary.get("heuristic", {}).get("worst_active_window_accepted_count")
     heuristic_worst_active_window_accepted_size_usd = signal_mode_summary.get("heuristic", {}).get("worst_active_window_accepted_size_usd")
     xgboost_worst_active_window_accepted_count = signal_mode_summary.get("xgboost", {}).get("worst_active_window_accepted_count")
@@ -2492,6 +2602,34 @@ def _constraint_failures(
         and xgboost_max_accepting_window_accepted_size_share > max_xgboost_accepting_window_accepted_size_share
     ):
         failures.append("xgboost_max_accepting_window_accepted_size_share")
+    if (
+        allow_heuristic
+        and max_heuristic_top_two_accepting_window_accepted_share > 0
+        and int(signal_mode_summary.get("heuristic", {}).get("accepted_count") or 0) > 0
+        and heuristic_top_two_accepting_window_accepted_share > max_heuristic_top_two_accepting_window_accepted_share
+    ):
+        failures.append("heuristic_top_two_accepting_window_accepted_share")
+    if (
+        allow_heuristic
+        and max_heuristic_top_two_accepting_window_accepted_size_share > 0
+        and float(signal_mode_summary.get("heuristic", {}).get("accepted_size_usd") or 0.0) > 0
+        and heuristic_top_two_accepting_window_accepted_size_share > max_heuristic_top_two_accepting_window_accepted_size_share
+    ):
+        failures.append("heuristic_top_two_accepting_window_accepted_size_share")
+    if (
+        allow_xgboost
+        and max_xgboost_top_two_accepting_window_accepted_share > 0
+        and int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) > 0
+        and xgboost_top_two_accepting_window_accepted_share > max_xgboost_top_two_accepting_window_accepted_share
+    ):
+        failures.append("xgboost_top_two_accepting_window_accepted_share")
+    if (
+        allow_xgboost
+        and max_xgboost_top_two_accepting_window_accepted_size_share > 0
+        and float(signal_mode_summary.get("xgboost", {}).get("accepted_size_usd") or 0.0) > 0
+        and xgboost_top_two_accepting_window_accepted_size_share > max_xgboost_top_two_accepting_window_accepted_size_share
+    ):
+        failures.append("xgboost_top_two_accepting_window_accepted_size_share")
     if (
         allow_heuristic
         and min_heuristic_worst_active_window_accepted_count > 0
@@ -2591,6 +2729,16 @@ def _constraint_failures(
         and max_accepting_window_accepted_size_share_value > max_accepting_window_accepted_size_share
     ):
         failures.append("max_accepting_window_accepted_size_share")
+    if (
+        max_top_two_accepting_window_accepted_share > 0
+        and top_two_accepting_window_accepted_share_value > max_top_two_accepting_window_accepted_share
+    ):
+        failures.append("top_two_accepting_window_accepted_share")
+    if (
+        max_top_two_accepting_window_accepted_size_share > 0
+        and top_two_accepting_window_accepted_size_share_value > max_top_two_accepting_window_accepted_size_share
+    ):
+        failures.append("top_two_accepting_window_accepted_size_share")
     if worst_active_window_accepted_count < max(min_worst_active_window_accepted_count, 0):
         failures.append("worst_active_window_accepted_count")
     if min_worst_active_window_accepted_size_usd > 0 and worst_active_window_accepted_size_usd < min_worst_active_window_accepted_size_usd:
@@ -2729,6 +2877,8 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             accepted_window_count = _accepted_window_count(row["result"])
             max_non_accepting_active_window_streak = _max_non_accepting_active_window_streak(row["result"])
             non_accepting_active_window_episode_count = _non_accepting_active_window_episode_count(row["result"])
+            top_two_accepting_window_accepted_share = _top_two_accepting_window_accepted_share(row["result"])
+            top_two_accepting_window_accepted_size_share = _top_two_accepting_window_accepted_size_share(row["result"])
             worst_active_window_accepted_count = int(row["result"].get("worst_active_window_accepted_count") or 0)
             worst_active_window_accepted_size_usd = float(row["result"].get("worst_active_window_accepted_size_usd") or 0.0)
             worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
@@ -2750,6 +2900,8 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
                 f" accept {accepted_window_count}/{window_count}"
                 f" acc-gap {max_non_accepting_active_window_streak}"
                 f" acc-runs {non_accepting_active_window_episode_count}"
+                f" top2-acc {top_two_accepting_window_accepted_share * 100:.0f}%"
+                f" top2-acc$ {top_two_accepting_window_accepted_size_share * 100:.0f}%"
                 f" carry {carry_summary}"
                 f"{carry_restart_suffix}"
                 f" carry-avg {avg_window_end_open_exposure_share * 100:.0f}%"
@@ -2961,6 +3113,32 @@ def _aggregate_window_results(
             if total_accepted_size_in_accepting_windows > 0
         ),
         default=0.0,
+    )
+    top_two_accepting_window_accepted_share = min(
+        sum(
+            sorted(
+                (
+                    float(int(row.get("accepted_count") or 0)) / float(total_accepted_count_in_accepting_windows)
+                    for row in accepting_rows
+                    if total_accepted_count_in_accepting_windows > 0
+                ),
+                reverse=True,
+            )[:2]
+        ),
+        1.0,
+    )
+    top_two_accepting_window_accepted_size_share = min(
+        sum(
+            sorted(
+                (
+                    float(row.get("accepted_size_usd") or 0.0) / float(total_accepted_size_in_accepting_windows)
+                    for row in accepting_rows
+                    if total_accepted_size_in_accepting_windows > 0
+                ),
+                reverse=True,
+            )[:2]
+        ),
+        1.0,
     )
     avg_window_end_open_exposure_share = (
         sum(
@@ -3278,6 +3456,48 @@ def _aggregate_window_results(
                 if values["accepted_size_usd"] > 0 and int(values["accepted_window_count"]) <= 1
                 else 0.0
             ),
+            "top_two_accepting_window_accepted_share": (
+                round(
+                    min(
+                        sum(
+                            sorted(
+                                (
+                                    float(count) / float(values["accepted_count"])
+                                    for count in values["active_window_accepted_counts"]
+                                ),
+                                reverse=True,
+                            )[:2]
+                        ),
+                        1.0,
+                    ),
+                    6,
+                )
+                if values["active_window_accepted_counts"] and values["accepted_count"] > 0
+                else 1.0
+                if values["accepted_count"] > 0 and int(values["accepted_window_count"]) <= 2
+                else 0.0
+            ),
+            "top_two_accepting_window_accepted_size_share": (
+                round(
+                    min(
+                        sum(
+                            sorted(
+                                (
+                                    float(size_usd) / float(values["accepted_size_usd"])
+                                    for size_usd in values["active_window_accepted_sizes_usd"]
+                                ),
+                                reverse=True,
+                            )[:2]
+                        ),
+                        1.0,
+                    ),
+                    6,
+                )
+                if values["active_window_accepted_sizes_usd"] and values["accepted_size_usd"] > 0
+                else 1.0
+                if values["accepted_size_usd"] > 0 and int(values["accepted_window_count"]) <= 2
+                else 0.0
+            ),
             "best_window_pnl_usd": round(max(values["window_pnls"]), 6) if values["window_pnls"] else None,
             "win_count": int(values["win_count"]),
             "win_rate": round(values["win_count"] / values["resolved_count"], 6) if values["resolved_count"] > 0 else None,
@@ -3493,6 +3713,8 @@ def _aggregate_window_results(
         "non_accepting_active_window_episode_count": non_accepting_active_window_episode_count,
         "max_accepting_window_accepted_share": round(max_accepting_window_accepted_share, 6),
         "max_accepting_window_accepted_size_share": round(max_accepting_window_accepted_size_share, 6),
+        "top_two_accepting_window_accepted_share": round(top_two_accepting_window_accepted_share, 6),
+        "top_two_accepting_window_accepted_size_share": round(top_two_accepting_window_accepted_size_share, 6),
         "worst_active_window_accepted_count": worst_active_window_accepted_count,
         "worst_active_window_accepted_size_usd": round(worst_active_window_accepted_size_usd, 6),
         "window_avg_pnl_usd": round(window_avg_pnl_usd, 6),
@@ -4086,6 +4308,8 @@ def main() -> None:
     parser.add_argument("--max-non-accepting-active-window-episodes", type=int, default=-1, help="Maximum count of stitched active-window fresh-entry drought episodes allowed across the replay horizon.")
     parser.add_argument("--max-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of accepted replay trades allowed to fall into a single stitched accepting window.")
     parser.add_argument("--max-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of accepted replay deployed dollars allowed to fall into a single stitched accepting window.")
+    parser.add_argument("--max-top-two-accepting-window-accepted-share", type=float, default=0.0, help="Maximum combined share of accepted replay trades allowed to fall into the top two stitched accepting windows.")
+    parser.add_argument("--max-top-two-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum combined share of accepted replay deployed dollars allowed to fall into the top two stitched accepting windows.")
     parser.add_argument("--min-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in the sparsest active replay window.")
     parser.add_argument("--min-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in the shallowest active replay window.")
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
@@ -4140,6 +4364,10 @@ def main() -> None:
     parser.add_argument("--max-heuristic-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of heuristic accepted replay deployed dollars allowed to fall into a single stitched heuristic accepting window.")
     parser.add_argument("--max-xgboost-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of xgboost accepted replay trades allowed to fall into a single stitched xgboost accepting window.")
     parser.add_argument("--max-xgboost-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of xgboost accepted replay deployed dollars allowed to fall into a single stitched xgboost accepting window.")
+    parser.add_argument("--max-heuristic-top-two-accepting-window-accepted-share", type=float, default=0.0, help="Maximum combined share of heuristic accepted replay trades allowed to fall into the top two stitched heuristic accepting windows.")
+    parser.add_argument("--max-heuristic-top-two-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum combined share of heuristic accepted replay deployed dollars allowed to fall into the top two stitched heuristic accepting windows.")
+    parser.add_argument("--max-xgboost-top-two-accepting-window-accepted-share", type=float, default=0.0, help="Maximum combined share of xgboost accepted replay trades allowed to fall into the top two stitched xgboost accepting windows.")
+    parser.add_argument("--max-xgboost-top-two-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum combined share of xgboost accepted replay deployed dollars allowed to fall into the top two stitched xgboost accepting windows.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--max-heuristic-accepted-size-share", type=float, default=0.0, help="Maximum fraction of accepted replay deployed dollars allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
@@ -4306,6 +4534,8 @@ def main() -> None:
         max_heuristic_non_accepting_active_window_episodes=int(args.max_heuristic_non_accepting_active_window_episodes),
         max_heuristic_accepting_window_accepted_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
         max_heuristic_accepting_window_accepted_size_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
+        max_heuristic_top_two_accepting_window_accepted_share=_clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_share),
+        max_heuristic_top_two_accepting_window_accepted_size_share=_clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_size_share),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         max_heuristic_accepted_size_share=_clamp_fraction(args.max_heuristic_accepted_size_share),
         max_heuristic_active_window_accepted_share=_clamp_fraction(args.max_heuristic_active_window_accepted_share),
@@ -4316,6 +4546,8 @@ def main() -> None:
         max_xgboost_non_accepting_active_window_episodes=int(args.max_xgboost_non_accepting_active_window_episodes),
         max_xgboost_accepting_window_accepted_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
         max_xgboost_accepting_window_accepted_size_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
+        max_xgboost_top_two_accepting_window_accepted_share=_clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_share),
+        max_xgboost_top_two_accepting_window_accepted_size_share=_clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_size_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         min_xgboost_accepted_size_share=_clamp_fraction(args.min_xgboost_accepted_size_share),
         min_xgboost_active_window_accepted_share=_clamp_fraction(args.min_xgboost_active_window_accepted_share),
@@ -4331,6 +4563,8 @@ def main() -> None:
         max_non_accepting_active_window_episodes=int(args.max_non_accepting_active_window_episodes),
         max_accepting_window_accepted_share=_clamp_fraction(args.max_accepting_window_accepted_share),
         max_accepting_window_accepted_size_share=_clamp_fraction(args.max_accepting_window_accepted_size_share),
+        max_top_two_accepting_window_accepted_share=_clamp_fraction(args.max_top_two_accepting_window_accepted_share),
+        max_top_two_accepting_window_accepted_size_share=_clamp_fraction(args.max_top_two_accepting_window_accepted_size_share),
         min_worst_active_window_accepted_count=max(args.min_worst_active_window_accepted_count, 0),
         min_worst_active_window_accepted_size_usd=max(args.min_worst_active_window_accepted_size_usd, 0.0),
         min_trader_count=max(args.min_trader_count, 0),
@@ -4612,6 +4846,8 @@ def main() -> None:
             max_heuristic_non_accepting_active_window_episodes=int(args.max_heuristic_non_accepting_active_window_episodes),
             max_heuristic_accepting_window_accepted_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
             max_heuristic_accepting_window_accepted_size_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
+            max_heuristic_top_two_accepting_window_accepted_share=_clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_share),
+            max_heuristic_top_two_accepting_window_accepted_size_share=_clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_size_share),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             max_heuristic_accepted_size_share=_clamp_fraction(args.max_heuristic_accepted_size_share),
             max_heuristic_active_window_accepted_share=_clamp_fraction(args.max_heuristic_active_window_accepted_share),
@@ -4622,6 +4858,8 @@ def main() -> None:
             max_xgboost_non_accepting_active_window_episodes=int(args.max_xgboost_non_accepting_active_window_episodes),
             max_xgboost_accepting_window_accepted_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
             max_xgboost_accepting_window_accepted_size_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
+            max_xgboost_top_two_accepting_window_accepted_share=_clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_share),
+            max_xgboost_top_two_accepting_window_accepted_size_share=_clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_size_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
             min_xgboost_accepted_size_share=_clamp_fraction(args.min_xgboost_accepted_size_share),
             min_xgboost_active_window_accepted_share=_clamp_fraction(args.min_xgboost_active_window_accepted_share),
@@ -4637,6 +4875,8 @@ def main() -> None:
             max_non_accepting_active_window_episodes=int(args.max_non_accepting_active_window_episodes),
             max_accepting_window_accepted_share=_clamp_fraction(args.max_accepting_window_accepted_share),
             max_accepting_window_accepted_size_share=_clamp_fraction(args.max_accepting_window_accepted_size_share),
+            max_top_two_accepting_window_accepted_share=_clamp_fraction(args.max_top_two_accepting_window_accepted_share),
+            max_top_two_accepting_window_accepted_size_share=_clamp_fraction(args.max_top_two_accepting_window_accepted_size_share),
             min_worst_active_window_accepted_count=max(args.min_worst_active_window_accepted_count, 0),
             min_worst_active_window_accepted_size_usd=max(args.min_worst_active_window_accepted_size_usd, 0.0),
             min_trader_count=max(args.min_trader_count, 0),
@@ -4707,6 +4947,8 @@ def main() -> None:
         "max_non_accepting_active_window_episodes": int(args.max_non_accepting_active_window_episodes),
         "max_accepting_window_accepted_share": _clamp_fraction(args.max_accepting_window_accepted_share),
         "max_accepting_window_accepted_size_share": _clamp_fraction(args.max_accepting_window_accepted_size_share),
+        "max_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_top_two_accepting_window_accepted_share),
+        "max_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_top_two_accepting_window_accepted_size_share),
         "min_worst_active_window_accepted_count": max(args.min_worst_active_window_accepted_count, 0),
         "min_worst_active_window_accepted_size_usd": max(args.min_worst_active_window_accepted_size_usd, 0.0),
         "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
@@ -4745,6 +4987,8 @@ def main() -> None:
         "max_heuristic_non_accepting_active_window_episodes": int(args.max_heuristic_non_accepting_active_window_episodes),
         "max_heuristic_accepting_window_accepted_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
         "max_heuristic_accepting_window_accepted_size_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
+        "max_heuristic_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_share),
+        "max_heuristic_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_heuristic_top_two_accepting_window_accepted_size_share),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "max_heuristic_accepted_size_share": _clamp_fraction(args.max_heuristic_accepted_size_share),
         "max_heuristic_active_window_accepted_share": _clamp_fraction(args.max_heuristic_active_window_accepted_share),
@@ -4755,6 +4999,8 @@ def main() -> None:
         "max_xgboost_non_accepting_active_window_episodes": int(args.max_xgboost_non_accepting_active_window_episodes),
         "max_xgboost_accepting_window_accepted_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
         "max_xgboost_accepting_window_accepted_size_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
+        "max_xgboost_top_two_accepting_window_accepted_share": _clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_share),
+        "max_xgboost_top_two_accepting_window_accepted_size_share": _clamp_fraction(args.max_xgboost_top_two_accepting_window_accepted_size_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
         "min_xgboost_accepted_size_share": _clamp_fraction(args.min_xgboost_accepted_size_share),
         "min_xgboost_active_window_accepted_share": _clamp_fraction(args.min_xgboost_active_window_accepted_share),

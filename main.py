@@ -517,20 +517,13 @@ def _write_bot_state(**extra) -> None:
     BOT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def _persist_startup_validation_failure(errors: list[str], warnings: list[str] | None = None) -> None:
-    cleaned_errors = [str(item or "").strip() for item in errors if str(item or "").strip()]
-    cleaned_warnings = [str(item or "").strip() for item in (warnings or []) if str(item or "").strip()]
-    if not cleaned_errors:
-        cleaned_errors = ["startup validation failed"]
+def _persist_startup_failure_state(
+    *,
+    detail: str,
+    message: str,
+    validation_failed: bool,
+) -> None:
     failed_at = int(time.time())
-    detail = (
-        f"startup validation failed: {cleaned_errors[0]}"
-        if len(cleaned_errors) == 1
-        else f"startup validation failed: {len(cleaned_errors)} errors"
-    )
-    message_lines = ["startup validation failed", *[f"- {item}" for item in cleaned_errors]]
-    if cleaned_warnings:
-        message_lines.extend(["warnings", *[f"- {item}" for item in cleaned_warnings]])
     _write_bot_state(
         started_at=failed_at,
         last_activity_at=failed_at,
@@ -542,9 +535,31 @@ def _persist_startup_validation_failure(errors: list[str], warnings: list[str] |
         retrain_started_at=0,
         replay_search_in_progress=False,
         replay_search_started_at=0,
-        startup_detail=detail,
-        startup_validation_failed=True,
-        startup_validation_message="\n".join(message_lines),
+        startup_detail=str(detail or "").strip(),
+        startup_failed=True,
+        startup_failure_message=str(message or "").strip(),
+        startup_validation_failed=bool(validation_failed),
+        startup_validation_message=str(message or "").strip() if validation_failed else "",
+    )
+
+
+def _persist_startup_validation_failure(errors: list[str], warnings: list[str] | None = None) -> None:
+    cleaned_errors = [str(item or "").strip() for item in errors if str(item or "").strip()]
+    cleaned_warnings = [str(item or "").strip() for item in (warnings or []) if str(item or "").strip()]
+    if not cleaned_errors:
+        cleaned_errors = ["startup validation failed"]
+    detail = (
+        f"startup validation failed: {cleaned_errors[0]}"
+        if len(cleaned_errors) == 1
+        else f"startup validation failed: {len(cleaned_errors)} errors"
+    )
+    message_lines = ["startup validation failed", *[f"- {item}" for item in cleaned_errors]]
+    if cleaned_warnings:
+        message_lines.extend(["warnings", *[f"- {item}" for item in cleaned_warnings]])
+    _persist_startup_failure_state(
+        detail=detail,
+        message="\n".join(message_lines),
+        validation_failed=True,
     )
 
 
@@ -3754,6 +3769,7 @@ def main() -> None:
     shutdown_event = threading.Event()
     previous_signal_handlers = _install_shutdown_signal_handlers(shutdown_event)
     pending_shadow_reset: ShadowResetRequest | None = None
+    cleanup_done = False
 
     init_db()
     _validate_startup()
@@ -3770,6 +3786,8 @@ def main() -> None:
         "last_activity_at": start_ts,
         "loop_in_progress": False,
         "startup_detail": "starting bot",
+        "startup_failed": False,
+        "startup_failure_message": "",
         "startup_validation_failed": False,
         "startup_validation_message": "",
         "last_poll_at": 0,
@@ -3880,6 +3898,30 @@ def main() -> None:
         if engine is None:
             return
         _persist_bot_state(**engine.runtime_info())
+
+    def _cleanup_runtime() -> None:
+        nonlocal cleanup_done
+        if cleanup_done:
+            return
+        cleanup_done = True
+        if dashboard_api_server is not None:
+            dashboard_api_server.stop()
+        _clear_bot_pid_file()
+        if telegram_command_stop is not None:
+            telegram_command_stop.set()
+        if telegram_command_thread is not None:
+            telegram_command_thread.join(timeout=1.0)
+        if scheduler is not None:
+            try:
+                scheduler.shutdown(wait=True)
+            except Exception:
+                logger.debug("Scheduler shutdown skipped during cleanup", exc_info=True)
+        if tracker is not None:
+            try:
+                tracker.close()
+            except Exception:
+                logger.debug("Tracker close skipped during cleanup", exc_info=True)
+        _restore_shutdown_signal_handlers(previous_signal_handlers)
 
     def _persist_replay_promotion_state(result: dict[str, Any]) -> None:
         _persist_bot_state(**_replay_promotion_state_updates(result))
@@ -4353,171 +4395,186 @@ def main() -> None:
             )
         )
 
-    _persist_bot_state(**watchlist.state_fields())
-    dashboard_api_server = start_dashboard_api_server()
-    _set_startup_detail("loading watchlist")
-    _set_startup_detail("syncing belief priors")
-    sync_belief_priors()
-
-    _set_startup_detail("creating tracker")
-    tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
-    _set_startup_detail("connecting executor")
-    executor = PolymarketExecutor()
-    _set_startup_detail("checking wallet balance")
-    executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
-    _persist_bot_state(bankroll_usd=round(executor.get_usdc_balance(), 2))
-    _set_startup_detail("starting telegram replies")
-    telegram_command_stop = threading.Event()
-    telegram_command_thread = threading.Thread(
-        target=_run_telegram_command_loop,
-        args=(telegram_command_stop,),
-        name="telegram-command-loop",
-        daemon=True,
-    )
-    telegram_command_thread.start()
-    startup_wallets = watchlist.startup_wallets()
-    _set_startup_detail("initializing risk guards")
-    live_entry_guard = _init_live_entry_guard(executor)
-    daily_loss_guard = _init_daily_loss_guard(executor)
-    _set_startup_detail("loading signal engine")
-    engine = SignalEngine()
-    _persist_runtime_truth()
-    _set_startup_detail("loading trade cache")
-    dedup = DedupeCache()
-    dedup.load_from_db(rebuild_shadow_positions=True)
-    tracker.seen_ids.update(dedup.seen_ids)
-    _set_startup_detail(
-        f"loaded {len(dedup.seen_ids)} seen ids, {len(dedup.open_positions)} open positions"
-    )
-    _set_startup_detail("syncing live positions" if use_real_money() else "rebuilding shadow positions")
-    initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
-    if use_real_money() and not initial_live_sync_ok:
-        raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
-    _refresh_shadow_history_state()
-
-    def _refresh_watchlist() -> None:
-        refresh_trader_cache(watchlist.active_wallets())
-        watchlist.refresh(run_auto_drop=True)
+    try:
         _persist_bot_state(**watchlist.state_fields())
+        dashboard_api_server = start_dashboard_api_server()
+        _set_startup_detail("loading watchlist")
+        _set_startup_detail("syncing belief priors")
+        sync_belief_priors()
 
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        lambda: (
-            _resolve_trades_and_alert(),
-            dedup.load_from_db(rebuild_shadow_positions=False),
-            _refresh_shadow_history_state(),
-        ),
-        "interval",
-        minutes=2,
-        id="resolve_trades",
-    )
-    scheduler.add_job(
-        daily_report,
-        "cron",
-        hour=8,
-        minute=0,
-        id="daily_report",
-    )
-    retrain_cadence = retrain_base_cadence()
-    retrain_hour = retrain_hour_local()
-    retrain_trigger = {"hour": retrain_hour, "minute": 0, "id": "scheduled_retrain"}
-    if retrain_cadence == "weekly":
-        scheduler.add_job(
-            lambda: _run_retrain_job("scheduled"),
-            "cron",
-            day_of_week="mon",
-            **retrain_trigger,
+        _set_startup_detail("creating tracker")
+        tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
+        _set_startup_detail("connecting executor")
+        executor = PolymarketExecutor()
+        _set_startup_detail("checking wallet balance")
+        executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
+        _persist_bot_state(bankroll_usd=round(executor.get_usdc_balance(), 2))
+        _set_startup_detail("starting telegram replies")
+        telegram_command_stop = threading.Event()
+        telegram_command_thread = threading.Thread(
+            target=_run_telegram_command_loop,
+            args=(telegram_command_stop,),
+            name="telegram-command-loop",
+            daemon=True,
         )
-    else:
-        scheduler.add_job(
-            lambda: _run_retrain_job("scheduled"),
-            "cron",
-            **retrain_trigger,
+        telegram_command_thread.start()
+        startup_wallets = watchlist.startup_wallets()
+        _set_startup_detail("initializing risk guards")
+        live_entry_guard = _init_live_entry_guard(executor)
+        daily_loss_guard = _init_daily_loss_guard(executor)
+        _set_startup_detail("loading signal engine")
+        engine = SignalEngine()
+        _persist_runtime_truth()
+        _set_startup_detail("loading trade cache")
+        dedup = DedupeCache()
+        dedup.load_from_db(rebuild_shadow_positions=True)
+        tracker.seen_ids.update(dedup.seen_ids)
+        _set_startup_detail(
+            f"loaded {len(dedup.seen_ids)} seen ids, {len(dedup.open_positions)} open positions"
         )
-    replay_search_cadence = replay_search_base_cadence()
-    replay_search_hour = replay_search_hour_local()
-    replay_search_trigger = {"hour": replay_search_hour, "minute": 0, "id": "scheduled_replay_search"}
-    if replay_search_cadence == "weekly":
-        scheduler.add_job(
-            lambda: _run_replay_search_job("scheduled"),
-            "cron",
-            day_of_week="mon",
-            **replay_search_trigger,
-        )
-    elif replay_search_cadence == "daily":
-        scheduler.add_job(
-            lambda: _run_replay_search_job("scheduled"),
-            "cron",
-            **replay_search_trigger,
-        )
-    scheduler.add_job(
-        lambda: should_retrain_early(engine) and _run_retrain_job("early"),
-        "interval",
-        seconds=retrain_early_check_seconds(),
-        id="early_retrain_check",
-    )
-    scheduler.add_job(
-        lambda: dedup.sync_positions_from_api(tracker, wallet_address()),
-        "interval",
-        minutes=5,
-        id="sync_positions",
-    )
-    scheduler.add_job(
-        lambda: _run_stop_loss_checks(tracker, executor, dedup),
-        "interval",
-        minutes=1,
-        id="stop_loss_check",
-    )
-    scheduler.add_job(
-        _refresh_watchlist,
-        "interval",
-        minutes=10,
-        id="refresh_trader_cache",
-    )
-    scheduler.add_job(
-        _backup_db,
-        "cron",
-        hour=4,
-        id="db_backup",
-    )
-    _set_startup_detail("starting scheduler")
-    scheduler.start()
-    _log_runtime_ready(tracker, watchlist)
-    _persist_bot_state(startup_detail="waiting for first poll")
-    startup_warmup_thread = threading.Thread(
-        target=_run_deferred_startup_tasks,
-        kwargs={
-            "startup_wallets": startup_wallets,
-            "tracker": tracker,
-            "watchlist": watchlist,
-            "dedup": dedup,
-            "engine": engine,
-            "persist_state": _persist_bot_state,
-            "run_retrain_job": _run_retrain_job,
-        },
-        name="startup-warmup",
-        daemon=True,
-    )
-    startup_warmup_thread.start()
+        _set_startup_detail("syncing live positions" if use_real_money() else "rebuilding shadow positions")
+        initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
+        if use_real_money() and not initial_live_sync_ok:
+            raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
+        _refresh_shadow_history_state()
 
-    mode_str = "LIVE" if use_real_money() else "SHADOW"
-    tier_state = watchlist.state_fields()
-    send_alert(
-        build_lines(
-            f"bot started in {mode_str.lower()} mode",
-            f"watching {len(tracker.wallets)} wallets",
-            (
-                "tracked/dropped: "
-                f"{tier_state['tracked_wallet_count']}/{tier_state['dropped_wallet_count']}"
+        def _refresh_watchlist() -> None:
+            refresh_trader_cache(watchlist.active_wallets())
+            watchlist.refresh(run_auto_drop=True)
+            _persist_bot_state(**watchlist.state_fields())
+
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            lambda: (
+                _resolve_trades_and_alert(),
+                dedup.load_from_db(rebuild_shadow_positions=False),
+                _refresh_shadow_history_state(),
             ),
-            (
-                "hot/warm/discovery: "
-                f"{tier_state['hot_wallet_count']}/{tier_state['warm_wallet_count']}/{tier_state['discovery_wallet_count']}"
+            "interval",
+            minutes=2,
+            id="resolve_trades",
+        )
+        scheduler.add_job(
+            daily_report,
+            "cron",
+            hour=8,
+            minute=0,
+            id="daily_report",
+        )
+        retrain_cadence = retrain_base_cadence()
+        retrain_hour = retrain_hour_local()
+        retrain_trigger = {"hour": retrain_hour, "minute": 0, "id": "scheduled_retrain"}
+        if retrain_cadence == "weekly":
+            scheduler.add_job(
+                lambda: _run_retrain_job("scheduled"),
+                "cron",
+                day_of_week="mon",
+                **retrain_trigger,
+            )
+        else:
+            scheduler.add_job(
+                lambda: _run_retrain_job("scheduled"),
+                "cron",
+                **retrain_trigger,
+            )
+        replay_search_cadence = replay_search_base_cadence()
+        replay_search_hour = replay_search_hour_local()
+        replay_search_trigger = {"hour": replay_search_hour, "minute": 0, "id": "scheduled_replay_search"}
+        if replay_search_cadence == "weekly":
+            scheduler.add_job(
+                lambda: _run_replay_search_job("scheduled"),
+                "cron",
+                day_of_week="mon",
+                **replay_search_trigger,
+            )
+        elif replay_search_cadence == "daily":
+            scheduler.add_job(
+                lambda: _run_replay_search_job("scheduled"),
+                "cron",
+                **replay_search_trigger,
+            )
+        scheduler.add_job(
+            lambda: should_retrain_early(engine) and _run_retrain_job("early"),
+            "interval",
+            seconds=retrain_early_check_seconds(),
+            id="early_retrain_check",
+        )
+        scheduler.add_job(
+            lambda: dedup.sync_positions_from_api(tracker, wallet_address()),
+            "interval",
+            minutes=5,
+            id="sync_positions",
+        )
+        scheduler.add_job(
+            lambda: _run_stop_loss_checks(tracker, executor, dedup),
+            "interval",
+            minutes=1,
+            id="stop_loss_check",
+        )
+        scheduler.add_job(
+            _refresh_watchlist,
+            "interval",
+            minutes=10,
+            id="refresh_trader_cache",
+        )
+        scheduler.add_job(
+            _backup_db,
+            "cron",
+            hour=4,
+            id="db_backup",
+        )
+        _set_startup_detail("starting scheduler")
+        scheduler.start()
+        _log_runtime_ready(tracker, watchlist)
+        _persist_bot_state(startup_detail="waiting for first poll")
+        startup_warmup_thread = threading.Thread(
+            target=_run_deferred_startup_tasks,
+            kwargs={
+                "startup_wallets": startup_wallets,
+                "tracker": tracker,
+                "watchlist": watchlist,
+                "dedup": dedup,
+                "engine": engine,
+                "persist_state": _persist_bot_state,
+                "run_retrain_job": _run_retrain_job,
+            },
+            name="startup-warmup",
+            daemon=True,
+        )
+        startup_warmup_thread.start()
+
+        mode_str = "LIVE" if use_real_money() else "SHADOW"
+        tier_state = watchlist.state_fields()
+        send_alert(
+            build_lines(
+                f"bot started in {mode_str.lower()} mode",
+                f"watching {len(tracker.wallets)} wallets",
+                (
+                    "tracked/dropped: "
+                    f"{tier_state['tracked_wallet_count']}/{tier_state['dropped_wallet_count']}"
+                ),
+                (
+                    "hot/warm/discovery: "
+                    f"{tier_state['hot_wallet_count']}/{tier_state['warm_wallet_count']}/{tier_state['discovery_wallet_count']}"
+                ),
+                f"poll interval: {poll_interval()}s",
             ),
-            f"poll interval: {poll_interval()}s",
-        ),
-        kind="status",
-    )
+            kind="status",
+        )
+    except Exception as exc:
+        detail = f"startup failed: {exc}"
+        logger.exception(detail)
+        _persist_startup_failure_state(
+            detail=detail,
+            message=detail,
+            validation_failed=False,
+        )
+        try:
+            send_alert(build_lines("startup failed", str(exc)), kind="error")
+        except Exception:
+            logger.debug("Startup failure alert skipped", exc_info=True)
+        _cleanup_runtime()
+        raise
 
     try:
         entry_pause_alerts = EntryPauseAlertTracker()
@@ -4674,24 +4731,7 @@ def main() -> None:
         logger.info("Shutting down...")
         send_alert("bot stopped", kind="status")
     finally:
-        if dashboard_api_server is not None:
-            dashboard_api_server.stop()
-        _clear_bot_pid_file()
-        if telegram_command_stop is not None:
-            telegram_command_stop.set()
-        if telegram_command_thread is not None:
-            telegram_command_thread.join(timeout=1.0)
-        if scheduler is not None:
-            try:
-                scheduler.shutdown(wait=True)
-            except Exception:
-                logger.debug("Scheduler shutdown skipped during cleanup", exc_info=True)
-        if tracker is not None:
-            try:
-                tracker.close()
-            except Exception:
-                logger.debug("Tracker close skipped during cleanup", exc_info=True)
-        _restore_shutdown_signal_handlers(previous_signal_handlers)
+        _cleanup_runtime()
         if pending_shadow_reset is not None:
             normalized_wallet_mode = pending_shadow_reset.wallet_mode
             previous_wallets = ""

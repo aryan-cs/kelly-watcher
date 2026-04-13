@@ -25,6 +25,12 @@ export const MODEL_PANEL_DEFS = [
         { label: 'Model artifact', text: 'The latest deployed model artifact on disk, even if live trading is currently falling back.' },
             { label: 'Contract', text: 'Artifact contract versus runtime contract. A mismatch means the runtime will reject the model.' },
             { label: 'Fallback', text: 'Why the runtime is using heuristics instead of the model, if it is degraded.' },
+            { label: 'Startup', text: 'Current startup state. Red means startup failed before the runtime reached its first stable polling loop.' },
+            { label: 'Replay search', text: 'Latest replay-search attempt and scope. This is the search job status, not the promotion result.' },
+            { label: 'Promotion', text: 'Latest replay-promotion attempt, including skipped or failed auto-promotion attempts after replay search.' },
+            { label: 'Promote delta', text: 'Score and replay P&L delta attached to the latest replay-promotion attempt, when available.' },
+            { label: 'Promo base', text: 'Last applied replay-promotion baseline. This can be older than Promotion when the latest attempt was skipped or failed.' },
+            { label: 'Shadow gate', text: 'Combined live-history gate: total shadow-history baseline plus the post-promotion shadow-history requirement.' },
             { label: 'Trained', text: 'When the latest deployed model artifact was built.' },
             { label: 'Model age', text: 'How long that deployed model artifact has been sitting without a retrain.' },
             { label: 'Samples', text: 'How many resolved trades were available to train the deployed model artifact.' },
@@ -5604,12 +5610,12 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         : fallbackLabel === 'No artifact'
             ? theme.yellow
             : theme.red;
-    const startupValidationFailed = Boolean(botState.startup_validation_failed);
+    const startupFailed = Boolean(botState.startup_failed || botState.startup_validation_failed);
     const startupDetail = String(botState.startup_detail || '').trim();
-    const startupValidationMessage = String(botState.startup_validation_message || '').trim();
+    const startupFailureMessage = String(botState.startup_failure_message || botState.startup_validation_message || '').trim();
     const startupValue = useMemo(() => {
-        if (startupValidationFailed)
-            return startupDetail || startupValidationMessage || 'startup validation failed';
+        if (startupFailed)
+            return startupDetail || startupFailureMessage || 'startup failed';
         if ((botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail)
             return startupDetail;
         return 'ready';
@@ -5617,10 +5623,10 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         botState.last_poll_at,
         botState.started_at,
         startupDetail,
-        startupValidationFailed,
-        startupValidationMessage
+        startupFailed,
+        startupFailureMessage
     ]);
-    const startupColor = startupValidationFailed
+    const startupColor = startupFailed
         ? theme.red
         : (botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail
             ? theme.yellow

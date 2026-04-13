@@ -3100,8 +3100,10 @@ class RuntimeFixesTest(unittest.TestCase):
                     )
 
                 payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_failed"])
                 self.assertTrue(payload["startup_validation_failed"])
                 self.assertEqual(payload["startup_detail"], "startup validation failed: 2 errors")
+                self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_failure_message"])
                 self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_validation_message"])
                 self.assertIn("warning text", payload["startup_validation_message"])
                 self.assertEqual(payload["mode"], "shadow")
@@ -3127,15 +3129,68 @@ class RuntimeFixesTest(unittest.TestCase):
                         main._validate_startup()
 
                 payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_failed"])
                 self.assertTrue(payload["startup_validation_failed"])
                 self.assertEqual(
                     payload["startup_detail"],
                     "startup validation failed: MIN_CONFIDENCE must be numeric, got 'abc'",
                 )
+                self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_failure_message"])
                 self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_validation_message"])
                 self.assertEqual(payload["poll_interval"], 0.0)
             finally:
                 main.BOT_STATE_FILE = original_state_file
+
+    def test_main_persists_late_startup_failure_after_dashboard_server_starts(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            original_event_file = main.EVENT_FILE
+            dashboard_server = SimpleNamespace(stop=Mock())
+            watchlist_stub = SimpleNamespace(
+                state_fields=lambda: {
+                    "tracked_wallet_count": 1,
+                    "dropped_wallet_count": 0,
+                    "hot_wallet_count": 1,
+                    "warm_wallet_count": 0,
+                    "discovery_wallet_count": 0,
+                },
+                startup_wallets=lambda: [],
+            )
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
+                with (
+                    patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
+                    patch("main.init_db"),
+                    patch("main._validate_startup"),
+                    patch("main._write_bot_pid_file"),
+                    patch("main._clear_bot_pid_file"),
+                    patch("main._repair_event_file_market_urls"),
+                    patch("main._install_shutdown_signal_handlers", return_value=[]),
+                    patch("main._restore_shutdown_signal_handlers"),
+                    patch("main._latest_replay_promotion", return_value=None),
+                    patch("main._latest_applied_replay_promotion", return_value=None),
+                    patch("main.WatchlistManager", return_value=watchlist_stub),
+                    patch("main.start_dashboard_api_server", return_value=dashboard_server),
+                    patch("main.sync_belief_priors", side_effect=RuntimeError("belief sync exploded")),
+                    patch("main.use_real_money", return_value=False),
+                    patch("main.poll_interval", return_value=5.0),
+                    patch("main.send_alert"),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "belief sync exploded"):
+                        main.main()
+
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_failed"])
+                self.assertFalse(payload["startup_validation_failed"])
+                self.assertEqual(payload["startup_detail"], "startup failed: belief sync exploded")
+                self.assertEqual(payload["startup_failure_message"], "startup failed: belief sync exploded")
+                self.assertEqual(payload["mode"], "shadow")
+                self.assertEqual(payload["poll_interval"], 5.0)
+                dashboard_server.stop.assert_called_once()
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+                main.EVENT_FILE = original_event_file
 
     def test_partial_bot_state_heartbeat_preserves_last_completed_poll(self) -> None:
         with TemporaryDirectory() as tmpdir:

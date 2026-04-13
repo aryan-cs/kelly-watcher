@@ -88,6 +88,7 @@ def _score_breakdown(
     mode_active_window_accepted_size_share_penalty: float = 0.0,
     mode_loss_penalty: float = 0.0,
     mode_inactivity_penalty: float = 0.0,
+    accepted_window_share_penalty: float = 0.0,
     allow_heuristic: bool = True,
     allow_xgboost: bool = True,
     wallet_concentration_penalty: float = 0.0,
@@ -119,6 +120,7 @@ def _score_breakdown(
     avg_window_end_open_exposure_share = _avg_window_end_open_exposure_share(result)
     carry_window_share = _carry_window_share(result)
     carry_restart_window_share = _carry_restart_window_share(result)
+    accepted_window_share = _accepted_window_share(result)
     daily_guard_window_share = _daily_guard_window_share(result)
     live_guard_window_share = _live_guard_window_share(result)
     daily_guard_restart_window_share = _daily_guard_restart_window_share(result)
@@ -148,9 +150,7 @@ def _score_breakdown(
     window_count = max(int(result.get("window_count") or 0), 0)
     inactive_window_count = int(result.get("inactive_window_count") or 0)
     active_window_count = max(int(result.get("active_window_count") or 0), 0)
-    accepted_window_count = max(int(result.get("accepted_window_count") or 0), 0)
-    if accepted_window_count <= 0 and accepted_size_usd > 0:
-        accepted_window_count = max(active_window_count, 1)
+    accepted_window_count = _accepted_window_count(result)
     worst_active_window_accepted_count = int(result.get("worst_active_window_accepted_count") or 0)
     worst_active_window_accepted_size_usd = float(result.get("worst_active_window_accepted_size_usd") or 0.0)
     avg_active_window_accepted_size_usd = (
@@ -364,6 +364,11 @@ def _score_breakdown(
     time_to_close_band_size_concentration_penalty_usd = initial_bankroll_usd * time_to_close_band_size_concentration_penalty * time_to_close_band_size_concentration_share
     mode_inactivity_penalty_usd = initial_bankroll_usd * mode_inactivity_penalty * mode_inactivity_share
     window_inactivity_penalty_usd = initial_bankroll_usd * window_inactivity_penalty * window_inactivity_share
+    accepted_window_share_penalty_usd = (
+        initial_bankroll_usd
+        * accepted_window_share_penalty
+        * max(1.0 - accepted_window_share, 0.0)
+    )
     score_usd = (
         pnl
         - drawdown_penalty_usd
@@ -396,6 +401,7 @@ def _score_breakdown(
         - mode_loss_penalty_usd
         - mode_inactivity_penalty_usd
         - window_inactivity_penalty_usd
+        - accepted_window_share_penalty_usd
         - wallet_count_penalty_usd
         - market_count_penalty_usd
         - entry_price_band_count_penalty_usd
@@ -441,6 +447,7 @@ def _score_breakdown(
         "mode_loss_penalty_usd": round(mode_loss_penalty_usd, 6),
         "mode_inactivity_penalty_usd": round(mode_inactivity_penalty_usd, 6),
         "window_inactivity_penalty_usd": round(window_inactivity_penalty_usd, 6),
+        "accepted_window_share_penalty_usd": round(accepted_window_share_penalty_usd, 6),
         "wallet_count_penalty_usd": round(wallet_count_penalty_usd, 6),
         "market_count_penalty_usd": round(market_count_penalty_usd, 6),
         "entry_price_band_count_penalty_usd": round(entry_price_band_count_penalty_usd, 6),
@@ -486,6 +493,7 @@ def _score_result(
     mode_active_window_accepted_size_share_penalty: float = 0.0,
     mode_loss_penalty: float = 0.0,
     mode_inactivity_penalty: float = 0.0,
+    accepted_window_share_penalty: float = 0.0,
     allow_heuristic: bool = True,
     allow_xgboost: bool = True,
     wallet_concentration_penalty: float = 0.0,
@@ -539,6 +547,7 @@ def _score_result(
             mode_worst_active_window_accepted_size_penalty=mode_worst_active_window_accepted_size_penalty,
             mode_loss_penalty=mode_loss_penalty,
             mode_inactivity_penalty=mode_inactivity_penalty,
+            accepted_window_share_penalty=accepted_window_share_penalty,
             window_inactivity_penalty=window_inactivity_penalty,
             wallet_count_penalty=wallet_count_penalty,
             market_count_penalty=market_count_penalty,
@@ -587,6 +596,7 @@ def _with_score_breakdown(
     mode_active_window_accepted_size_share_penalty: float = 0.0,
     mode_loss_penalty: float = 0.0,
     mode_inactivity_penalty: float = 0.0,
+    accepted_window_share_penalty: float = 0.0,
     allow_heuristic: bool = True,
     allow_xgboost: bool = True,
     wallet_concentration_penalty: float = 0.0,
@@ -640,6 +650,7 @@ def _with_score_breakdown(
         mode_worst_active_window_accepted_size_penalty=mode_worst_active_window_accepted_size_penalty,
         mode_loss_penalty=mode_loss_penalty,
         mode_inactivity_penalty=mode_inactivity_penalty,
+        accepted_window_share_penalty=accepted_window_share_penalty,
         window_inactivity_penalty=window_inactivity_penalty,
         wallet_count_penalty=wallet_count_penalty,
         market_count_penalty=market_count_penalty,
@@ -1517,6 +1528,28 @@ def _active_window_count(result: dict[str, Any]) -> int:
     return max(window_count - int(result.get("inactive_window_count") or 0), 0)
 
 
+def _accepted_window_count(result: dict[str, Any]) -> int:
+    accepted_window_count = int(result.get("accepted_window_count") or 0)
+    if accepted_window_count > 0:
+        return accepted_window_count
+    accepted_count = int(result.get("accepted_count") or 0)
+    accepted_size_usd = float(result.get("accepted_size_usd") or 0.0)
+    window_count = int(result.get("window_count") or 0)
+    if window_count <= 1:
+        return 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
+    if accepted_size_usd > 0:
+        return max(_active_window_count(result), 1)
+    return 0
+
+
+def _accepted_window_share(result: dict[str, Any]) -> float:
+    accepted_window_count = _accepted_window_count(result)
+    active_window_count = _active_window_count(result)
+    if active_window_count > 0:
+        return _clamp_fraction(float(accepted_window_count) / float(active_window_count))
+    return 1.0 if accepted_window_count > 0 else 0.0
+
+
 def _carry_window_share(result: dict[str, Any]) -> float:
     raw_share = result.get("carry_window_share")
     if raw_share is not None:
@@ -1693,6 +1726,7 @@ def _constraint_failures(
     max_live_guard_restart_window_share: float = 0.0,
     min_active_window_count: int,
     max_inactive_window_count: int,
+    min_accepted_window_share: float = 0.0,
     min_trader_count: int,
     min_market_count: int,
     min_entry_price_band_count: int,
@@ -1749,6 +1783,7 @@ def _constraint_failures(
     worst_window_drawdown_pct = float(result.get("worst_window_drawdown_pct") or 0.0)
     active_window_count = int(result.get("active_window_count") or 0)
     inactive_window_count = int(result.get("inactive_window_count") or 0)
+    accepted_window_share = _accepted_window_share(result)
     worst_active_window_accepted_count = int(result.get("worst_active_window_accepted_count") or 0)
     worst_active_window_accepted_size_usd = float(result.get("worst_active_window_accepted_size_usd") or 0.0)
 
@@ -1941,6 +1976,8 @@ def _constraint_failures(
         failures.append("active_window_count")
     if max_inactive_window_count >= 0 and inactive_window_count > max_inactive_window_count:
         failures.append("inactive_window_count")
+    if min_accepted_window_share > 0 and accepted_window_share < min_accepted_window_share:
+        failures.append("accepted_window_share")
     if worst_active_window_accepted_count < max(min_worst_active_window_accepted_count, 0):
         failures.append("worst_active_window_accepted_count")
     if min_worst_active_window_accepted_size_usd > 0 and worst_active_window_accepted_size_usd < min_worst_active_window_accepted_size_usd:
@@ -2852,6 +2889,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             mode_loss_penalty             REAL NOT NULL DEFAULT 0,
             mode_inactivity_penalty       REAL NOT NULL DEFAULT 0,
             window_inactivity_penalty     REAL NOT NULL DEFAULT 0,
+            accepted_window_share_penalty REAL NOT NULL DEFAULT 0,
             wallet_count_penalty          REAL NOT NULL DEFAULT 0,
             market_count_penalty          REAL NOT NULL DEFAULT 0,
             entry_price_band_count_penalty REAL NOT NULL DEFAULT 0,
@@ -2950,6 +2988,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "mode_loss_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_inactivity_penalty": "REAL NOT NULL DEFAULT 0",
             "window_inactivity_penalty": "REAL NOT NULL DEFAULT 0",
+            "accepted_window_share_penalty": "REAL NOT NULL DEFAULT 0",
             "wallet_count_penalty": "REAL NOT NULL DEFAULT 0",
             "market_count_penalty": "REAL NOT NULL DEFAULT 0",
             "entry_price_band_count_penalty": "REAL NOT NULL DEFAULT 0",
@@ -3044,6 +3083,7 @@ def _persist_search_results(
     mode_loss_penalty: float,
     mode_inactivity_penalty: float,
     window_inactivity_penalty: float,
+    accepted_window_share_penalty: float,
     wallet_count_penalty: float,
     market_count_penalty: float,
     entry_price_band_count_penalty: float,
@@ -3111,6 +3151,7 @@ def _persist_search_results(
             mode_loss_penalty,
             mode_inactivity_penalty,
             window_inactivity_penalty,
+            accepted_window_share_penalty,
             wallet_count_penalty,
             market_count_penalty,
             entry_price_band_count_penalty,
@@ -3150,7 +3191,7 @@ def _persist_search_results(
             INSERT INTO replay_search_runs (
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
-                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, daily_guard_window_penalty, live_guard_window_penalty, daily_guard_restart_window_penalty, live_guard_restart_window_penalty, open_exposure_penalty, window_end_open_exposure_penalty, avg_window_end_open_exposure_penalty, carry_window_penalty, carry_restart_window_penalty, resolved_share_penalty, resolved_size_share_penalty, worst_window_resolved_share_penalty, worst_window_resolved_size_share_penalty, mode_resolved_share_penalty, mode_resolved_size_share_penalty, mode_worst_window_resolved_share_penalty, mode_worst_window_resolved_size_share_penalty, mode_active_window_accepted_share_penalty, mode_active_window_accepted_size_share_penalty, worst_active_window_accepted_penalty, worst_active_window_accepted_size_penalty, mode_worst_active_window_accepted_penalty, mode_worst_active_window_accepted_size_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
+                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, daily_guard_window_penalty, live_guard_window_penalty, daily_guard_restart_window_penalty, live_guard_restart_window_penalty, open_exposure_penalty, window_end_open_exposure_penalty, avg_window_end_open_exposure_penalty, carry_window_penalty, carry_restart_window_penalty, resolved_share_penalty, resolved_size_share_penalty, worst_window_resolved_share_penalty, worst_window_resolved_size_share_penalty, mode_resolved_share_penalty, mode_resolved_size_share_penalty, mode_worst_window_resolved_share_penalty, mode_worst_window_resolved_size_share_penalty, mode_active_window_accepted_share_penalty, mode_active_window_accepted_size_share_penalty, worst_active_window_accepted_penalty, worst_active_window_accepted_size_penalty, mode_worst_active_window_accepted_penalty, mode_worst_active_window_accepted_size_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, accepted_window_share_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
                 wallet_size_concentration_penalty, market_size_concentration_penalty, entry_price_band_size_concentration_penalty, time_to_close_band_size_concentration_penalty,
                 candidate_count, feasible_count, rejected_count, current_candidate_score, current_candidate_feasible,
                 current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
@@ -3280,6 +3321,7 @@ def main() -> None:
     parser.add_argument("--mode-loss-penalty", type=float, default=0.0, help="Penalty per replay dollar lost by any active scorer path when ranking candidates.")
     parser.add_argument("--mode-inactivity-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer inactive-window share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--window-inactivity-penalty", type=float, default=0.0, help="Penalty multiplier applied to global replay inactive-window share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--accepted-window-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of stitched active replay windows that fail to produce fresh accepted entries.")
     parser.add_argument("--wallet-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse distinct-wallet breadth in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--market-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse distinct-market breadth in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--entry-price-band-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse distinct entry-price-band breadth in bankroll-dollar terms when ranking candidates.")
@@ -3298,6 +3340,7 @@ def main() -> None:
     parser.add_argument("--min-positive-windows", type=int, default=0, help="Minimum count of positive-P&L windows required for feasibility.")
     parser.add_argument("--min-active-windows", type=int, default=0, help="Minimum count of active replay windows required for a candidate to be feasible.")
     parser.add_argument("--max-inactive-windows", type=int, default=-1, help="Maximum count of inactive replay windows allowed before a candidate is rejected.")
+    parser.add_argument("--min-accepted-window-share", type=float, default=0.0, help="Minimum share of stitched active replay windows that must produce fresh accepted entries.")
     parser.add_argument("--min-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in the sparsest active replay window.")
     parser.add_argument("--min-worst-active-window-accepted-size-usd", type=float, default=0.0, help="Minimum accepted deployed dollars required in the shallowest active replay window.")
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
@@ -3426,6 +3469,7 @@ def main() -> None:
         mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
         window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+        accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
         wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
         market_count_penalty=max(args.market_count_penalty, 0.0),
         entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
@@ -3501,6 +3545,7 @@ def main() -> None:
         max_daily_guard_restart_window_share=_clamp_fraction(args.max_daily_guard_restart_window_share),
         min_active_window_count=max(args.min_active_windows, 0),
         max_inactive_window_count=int(args.max_inactive_windows),
+        min_accepted_window_share=_clamp_fraction(args.min_accepted_window_share),
         min_worst_active_window_accepted_count=max(args.min_worst_active_window_accepted_count, 0),
         min_worst_active_window_accepted_size_usd=max(args.min_worst_active_window_accepted_size_usd, 0.0),
         min_trader_count=max(args.min_trader_count, 0),
@@ -3559,6 +3604,7 @@ def main() -> None:
                 mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
                 mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
                 window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+                accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
                 wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
                 market_count_penalty=max(args.market_count_penalty, 0.0),
                 entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
@@ -3678,6 +3724,7 @@ def main() -> None:
             mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
             mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
             window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+            accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
             wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
             market_count_penalty=max(args.market_count_penalty, 0.0),
             entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
@@ -3753,6 +3800,7 @@ def main() -> None:
             max_daily_guard_restart_window_share=_clamp_fraction(args.max_daily_guard_restart_window_share),
             min_active_window_count=max(args.min_active_windows, 0),
             max_inactive_window_count=int(args.max_inactive_windows),
+            min_accepted_window_share=_clamp_fraction(args.min_accepted_window_share),
             min_worst_active_window_accepted_count=max(args.min_worst_active_window_accepted_count, 0),
             min_worst_active_window_accepted_size_usd=max(args.min_worst_active_window_accepted_size_usd, 0.0),
             min_trader_count=max(args.min_trader_count, 0),
@@ -3817,6 +3865,7 @@ def main() -> None:
         "min_positive_windows": max(args.min_positive_windows, 0),
         "min_active_windows": max(args.min_active_windows, 0),
         "max_inactive_windows": int(args.max_inactive_windows),
+        "min_accepted_window_share": _clamp_fraction(args.min_accepted_window_share),
         "min_worst_active_window_accepted_count": max(args.min_worst_active_window_accepted_count, 0),
         "min_worst_active_window_accepted_size_usd": max(args.min_worst_active_window_accepted_size_usd, 0.0),
         "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
@@ -3920,6 +3969,7 @@ def main() -> None:
         mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
         window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+        accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
         wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
         market_count_penalty=max(args.market_count_penalty, 0.0),
         entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
@@ -3977,6 +4027,7 @@ def main() -> None:
                 "mode_loss_penalty": max(args.mode_loss_penalty, 0.0),
                 "mode_inactivity_penalty": max(args.mode_inactivity_penalty, 0.0),
                 "window_inactivity_penalty": max(args.window_inactivity_penalty, 0.0),
+                "accepted_window_share_penalty": max(args.accepted_window_share_penalty, 0.0),
                 "wallet_count_penalty": max(args.wallet_count_penalty, 0.0),
                 "market_count_penalty": max(args.market_count_penalty, 0.0),
                 "entry_price_band_count_penalty": max(args.entry_price_band_count_penalty, 0.0),

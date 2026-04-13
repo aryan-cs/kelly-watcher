@@ -504,6 +504,8 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "last_retrain_min_samples": 0,
         "last_retrain_trigger": "",
         "last_retrain_deployed": False,
+        "shadow_restart_pending": False,
+        "shadow_restart_message": "",
         "replay_search_in_progress": False,
         "replay_search_started_at": 0,
         "last_replay_search_started_at": 0,
@@ -4728,6 +4730,10 @@ def main() -> None:
     def _service_runtime_requests() -> None:
         request = _consume_shadow_reset_request()
         if request is not None:
+            _persist_bot_state(
+                shadow_restart_pending=True,
+                shadow_restart_message=f"Shadow restart in progress ({request.wallet_mode}). Waiting for backend to restart.",
+            )
             raise ShadowResetRequested(request)
         _consume_manual_retrain_request(_run_retrain_job)
         _consume_manual_trade_request(

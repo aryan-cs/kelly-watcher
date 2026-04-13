@@ -291,8 +291,31 @@ def _write_atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temp_path.replace(path)
 
 
+def _shadow_restart_pending_message(wallet_mode: str = "") -> str:
+    mode = str(wallet_mode or "").strip().lower()
+    if mode in {"keep_active", "keep_all", "clear_all"}:
+        return f"Shadow restart requested ({mode}). Waiting for backend to restart."
+    return "Shadow restart requested. Waiting for backend to restart."
+
+
+def _persist_shadow_restart_pending_state(request_payload: dict[str, Any]) -> None:
+    bot_state = _read_json_dict(BOT_STATE_FILE)
+    bot_state.update(
+        shadow_restart_pending=True,
+        shadow_restart_message=_shadow_restart_pending_message(str(request_payload.get("wallet_mode") or "")),
+    )
+    _write_atomic_json(BOT_STATE_FILE, bot_state)
+
+
 def _bot_state_snapshot() -> dict[str, Any]:
-    return _read_json_dict(BOT_STATE_FILE)
+    bot_state = _read_json_dict(BOT_STATE_FILE)
+    if _request_is_recent(SHADOW_RESET_REQUEST_FILE, 900):
+        request_payload = _read_json_dict(SHADOW_RESET_REQUEST_FILE)
+        bot_state.update(
+            shadow_restart_pending=True,
+            shadow_restart_message=_shadow_restart_pending_message(str(request_payload.get("wallet_mode") or "")),
+        )
+    return bot_state
 
 
 def _heartbeat_window_seconds(bot_state: dict[str, Any]) -> int:
@@ -762,6 +785,7 @@ def _spawn_shadow_restart_process(wallet_mode: str) -> dict[str, Any]:
             json.dumps(request_payload, separators=(",", ":")),
             encoding="utf-8",
         )
+        _persist_shadow_restart_pending_state(request_payload)
     logger.info("Queued shadow reset request %s", request_payload)
     return {"ok": True, "message": "Shadow reset queued."}
 

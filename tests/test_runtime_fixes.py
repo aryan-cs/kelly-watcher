@@ -1074,19 +1074,36 @@ class RuntimeFixesTest(unittest.TestCase):
         assert row is not None
         self.assertEqual(int(row["id"]), expected_id)
 
+    def test_base_bot_state_snapshot_clears_shadow_restart_state_by_default(self) -> None:
+        snapshot = main._base_bot_state_snapshot(session_id="session-1", started_at=123)
+
+        self.assertFalse(snapshot["shadow_restart_pending"])
+        self.assertEqual(snapshot["shadow_restart_message"], "")
+
     def test_dashboard_spawn_shadow_restart_process_writes_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
             request_file = data_dir / "shadow_reset_request.json"
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            bot_state_file.write_text(
+                json.dumps({"session_id": "abc123", "started_at": 100, "mode": "shadow"}),
+                encoding="utf-8",
+            )
             with patch.object(dashboard_api, "DATA_DIR", data_dir), patch.object(
                 dashboard_api, "SHADOW_RESET_REQUEST_FILE", request_file
+            ), patch.object(
+                dashboard_api, "BOT_STATE_FILE", bot_state_file
             ):
                 result = dashboard_api._spawn_shadow_restart_process(wallet_mode="clear_all")
                 payload = json.loads(request_file.read_text(encoding="utf-8"))
+                bot_state = json.loads(bot_state_file.read_text(encoding="utf-8"))
 
             self.assertTrue(result["ok"])
             self.assertEqual(payload["wallet_mode"], "clear_all")
             self.assertTrue(str(payload["request_id"]).startswith("shadow-reset-"))
+            self.assertTrue(bot_state["shadow_restart_pending"])
+            self.assertIn("clear_all", bot_state["shadow_restart_message"])
+            self.assertEqual(bot_state["session_id"], "abc123")
 
     def test_dashboard_spawn_shadow_restart_process_supports_keep_active_mode(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -1100,6 +1117,28 @@ class RuntimeFixesTest(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(payload["wallet_mode"], "keep_active")
+
+    def test_dashboard_bot_state_snapshot_overlays_recent_shadow_restart_request(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "shadow_reset_request.json"
+            bot_state_file.write_text(
+                json.dumps({"session_id": "abc123", "started_at": 100, "shadow_restart_pending": False}),
+                encoding="utf-8",
+            )
+            request_file.write_text(
+                json.dumps({"wallet_mode": "keep_active", "requested_at": int(time.time())}),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "SHADOW_RESET_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertTrue(snapshot["shadow_restart_pending"])
+        self.assertIn("keep_active", snapshot["shadow_restart_message"])
+        self.assertEqual(snapshot["session_id"], "abc123")
 
     def test_dashboard_launch_shadow_restart_queues_request(self) -> None:
         with patch.object(dashboard_api, "_live_trading_enabled_in_config", return_value=False), patch.object(

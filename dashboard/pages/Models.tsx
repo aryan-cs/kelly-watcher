@@ -2107,6 +2107,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'accepted'
         case 'resolved_count':
           return 'resolved'
+        case 'resolved_share':
+          return 'coverage'
         case 'win_rate':
           return 'win rate'
         case 'total_pnl_usd':
@@ -2223,6 +2225,7 @@ function replaySearchHeadroomSummary(
 
     const globalAccepted = Number(resultParsed.accepted_count || 0)
     const globalResolved = Number(resultParsed.resolved_count || 0)
+    const globalResolvedShare = globalAccepted > 0 ? globalResolved / globalAccepted : 0
     const globalWinRate = resultParsed.win_rate == null ? null : Number(resultParsed.win_rate)
     const globalTotalPnl = Number(resultParsed.total_pnl_usd || 0)
     const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0)
@@ -2246,6 +2249,7 @@ function replaySearchHeadroomSummary(
       : 0
     const minAccepted = Number(constraints.min_accepted_count || 0)
     const minResolved = Number(constraints.min_resolved_count || 0)
+    const minResolvedShare = Number(constraints.min_resolved_share || 0)
     const minWinRate = Number(constraints.min_win_rate || 0)
     const minTotalPnlUsd = Number(constraints.min_total_pnl_usd ?? -1_000_000_000)
     const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0)
@@ -2264,6 +2268,7 @@ function replaySearchHeadroomSummary(
 
     if (minAccepted > 0) pushHeadroom('global', 'acc', globalAccepted, minAccepted, replayHeadroomCount, 'min')
     if (minResolved > 0) pushHeadroom('global', 'res', globalResolved, minResolved, replayHeadroomCount, 'min')
+    if (minResolvedShare > 0) pushHeadroom('global', 'cov', globalResolvedShare, minResolvedShare, replayHeadroomPctPoints, 'min')
     if (minWinRate > 0 && globalWinRate != null) pushHeadroom('global', 'win', globalWinRate, minWinRate, replayHeadroomPctPoints, 'min')
     if (minTotalPnlUsd > -999_999_999) pushHeadroom('global', 'pnl', globalTotalPnl, minTotalPnlUsd, formatDollar, 'min')
     if (maxDrawdownPct > 0) pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max')

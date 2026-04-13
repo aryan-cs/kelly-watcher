@@ -372,6 +372,7 @@ def _constraint_failures(
     allow_xgboost: bool,
     min_accepted_count: int,
     min_resolved_count: int,
+    min_resolved_share: float,
     min_win_rate: float,
     min_total_pnl_usd: float,
     max_drawdown_pct: float,
@@ -404,6 +405,7 @@ def _constraint_failures(
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
     resolved_count = int(result.get("resolved_count") or 0)
+    resolved_share = float(resolved_count) / float(accepted_count) if accepted_count > 0 else 0.0
     signal_mode_summary = _signal_mode_summary(result)
     trader_concentration = _trader_concentration(result)
     market_concentration = _market_concentration(result)
@@ -418,6 +420,8 @@ def _constraint_failures(
         failures.append("accepted_count")
     if resolved_count < max(min_resolved_count, 0):
         failures.append("resolved_count")
+    if min_resolved_share > 0 and resolved_share < min_resolved_share:
+        failures.append("resolved_share")
     if min_win_rate > 0 and (win_rate is None or win_rate < min_win_rate):
         failures.append("win_rate")
     if total_pnl_usd < min_total_pnl_usd:
@@ -1094,6 +1098,7 @@ def main() -> None:
     parser.add_argument("--min-positive-windows", type=int, default=0, help="Minimum count of positive-P&L windows required for feasibility.")
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-count", type=int, default=0, help="Minimum resolved trades required for a candidate to be feasible.")
+    parser.add_argument("--min-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades that must be resolved.")
     parser.add_argument("--min-win-rate", type=float, default=0.0, help="Minimum replay win rate required for a candidate to be feasible.")
     parser.add_argument("--min-total-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum total replay P&L required for a candidate to be feasible.")
     parser.add_argument("--max-drawdown-pct", type=float, default=0.0, help="Maximum replay drawdown allowed for a candidate to be feasible.")
@@ -1164,6 +1169,7 @@ def main() -> None:
         allow_xgboost=bool(base_policy.allow_xgboost),
         min_accepted_count=args.min_accepted_count,
         min_resolved_count=args.min_resolved_count,
+        min_resolved_share=_clamp_fraction(args.min_resolved_share),
         min_win_rate=max(args.min_win_rate, 0.0),
         min_total_pnl_usd=float(args.min_total_pnl_usd),
         max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
@@ -1270,6 +1276,7 @@ def main() -> None:
             allow_xgboost=bool(policy.allow_xgboost),
             min_accepted_count=args.min_accepted_count,
             min_resolved_count=args.min_resolved_count,
+            min_resolved_share=_clamp_fraction(args.min_resolved_share),
             min_win_rate=max(args.min_win_rate, 0.0),
             min_total_pnl_usd=float(args.min_total_pnl_usd),
             max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
@@ -1331,6 +1338,7 @@ def main() -> None:
     constraints = {
         "min_accepted_count": max(args.min_accepted_count, 0),
         "min_resolved_count": max(args.min_resolved_count, 0),
+        "min_resolved_share": _clamp_fraction(args.min_resolved_share),
         "min_win_rate": max(args.min_win_rate, 0.0),
         "min_total_pnl_usd": float(args.min_total_pnl_usd),
         "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),

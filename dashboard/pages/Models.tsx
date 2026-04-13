@@ -2027,9 +2027,7 @@ function replaySearchAcceptedWindowCountFromPayload(payload: Record<string, unkn
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
   const windowCount = Number(payload.window_count || 0)
   if (windowCount <= 1) return acceptedCount > 0 || acceptedSizeUsd > 0 ? 1 : 0
-  if (acceptedCount > 0 || acceptedSizeUsd > 0) {
-    return Math.max(replaySearchActiveWindowCountFromPayload(payload), 1)
-  }
+  if (acceptedCount > 0 || acceptedSizeUsd > 0) return 1
   return 0
 }
 
@@ -2143,9 +2141,7 @@ function replaySearchModeAcceptedWindowCountFromPayload(payload: Record<string, 
   const acceptedCount = Number(payload.accepted_count || 0)
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
   if (windowCount <= 1) return acceptedCount > 0 || acceptedSizeUsd > 0 ? 1 : 0
-  if (acceptedCount > 0 || acceptedSizeUsd > 0) {
-    return Math.max(replaySearchModeActiveWindowCountFromPayload(payload, windowCount), 1)
-  }
+  if (acceptedCount > 0 || acceptedSizeUsd > 0) return 1
   return 0
 }
 

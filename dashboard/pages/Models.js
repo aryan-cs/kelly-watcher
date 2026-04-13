@@ -2271,7 +2271,7 @@ function replaySearchAcceptedWindowCountFromPayload(payload) {
   if (windowCount <= 1)
     return acceptedCount > 0 || acceptedSizeUsd > 0 ? 1 : 0;
   if (acceptedCount > 0 || acceptedSizeUsd > 0)
-    return Math.max(replaySearchActiveWindowCountFromPayload(payload), 1);
+    return 1;
   return 0;
 }
 function replaySearchAcceptedWindowShareFromPayload(payload) {
@@ -2377,7 +2377,7 @@ function replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount) {
   if (windowCount <= 1)
     return acceptedCount > 0 || acceptedSizeUsd > 0 ? 1 : 0;
   if (acceptedCount > 0 || acceptedSizeUsd > 0)
-    return Math.max(replaySearchModeActiveWindowCountFromPayload(payload, windowCount), 1);
+    return 1;
   return 0;
 }
 function replaySearchModeAcceptedWindowShareFromPayload(payload, windowCount) {

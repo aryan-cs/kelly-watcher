@@ -148,11 +148,14 @@ def _score_breakdown(
     window_count = max(int(result.get("window_count") or 0), 0)
     inactive_window_count = int(result.get("inactive_window_count") or 0)
     active_window_count = max(int(result.get("active_window_count") or 0), 0)
+    accepted_window_count = max(int(result.get("accepted_window_count") or 0), 0)
+    if accepted_window_count <= 0 and accepted_size_usd > 0:
+        accepted_window_count = max(active_window_count, 1)
     worst_active_window_accepted_count = int(result.get("worst_active_window_accepted_count") or 0)
     worst_active_window_accepted_size_usd = float(result.get("worst_active_window_accepted_size_usd") or 0.0)
     avg_active_window_accepted_size_usd = (
-        accepted_size_usd / float(active_window_count)
-        if active_window_count > 0
+        accepted_size_usd / float(accepted_window_count)
+        if accepted_window_count > 0
         else 0.0
     )
     enabled_modes = []
@@ -213,7 +216,7 @@ def _score_breakdown(
     )
     worst_active_window_accepted_size_risk = (
         max(1.0 - min(worst_active_window_accepted_size_usd / avg_active_window_accepted_size_usd, 1.0), 0.0)
-        if active_window_count > 1
+        if accepted_window_count > 1
         and worst_active_window_accepted_size_usd > 0
         and avg_active_window_accepted_size_usd > 0
         else 0.0
@@ -224,13 +227,24 @@ def _score_breakdown(
         if int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0) > 0
         and int(signal_mode_summary.get(mode, {}).get("worst_active_window_accepted_count") or 0) > 0
     ]
+    mode_accepted_window_counts = {
+        mode: (
+            max(int(signal_mode_summary.get(mode, {}).get("accepted_window_count") or 0), 0)
+            or (
+                max(window_count - int(signal_mode_summary.get(mode, {}).get("inactive_window_count") or 0), 0)
+                if float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0) > 0
+                else 0
+            )
+        )
+        for mode in enabled_modes
+    }
     mode_worst_active_window_accepted_size_candidates = [
         max(
             1.0 - min(
                 float(signal_mode_summary.get(mode, {}).get("worst_active_window_accepted_size_usd") or 0.0)
                 / (
                     float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0)
-                    / float(max(window_count - int(signal_mode_summary.get(mode, {}).get("inactive_window_count") or 0), 0))
+                    / float(mode_accepted_window_counts.get(mode, 0))
                 ),
                 1.0,
             ),
@@ -239,7 +253,7 @@ def _score_breakdown(
         for mode in enabled_modes
         if float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0) > 0
         and float(signal_mode_summary.get(mode, {}).get("worst_active_window_accepted_size_usd") or 0.0) > 0
-        and max(window_count - int(signal_mode_summary.get(mode, {}).get("inactive_window_count") or 0), 0) > 1
+        and mode_accepted_window_counts.get(mode, 0) > 1
     ]
     mode_worst_active_window_accepted_risk = (
         max(mode_worst_active_window_accepted_candidates)
@@ -649,6 +663,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
     raw = result.get("signal_mode_summary")
     if not isinstance(raw, dict):
         return {}
+    result_window_count = max(int(result.get("window_count") or 0), 0)
     summary: dict[str, dict[str, Any]] = {}
     for raw_mode, raw_values in raw.items():
         mode = _canonical_signal_mode(raw_mode)
@@ -660,6 +675,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "trade_count": 0,
                 "accepted_count": 0,
                 "accepted_size_usd": 0.0,
+                "accepted_window_count": 0,
                 "resolved_count": 0,
                 "resolved_size_usd": 0.0,
                 "total_pnl_usd": 0.0,
@@ -808,9 +824,26 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if raw_values.get("inactive_window_count") is not None
             else 0
         )
+        resolved_accepted_window_count = (
+            int(raw_values.get("accepted_window_count") or 0)
+            if raw_values.get("accepted_window_count") is not None
+            else max(result_window_count - resolved_inactive_window_count, 0)
+            if result_window_count > 1
+            and (
+                int(raw_values.get("accepted_count") or 0) > 0
+                or float(raw_values.get("accepted_size_usd") or 0.0) > 0
+            )
+            else 1
+            if (
+                int(raw_values.get("accepted_count") or 0) > 0
+                or float(raw_values.get("accepted_size_usd") or 0.0) > 0
+            )
+            else 0
+        )
         bucket["trade_count"] += int(raw_values.get("trade_count") or 0)
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
         bucket["accepted_size_usd"] += float(raw_values.get("accepted_size_usd") or 0.0)
+        bucket["accepted_window_count"] += resolved_accepted_window_count
         bucket["resolved_count"] += int(raw_values.get("resolved_count") or 0)
         bucket["resolved_size_usd"] += float(raw_values.get("resolved_size_usd") or 0.0)
         bucket["total_pnl_usd"] += raw_total_pnl_usd
@@ -891,6 +924,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             else None
         )
         values["accepted_size_usd"] = round(float(values["accepted_size_usd"]), 6)
+        values["accepted_window_count"] = int(values["accepted_window_count"])
         values["resolved_size_usd"] = round(float(values["resolved_size_usd"]), 6)
         values["worst_window_pnl_usd"] = (
             round(float(values["worst_window_pnl_usd"]), 6)
@@ -1441,6 +1475,13 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
         enriched["worst_active_window_accepted_count"] = accepted_count if accepted_count > 0 else 0
     if "worst_active_window_accepted_size_usd" not in enriched and window_count == 1:
         enriched["worst_active_window_accepted_size_usd"] = round(accepted_size_usd, 6) if accepted_size_usd > 0 else 0.0
+    if "accepted_window_count" not in enriched:
+        if window_count == 1:
+            enriched["accepted_window_count"] = 1 if accepted_count > 0 or accepted_size_usd > 0 else 0
+        elif active_window_count > 0 and accepted_size_usd > 0:
+            enriched["accepted_window_count"] = active_window_count
+        else:
+            enriched["accepted_window_count"] = 0
     return enriched
 
 
@@ -2222,7 +2263,14 @@ def _aggregate_window_results(
     positive_window_count = sum(1 for pnl in pnl_values if pnl > 0)
     negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
     active_rows = [row for row in window_results if _window_has_participation(row)]
+    accepting_rows = [
+        row
+        for row in window_results
+        if int(row.get("accepted_count") or 0) > 0
+        or float(row.get("accepted_size_usd") or 0.0) > 0
+    ]
     active_window_count = len(active_rows)
+    accepted_window_count = len(accepting_rows)
     inactive_window_count = max(len(window_results) - active_window_count, 0)
     avg_window_end_open_exposure_share = (
         sum(
@@ -2394,6 +2442,7 @@ def _aggregate_window_results(
                     "trade_count": 0.0,
                     "accepted_count": 0.0,
                     "accepted_size_usd": 0.0,
+                    "accepted_window_count": 0.0,
                     "resolved_count": 0.0,
                     "resolved_size_usd": 0.0,
                     "total_pnl_usd": 0.0,
@@ -2426,6 +2475,7 @@ def _aggregate_window_results(
             bucket["trade_count"] += int(values.get("trade_count") or 0)
             bucket["accepted_count"] += mode_accepted_count
             bucket["accepted_size_usd"] += mode_accepted_size_usd
+            bucket["accepted_window_count"] += 1 if mode_accepted_count > 0 or mode_accepted_size_usd > 0 else 0
             bucket["resolved_count"] += mode_resolved_count
             bucket["resolved_size_usd"] += mode_resolved_size_usd
             window_pnl_usd = float(values.get("total_pnl_usd") or 0.0)
@@ -2458,6 +2508,7 @@ def _aggregate_window_results(
             "trade_count": int(values["trade_count"]),
             "accepted_count": int(values["accepted_count"]),
             "accepted_size_usd": round(values["accepted_size_usd"], 6),
+            "accepted_window_count": int(values["accepted_window_count"]),
             "resolved_count": int(values["resolved_count"]),
             "resolved_size_usd": round(values["resolved_size_usd"], 6),
             "total_pnl_usd": round(values["total_pnl_usd"], 6),
@@ -2716,6 +2767,7 @@ def _aggregate_window_results(
         "positive_window_count": positive_window_count,
         "negative_window_count": negative_window_count,
         "active_window_count": active_window_count,
+        "accepted_window_count": accepted_window_count,
         "inactive_window_count": inactive_window_count,
         "worst_active_window_accepted_count": worst_active_window_accepted_count,
         "worst_active_window_accepted_size_usd": round(worst_active_window_accepted_size_usd, 6),

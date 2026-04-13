@@ -599,6 +599,25 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(summary["xgboost"]["worst_active_window_accepted_size_usd"], 96.0)
 
+    def test_signal_mode_summary_materializes_accepted_window_count(self) -> None:
+        summary = replay_search._signal_mode_summary(
+            {
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 96.0,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 96.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 9.0,
+                        "win_count": 2,
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(summary["xgboost"]["accepted_window_count"], 1)
+
     def test_aggregate_window_results_uses_stitched_max_drawdown_pct(self) -> None:
         result = replay_search._aggregate_window_results(
             [
@@ -1458,6 +1477,100 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(result["live_guard_restart_window_count"], 1)
         self.assertEqual(result["live_guard_restart_window_opportunity_count"], 1)
         self.assertEqual(result["live_guard_restart_window_share"], 1.0)
+
+    def test_aggregate_window_results_tracks_accepting_windows_separately_from_active_windows(
+        self,
+    ) -> None:
+        result = replay_search._aggregate_window_results(
+            [
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 98.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 98.0,
+                    "total_pnl_usd": -2.0,
+                    "accepted_count": 1,
+                    "accepted_size_usd": 120.0,
+                    "resolved_count": 0,
+                    "resolved_size_usd": 0.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 1,
+                    "window_end_open_exposure_usd": 120.0,
+                    "window_end_open_exposure_share": 1.0,
+                    "signal_mode_summary": {
+                        "heuristic": {
+                            "accepted_count": 1,
+                            "accepted_size_usd": 120.0,
+                            "resolved_count": 0,
+                            "resolved_size_usd": 0.0,
+                            "trade_count": 1,
+                            "total_pnl_usd": -2.0,
+                        }
+                    },
+                    "window_end_signal_mode_exposure": {
+                        "heuristic": {"open_count": 1, "open_size_usd": 120.0}
+                    },
+                },
+                {
+                    "initial_bankroll_usd": 98.0,
+                    "final_equity_usd": 101.0,
+                    "peak_equity_usd": 101.0,
+                    "min_equity_usd": 98.0,
+                    "total_pnl_usd": 3.0,
+                    "accepted_count": 0,
+                    "accepted_size_usd": 0.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 120.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 0,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
+                    "signal_mode_summary": {
+                        "heuristic": {
+                            "accepted_count": 0,
+                            "accepted_size_usd": 0.0,
+                            "resolved_count": 1,
+                            "resolved_size_usd": 120.0,
+                            "trade_count": 0,
+                            "total_pnl_usd": 3.0,
+                        }
+                    },
+                },
+                {
+                    "initial_bankroll_usd": 101.0,
+                    "final_equity_usd": 104.0,
+                    "peak_equity_usd": 104.0,
+                    "min_equity_usd": 101.0,
+                    "total_pnl_usd": 3.0,
+                    "accepted_count": 1,
+                    "accepted_size_usd": 40.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 40.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 1,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
+                    "signal_mode_summary": {
+                        "heuristic": {
+                            "accepted_count": 1,
+                            "accepted_size_usd": 40.0,
+                            "resolved_count": 1,
+                            "resolved_size_usd": 40.0,
+                            "trade_count": 1,
+                            "total_pnl_usd": 3.0,
+                        }
+                    },
+                },
+            ],
+            initial_bankroll_usd=100.0,
+        )
+
+        self.assertEqual(result["active_window_count"], 3)
+        self.assertEqual(result["accepted_window_count"], 2)
+        self.assertEqual(result["signal_mode_summary"]["heuristic"]["accepted_window_count"], 2)
 
     def test_aggregate_window_results_tracks_live_guard_restart_across_inactive_gap(self) -> None:
         result = replay_search._aggregate_window_results(
@@ -2977,6 +3090,50 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["worst_active_window_accepted_size_penalty_usd"], 150.0)
         self.assertEqual(breakdown["score_usd"], -130.0)
 
+    def test_score_breakdown_uses_accepting_windows_for_global_sparse_size_penalty(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 3,
+                "active_window_count": 3,
+                "accepted_window_count": 2,
+                "inactive_window_count": 0,
+                "accepted_count": 5,
+                "resolved_count": 5,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": 200.0,
+                "worst_active_window_accepted_count": 2,
+                "worst_active_window_accepted_size_usd": 50.0,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            worst_active_window_accepted_size_penalty=0.1,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_size_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["worst_active_window_accepted_size_penalty_usd"], 150.0)
+        self.assertEqual(breakdown["score_usd"], -130.0)
+
     def test_score_breakdown_penalizes_low_breadth_counts(self) -> None:
         breakdown = replay_search._score_breakdown(
             {
@@ -3147,6 +3304,67 @@ class ReplaySearchTest(unittest.TestCase):
                     "xgboost": {
                         "accepted_count": 6,
                         "accepted_size_usd": 200.0,
+                        "resolved_count": 6,
+                        "resolved_size_usd": 200.0,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": 2,
+                        "worst_active_window_accepted_size_usd": 40.0,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            worst_active_window_accepted_size_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_size_penalty=0.1,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_worst_active_window_accepted_size_penalty_usd"], 180.0)
+        self.assertEqual(breakdown["score_usd"], -160.0)
+
+    def test_score_breakdown_uses_accepting_windows_for_mode_sparse_size_penalty(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 3,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 120.0,
+                        "accepted_window_count": 2,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 120.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                        "inactive_window_count": 0,
+                        "worst_active_window_accepted_count": 4,
+                        "worst_active_window_accepted_size_usd": 60.0,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "accepted_size_usd": 200.0,
+                        "accepted_window_count": 2,
                         "resolved_count": 6,
                         "resolved_size_usd": 200.0,
                         "trade_count": 6,

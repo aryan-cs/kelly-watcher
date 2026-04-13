@@ -93,6 +93,45 @@ class RetrainRunHistoryTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_retrain_cycle_report_logs_failed_attempt_when_loading_training_data_raises(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+
+                with patch(
+                    "auto_retrain.load_training_data",
+                    side_effect=RuntimeError("training data unavailable"),
+                ), patch("auto_retrain.send_alert", return_value=None), patch(
+                    "auto_retrain.time.time", return_value=1_700_000_125
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "training data unavailable"):
+                        auto_retrain.retrain_cycle_report(object(), trigger="scheduled")
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT trigger, status, ok, deployed, sample_count, min_samples, started_at, finished_at, message
+                    FROM retrain_runs
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(row["trigger"], "scheduled")
+                self.assertEqual(row["status"], "failed")
+                self.assertEqual(int(row["ok"]), 0)
+                self.assertEqual(int(row["deployed"]), 0)
+                self.assertEqual(int(row["sample_count"]), 0)
+                self.assertEqual(int(row["min_samples"]), 0)
+                self.assertEqual(int(row["started_at"]), 1_700_000_125)
+                self.assertEqual(int(row["finished_at"]), 1_700_000_125)
+                self.assertIn("training data unavailable", row["message"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_retrain_cycle_report_logs_completed_not_deployed_attempt(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

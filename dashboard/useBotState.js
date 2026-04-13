@@ -173,12 +173,13 @@ export function useBotState(intervalMs = 1000) {
             activeController = controller;
             try {
                 const response = await fetchApiJson('/api/bot-state', { signal: controller.signal });
+                const responseState = response.state || {};
                 const nextState = {
-                    ...(response.state || {}),
+                    ...responseState,
                     api_base_url: apiBaseUrl,
                     api_error: '',
-                    shadow_restart_pending: false,
-                    shadow_restart_message: ''
+                    shadow_restart_pending: Boolean(responseState.shadow_restart_pending),
+                    shadow_restart_message: String(responseState.shadow_restart_message || '')
                 };
                 const resolvedState = hasShadowRestartCompleted(nextState)
                     ? nextState

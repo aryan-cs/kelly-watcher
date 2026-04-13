@@ -99,22 +99,25 @@ def _finalize_retrain_report(
 
 def retrain_cycle_report(signal_engine, *, trigger: str = "manual", started_at: int | None = None) -> dict[str, object]:
     started_at = int(started_at or time.time())
-    df = load_training_data()
-    sample_count = len(df)
-    min_samples = min_samples_required()
-    if sample_count < min_samples:
-        message = f"Auto-retrain skipped: {sample_count} labeled samples (need {min_samples})"
-        logger.info(message)
-        return _finalize_retrain_report({
-            "ok": False,
-            "status": "skipped_not_enough_samples",
-            "sample_count": sample_count,
-            "min_samples": min_samples,
-            "deployed": False,
-            "message": message,
-        }, trigger=trigger, started_at=started_at)
+    sample_count = 0
+    min_samples = 0
 
     try:
+        df = load_training_data()
+        sample_count = len(df)
+        min_samples = min_samples_required()
+        if sample_count < min_samples:
+            message = f"Auto-retrain skipped: {sample_count} labeled samples (need {min_samples})"
+            logger.info(message)
+            return _finalize_retrain_report({
+                "ok": False,
+                "status": "skipped_not_enough_samples",
+                "sample_count": sample_count,
+                "min_samples": min_samples,
+                "deployed": False,
+                "message": message,
+            }, trigger=trigger, started_at=started_at)
+
         metrics = train(df)
         if metrics.get("skipped"):
             reason = str(metrics.get("reason") or "training skipped")

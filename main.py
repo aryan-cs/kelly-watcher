@@ -2620,6 +2620,15 @@ def _latest_replay_search_run_id() -> int:
         conn.close()
 
 
+def _latest_retrain_run_id() -> int:
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) AS id FROM retrain_runs").fetchone()
+        return int(row["id"] or 0)
+    finally:
+        conn.close()
+
+
 def _latest_retrain_run() -> dict[str, Any] | None:
     conn = get_conn()
     try:
@@ -2662,6 +2671,24 @@ def _latest_replay_search_run() -> dict[str, Any] | None:
         conn.close()
 
 
+def _load_retrain_run_after(after_id: int) -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM retrain_runs
+            WHERE id > ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(after_id),),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def _load_replay_search_run_after(after_id: int, *, request_token: str = "") -> dict[str, Any] | None:
     conn = get_conn()
     try:
@@ -2689,6 +2716,52 @@ def _load_replay_search_run_after(after_id: int, *, request_token: str = "") -> 
                 (int(after_id),),
             ).fetchone()
         return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def _insert_retrain_run(
+    *,
+    started_at: int,
+    finished_at: int,
+    trigger: str,
+    status: str,
+    ok: bool,
+    deployed: bool,
+    sample_count: int = 0,
+    min_samples: int = 0,
+    message: str = "",
+) -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO retrain_runs (
+                started_at, finished_at, trigger, status, ok, deployed, sample_count, min_samples, message
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                int(started_at),
+                int(finished_at),
+                str(trigger or ""),
+                str(status or ""),
+                1 if ok else 0,
+                1 if deployed else 0,
+                int(sample_count or 0),
+                int(min_samples or 0),
+                str(message or ""),
+            ),
+        )
+        run_id = int(cursor.lastrowid or 0)
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM retrain_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    except Exception:
+        logger.exception("Failed to insert fallback retrain run")
+        return None
     finally:
         conn.close()
 
@@ -4579,6 +4652,7 @@ def main() -> None:
             return False
 
         started_at = int(time.time())
+        retrain_run_before_id = _latest_retrain_run_id()
         _persist_bot_state(
             retrain_in_progress=True,
             retrain_started_at=started_at,
@@ -4590,7 +4664,21 @@ def main() -> None:
         _heartbeat(force=True)
         try:
             report = retrain_cycle_report(engine, trigger=trigger, started_at=started_at)
-            finished_at = int(time.time())
+            finished_at = int(report.get("finished_at") or time.time())
+            run_row = _load_retrain_run_after(retrain_run_before_id)
+            if run_row is None:
+                logger.error("Retrain completed without persisting retrain_runs row; inserting fallback row")
+                run_row = _insert_retrain_run(
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    trigger=trigger,
+                    status=str(report.get("status") or ""),
+                    ok=bool(report.get("ok")),
+                    deployed=bool(report.get("deployed")),
+                    sample_count=int(report.get("sample_count") or 0),
+                    min_samples=int(report.get("min_samples") or 0),
+                    message=str(report.get("message") or ""),
+                )
             _persist_bot_state(
                 retrain_in_progress=False,
                 retrain_started_at=0,
@@ -4610,6 +4698,18 @@ def main() -> None:
             finished_at = int(time.time())
             message = f"Retrain failed: {exc}"
             logger.exception(message)
+            run_row = _load_retrain_run_after(retrain_run_before_id)
+            if run_row is None:
+                logger.error("Retrain failed before persisting retrain_runs row; inserting fallback row")
+                _insert_retrain_run(
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    trigger=trigger,
+                    status="failed",
+                    ok=False,
+                    deployed=False,
+                    message=message,
+                )
             _persist_bot_state(
                 retrain_in_progress=False,
                 retrain_started_at=0,

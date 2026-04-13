@@ -615,9 +615,9 @@ def _constraint_failures(
         failures.append("heuristic_worst_window_pnl_usd")
     if allow_xgboost and _worst_window_pnl(signal_mode_summary, "xgboost") < min_xgboost_worst_window_pnl_usd:
         failures.append("xgboost_worst_window_pnl_usd")
-    if allow_heuristic and min_heuristic_worst_window_resolved_share > 0 and _worst_window_resolved_share(signal_mode_summary, "heuristic") < min_heuristic_worst_window_resolved_share:
+    if allow_heuristic and min_heuristic_worst_window_resolved_share > 0 and _worst_active_window_resolved_share(signal_mode_summary, "heuristic") < min_heuristic_worst_window_resolved_share:
         failures.append("heuristic_worst_window_resolved_share")
-    if allow_xgboost and min_xgboost_worst_window_resolved_share > 0 and _worst_window_resolved_share(signal_mode_summary, "xgboost") < min_xgboost_worst_window_resolved_share:
+    if allow_xgboost and min_xgboost_worst_window_resolved_share > 0 and _worst_active_window_resolved_share(signal_mode_summary, "xgboost") < min_xgboost_worst_window_resolved_share:
         failures.append("xgboost_worst_window_resolved_share")
     if allow_heuristic and int(signal_mode_summary.get("heuristic", {}).get("positive_window_count") or 0) < max(min_heuristic_positive_window_count, 0):
         failures.append("heuristic_positive_window_count")

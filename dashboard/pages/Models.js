@@ -1830,7 +1830,7 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
             const totalPnlUsd = Number(payload.total_pnl_usd || 0);
             const rawWorstWindowPnlUsd = payload.worst_window_pnl_usd;
             const worstWindowPnlUsd = rawWorstWindowPnlUsd == null ? totalPnlUsd : Number(rawWorstWindowPnlUsd);
-            const worstWindowResolvedShare = Number(payload.worst_window_resolved_share ?? resolvedShare);
+            const worstWindowResolvedShare = Number(payload.worst_active_window_resolved_share ?? payload.worst_window_resolved_share ?? resolvedShare);
             const inactiveWindowCount = Number(payload.inactive_window_count || 0);
             const minAccepted = Number(constraints[`min_${mode}_accepted_count`] || 0);
             const minResolved = Number(constraints[`min_${mode}_resolved_count`] || 0);
@@ -2123,7 +2123,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             const positiveWindowCount = Number(payload.positive_window_count || 0);
             const worstWindowPnlUsd = Number(payload.worst_window_pnl_usd ?? totalPnlUsd);
             const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0;
-            const worstWindowResolvedShare = Number(payload.worst_window_resolved_share ?? resolvedShare);
+            const worstWindowResolvedShare = Number(payload.worst_active_window_resolved_share ?? payload.worst_window_resolved_share ?? resolvedShare);
             const inactiveWindowCount = Number(payload.inactive_window_count || 0);
             const acceptedShare = acceptedTotal > 0 ? acceptedCount / acceptedTotal : 0;
             const minModeAccepted = Number(constraints[`min_${mode}_accepted_count`] || 0);

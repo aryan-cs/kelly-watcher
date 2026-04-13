@@ -915,7 +915,7 @@ class ReplayTest(unittest.TestCase):
                     "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
                 ).fetchall()
                 run_row = conn.execute(
-                    "SELECT window_end_live_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
+                    "SELECT window_end_live_guard_triggered, window_end_daily_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 conn.close()
 
@@ -1003,7 +1003,7 @@ class ReplayTest(unittest.TestCase):
                     "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
                 ).fetchall()
                 run_row = conn.execute(
-                    "SELECT window_end_live_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
+                    "SELECT window_end_live_guard_triggered, window_end_daily_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 conn.close()
 
@@ -1107,7 +1107,7 @@ class ReplayTest(unittest.TestCase):
                     "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
                 ).fetchall()
                 run_row = conn.execute(
-                    "SELECT window_end_live_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
+                    "SELECT window_end_live_guard_triggered, window_end_daily_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 conn.close()
 
@@ -1120,6 +1120,100 @@ class ReplayTest(unittest.TestCase):
                     ],
                 )
                 self.assertEqual(result["reject_reason_summary"]["daily_loss_guard"], 1)
+                self.assertEqual(result["window_end_daily_guard_triggered"], 0)
+                self.assertEqual(int(run_row[0]), 0)
+                self.assertEqual(int(run_row[1]), 0)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_records_window_end_daily_guard_when_day_ends_locked(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                first_ts = 1_700_000_000
+                _insert_trade(
+                    conn,
+                    trade_id="daily-loss",
+                    market_id="market-daily-loss",
+                    trader_address="0xdaily1",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=-60.0,
+                    placed_at=first_ts,
+                    resolved_at=first_ts + 60,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.85}},
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="daily-blocked",
+                    market_id="market-daily-blocked",
+                    trader_address="0xdaily2",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=30.0,
+                    placed_at=first_ts + 120,
+                    resolved_at=first_ts + 180,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.85}},
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                            "max_daily_loss_pct": 0.01,
+                            "max_live_drawdown_pct": 0.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                )
+
+                self.assertEqual(result["accepted_count"], 1)
+                self.assertEqual(result["rejected_count"], 1)
+
+                conn = sqlite3.connect(str(test_db_path))
+                rows = conn.execute(
+                    "SELECT trade_id, decision, reason FROM replay_trades ORDER BY trade_log_id ASC"
+                ).fetchall()
+                run_row = conn.execute(
+                    "SELECT window_end_daily_guard_triggered FROM replay_runs ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(
+                    rows,
+                    [
+                        ("daily-loss", "accept", "accepted"),
+                        ("daily-blocked", "reject", "daily_loss_guard"),
+                    ],
+                )
+                self.assertEqual(result["reject_reason_summary"]["daily_loss_guard"], 1)
+                self.assertEqual(result["window_end_daily_guard_triggered"], 1)
+                self.assertEqual(int(run_row[0]), 1)
             finally:
                 db.DB_PATH = original_db_path
 

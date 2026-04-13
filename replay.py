@@ -323,6 +323,7 @@ def _simulate(
     window_end_open_exposure_usd = 0.0
     window_end_open_exposure_share = 0.0
     window_end_live_guard_triggered = False
+    window_end_daily_guard_triggered = False
     replay_rows: list[dict[str, Any]] = []
     unresolved_count = 0
     live_guard_triggered = False
@@ -749,6 +750,11 @@ def _simulate(
             or final_equity <= live_guard_stop_equity + 1e-9
         )
     )
+    window_end_daily_guard_triggered = bool(
+        policy.max_daily_loss_pct > 0
+        and daily_guard_start_equity > 0
+        and final_equity <= max(daily_guard_start_equity * (1.0 - policy.max_daily_loss_pct), 0.0) + 1e-9
+    )
     final_bankroll = round(final_equity - window_end_open_exposure_usd, 6)
     total_pnl_usd = round(final_equity - policy.initial_bankroll_usd, 6)
     accepted_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in accepted_rows)
@@ -781,6 +787,7 @@ def _simulate(
             "window_end_open_exposure_usd": round(window_end_open_exposure_usd, 6),
             "window_end_open_exposure_share": round(window_end_open_exposure_share, 6),
             "window_end_live_guard_triggered": 1 if window_end_live_guard_triggered else 0,
+            "window_end_daily_guard_triggered": 1 if window_end_daily_guard_triggered else 0,
             "trade_count": len(replay_rows),
             "accepted_count": len(accepted_rows),
             "rejected_count": len(replay_rows) - len(accepted_rows),
@@ -816,6 +823,7 @@ def _simulate(
         "max_open_exposure_share": round(max_open_exposure_share, 6),
         "window_end_open_exposure_share": round(window_end_open_exposure_share, 6),
         "window_end_live_guard_triggered": 1 if window_end_live_guard_triggered else 0,
+        "window_end_daily_guard_triggered": 1 if window_end_daily_guard_triggered else 0,
         "trade_count": len(replay_rows),
         "accepted_count": len(accepted_rows),
         "accepted_size_usd": round(accepted_size_usd, 6),
@@ -1413,6 +1421,7 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
             window_end_open_exposure_usd REAL NOT NULL DEFAULT 0,
             window_end_open_exposure_share REAL NOT NULL DEFAULT 0,
             window_end_live_guard_triggered INTEGER NOT NULL DEFAULT 0,
+            window_end_daily_guard_triggered INTEGER NOT NULL DEFAULT 0,
             trade_count             INTEGER NOT NULL DEFAULT 0,
             accepted_count          INTEGER NOT NULL DEFAULT 0,
             rejected_count          INTEGER NOT NULL DEFAULT 0,
@@ -1474,6 +1483,7 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
         ("window_end_open_exposure_usd", "REAL NOT NULL DEFAULT 0"),
         ("window_end_open_exposure_share", "REAL NOT NULL DEFAULT 0"),
         ("window_end_live_guard_triggered", "INTEGER NOT NULL DEFAULT 0"),
+        ("window_end_daily_guard_triggered", "INTEGER NOT NULL DEFAULT 0"),
     ):
         try:
             conn.execute(f"ALTER TABLE replay_runs ADD COLUMN {column_name} {column_type}")

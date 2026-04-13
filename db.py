@@ -487,6 +487,7 @@ def init_db() -> None:
             window_end_open_exposure_usd REAL NOT NULL DEFAULT 0,
             window_end_open_exposure_share REAL NOT NULL DEFAULT 0,
             window_end_live_guard_triggered INTEGER NOT NULL DEFAULT 0,
+            window_end_daily_guard_triggered INTEGER NOT NULL DEFAULT 0,
             trade_count             INTEGER NOT NULL DEFAULT 0,
             accepted_count          INTEGER NOT NULL DEFAULT 0,
             rejected_count          INTEGER NOT NULL DEFAULT 0,
@@ -550,6 +551,7 @@ def init_db() -> None:
             window_stddev_penalty        REAL NOT NULL DEFAULT 0,
             worst_window_penalty         REAL NOT NULL DEFAULT 0,
             pause_guard_penalty          REAL NOT NULL DEFAULT 0,
+            daily_guard_window_penalty   REAL NOT NULL DEFAULT 0,
             live_guard_window_penalty    REAL NOT NULL DEFAULT 0,
             open_exposure_penalty        REAL NOT NULL DEFAULT 0,
             window_end_open_exposure_penalty REAL NOT NULL DEFAULT 0,
@@ -766,6 +768,7 @@ def init_db() -> None:
             "window_end_open_exposure_usd": "REAL NOT NULL DEFAULT 0",
             "window_end_open_exposure_share": "REAL NOT NULL DEFAULT 0",
             "window_end_live_guard_triggered": "INTEGER NOT NULL DEFAULT 0",
+            "window_end_daily_guard_triggered": "INTEGER NOT NULL DEFAULT 0",
         },
     )
     _ensure_table_columns(
@@ -791,6 +794,7 @@ def init_db() -> None:
             "window_stddev_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
             "pause_guard_penalty": "REAL NOT NULL DEFAULT 0",
+            "daily_guard_window_penalty": "REAL NOT NULL DEFAULT 0",
             "live_guard_window_penalty": "REAL NOT NULL DEFAULT 0",
             "open_exposure_penalty": "REAL NOT NULL DEFAULT 0",
             "window_end_open_exposure_penalty": "REAL NOT NULL DEFAULT 0",

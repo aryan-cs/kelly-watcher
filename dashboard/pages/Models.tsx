@@ -190,6 +190,7 @@ interface ReplaySearchSummaryRow {
   positive_window_count: number | null
   negative_window_count: number | null
   worst_window_pnl_usd: number | null
+  pause_guard_penalty: number | null
   constraints_json: string | null
   overrides_json: string | null
   policy_json: string | null
@@ -288,7 +289,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.'},
       {label: 'Deploy gap', text: 'Recommendation pieces not currently present in the persisted editable-config payload for the latest best feasible candidate. Older search rows may need a rerun after config-surface changes.'},
       {label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and scorer-path gates on the latest best feasible replay-search candidate.'},
-      {label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap.'},
+      {label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap or ranking penalty.'},
       {label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.'},
       {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.'},
@@ -608,7 +609,8 @@ WITH latest_search AS (
     current_candidate_result_json,
     best_vs_current_pnl_usd,
     best_vs_current_score,
-    best_feasible_score
+    best_feasible_score,
+    pause_guard_penalty
   FROM replay_search_runs
   ORDER BY finished_at DESC, id DESC
   LIMIT 1
@@ -649,6 +651,7 @@ SELECT
   latest_search.best_vs_current_pnl_usd,
   latest_search.best_vs_current_score,
   latest_search.best_feasible_score,
+  latest_search.pause_guard_penalty,
   best_candidate.candidate_index,
   best_candidate.score,
   best_candidate.total_pnl_usd,
@@ -1521,7 +1524,8 @@ interface ReplaySearchPauseGuardSummary {
 function replaySearchPauseGuardSummary(
   bestRaw: string | null | undefined,
   currentRaw: string | null | undefined,
-  constraintsRaw: string | null | undefined
+  constraintsRaw: string | null | undefined,
+  pauseGuardPenalty: number | null | undefined
 ): ReplaySearchPauseGuardSummary {
   const parseShare = (raw: string | null | undefined): number | null => {
     if (!raw) return null
@@ -1553,15 +1557,35 @@ function replaySearchPauseGuardSummary(
       return 0
     }
   })()
+  const resolvedPauseGuardPenalty = Math.max(Number(pauseGuardPenalty || 0), 0)
+  const formatPenaltyCost = (raw: string | null | undefined, share: number | null): string | null => {
+    if (resolvedPauseGuardPenalty <= 0 || share == null || !raw) return null
+    try {
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+      const initialBankrollUsd = Number((parsed as Record<string, unknown>).initial_bankroll_usd || 0)
+      if (initialBankrollUsd <= 0) return null
+      return formatDollar(-(initialBankrollUsd * resolvedPauseGuardPenalty * share))
+    } catch {
+      return null
+    }
+  }
 
-  if (bestShare == null && currentShare == null && maxShare <= 0) {
+  if (bestShare == null && currentShare == null && maxShare <= 0 && resolvedPauseGuardPenalty <= 0) {
     return {summary: '-', hasActiveGuard: false, currentShare: null, bestShare: null, overLimit: false}
   }
 
   const parts: string[] = []
-  if (bestShare != null) parts.push(`best ${formatPct(bestShare, 0)}`)
-  if (currentShare != null) parts.push(`cur ${formatPct(currentShare, 0)}`)
+  if (bestShare != null) {
+    const penaltyCost = formatPenaltyCost(bestRaw, bestShare)
+    parts.push(`best ${formatPct(bestShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`)
+  }
+  if (currentShare != null) {
+    const penaltyCost = formatPenaltyCost(currentRaw, currentShare)
+    parts.push(`cur ${formatPct(currentShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`)
+  }
   if (maxShare > 0) parts.push(`max ${formatPct(maxShare, 0)}`)
+  if (resolvedPauseGuardPenalty > 0) parts.push(`pen ${resolvedPauseGuardPenalty.toFixed(2)}x`)
   return {
     summary: parts.length ? parts.join(' | ') : '-',
     hasActiveGuard: maxShare > 0,
@@ -2572,9 +2596,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => replaySearchPauseGuardSummary(
       latestReplaySearch?.result_json,
       latestReplaySearch?.current_candidate_result_json,
-      latestReplaySearch?.constraints_json
+      latestReplaySearch?.constraints_json,
+      latestReplaySearch?.pause_guard_penalty
     ),
-    [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.result_json]
+    [
+      latestReplaySearch?.constraints_json,
+      latestReplaySearch?.current_candidate_result_json,
+      latestReplaySearch?.pause_guard_penalty,
+      latestReplaySearch?.result_json
+    ]
   )
   const replayLabStats = useMemo<CompactStatItem[]>(
     () => [

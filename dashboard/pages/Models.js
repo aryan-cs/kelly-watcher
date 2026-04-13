@@ -76,7 +76,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.' },
             { label: 'Deploy gap', text: 'Recommendation pieces not currently present in the persisted editable-config payload for the latest best feasible candidate. Older search rows may need a rerun after config-surface changes.' },
             { label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and scorer-path gates on the latest best feasible replay-search candidate.' },
-            { label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap.' },
+            { label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap or ranking penalty.' },
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
@@ -352,7 +352,8 @@ WITH latest_search AS (
     current_candidate_result_json,
     best_vs_current_pnl_usd,
     best_vs_current_score,
-    best_feasible_score
+    best_feasible_score,
+    pause_guard_penalty
   FROM replay_search_runs
   ORDER BY finished_at DESC, id DESC
   LIMIT 1
@@ -393,6 +394,7 @@ SELECT
   latest_search.best_vs_current_pnl_usd,
   latest_search.best_vs_current_score,
   latest_search.best_feasible_score,
+  latest_search.pause_guard_penalty,
   best_candidate.candidate_index,
   best_candidate.score,
   best_candidate.total_pnl_usd,
@@ -1292,7 +1294,7 @@ function replaySearchModeFloorSummary(raw) {
         return 'none';
     }
 }
-function replaySearchPauseGuardSummary(bestRaw, currentRaw, constraintsRaw) {
+function replaySearchPauseGuardSummary(bestRaw, currentRaw, constraintsRaw, pauseGuardPenalty) {
     const parseShare = (raw) => {
         if (!raw)
             return null;
@@ -1330,16 +1332,39 @@ function replaySearchPauseGuardSummary(bestRaw, currentRaw, constraintsRaw) {
             return 0;
         }
     })();
-    if (bestShare == null && currentShare == null && maxShare <= 0) {
+    const resolvedPauseGuardPenalty = Math.max(Number(pauseGuardPenalty || 0), 0);
+    const formatPenaltyCost = (raw, share) => {
+        if (resolvedPauseGuardPenalty <= 0 || share == null || !raw)
+            return null;
+        try {
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                return null;
+            const initialBankrollUsd = Number(parsed.initial_bankroll_usd || 0);
+            if (initialBankrollUsd <= 0)
+                return null;
+            return formatDollar(-(initialBankrollUsd * resolvedPauseGuardPenalty * share));
+        }
+        catch {
+            return null;
+        }
+    };
+    if (bestShare == null && currentShare == null && maxShare <= 0 && resolvedPauseGuardPenalty <= 0) {
         return { summary: '-', hasActiveGuard: false, currentShare: null, bestShare: null, overLimit: false };
     }
     const parts = [];
-    if (bestShare != null)
-        parts.push(`best ${formatPct(bestShare, 0)}`);
-    if (currentShare != null)
-        parts.push(`cur ${formatPct(currentShare, 0)}`);
+    if (bestShare != null) {
+        const penaltyCost = formatPenaltyCost(bestRaw, bestShare);
+        parts.push(`best ${formatPct(bestShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`);
+    }
+    if (currentShare != null) {
+        const penaltyCost = formatPenaltyCost(currentRaw, currentShare);
+        parts.push(`cur ${formatPct(currentShare, 0)}${penaltyCost ? ` (${penaltyCost})` : ''}`);
+    }
     if (maxShare > 0)
         parts.push(`max ${formatPct(maxShare, 0)}`);
+    if (resolvedPauseGuardPenalty > 0)
+        parts.push(`pen ${resolvedPauseGuardPenalty.toFixed(2)}x`);
     return {
         summary: parts.length ? parts.join(' | ') : '-',
         hasActiveGuard: maxShare > 0,
@@ -2131,7 +2156,12 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const replaySearchCurrentModeRisk = useMemo(() => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
     const replaySearchBestHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.result_json]);
     const replaySearchCurrentHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
-    const replaySearchPauseGuard = useMemo(() => replaySearchPauseGuardSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.result_json]);
+    const replaySearchPauseGuard = useMemo(() => replaySearchPauseGuardSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.pause_guard_penalty), [
+        latestReplaySearch?.constraints_json,
+        latestReplaySearch?.current_candidate_result_json,
+        latestReplaySearch?.pause_guard_penalty,
+        latestReplaySearch?.result_json
+    ]);
     const replayLabStats = useMemo(() => [
         {
             label: 'Last replay',

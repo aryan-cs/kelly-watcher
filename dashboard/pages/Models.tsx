@@ -221,6 +221,7 @@ interface ReplaySearchSummaryRow {
   mode_inactivity_penalty: number | null
   mode_accepted_window_count_penalty: number | null
   mode_accepted_window_share_penalty: number | null
+  mode_non_accepting_active_window_streak_penalty: number | null
   mode_accepting_window_accepted_share_penalty: number | null
   mode_accepting_window_accepted_size_share_penalty: number | null
   window_inactivity_penalty: number | null
@@ -333,7 +334,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search run', text: 'How recently the latest persisted replay search finished.'},
       {label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.'},
       {label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.'},
-      {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window droughts, accepting-window concentration, scorer accepting-window count/share, count and deployed-dollar accepting-window depth, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, global and worst-window count-weighted and deployed-dollar coverage, scorer-path count-weighted and deployed-dollar coverage and depth, scorer accepting-window mix, and count/share plus deployed-dollar concentration terms.'},
+      {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window droughts, accepting-window concentration, scorer accepting-window count/share and droughts, count and deployed-dollar accepting-window depth, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, global and worst-window count-weighted and deployed-dollar coverage, scorer-path count-weighted and deployed-dollar coverage and depth, scorer accepting-window mix, and count/share plus deployed-dollar concentration terms.'},
       {label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window droughts, accepting-window concentration, scorer accepting-window count/share, count and deployed-dollar accepting-window depth, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, worst-window count-weighted and deployed-dollar coverage, scorer-path count-weighted and deployed-dollar coverage and depth, scorer-loss, scorer-inactivity, and concentration penalties.'},
       {label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.'},
       {label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, fresh-entry accepting-window count/share, maximum stitched active-window accepting drought, top accepting-window trade-share and deployed-dollar-share concentration, carry-window frequency, carry-restart continuity risk, sparsest accepting-window trade depth and deployed dollars, peak and average window-end carry exposure, and the worst window P&L for the latest best feasible search candidate.'},
@@ -350,15 +351,15 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search modes', text: 'Accepted trade mix and deployed-dollar mix, scorer accepting-window count/share, plus count-weighted and deployed-dollar resolved coverage and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Cur evidence', text: 'Current/base scorer accepted trade mix and deployed-dollar mix, scorer accepting-window count/share and per-scorer accepting-window concentration, plus count-weighted and deployed-dollar resolved evidence and replay P&L.'},
       {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, accepting-window count/share and concentration, resolved-count, count-weighted and deployed-dollar resolved-share, win-rate, total P&L, worst-window P&L, worst-window count-weighted coverage, worst-window deployed-dollar coverage, and aggregate plus accepting-window count-share and deployed-dollar-share guardrails from the latest replay search, if any.'},
-      {label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer coverage, scorer deployed-dollar coverage, scorer worst-window count-weighted coverage, scorer worst-window deployed-dollar coverage, scorer accepting-window count/share, scorer accepting-window count depth, scorer accepting-window deployed-dollar depth, scorer accepting-window mix, scorer-loss, and scorer-inactivity pressure.'},
+      {label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer coverage, scorer deployed-dollar coverage, scorer worst-window count-weighted coverage, scorer worst-window deployed-dollar coverage, scorer accepting-window count/share and droughts, scorer accepting-window count depth, scorer accepting-window deployed-dollar depth, scorer accepting-window mix, scorer-loss, and scorer-inactivity pressure.'},
       {label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.'},
       {label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.'},
       {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share and deployed-dollar-share percentage points.'},
       {label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.'},
       {label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
-      {label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window droughts, accepting-window concentration, scorer accepting-window count/share, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, worst-window count-weighted and deployed-dollar coverage, global window inactivity, scorer-path count-weighted and deployed-dollar coverage and depth, scorer-loss, scorer-inactivity, and concentration penalties.'},
-      {label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window droughts, accepting-window concentration, scorer accepting-window count/share, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, worst-window count-weighted and deployed-dollar coverage, inactivity, scorer-path count-weighted and deployed-dollar coverage/depth, and concentration penalties.'},
+      {label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window droughts, accepting-window concentration, scorer accepting-window count/share and droughts, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, worst-window count-weighted and deployed-dollar coverage, global window inactivity, scorer-path count-weighted and deployed-dollar coverage and depth, scorer-loss, scorer-inactivity, and concentration penalties.'},
+      {label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window droughts, accepting-window concentration, scorer accepting-window count/share and droughts, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, worst-window count-weighted and deployed-dollar coverage, inactivity, scorer-path count-weighted and deployed-dollar coverage/depth, and concentration penalties.'},
       {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
       {label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
@@ -702,6 +703,7 @@ WITH latest_search AS (
     mode_inactivity_penalty,
     mode_accepted_window_count_penalty,
     mode_accepted_window_share_penalty,
+    mode_non_accepting_active_window_streak_penalty,
     mode_accepting_window_accepted_share_penalty,
     mode_accepting_window_accepted_size_share_penalty,
     window_inactivity_penalty,
@@ -794,6 +796,7 @@ SELECT
   latest_search.mode_inactivity_penalty,
   latest_search.mode_accepted_window_count_penalty,
   latest_search.mode_accepted_window_share_penalty,
+  latest_search.mode_non_accepting_active_window_streak_penalty,
   latest_search.mode_accepting_window_accepted_share_penalty,
   latest_search.mode_accepting_window_accepted_size_share_penalty,
   latest_search.window_inactivity_penalty,
@@ -2143,6 +2146,7 @@ function replaySearchScoreWeightSummary(row: ReplaySearchSummaryRow | undefined)
   pushIfActive('idle', row.mode_inactivity_penalty)
   pushIfActive('m-acc-win', row.mode_accepted_window_count_penalty)
   pushIfActive('m-acc-freq', row.mode_accepted_window_share_penalty)
+  pushIfActive('m-acc-gap', row.mode_non_accepting_active_window_streak_penalty)
   pushIfActive('m-top-acc', row.mode_accepting_window_accepted_share_penalty)
   pushIfActive('m-top-acc$', row.mode_accepting_window_accepted_size_share_penalty)
   pushIfActive('wallet#', row.wallet_count_penalty)
@@ -2207,6 +2211,7 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     const modeInactivityPenaltyUsd = Number(breakdown.mode_inactivity_penalty_usd || 0)
     const modeAcceptedWindowCountPenaltyUsd = Number(breakdown.mode_accepted_window_count_penalty_usd || 0)
     const modeAcceptedWindowSharePenaltyUsd = Number(breakdown.mode_accepted_window_share_penalty_usd || 0)
+    const modeNonAcceptingActiveWindowStreakPenaltyUsd = Number(breakdown.mode_non_accepting_active_window_streak_penalty_usd || 0)
     const modeAcceptingWindowAcceptedSharePenaltyUsd = Number(breakdown.mode_accepting_window_accepted_share_penalty_usd || 0)
     const modeAcceptingWindowAcceptedSizeSharePenaltyUsd = Number(breakdown.mode_accepting_window_accepted_size_share_penalty_usd || 0)
     const walletCountPenaltyUsd = Number(breakdown.wallet_count_penalty_usd || 0)
@@ -2261,6 +2266,7 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     if (Math.abs(modeInactivityPenaltyUsd) > 1e-9) parts.push(`idle ${formatDollar(-modeInactivityPenaltyUsd)}`)
     if (Math.abs(modeAcceptedWindowCountPenaltyUsd) > 1e-9) parts.push(`m-acc-win ${formatDollar(-modeAcceptedWindowCountPenaltyUsd)}`)
     if (Math.abs(modeAcceptedWindowSharePenaltyUsd) > 1e-9) parts.push(`m-acc-freq ${formatDollar(-modeAcceptedWindowSharePenaltyUsd)}`)
+    if (Math.abs(modeNonAcceptingActiveWindowStreakPenaltyUsd) > 1e-9) parts.push(`m-acc-gap ${formatDollar(-modeNonAcceptingActiveWindowStreakPenaltyUsd)}`)
     if (Math.abs(modeAcceptingWindowAcceptedSharePenaltyUsd) > 1e-9) parts.push(`m-top-acc ${formatDollar(-modeAcceptingWindowAcceptedSharePenaltyUsd)}`)
     if (Math.abs(modeAcceptingWindowAcceptedSizeSharePenaltyUsd) > 1e-9) parts.push(`m-top-acc$ ${formatDollar(-modeAcceptingWindowAcceptedSizeSharePenaltyUsd)}`)
     if (Math.abs(walletCountPenaltyUsd) > 1e-9) parts.push(`wallet# ${formatDollar(-walletCountPenaltyUsd)}`)
@@ -2333,6 +2339,7 @@ function replaySearchScoreDriftSummary(
         mode_inactivity_penalty_usd: Number(breakdown.mode_inactivity_penalty_usd || 0),
         mode_accepted_window_count_penalty_usd: Number(breakdown.mode_accepted_window_count_penalty_usd || 0),
         mode_accepted_window_share_penalty_usd: Number(breakdown.mode_accepted_window_share_penalty_usd || 0),
+        mode_non_accepting_active_window_streak_penalty_usd: Number(breakdown.mode_non_accepting_active_window_streak_penalty_usd || 0),
         mode_accepting_window_accepted_share_penalty_usd: Number(breakdown.mode_accepting_window_accepted_share_penalty_usd || 0),
         mode_accepting_window_accepted_size_share_penalty_usd: Number(breakdown.mode_accepting_window_accepted_size_share_penalty_usd || 0),
         wallet_count_penalty_usd: Number(breakdown.wallet_count_penalty_usd || 0),
@@ -2396,6 +2403,7 @@ function replaySearchScoreDriftSummary(
   const inactivityDelta = current.mode_inactivity_penalty_usd - best.mode_inactivity_penalty_usd
   const modeAcceptedWindowCountDelta = current.mode_accepted_window_count_penalty_usd - best.mode_accepted_window_count_penalty_usd
   const modeAcceptedWindowShareDelta = current.mode_accepted_window_share_penalty_usd - best.mode_accepted_window_share_penalty_usd
+  const modeNonAcceptingActiveWindowStreakDelta = current.mode_non_accepting_active_window_streak_penalty_usd - best.mode_non_accepting_active_window_streak_penalty_usd
   const modeAcceptingWindowAcceptedShareDelta = current.mode_accepting_window_accepted_share_penalty_usd - best.mode_accepting_window_accepted_share_penalty_usd
   const modeAcceptingWindowAcceptedSizeShareDelta = current.mode_accepting_window_accepted_size_share_penalty_usd - best.mode_accepting_window_accepted_size_share_penalty_usd
   const walletCountDelta = current.wallet_count_penalty_usd - best.wallet_count_penalty_usd
@@ -2450,6 +2458,7 @@ function replaySearchScoreDriftSummary(
   if (Math.abs(inactivityDelta) > 1e-9) parts.push(`idle ${formatDollar(inactivityDelta)}`)
   if (Math.abs(modeAcceptedWindowCountDelta) > 1e-9) parts.push(`m-acc-win ${formatDollar(modeAcceptedWindowCountDelta)}`)
   if (Math.abs(modeAcceptedWindowShareDelta) > 1e-9) parts.push(`m-acc-freq ${formatDollar(modeAcceptedWindowShareDelta)}`)
+  if (Math.abs(modeNonAcceptingActiveWindowStreakDelta) > 1e-9) parts.push(`m-acc-gap ${formatDollar(modeNonAcceptingActiveWindowStreakDelta)}`)
   if (Math.abs(modeAcceptingWindowAcceptedShareDelta) > 1e-9) parts.push(`m-top-acc ${formatDollar(modeAcceptingWindowAcceptedShareDelta)}`)
   if (Math.abs(modeAcceptingWindowAcceptedSizeShareDelta) > 1e-9) parts.push(`m-top-acc$ ${formatDollar(modeAcceptingWindowAcceptedSizeShareDelta)}`)
   if (Math.abs(walletCountDelta) > 1e-9) parts.push(`wallet# ${formatDollar(walletCountDelta)}`)
@@ -3108,6 +3117,7 @@ function replaySearchModePenaltySummary(row: ReplaySearchSummaryRow | undefined)
   const modeInactivityPenalty = Math.max(Number(row.mode_inactivity_penalty || 0), 0)
   const modeAcceptedWindowCountPenalty = Math.max(Number(row.mode_accepted_window_count_penalty || 0), 0)
   const modeAcceptedWindowSharePenalty = Math.max(Number(row.mode_accepted_window_share_penalty || 0), 0)
+  const modeNonAcceptingActiveWindowStreakPenalty = Math.max(Number(row.mode_non_accepting_active_window_streak_penalty || 0), 0)
   const modeAcceptingWindowAcceptedSharePenalty = Math.max(Number(row.mode_accepting_window_accepted_share_penalty || 0), 0)
   const modeAcceptingWindowAcceptedSizeSharePenalty = Math.max(Number(row.mode_accepting_window_accepted_size_share_penalty || 0), 0)
   if (modeResolvedSharePenalty > 0) parts.push(`cov ${modeResolvedSharePenalty.toFixed(2)}x`)
@@ -3122,6 +3132,7 @@ function replaySearchModePenaltySummary(row: ReplaySearchSummaryRow | undefined)
   if (modeInactivityPenalty > 0) parts.push(`idle ${modeInactivityPenalty.toFixed(2)}x`)
   if (modeAcceptedWindowCountPenalty > 0) parts.push(`acc-win ${modeAcceptedWindowCountPenalty.toFixed(2)}x`)
   if (modeAcceptedWindowSharePenalty > 0) parts.push(`acc-freq ${modeAcceptedWindowSharePenalty.toFixed(2)}x`)
+  if (modeNonAcceptingActiveWindowStreakPenalty > 0) parts.push(`acc-gap ${modeNonAcceptingActiveWindowStreakPenalty.toFixed(2)}x`)
   if (modeAcceptingWindowAcceptedSharePenalty > 0) parts.push(`top-acc ${modeAcceptingWindowAcceptedSharePenalty.toFixed(2)}x`)
   if (modeAcceptingWindowAcceptedSizeSharePenalty > 0) parts.push(`top-acc$ ${modeAcceptingWindowAcceptedSizeSharePenalty.toFixed(2)}x`)
   return parts.length ? parts.join(' | ') : 'none'

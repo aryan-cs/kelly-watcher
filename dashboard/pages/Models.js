@@ -69,7 +69,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search run', text: 'How recently the latest persisted replay search finished.' },
             { label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.' },
             { label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.' },
-            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, scorer-loss, and concentration penalties.' },
+            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, scorer-loss, scorer-inactivity, and concentration penalties.' },
             { label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.' },
             { label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.' },
             { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
@@ -89,8 +89,8 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.' },
             { label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.' },
             { label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.' },
-            { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, scorer-loss, and concentration penalties.' },
-            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term.' },
+            { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, scorer-loss, scorer-inactivity, and concentration penalties.' },
+            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including scorer inactivity.' },
             { label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.' },
             { label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
             { label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
@@ -1402,6 +1402,7 @@ function replaySearchScoreBreakdownSummary(raw) {
         const worstWindowPenaltyUsd = Number(breakdown.worst_window_penalty_usd || 0);
         const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0);
         const modeLossPenaltyUsd = Number(breakdown.mode_loss_penalty_usd || 0);
+        const modeInactivityPenaltyUsd = Number(breakdown.mode_inactivity_penalty_usd || 0);
         const walletConcentrationPenaltyUsd = Number(breakdown.wallet_concentration_penalty_usd || 0);
         const marketConcentrationPenaltyUsd = Number(breakdown.market_concentration_penalty_usd || 0);
         const parts = [
@@ -1416,6 +1417,8 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`pause ${formatDollar(-pauseGuardPenaltyUsd)}`);
         if (Math.abs(modeLossPenaltyUsd) > 1e-9)
             parts.push(`mode ${formatDollar(-modeLossPenaltyUsd)}`);
+        if (Math.abs(modeInactivityPenaltyUsd) > 1e-9)
+            parts.push(`idle ${formatDollar(-modeInactivityPenaltyUsd)}`);
         if (Math.abs(walletConcentrationPenaltyUsd) > 1e-9)
             parts.push(`wallet ${formatDollar(-walletConcentrationPenaltyUsd)}`);
         if (Math.abs(marketConcentrationPenaltyUsd) > 1e-9)
@@ -1446,6 +1449,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 worst_window_penalty_usd: Number(breakdown.worst_window_penalty_usd || 0),
                 pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0),
                 mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
+                mode_inactivity_penalty_usd: Number(breakdown.mode_inactivity_penalty_usd || 0),
                 wallet_concentration_penalty_usd: Number(breakdown.wallet_concentration_penalty_usd || 0),
                 market_concentration_penalty_usd: Number(breakdown.market_concentration_penalty_usd || 0)
             };
@@ -1465,6 +1469,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const worstDelta = current.worst_window_penalty_usd - best.worst_window_penalty_usd;
     const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd;
     const modeDelta = current.mode_loss_penalty_usd - best.mode_loss_penalty_usd;
+    const inactivityDelta = current.mode_inactivity_penalty_usd - best.mode_inactivity_penalty_usd;
     const walletDelta = current.wallet_concentration_penalty_usd - best.wallet_concentration_penalty_usd;
     const marketDelta = current.market_concentration_penalty_usd - best.market_concentration_penalty_usd;
     const parts = [
@@ -1479,6 +1484,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`pause ${formatDollar(pauseDelta)}`);
     if (Math.abs(modeDelta) > 1e-9)
         parts.push(`mode ${formatDollar(modeDelta)}`);
+    if (Math.abs(inactivityDelta) > 1e-9)
+        parts.push(`idle ${formatDollar(inactivityDelta)}`);
     if (Math.abs(walletDelta) > 1e-9)
         parts.push(`wallet ${formatDollar(walletDelta)}`);
     if (Math.abs(marketDelta) > 1e-9)

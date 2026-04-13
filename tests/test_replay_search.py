@@ -35,6 +35,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("current_candidate_result_json", columns)
         self.assertIn("pause_guard_penalty", columns)
         self.assertIn("open_exposure_penalty", columns)
+        self.assertIn("window_end_open_exposure_penalty", columns)
         self.assertIn("resolved_share_penalty", columns)
         self.assertIn("resolved_size_share_penalty", columns)
         self.assertIn("worst_window_resolved_share_penalty", columns)
@@ -82,6 +83,8 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertIn("peak_open_exposure_usd", columns)
         self.assertIn("max_open_exposure_share", columns)
+        self.assertIn("window_end_open_exposure_usd", columns)
+        self.assertIn("window_end_open_exposure_share", columns)
 
     def test_main_ranks_grid_candidates_and_keeps_json_on_stdout(self) -> None:
         calls: list[dict[str, object]] = []
@@ -251,6 +254,79 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(result["worst_window_drawdown_pct"], 0.3)
         self.assertEqual(result["max_drawdown_pct"], 0.37)
 
+    def test_with_window_activity_fields_derives_window_end_open_exposure(self) -> None:
+        result = replay_search._with_window_activity_fields(
+            {
+                "initial_bankroll_usd": 100.0,
+                "final_equity_usd": 95.0,
+                "final_bankroll_usd": 80.0,
+                "accepted_count": 2,
+                "resolved_count": 1,
+            }
+        )
+
+        self.assertEqual(result["window_end_open_exposure_usd"], 15.0)
+        self.assertAlmostEqual(result["window_end_open_exposure_share"], 15.0 / 95.0, places=6)
+        self.assertEqual(result["max_window_end_open_exposure_usd"], 15.0)
+        self.assertAlmostEqual(result["max_window_end_open_exposure_share"], 15.0 / 95.0, places=6)
+
+        stressed = replay_search._with_window_activity_fields(
+            {
+                "initial_bankroll_usd": 100.0,
+                "final_equity_usd": 0.0,
+                "final_bankroll_usd": -10.0,
+                "accepted_count": 1,
+                "resolved_count": 0,
+            }
+        )
+
+        self.assertEqual(stressed["window_end_open_exposure_usd"], 10.0)
+        self.assertEqual(stressed["window_end_open_exposure_share"], 1.0)
+
+    def test_aggregate_window_results_tracks_max_window_end_open_exposure_share(self) -> None:
+        result = replay_search._aggregate_window_results(
+            [
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 95.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": -5.0,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 2,
+                    "window_end_open_exposure_usd": 10.0,
+                    "window_end_open_exposure_share": 10.0 / 95.0,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 90.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 90.0,
+                    "total_pnl_usd": -10.0,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 30.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 15.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 2,
+                    "window_end_open_exposure_usd": 18.0,
+                    "window_end_open_exposure_share": 0.2,
+                    "signal_mode_summary": {},
+                },
+            ],
+            initial_bankroll_usd=100.0,
+        )
+
+        self.assertEqual(result["max_window_end_open_exposure_usd"], 18.0)
+        self.assertEqual(result["max_window_end_open_exposure_share"], 0.2)
+
     def test_main_uses_stitched_max_drawdown_pct_for_multi_window_replay(self) -> None:
         calls: list[tuple[int | None, int | None]] = []
 
@@ -415,6 +491,37 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["open_exposure_penalty_usd"], 240.0)
         self.assertEqual(breakdown["score_usd"], -220.0)
 
+    def test_score_breakdown_penalizes_window_end_open_exposure_share(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "max_window_end_open_exposure_share": 0.3,
+                "accepted_count": 6,
+                "resolved_count": 6,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            open_exposure_penalty=0.0,
+            window_end_open_exposure_penalty=0.2,
+            resolved_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["window_end_open_exposure_penalty_usd"], 180.0)
+        self.assertEqual(breakdown["score_usd"], -160.0)
+
     def test_constraint_failures_reject_open_exposure_share(self) -> None:
         failures = replay_search._constraint_failures(
             {
@@ -494,6 +601,87 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(failures, ["max_open_exposure_share"])
+
+    def test_constraint_failures_reject_window_end_open_exposure_share(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 6,
+                "resolved_count": 6,
+                "trade_count": 6,
+                "rejected_count": 0,
+                "max_window_end_open_exposure_share": 0.31,
+            },
+            allow_heuristic=True,
+            allow_xgboost=True,
+            min_accepted_count=0,
+            min_resolved_count=0,
+            min_resolved_share=0.0,
+            min_resolved_size_share=0.0,
+            min_win_rate=0.0,
+            min_total_pnl_usd=-1_000_000_000.0,
+            max_drawdown_pct=0.0,
+            max_open_exposure_share=0.0,
+            min_worst_window_pnl_usd=-1_000_000_000.0,
+            min_worst_window_resolved_share=0.0,
+            min_worst_window_resolved_size_share=0.0,
+            max_worst_window_drawdown_pct=0.0,
+            min_heuristic_accepted_count=0,
+            min_xgboost_accepted_count=0,
+            min_heuristic_resolved_count=0,
+            min_xgboost_resolved_count=0,
+            min_heuristic_win_rate=0.0,
+            min_xgboost_win_rate=0.0,
+            min_heuristic_resolved_share=0.0,
+            min_xgboost_resolved_share=0.0,
+            min_heuristic_resolved_size_share=0.0,
+            min_xgboost_resolved_size_share=0.0,
+            min_heuristic_pnl_usd=0.0,
+            min_xgboost_pnl_usd=0.0,
+            min_heuristic_worst_window_pnl_usd=-1_000_000_000.0,
+            min_xgboost_worst_window_pnl_usd=-1_000_000_000.0,
+            min_heuristic_worst_window_resolved_share=0.0,
+            min_xgboost_worst_window_resolved_share=0.0,
+            min_heuristic_worst_window_resolved_size_share=0.0,
+            min_xgboost_worst_window_resolved_size_share=0.0,
+            min_heuristic_positive_window_count=0,
+            min_xgboost_positive_window_count=0,
+            min_heuristic_worst_active_window_accepted_count=0,
+            min_heuristic_worst_active_window_accepted_size_usd=0.0,
+            min_xgboost_worst_active_window_accepted_count=0,
+            min_xgboost_worst_active_window_accepted_size_usd=0.0,
+            max_heuristic_inactive_window_count=-1,
+            max_xgboost_inactive_window_count=-1,
+            max_heuristic_accepted_share=0.0,
+            max_heuristic_accepted_size_share=0.0,
+            max_heuristic_active_window_accepted_share=0.0,
+            max_heuristic_active_window_accepted_size_share=0.0,
+            min_xgboost_accepted_share=0.0,
+            min_xgboost_accepted_size_share=0.0,
+            min_xgboost_active_window_accepted_share=0.0,
+            min_xgboost_active_window_accepted_size_share=0.0,
+            max_pause_guard_reject_share=0.0,
+            min_active_window_count=0,
+            max_inactive_window_count=-1,
+            min_trader_count=0,
+            min_market_count=0,
+            min_entry_price_band_count=0,
+            min_time_to_close_band_count=0,
+            max_top_trader_accepted_share=0.0,
+            max_top_trader_abs_pnl_share=0.0,
+            max_top_trader_size_share=0.0,
+            max_top_market_accepted_share=0.0,
+            max_top_market_abs_pnl_share=0.0,
+            max_top_market_size_share=0.0,
+            max_top_entry_price_band_accepted_share=0.0,
+            max_top_entry_price_band_abs_pnl_share=0.0,
+            max_top_entry_price_band_size_share=0.0,
+            max_top_time_to_close_band_accepted_share=0.0,
+            max_top_time_to_close_band_abs_pnl_share=0.0,
+            max_top_time_to_close_band_size_share=0.0,
+            max_window_end_open_exposure_share=0.3,
+        )
+
+        self.assertEqual(failures, ["max_window_end_open_exposure_share"])
 
     def test_score_breakdown_does_not_treat_losing_active_windows_as_inactive(self) -> None:
         breakdown = replay_search._score_breakdown(

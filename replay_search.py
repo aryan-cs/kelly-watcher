@@ -68,6 +68,7 @@ def _score_breakdown(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     open_exposure_penalty: float = 0.0,
+    window_end_open_exposure_penalty: float = 0.0,
     resolved_share_penalty: float = 0.0,
     resolved_size_share_penalty: float = 0.0,
     worst_window_resolved_share_penalty: float = 0.0,
@@ -103,6 +104,11 @@ def _score_breakdown(
     pnl = float(result.get("total_pnl_usd") or 0.0)
     max_drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
     max_open_exposure_share = float(result.get("max_open_exposure_share") or 0.0)
+    max_window_end_open_exposure_share = float(
+        result.get("max_window_end_open_exposure_share")
+        or result.get("window_end_open_exposure_share")
+        or 0.0
+    )
     window_pnl_stddev_usd = float(result.get("window_pnl_stddev_usd") or 0.0)
     worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
     worst_window_loss_usd = max(-worst_window_pnl_usd, 0.0)
@@ -286,6 +292,11 @@ def _score_breakdown(
     worst_window_penalty_usd = worst_window_penalty * worst_window_loss_usd
     pause_guard_penalty_usd = initial_bankroll_usd * pause_guard_penalty * pause_guard_reject_share
     open_exposure_penalty_usd = initial_bankroll_usd * open_exposure_penalty * max_open_exposure_share
+    window_end_open_exposure_penalty_usd = (
+        initial_bankroll_usd
+        * window_end_open_exposure_penalty
+        * max_window_end_open_exposure_share
+    )
     resolved_share_penalty_usd = initial_bankroll_usd * resolved_share_penalty * unresolved_share
     resolved_size_share_penalty_usd = initial_bankroll_usd * resolved_size_share_penalty * unresolved_size_share
     worst_window_resolved_share_penalty_usd = initial_bankroll_usd * worst_window_resolved_share_penalty * worst_window_unresolved_share
@@ -321,6 +332,7 @@ def _score_breakdown(
         - worst_window_penalty_usd
         - pause_guard_penalty_usd
         - open_exposure_penalty_usd
+        - window_end_open_exposure_penalty_usd
         - resolved_share_penalty_usd
         - resolved_size_share_penalty_usd
         - worst_window_resolved_share_penalty_usd
@@ -358,6 +370,7 @@ def _score_breakdown(
         "worst_window_penalty_usd": round(worst_window_penalty_usd, 6),
         "pause_guard_penalty_usd": round(pause_guard_penalty_usd, 6),
         "open_exposure_penalty_usd": round(open_exposure_penalty_usd, 6),
+        "window_end_open_exposure_penalty_usd": round(window_end_open_exposure_penalty_usd, 6),
         "resolved_share_penalty_usd": round(resolved_share_penalty_usd, 6),
         "resolved_size_share_penalty_usd": round(resolved_size_share_penalty_usd, 6),
         "worst_window_resolved_share_penalty_usd": round(worst_window_resolved_share_penalty_usd, 6),
@@ -400,6 +413,7 @@ def _score_result(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     open_exposure_penalty: float = 0.0,
+    window_end_open_exposure_penalty: float = 0.0,
     resolved_share_penalty: float = 0.0,
     resolved_size_share_penalty: float = 0.0,
     worst_window_resolved_share_penalty: float = 0.0,
@@ -441,6 +455,7 @@ def _score_result(
             worst_window_penalty=worst_window_penalty,
             pause_guard_penalty=pause_guard_penalty,
             open_exposure_penalty=open_exposure_penalty,
+            window_end_open_exposure_penalty=window_end_open_exposure_penalty,
             resolved_share_penalty=resolved_share_penalty,
             resolved_size_share_penalty=resolved_size_share_penalty,
             worst_window_resolved_share_penalty=worst_window_resolved_share_penalty,
@@ -485,6 +500,7 @@ def _with_score_breakdown(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     open_exposure_penalty: float = 0.0,
+    window_end_open_exposure_penalty: float = 0.0,
     resolved_share_penalty: float = 0.0,
     resolved_size_share_penalty: float = 0.0,
     worst_window_resolved_share_penalty: float = 0.0,
@@ -526,6 +542,7 @@ def _with_score_breakdown(
         worst_window_penalty=worst_window_penalty,
         pause_guard_penalty=pause_guard_penalty,
         open_exposure_penalty=open_exposure_penalty,
+        window_end_open_exposure_penalty=window_end_open_exposure_penalty,
         resolved_share_penalty=resolved_share_penalty,
         resolved_size_share_penalty=resolved_size_share_penalty,
         worst_window_resolved_share_penalty=worst_window_resolved_share_penalty,
@@ -1181,6 +1198,39 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
         enriched["peak_open_exposure_usd"] = 0.0
     if "max_open_exposure_share" not in enriched:
         enriched["max_open_exposure_share"] = 0.0
+    if "window_end_open_exposure_usd" not in enriched:
+        final_bankroll_raw = enriched.get("final_bankroll_usd")
+        if final_bankroll_raw is None:
+            enriched["window_end_open_exposure_usd"] = 0.0
+        else:
+            final_equity_usd = max(float(enriched.get("final_equity_usd") or 0.0), 0.0)
+            final_bankroll_usd = float(final_bankroll_raw or 0.0)
+            enriched["window_end_open_exposure_usd"] = round(
+                max(final_equity_usd - final_bankroll_usd, 0.0),
+                6,
+            )
+    if "window_end_open_exposure_share" not in enriched:
+        final_equity_usd = max(float(enriched.get("final_equity_usd") or 0.0), 0.0)
+        window_end_open_exposure_usd = float(enriched.get("window_end_open_exposure_usd") or 0.0)
+        if final_equity_usd > 0:
+            enriched["window_end_open_exposure_share"] = round(
+                window_end_open_exposure_usd / final_equity_usd,
+                6,
+            )
+        elif window_end_open_exposure_usd > 0:
+            enriched["window_end_open_exposure_share"] = 1.0
+        else:
+            enriched["window_end_open_exposure_share"] = 0.0
+    if "max_window_end_open_exposure_usd" not in enriched:
+        enriched["max_window_end_open_exposure_usd"] = round(
+            float(enriched.get("window_end_open_exposure_usd") or 0.0),
+            6,
+        )
+    if "max_window_end_open_exposure_share" not in enriched:
+        enriched["max_window_end_open_exposure_share"] = round(
+            float(enriched.get("window_end_open_exposure_share") or 0.0),
+            6,
+        )
     if "positive_window_count" not in enriched and window_count == 1:
         enriched["positive_window_count"] = 1 if total_pnl_usd > 0 else 0
     if "negative_window_count" not in enriched and window_count == 1:
@@ -1335,6 +1385,7 @@ def _constraint_failures(
     max_top_time_to_close_band_size_share: float,
     min_worst_active_window_accepted_count: int = 0,
     min_worst_active_window_accepted_size_usd: float = 0.0,
+    max_window_end_open_exposure_share: float = 0.0,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
@@ -1351,6 +1402,11 @@ def _constraint_failures(
     total_pnl_usd = float(result.get("total_pnl_usd") or 0.0)
     drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
     open_exposure_share = float(result.get("max_open_exposure_share") or 0.0)
+    window_end_open_exposure_share = float(
+        result.get("max_window_end_open_exposure_share")
+        or result.get("window_end_open_exposure_share")
+        or 0.0
+    )
     worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
     worst_window_resolved_share = _global_worst_active_window_resolved_share(result)
     worst_window_resolved_size_share = _global_worst_active_window_resolved_size_share(result)
@@ -1376,6 +1432,11 @@ def _constraint_failures(
         failures.append("max_drawdown_pct")
     if max_open_exposure_share > 0 and open_exposure_share > max_open_exposure_share:
         failures.append("max_open_exposure_share")
+    if (
+        max_window_end_open_exposure_share > 0
+        and window_end_open_exposure_share > max_window_end_open_exposure_share
+    ):
+        failures.append("max_window_end_open_exposure_share")
     if worst_window_pnl_usd < min_worst_window_pnl_usd:
         failures.append("worst_window_pnl_usd")
     if min_worst_window_resolved_share > 0 and worst_window_resolved_share < min_worst_window_resolved_share:
@@ -1778,6 +1839,28 @@ def _aggregate_window_results(
         (float(row.get("max_open_exposure_share") or 0.0) for row in window_results),
         default=0.0,
     )
+    max_window_end_open_exposure_usd = max(
+        (
+            float(
+                row.get("max_window_end_open_exposure_usd")
+                or row.get("window_end_open_exposure_usd")
+                or 0.0
+            )
+            for row in window_results
+        ),
+        default=0.0,
+    )
+    max_window_end_open_exposure_share = max(
+        (
+            float(
+                row.get("max_window_end_open_exposure_share")
+                or row.get("window_end_open_exposure_share")
+                or 0.0
+            )
+            for row in window_results
+        ),
+        default=0.0,
+    )
     positive_window_count = sum(1 for pnl in pnl_values if pnl > 0)
     negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
     active_window_count = sum(1 for row in window_results if int(row.get("accepted_count") or 0) > 0)
@@ -2119,6 +2202,8 @@ def _aggregate_window_results(
         "max_drawdown_pct": round(max_drawdown_pct, 6),
         "peak_open_exposure_usd": round(peak_open_exposure_usd, 6),
         "max_open_exposure_share": round(max_open_exposure_share, 6),
+        "max_window_end_open_exposure_usd": round(max_window_end_open_exposure_usd, 6),
+        "max_window_end_open_exposure_share": round(max_window_end_open_exposure_share, 6),
         "trade_count": trade_count,
         "accepted_count": accepted_count,
         "accepted_size_usd": round(accepted_size_usd, 6),
@@ -2187,6 +2272,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             worst_window_penalty          REAL NOT NULL DEFAULT 0,
             pause_guard_penalty           REAL NOT NULL DEFAULT 0,
             open_exposure_penalty         REAL NOT NULL DEFAULT 0,
+            window_end_open_exposure_penalty REAL NOT NULL DEFAULT 0,
             resolved_share_penalty        REAL NOT NULL DEFAULT 0,
             resolved_size_share_penalty   REAL NOT NULL DEFAULT 0,
             worst_window_resolved_share_penalty REAL NOT NULL DEFAULT 0,
@@ -2277,6 +2363,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
             "pause_guard_penalty": "REAL NOT NULL DEFAULT 0",
             "open_exposure_penalty": "REAL NOT NULL DEFAULT 0",
+            "window_end_open_exposure_penalty": "REAL NOT NULL DEFAULT 0",
             "resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
             "resolved_size_share_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_window_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
@@ -2363,6 +2450,7 @@ def _persist_search_results(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     open_exposure_penalty: float,
+    window_end_open_exposure_penalty: float,
     resolved_share_penalty: float,
     resolved_size_share_penalty: float,
     worst_window_resolved_share_penalty: float,
@@ -2422,6 +2510,7 @@ def _persist_search_results(
             worst_window_penalty,
             pause_guard_penalty,
             open_exposure_penalty,
+            window_end_open_exposure_penalty,
             resolved_share_penalty,
             resolved_size_share_penalty,
             worst_window_resolved_share_penalty,
@@ -2478,7 +2567,7 @@ def _persist_search_results(
             INSERT INTO replay_search_runs (
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
-                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, open_exposure_penalty, resolved_share_penalty, resolved_size_share_penalty, worst_window_resolved_share_penalty, worst_window_resolved_size_share_penalty, mode_resolved_share_penalty, mode_resolved_size_share_penalty, mode_worst_window_resolved_share_penalty, mode_worst_window_resolved_size_share_penalty, mode_active_window_accepted_share_penalty, mode_active_window_accepted_size_share_penalty, worst_active_window_accepted_penalty, worst_active_window_accepted_size_penalty, mode_worst_active_window_accepted_penalty, mode_worst_active_window_accepted_size_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
+                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, open_exposure_penalty, window_end_open_exposure_penalty, resolved_share_penalty, resolved_size_share_penalty, worst_window_resolved_share_penalty, worst_window_resolved_size_share_penalty, mode_resolved_share_penalty, mode_resolved_size_share_penalty, mode_worst_window_resolved_share_penalty, mode_worst_window_resolved_size_share_penalty, mode_active_window_accepted_share_penalty, mode_active_window_accepted_size_share_penalty, worst_active_window_accepted_penalty, worst_active_window_accepted_size_penalty, mode_worst_active_window_accepted_penalty, mode_worst_active_window_accepted_size_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
                 wallet_size_concentration_penalty, market_size_concentration_penalty, entry_price_band_size_concentration_penalty, time_to_close_band_size_concentration_penalty,
                 candidate_count, feasible_count, rejected_count, current_candidate_score, current_candidate_feasible,
                 current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
@@ -2583,6 +2672,7 @@ def main() -> None:
     parser.add_argument("--worst-window-penalty", type=float, default=0.0, help="Penalty per dollar of worst-window loss magnitude.")
     parser.add_argument("--pause-guard-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay pause-guard reject share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--open-exposure-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay peak open-exposure share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--window-end-open-exposure-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay window-end carried open-exposure share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved accepted-share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--resolved-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved accepted deployed-dollar share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--worst-window-resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved-share in the worst replay window in bankroll-dollar terms when ranking candidates.")
@@ -2628,6 +2718,7 @@ def main() -> None:
     parser.add_argument("--min-total-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum total replay P&L required for a candidate to be feasible.")
     parser.add_argument("--max-drawdown-pct", type=float, default=0.0, help="Maximum replay drawdown allowed for a candidate to be feasible.")
     parser.add_argument("--max-open-exposure-share", type=float, default=0.0, help="Maximum open-exposure share of replay equity allowed at any point during the replay.")
+    parser.add_argument("--max-window-end-open-exposure-share", type=float, default=0.0, help="Maximum carried open-exposure share allowed at the end of any replay window.")
     parser.add_argument("--min-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed P&L for the worst replay window.")
     parser.add_argument("--min-worst-window-resolved-share", type=float, default=0.0, help="Minimum resolved-share required for the worst replay window.")
     parser.add_argument("--min-worst-window-resolved-size-share", type=float, default=0.0, help="Minimum deployed-dollar resolved-share required for the worst active replay window.")
@@ -2713,6 +2804,7 @@ def main() -> None:
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
         open_exposure_penalty=max(args.open_exposure_penalty, 0.0),
+        window_end_open_exposure_penalty=max(args.window_end_open_exposure_penalty, 0.0),
         resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
         resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
         worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
@@ -2757,6 +2849,7 @@ def main() -> None:
         min_total_pnl_usd=float(args.min_total_pnl_usd),
         max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
         max_open_exposure_share=_clamp_fraction(args.max_open_exposure_share),
+        max_window_end_open_exposure_share=_clamp_fraction(args.max_window_end_open_exposure_share),
         min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
         min_worst_window_resolved_share=_clamp_fraction(args.min_worst_window_resolved_share),
         min_worst_window_resolved_size_share=_clamp_fraction(args.min_worst_window_resolved_size_share),
@@ -2830,6 +2923,7 @@ def main() -> None:
                 worst_window_penalty=max(args.worst_window_penalty, 0.0),
                 pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
                 open_exposure_penalty=max(args.open_exposure_penalty, 0.0),
+                window_end_open_exposure_penalty=max(args.window_end_open_exposure_penalty, 0.0),
                 resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
                 resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
                 worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
@@ -2894,6 +2988,7 @@ def main() -> None:
                 worst_window_penalty=max(args.worst_window_penalty, 0.0),
                 pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
                 open_exposure_penalty=max(args.open_exposure_penalty, 0.0),
+                window_end_open_exposure_penalty=max(args.window_end_open_exposure_penalty, 0.0),
                 resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
                 resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
                 worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
@@ -2931,10 +3026,11 @@ def main() -> None:
             initial_bankroll_usd=policy.initial_bankroll_usd,
             drawdown_penalty=max(args.drawdown_penalty, 0.0),
             window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
-            worst_window_penalty=max(args.worst_window_penalty, 0.0),
-            pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
-            open_exposure_penalty=max(args.open_exposure_penalty, 0.0),
-            resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+                worst_window_penalty=max(args.worst_window_penalty, 0.0),
+                pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
+                open_exposure_penalty=max(args.open_exposure_penalty, 0.0),
+                window_end_open_exposure_penalty=max(args.window_end_open_exposure_penalty, 0.0),
+                resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
             resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
             worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
             worst_window_resolved_size_share_penalty=max(args.worst_window_resolved_size_share_penalty, 0.0),
@@ -2978,6 +3074,7 @@ def main() -> None:
             min_total_pnl_usd=float(args.min_total_pnl_usd),
             max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
             max_open_exposure_share=_clamp_fraction(args.max_open_exposure_share),
+            max_window_end_open_exposure_share=_clamp_fraction(args.max_window_end_open_exposure_share),
             min_worst_window_pnl_usd=args.min_worst_window_pnl_usd,
             min_worst_window_resolved_share=_clamp_fraction(args.min_worst_window_resolved_share),
             min_worst_window_resolved_size_share=_clamp_fraction(args.min_worst_window_resolved_size_share),
@@ -3076,6 +3173,7 @@ def main() -> None:
         "min_total_pnl_usd": float(args.min_total_pnl_usd),
         "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
         "max_open_exposure_share": _clamp_fraction(args.max_open_exposure_share),
+        "max_window_end_open_exposure_share": _clamp_fraction(args.max_window_end_open_exposure_share),
         "min_positive_windows": max(args.min_positive_windows, 0),
         "min_active_windows": max(args.min_active_windows, 0),
         "max_inactive_windows": int(args.max_inactive_windows),
@@ -3152,6 +3250,7 @@ def main() -> None:
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
         open_exposure_penalty=max(args.open_exposure_penalty, 0.0),
+        window_end_open_exposure_penalty=max(args.window_end_open_exposure_penalty, 0.0),
         resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
         resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
         worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
@@ -3201,6 +3300,7 @@ def main() -> None:
                 "worst_window_penalty": max(args.worst_window_penalty, 0.0),
                 "pause_guard_penalty": max(args.pause_guard_penalty, 0.0),
                 "open_exposure_penalty": max(args.open_exposure_penalty, 0.0),
+                "window_end_open_exposure_penalty": max(args.window_end_open_exposure_penalty, 0.0),
                 "resolved_share_penalty": max(args.resolved_share_penalty, 0.0),
                 "resolved_size_share_penalty": max(args.resolved_size_share_penalty, 0.0),
                 "worst_window_resolved_share_penalty": max(args.worst_window_resolved_share_penalty, 0.0),

@@ -377,9 +377,17 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(result["resolved_count"], 1)
                 self.assertEqual(result["unresolved_count"], 1)
                 self.assertLess(result["final_bankroll_usd"], result["initial_bankroll_usd"])
+                self.assertGreater(result["window_end_open_exposure_usd"], 0.0)
+                self.assertGreater(result["window_end_open_exposure_share"], 0.0)
+                self.assertAlmostEqual(
+                    result["window_end_open_exposure_usd"],
+                    result["final_equity_usd"] - result["final_bankroll_usd"],
+                    places=6,
+                )
 
                 conn = sqlite3.connect(str(test_db_path))
                 conn.row_factory = sqlite3.Row
+                run_row = conn.execute("SELECT * FROM replay_runs").fetchone()
                 trade_rows = conn.execute(
                     "SELECT trade_id, decision, pnl_usd, simulated_size_usd FROM replay_trades ORDER BY trade_log_id ASC"
                 ).fetchall()
@@ -410,6 +418,8 @@ class ReplayTest(unittest.TestCase):
                     result["signal_mode_summary"]["heuristic"]["resolved_size_usd"],
                     resolved_size_usd,
                 )
+                self.assertAlmostEqual(float(run_row["window_end_open_exposure_usd"]), result["window_end_open_exposure_usd"])
+                self.assertAlmostEqual(float(run_row["window_end_open_exposure_share"]), result["window_end_open_exposure_share"])
 
                 self.assertEqual(
                     [(row["trade_id"], row["decision"], row["pnl_usd"] is None) for row in trade_rows],
@@ -519,6 +529,15 @@ class ReplayTest(unittest.TestCase):
                 self.assertAlmostEqual(float(run_row["total_pnl_usd"]), realized_pnl)
                 self.assertLess(result["final_bankroll_usd"], result["initial_bankroll_usd"])
                 self.assertGreater(result["final_equity_usd"], result["final_bankroll_usd"])
+                self.assertGreater(result["window_end_open_exposure_usd"], 0.0)
+                self.assertGreater(result["window_end_open_exposure_share"], 0.0)
+                self.assertAlmostEqual(
+                    result["window_end_open_exposure_usd"],
+                    result["final_equity_usd"] - result["final_bankroll_usd"],
+                    places=6,
+                )
+                self.assertAlmostEqual(float(run_row["window_end_open_exposure_usd"]), result["window_end_open_exposure_usd"])
+                self.assertAlmostEqual(float(run_row["window_end_open_exposure_share"]), result["window_end_open_exposure_share"])
                 self.assertIsNone(carried_trade["pnl_usd"])
                 self.assertTrue(bool(carried_metadata["window_carried"]))
                 self.assertEqual(int(carried_metadata["eventual_close_ts"]), 1_700_000_200)

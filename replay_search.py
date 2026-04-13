@@ -3829,6 +3829,37 @@ def _apply_constraints_payload(
         setattr(args, key, _coerce_argparse_value(parser, option, value))
 
 
+def _apply_score_weights_payload(
+    args: argparse.Namespace,
+    *,
+    parser: argparse.ArgumentParser,
+    raw_argv: list[str],
+) -> None:
+    payload = _load_payload(
+        file_path=args.score_weights_file,
+        inline_json=args.score_weights_json,
+    )
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        raise ValueError("Score-weight payload must be a JSON object")
+    allowed_keys = {
+        str(action.dest)
+        for action in parser._actions
+        if str(getattr(action, "dest", "")).endswith("_penalty")
+    }
+    normalized_payload = {str(key): value for key, value in payload.items()}
+    unknown_keys = sorted(key for key in normalized_payload if key not in allowed_keys)
+    if unknown_keys:
+        joined_unknown_keys = ", ".join(unknown_keys)
+        raise ValueError(f"Unknown replay-search score-weight key(s): {joined_unknown_keys}")
+    for key, value in normalized_payload.items():
+        option = f"--{key.replace('_', '-')}"
+        if _argv_has_option(raw_argv, option):
+            continue
+        setattr(args, key, _coerce_argparse_value(parser, option, value))
+
+
 def _latest_trade_ts(*, db_path: Path | None, mode: str) -> int:
     target_path = db_path or Path(TRADING_DB_PATH)
     conn = sqlite3.connect(str(target_path))
@@ -5178,6 +5209,8 @@ def main() -> None:
     parser.add_argument("--grid-json", default="", help="Inline JSON object describing the parameter grid to sweep.")
     parser.add_argument("--constraints-file", default="", help="JSON file with replay-search constraint overrides.")
     parser.add_argument("--constraints-json", default="", help="Inline JSON object with replay-search constraint overrides.")
+    parser.add_argument("--score-weights-file", default="", help="JSON file with replay-search score-weight overrides.")
+    parser.add_argument("--score-weights-json", default="", help="Inline JSON object with replay-search score-weight overrides.")
     parser.add_argument("--top", type=int, default=10, help="How many ranked candidates to print in the stderr summary.")
     parser.add_argument(
         "--drawdown-penalty",
@@ -5358,6 +5391,7 @@ def main() -> None:
     raw_argv = sys.argv[1:]
     args = parser.parse_args()
     _apply_constraints_payload(args, parser=parser, raw_argv=raw_argv)
+    _apply_score_weights_payload(args, parser=parser, raw_argv=raw_argv)
 
     base_policy = _load_base_policy(args)
     grid = _load_grid(args)

@@ -725,6 +725,7 @@ WITH latest_search AS (
     accepted_window_count_penalty,
     accepted_window_share_penalty,
     non_accepting_active_window_streak_penalty,
+    non_accepting_active_window_episode_penalty,
     accepting_window_accepted_share_penalty,
     accepting_window_accepted_size_share_penalty,
     top_two_accepting_window_accepted_share_penalty,

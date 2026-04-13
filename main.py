@@ -77,6 +77,8 @@ from config import (
     replay_search_label_prefix,
     replay_search_max_combos,
     replay_search_notes,
+    replay_search_score_weights,
+    replay_search_score_weights_file,
     replay_search_top,
     replay_search_window_count,
     replay_search_window_days,
@@ -2486,6 +2488,12 @@ def _build_replay_search_command() -> list[str]:
     constraints = replay_search_constraints()
     if constraints:
         command.extend(["--constraints-json", _compact_json(constraints)])
+    score_weights_file = replay_search_score_weights_file()
+    if score_weights_file:
+        command.extend(["--score-weights-file", score_weights_file])
+    score_weights = replay_search_score_weights()
+    if score_weights:
+        command.extend(["--score-weights-json", _compact_json(score_weights)])
     return command
 
 
@@ -3190,6 +3198,7 @@ def _validate_startup() -> None:
     _capture_config(replay_search_base_policy)
     replay_search_grid_value = _capture_config(replay_search_grid)
     _capture_config(replay_search_constraints)
+    replay_search_score_weights_value = _capture_config(replay_search_score_weights)
     auto_promote_enabled = _capture_config(replay_auto_promote)
     auto_promote_min_score = _capture_config(replay_auto_promote_min_score_delta)
     auto_promote_min_pnl = _capture_config(replay_auto_promote_min_pnl_delta_usd)
@@ -3292,6 +3301,10 @@ def _validate_startup() -> None:
     if replay_search_cadence not in {None, "off"} and replay_search_grid_value == {}:
         warnings.append(
             "REPLAY_SEARCH_BASE_CADENCE is enabled but the replay-search grid config is empty, so scheduled replay search will only re-evaluate the current policy"
+        )
+    if replay_search_cadence not in {None, "off"} and replay_search_score_weights_value == {}:
+        warnings.append(
+            "REPLAY_SEARCH_BASE_CADENCE is enabled but replay-search score weights are empty, so scheduled ranking will rely mostly on drawdown defaults and hard constraints"
         )
     if replay_search_hour is not None and retrain_hour_value is not None and replay_search_hour == retrain_hour_value:
         warnings.append(

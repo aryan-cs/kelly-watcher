@@ -767,6 +767,11 @@ def replay_search_constraints_file() -> str:
     raw = _get_env_file_value("REPLAY_SEARCH_CONSTRAINTS_FILE") or _get("REPLAY_SEARCH_CONSTRAINTS_FILE", "replay_search_specs/constraints.json")
     return str(raw or "").strip()
 
+
+def replay_search_score_weights_file() -> str:
+    raw = _get_env_file_value("REPLAY_SEARCH_SCORE_WEIGHTS_FILE") or _get("REPLAY_SEARCH_SCORE_WEIGHTS_FILE", "replay_search_specs/score_weights.json")
+    return str(raw or "").strip()
+
 def telegram_bot_token() -> str:
     return _get("TELEGRAM_BOT_TOKEN")
 
@@ -853,6 +858,12 @@ def replay_search_grid() -> dict[str, Any]:
 def replay_search_constraints() -> dict[str, Any]:
     payload = _load_json_object_file(replay_search_constraints_file())
     payload.update(_get_env_file_json_object("REPLAY_SEARCH_CONSTRAINTS_JSON"))
+    return payload
+
+
+def replay_search_score_weights() -> dict[str, Any]:
+    payload = _load_json_object_file(replay_search_score_weights_file())
+    payload.update(_get_env_file_json_object("REPLAY_SEARCH_SCORE_WEIGHTS_JSON"))
     return payload
 
 

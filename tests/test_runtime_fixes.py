@@ -2427,9 +2427,11 @@ class RuntimeFixesTest(unittest.TestCase):
             patch.object(main, "replay_search_base_policy_file", return_value="replay_search_specs/base_policy.json"),
             patch.object(main, "replay_search_grid_file", return_value="replay_search_specs/grid.json"),
             patch.object(main, "replay_search_constraints_file", return_value="replay_search_specs/constraints.json"),
+            patch.object(main, "replay_search_score_weights_file", return_value="replay_search_specs/score_weights.json"),
             patch.object(main, "replay_search_base_policy", return_value={"mode": "shadow", "min_confidence": 0.66}),
             patch.object(main, "replay_search_grid", return_value={"min_confidence": [0.62, 0.66]}),
             patch.object(main, "replay_search_constraints", return_value={"min_accepted_count": 12}),
+            patch.object(main, "replay_search_score_weights", return_value={"worst_window_penalty": 0.1}),
         ):
             command = main._build_replay_search_command()
 
@@ -2439,12 +2441,16 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("replay_search_specs/grid.json", command)
         self.assertIn("--constraints-file", command)
         self.assertIn("replay_search_specs/constraints.json", command)
+        self.assertIn("--score-weights-file", command)
+        self.assertIn("replay_search_specs/score_weights.json", command)
         self.assertIn("--base-policy-json", command)
         self.assertIn(json.dumps({"mode": "shadow", "min_confidence": 0.66}, separators=(",", ":"), sort_keys=True), command)
         self.assertIn("--grid-json", command)
         self.assertIn(json.dumps({"min_confidence": [0.62, 0.66]}, separators=(",", ":"), sort_keys=True), command)
         self.assertIn("--constraints-json", command)
         self.assertIn(json.dumps({"min_accepted_count": 12}, separators=(",", ":"), sort_keys=True), command)
+        self.assertIn("--score-weights-json", command)
+        self.assertIn(json.dumps({"worst_window_penalty": 0.1}, separators=(",", ":"), sort_keys=True), command)
 
     def test_apply_env_config_payload_only_writes_promotable_replay_keys(self) -> None:
         with patch.object(main, "_write_env_value") as write_env_value:
@@ -2507,6 +2513,7 @@ class RuntimeFixesTest(unittest.TestCase):
             self.assertEqual(config.replay_search_base_policy_file(), "replay_search_specs/base_policy.json")
             self.assertEqual(config.replay_search_grid_file(), "replay_search_specs/grid.json")
             self.assertEqual(config.replay_search_constraints_file(), "replay_search_specs/constraints.json")
+            self.assertEqual(config.replay_search_score_weights_file(), "replay_search_specs/score_weights.json")
 
     def test_replay_auto_promote_defaults_true_without_explicit_env(self) -> None:
         def fake_get(name: str, default: str = "") -> str:

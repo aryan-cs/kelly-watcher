@@ -1059,28 +1059,44 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         resolved_worst_window_resolved_share = (
             float(raw_worst_window_resolved_share)
             if raw_worst_window_resolved_share is not None
-            else _resolved_share_from_counts(raw_values.get("accepted_count"), raw_values.get("resolved_count"))
+            else _legacy_worst_window_coverage_fallback(
+                has_activity=int(raw_values.get("accepted_count") or 0) > 0,
+                exact_share=_resolved_share_from_counts(raw_values.get("accepted_count"), raw_values.get("resolved_count")),
+                window_count=result_window_count,
+                no_activity_value=0.0,
+            )
         )
         raw_worst_window_resolved_size_share = raw_values.get("worst_window_resolved_size_share")
         resolved_worst_window_resolved_size_share = (
             float(raw_worst_window_resolved_size_share)
             if raw_worst_window_resolved_size_share is not None
-            else _resolved_share_from_sizes(raw_values.get("accepted_size_usd"), raw_values.get("resolved_size_usd"))
+            else _legacy_worst_window_coverage_fallback(
+                has_activity=float(raw_values.get("accepted_size_usd") or 0.0) > 0,
+                exact_share=_resolved_share_from_sizes(raw_values.get("accepted_size_usd"), raw_values.get("resolved_size_usd")),
+                window_count=result_window_count,
+                no_activity_value=0.0,
+            )
         )
         raw_worst_active_window_resolved_share = raw_values.get("worst_active_window_resolved_share")
         resolved_worst_active_window_resolved_share = (
             float(raw_worst_active_window_resolved_share)
             if raw_worst_active_window_resolved_share is not None
-            else resolved_worst_window_resolved_share
+            else _legacy_worst_window_coverage_fallback(
+                has_activity=int(raw_values.get("accepted_count") or 0) > 0,
+                exact_share=_resolved_share_from_counts(raw_values.get("accepted_count"), raw_values.get("resolved_count")),
+                window_count=result_window_count,
+                no_activity_value=1.0,
+            )
         )
         raw_worst_active_window_resolved_size_share = raw_values.get("worst_active_window_resolved_size_share")
         resolved_worst_active_window_resolved_size_share = (
             float(raw_worst_active_window_resolved_size_share)
             if raw_worst_active_window_resolved_size_share is not None
-            else (
-                resolved_worst_window_resolved_size_share
-                if float(raw_values.get("accepted_size_usd") or 0.0) > 0
-                else 1.0
+            else _legacy_worst_window_coverage_fallback(
+                has_activity=float(raw_values.get("accepted_size_usd") or 0.0) > 0,
+                exact_share=_resolved_share_from_sizes(raw_values.get("accepted_size_usd"), raw_values.get("resolved_size_usd")),
+                window_count=result_window_count,
+                no_activity_value=1.0,
             )
         )
         raw_worst_accepting_window_accepted_count = raw_values.get("worst_accepting_window_accepted_count")
@@ -1525,6 +1541,21 @@ def _legacy_accepting_window_concentration_fallback(has_accepts: bool) -> float:
     return 1.0 if has_accepts else 0.0
 
 
+def _legacy_worst_window_coverage_fallback(
+    *,
+    has_activity: bool,
+    exact_share: float,
+    window_count: int,
+    no_activity_value: float,
+) -> float:
+    normalized_window_count = max(int(window_count), 1)
+    if normalized_window_count <= 1:
+        return exact_share
+    if has_activity:
+        return 0.0
+    return no_activity_value
+
+
 def _min_active_window_accepted_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
     raw_value = signal_mode_summary.get(mode, {}).get("min_active_window_accepted_share")
     if raw_value is not None:
@@ -1632,7 +1663,12 @@ def _global_worst_active_window_resolved_share(result: dict[str, Any]) -> float:
         return float(raw_value)
     if int(result.get("accepted_count") or 0) <= 0:
         return 1.0
-    return float(result.get("worst_window_resolved_share") or 0.0)
+    return _legacy_worst_window_coverage_fallback(
+        has_activity=True,
+        exact_share=_resolved_share_from_counts(result.get("accepted_count"), result.get("resolved_count")),
+        window_count=max(int(result.get("window_count") or 0), 0),
+        no_activity_value=1.0,
+    )
 
 
 def _global_worst_active_window_resolved_size_share(result: dict[str, Any]) -> float:
@@ -1641,7 +1677,12 @@ def _global_worst_active_window_resolved_size_share(result: dict[str, Any]) -> f
         return float(raw_value)
     if float(result.get("accepted_size_usd") or 0.0) <= 0:
         return 1.0
-    return float(result.get("worst_window_resolved_size_share") or 0.0)
+    return _legacy_worst_window_coverage_fallback(
+        has_activity=True,
+        exact_share=_resolved_share_from_sizes(result.get("accepted_size_usd"), result.get("resolved_size_usd")),
+        window_count=max(int(result.get("window_count") or 0), 0),
+        no_activity_value=1.0,
+    )
 
 
 def _resolved_share_from_counts(accepted_count: Any, resolved_count: Any) -> float:
@@ -1776,6 +1817,7 @@ def _stitched_max_drawdown_pct(
 
 
 def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
+    window_count = max(int(result.get("window_count") or 0), 0)
     if "worst_window_resolved_share" in result:
         if (
             "worst_active_window_resolved_share" in result
@@ -1787,40 +1829,79 @@ def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
         accepted_count = int(enriched.get("accepted_count") or 0)
         accepted_size_usd = float(enriched.get("accepted_size_usd") or 0.0)
         enriched["worst_active_window_resolved_share"] = (
-            round(_resolved_share_from_counts(accepted_count, enriched.get("resolved_count")), 6)
-            if accepted_count > 0
-            else 1.0
+            round(
+                _legacy_worst_window_coverage_fallback(
+                    has_activity=accepted_count > 0,
+                    exact_share=_resolved_share_from_counts(accepted_count, enriched.get("resolved_count")),
+                    window_count=window_count,
+                    no_activity_value=1.0,
+                ),
+                6,
+            )
         )
         enriched["worst_window_resolved_size_share"] = round(
-            _resolved_share_from_sizes(enriched.get("accepted_size_usd"), enriched.get("resolved_size_usd")),
+            _legacy_worst_window_coverage_fallback(
+                has_activity=accepted_size_usd > 0,
+                exact_share=_resolved_share_from_sizes(enriched.get("accepted_size_usd"), enriched.get("resolved_size_usd")),
+                window_count=window_count,
+                no_activity_value=0.0,
+            ),
             6,
         )
         enriched["worst_active_window_resolved_size_share"] = (
-            round(_resolved_share_from_sizes(accepted_size_usd, enriched.get("resolved_size_usd")), 6)
-            if accepted_size_usd > 0
-            else 1.0
+            round(
+                _legacy_worst_window_coverage_fallback(
+                    has_activity=accepted_size_usd > 0,
+                    exact_share=_resolved_share_from_sizes(accepted_size_usd, enriched.get("resolved_size_usd")),
+                    window_count=window_count,
+                    no_activity_value=1.0,
+                ),
+                6,
+            )
         )
         return enriched
     enriched = dict(result)
     enriched["worst_window_resolved_share"] = round(
-        _resolved_share_from_counts(enriched.get("accepted_count"), enriched.get("resolved_count")),
+        _legacy_worst_window_coverage_fallback(
+            has_activity=int(enriched.get("accepted_count") or 0) > 0,
+            exact_share=_resolved_share_from_counts(enriched.get("accepted_count"), enriched.get("resolved_count")),
+            window_count=window_count,
+            no_activity_value=0.0,
+        ),
         6,
     )
     accepted_count = int(enriched.get("accepted_count") or 0)
     accepted_size_usd = float(enriched.get("accepted_size_usd") or 0.0)
     enriched["worst_active_window_resolved_share"] = (
-        round(_resolved_share_from_counts(accepted_count, enriched.get("resolved_count")), 6)
-        if accepted_count > 0
-        else 1.0
+        round(
+            _legacy_worst_window_coverage_fallback(
+                has_activity=accepted_count > 0,
+                exact_share=_resolved_share_from_counts(accepted_count, enriched.get("resolved_count")),
+                window_count=window_count,
+                no_activity_value=1.0,
+            ),
+            6,
+        )
     )
     enriched["worst_window_resolved_size_share"] = round(
-        _resolved_share_from_sizes(enriched.get("accepted_size_usd"), enriched.get("resolved_size_usd")),
+        _legacy_worst_window_coverage_fallback(
+            has_activity=accepted_size_usd > 0,
+            exact_share=_resolved_share_from_sizes(enriched.get("accepted_size_usd"), enriched.get("resolved_size_usd")),
+            window_count=window_count,
+            no_activity_value=0.0,
+        ),
         6,
     )
     enriched["worst_active_window_resolved_size_share"] = (
-        round(_resolved_share_from_sizes(accepted_size_usd, enriched.get("resolved_size_usd")), 6)
-        if accepted_size_usd > 0
-        else 1.0
+        round(
+            _legacy_worst_window_coverage_fallback(
+                has_activity=accepted_size_usd > 0,
+                exact_share=_resolved_share_from_sizes(accepted_size_usd, enriched.get("resolved_size_usd")),
+                window_count=window_count,
+                no_activity_value=1.0,
+            ),
+            6,
+        )
     )
     return enriched
 

@@ -593,10 +593,17 @@ def _aggregate_window_results(
     )
     reject_reason_summary: dict[str, int] = {}
     signal_mode_totals: dict[str, dict[str, float]] = {}
+    normalized_window_mode_summaries: list[dict[str, dict[str, Any]]] = []
+    all_modes: set[str] = set()
     for window_result in window_results:
         for reason, count in _reject_reason_summary(window_result).items():
             reject_reason_summary[reason] = reject_reason_summary.get(reason, 0) + int(count or 0)
-        for mode, values in _signal_mode_summary(window_result).items():
+        window_mode_summary = _signal_mode_summary(window_result)
+        normalized_window_mode_summaries.append(window_mode_summary)
+        all_modes.update(window_mode_summary.keys())
+    for window_mode_summary in normalized_window_mode_summaries:
+        for mode in all_modes:
+            values = window_mode_summary.get(mode) or {}
             bucket = signal_mode_totals.setdefault(
                 mode,
                 {
@@ -606,17 +613,21 @@ def _aggregate_window_results(
                     "total_pnl_usd": 0.0,
                     "positive_window_count": 0.0,
                     "negative_window_count": 0.0,
+                    "inactive_window_count": 0.0,
                     "window_pnls": [],
                     "win_count": 0.0,
                 },
             )
+            is_inactive_window = mode not in window_mode_summary
             bucket["trade_count"] += int(values.get("trade_count") or 0)
             bucket["accepted_count"] += int(values.get("accepted_count") or 0)
             bucket["resolved_count"] += int(values.get("resolved_count") or 0)
-            bucket["total_pnl_usd"] += float(values.get("total_pnl_usd") or 0.0)
-            bucket["positive_window_count"] += int(values.get("positive_window_count") or 0)
-            bucket["negative_window_count"] += int(values.get("negative_window_count") or 0)
-            bucket["window_pnls"].append(float(values.get("total_pnl_usd") or 0.0))
+            window_pnl_usd = float(values.get("total_pnl_usd") or 0.0)
+            bucket["total_pnl_usd"] += window_pnl_usd
+            bucket["positive_window_count"] += 1 if window_pnl_usd > 0 else 0
+            bucket["negative_window_count"] += 1 if window_pnl_usd < 0 else 0
+            bucket["inactive_window_count"] += 1 if is_inactive_window else 0
+            bucket["window_pnls"].append(window_pnl_usd)
             bucket["win_count"] += int(values.get("win_count") or 0)
     signal_mode_summary = {
         mode: {
@@ -626,6 +637,7 @@ def _aggregate_window_results(
             "total_pnl_usd": round(values["total_pnl_usd"], 6),
             "positive_window_count": int(values["positive_window_count"]),
             "negative_window_count": int(values["negative_window_count"]),
+            "inactive_window_count": int(values["inactive_window_count"]),
             "worst_window_pnl_usd": round(min(values["window_pnls"]), 6) if values["window_pnls"] else None,
             "best_window_pnl_usd": round(max(values["window_pnls"]), 6) if values["window_pnls"] else None,
             "win_count": int(values["win_count"]),

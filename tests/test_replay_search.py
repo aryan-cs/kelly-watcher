@@ -1019,8 +1019,12 @@ class ReplaySearchTest(unittest.TestCase):
             max_xgboost_inactive_window_count=-1,
             max_heuristic_accepted_share=0.5,
             max_heuristic_accepted_size_share=0.0,
+            max_heuristic_active_window_accepted_share=0.0,
+            max_heuristic_active_window_accepted_size_share=0.0,
             min_xgboost_accepted_share=0.5,
             min_xgboost_accepted_size_share=0.0,
+            min_xgboost_active_window_accepted_share=0.0,
+            min_xgboost_active_window_accepted_size_share=0.0,
             max_pause_guard_reject_share=0.0,
             min_active_window_count=0,
             max_inactive_window_count=-1,
@@ -1109,8 +1113,12 @@ class ReplaySearchTest(unittest.TestCase):
             max_xgboost_inactive_window_count=0,
             max_heuristic_accepted_share=0.5,
             max_heuristic_accepted_size_share=0.5,
+            max_heuristic_active_window_accepted_share=0.5,
+            max_heuristic_active_window_accepted_size_share=0.5,
             min_xgboost_accepted_share=0.5,
             min_xgboost_accepted_size_share=0.5,
+            min_xgboost_active_window_accepted_share=0.5,
+            min_xgboost_active_window_accepted_size_share=0.5,
             max_pause_guard_reject_share=0.0,
             min_active_window_count=0,
             max_inactive_window_count=-1,
@@ -1618,6 +1626,146 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["max_heuristic_accepted_size_share"], 0.6)
         self.assertEqual(payload["constraints"]["min_xgboost_accepted_size_share"], 0.4)
         self.assertIn("modes heur 4 (40%) sz 33% / xgb 6 (60%) sz 67%", stderr.getvalue())
+
+    def test_main_can_require_mode_specific_active_window_accepted_shares(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                if start_ts == 1:
+                    heuristic_accepted = 5
+                    xgboost_accepted = 5
+                else:
+                    heuristic_accepted = 9
+                    xgboost_accepted = 1
+            else:
+                heuristic_accepted = 5
+                xgboost_accepted = 5
+            total_pnl = 40.0 if min_conf >= 0.65 else 34.0
+            return {
+                "run_id": (1 if min_conf >= 0.65 else 3) + (0 if start_ts == 1 else 1),
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": total_pnl,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": heuristic_accepted + xgboost_accepted,
+                "resolved_count": heuristic_accepted + xgboost_accepted,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": heuristic_accepted + xgboost_accepted,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": heuristic_accepted, "resolved_count": heuristic_accepted, "trade_count": heuristic_accepted, "total_pnl_usd": 12.0, "win_count": max(heuristic_accepted - 1, 1)},
+                    "xgboost": {"accepted_count": xgboost_accepted, "resolved_count": xgboost_accepted, "trade_count": xgboost_accepted, "total_pnl_usd": total_pnl - 12.0, "win_count": max(xgboost_accepted - 1, 1)},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--max-heuristic-active-window-accepted-share",
+            "0.60",
+            "--min-xgboost-active-window-accepted-share",
+            "0.40",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        self.assertEqual(
+            rejected["constraint_failures"],
+            ["heuristic_active_window_accepted_share", "xgboost_active_window_accepted_share"],
+        )
+        self.assertEqual(payload["constraints"]["max_heuristic_active_window_accepted_share"], 0.6)
+        self.assertEqual(payload["constraints"]["min_xgboost_active_window_accepted_share"], 0.4)
+        self.assertEqual(rejected["result"]["signal_mode_summary"]["heuristic"]["max_active_window_accepted_share"], 0.9)
+        self.assertEqual(rejected["result"]["signal_mode_summary"]["xgboost"]["min_active_window_accepted_share"], 0.1)
+        self.assertIn("reject heuristic_active_window_accepted_share,xgboost_active_window_accepted_share", stderr.getvalue())
+
+    def test_main_can_require_mode_specific_active_window_accepted_size_shares(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                if start_ts == 1:
+                    heuristic_size = 50.0
+                    xgboost_size = 50.0
+                else:
+                    heuristic_size = 90.0
+                    xgboost_size = 10.0
+            else:
+                heuristic_size = 50.0
+                xgboost_size = 50.0
+            total_pnl = 44.0 if min_conf >= 0.65 else 38.0
+            return {
+                "run_id": (1 if min_conf >= 0.65 else 3) + (0 if start_ts == 1 else 1),
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": total_pnl,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "accepted_size_usd": heuristic_size + xgboost_size,
+                "resolved_count": 10,
+                "resolved_size_usd": heuristic_size + xgboost_size,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 5, "accepted_size_usd": heuristic_size, "resolved_count": 5, "resolved_size_usd": heuristic_size, "trade_count": 5, "total_pnl_usd": 12.0, "win_count": 3},
+                    "xgboost": {"accepted_count": 5, "accepted_size_usd": xgboost_size, "resolved_count": 5, "resolved_size_usd": xgboost_size, "trade_count": 5, "total_pnl_usd": total_pnl - 12.0, "win_count": 3},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--max-heuristic-active-window-accepted-size-share",
+            "0.60",
+            "--min-xgboost-active-window-accepted-size-share",
+            "0.40",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        self.assertEqual(
+            rejected["constraint_failures"],
+            ["heuristic_active_window_accepted_size_share", "xgboost_active_window_accepted_size_share"],
+        )
+        self.assertEqual(payload["constraints"]["max_heuristic_active_window_accepted_size_share"], 0.6)
+        self.assertEqual(payload["constraints"]["min_xgboost_active_window_accepted_size_share"], 0.4)
+        self.assertEqual(rejected["result"]["signal_mode_summary"]["heuristic"]["max_active_window_accepted_size_share"], 0.9)
+        self.assertEqual(rejected["result"]["signal_mode_summary"]["xgboost"]["min_active_window_accepted_size_share"], 0.1)
+        self.assertIn("reject heuristic_active_window_accepted_size_share,xgboost_active_window_accepted_size_share", stderr.getvalue())
 
     def test_main_can_limit_pause_guard_reject_share(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -5188,6 +5336,8 @@ class ReplaySearchTest(unittest.TestCase):
                 "max_drawdown_pct": 0.1,
                 "max_heuristic_accepted_share": 0.0,
                 "max_heuristic_accepted_size_share": 0.0,
+                "max_heuristic_active_window_accepted_share": 0.0,
+                "max_heuristic_active_window_accepted_size_share": 0.0,
                 "max_heuristic_inactive_windows": -1,
                 "max_inactive_windows": -1,
                 "max_pause_guard_reject_share": 0.0,
@@ -5236,6 +5386,8 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_worst_window_resolved_size_share": 0.0,
                 "min_xgboost_accepted_share": 0.0,
                 "min_xgboost_accepted_size_share": 0.0,
+                "min_xgboost_active_window_accepted_share": 0.0,
+                "min_xgboost_active_window_accepted_size_share": 0.0,
                 "min_xgboost_accepted_count": 0,
                 "min_xgboost_resolved_count": 0,
                 "min_xgboost_resolved_share": 0.0,

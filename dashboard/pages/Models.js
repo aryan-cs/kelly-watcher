@@ -2311,6 +2311,11 @@ function replaySearchWorstWindowPnlFromPayload(payload) {
     return totalPnlUsd;
   return Math.min(totalPnlUsd, 0);
 }
+function replaySearchWorstWindowDrawdownPctFromPayload(payload) {
+  if (payload.worst_window_drawdown_pct != null)
+    return Number(payload.worst_window_drawdown_pct || 0);
+  return Number(payload.max_drawdown_pct || 0);
+}
 function replaySearchWorstActiveWindowResolvedShareFromPayload(payload) {
   if (payload.worst_active_window_resolved_share != null)
     return Number(payload.worst_active_window_resolved_share || 0);
@@ -3812,7 +3817,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalWorstWindowPnl = replaySearchWorstWindowPnlFromPayload(resultParsed);
         const globalWorstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(resultParsed);
         const globalWorstWindowResolvedSizeShare = replaySearchWorstActiveWindowResolvedSizeShareFromPayload(resultParsed);
-        const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0);
+        const globalWorstWindowDrawdown = replaySearchWorstWindowDrawdownPctFromPayload(resultParsed);
         const globalOpenExposureShare = Number(resultParsed.max_open_exposure_share || 0);
         const globalWindowEndOpenExposureShare = Number(resultParsed.max_window_end_open_exposure_share ?? resultParsed.window_end_open_exposure_share ?? 0);
         const globalAvgWindowEndOpenExposureShare = replaySearchAvgWindowEndOpenExposureShareFromPayload(resultParsed);

@@ -1571,6 +1571,13 @@ def _legacy_worst_window_pnl_fallback(total_pnl_usd: float, window_count: int) -
     return min(total_pnl_usd, 0.0)
 
 
+def _worst_window_drawdown_pct(result: dict[str, Any]) -> float:
+    raw_value = result.get("worst_window_drawdown_pct")
+    if raw_value is not None:
+        return max(float(raw_value or 0.0), 0.0)
+    return max(float(result.get("max_drawdown_pct") or 0.0), 0.0)
+
+
 def _legacy_window_sign_count_fallback(total_pnl_usd: float, window_count: int, *, positive: bool) -> int:
     normalized_window_count = max(int(window_count), 1)
     if normalized_window_count <= 1:
@@ -2813,7 +2820,7 @@ def _constraint_failures(
     worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
     worst_window_resolved_share = _global_worst_active_window_resolved_share(result)
     worst_window_resolved_size_share = _global_worst_active_window_resolved_size_share(result)
-    worst_window_drawdown_pct = float(result.get("worst_window_drawdown_pct") or 0.0)
+    worst_window_drawdown_pct = _worst_window_drawdown_pct(result)
     active_window_count = int(result.get("active_window_count") or 0)
     inactive_window_count = int(result.get("inactive_window_count") or 0)
     accepted_window_count = _accepted_window_count(result)

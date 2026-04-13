@@ -5063,6 +5063,25 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(failures, ["worst_window_pnl_usd"])
 
+    def test_constraint_failures_fail_closed_on_legacy_multi_window_worst_window_drawdown(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "max_drawdown_pct": 0.18,
+                "total_pnl_usd": 20.0,
+            },
+            **self._constraint_defaults(
+                max_worst_window_drawdown_pct=0.10,
+            ),
+        )
+
+        self.assertEqual(failures, ["worst_window_drawdown_pct"])
+
     def test_constraint_failures_fail_closed_on_legacy_multi_window_mode_positive_windows(self) -> None:
         failures = replay_search._constraint_failures(
             {

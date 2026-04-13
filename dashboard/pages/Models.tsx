@@ -197,6 +197,7 @@ interface ReplaySearchSummaryRow {
   live_guard_window_penalty: number | null
   open_exposure_penalty: number | null
   window_end_open_exposure_penalty: number | null
+  avg_window_end_open_exposure_penalty: number | null
   carry_window_penalty: number | null
   resolved_share_penalty: number | null
   resolved_size_share_penalty: number | null
@@ -322,7 +323,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, count and deployed-dollar active-window depth, pause-guard, count-weighted and deployed-dollar coverage, global window inactivity, worst-window coverage, scorer coverage, scorer-window depth, scorer active-window mix, scorer-loss, scorer-inactivity, and concentration terms.'},
       {label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, active-window depth, pause-guard, count-weighted and deployed-dollar coverage, global window inactivity, worst-window coverage, scorer coverage, scorer-window depth, scorer-loss, scorer-inactivity, and concentration penalties.'},
       {label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.'},
-      {label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, carry-window frequency, sparsest active-window trade depth and deployed dollars, window-end carry exposure, and the worst window P&L for the latest best feasible search candidate.'},
+      {label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, carry-window frequency, sparsest active-window trade depth and deployed dollars, peak and average window-end carry exposure, and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
       {label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.'},
@@ -664,6 +665,7 @@ WITH latest_search AS (
     live_guard_window_penalty,
     open_exposure_penalty,
     window_end_open_exposure_penalty,
+    avg_window_end_open_exposure_penalty,
     carry_window_penalty,
     resolved_share_penalty,
     resolved_size_share_penalty,
@@ -742,6 +744,7 @@ SELECT
   latest_search.live_guard_window_penalty,
   latest_search.open_exposure_penalty,
   latest_search.window_end_open_exposure_penalty,
+  latest_search.avg_window_end_open_exposure_penalty,
   latest_search.carry_window_penalty,
   latest_search.resolved_share_penalty,
   latest_search.resolved_size_share_penalty,
@@ -1844,6 +1847,15 @@ function replaySearchCarryWindowShareFromPayload(payload: Record<string, unknown
   return Number(payload.carry_window_count || 0) / activeWindowCount
 }
 
+function replaySearchAvgWindowEndOpenExposureShareFromPayload(payload: Record<string, unknown>): number {
+  if (payload.avg_window_end_open_exposure_share != null) return Number(payload.avg_window_end_open_exposure_share || 0)
+  return Number(
+    payload.max_window_end_open_exposure_share
+    ?? payload.window_end_open_exposure_share
+    ?? 0
+  )
+}
+
 function replaySearchLiveGuardWindowShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.live_guard_window_share != null) return Number(payload.live_guard_window_share || 0)
   const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload)
@@ -1865,6 +1877,7 @@ function replaySearchScoreWeightSummary(row: ReplaySearchSummaryRow | undefined)
   pushIfActive('p-freq', row.live_guard_window_penalty)
   pushIfActive('exp', row.open_exposure_penalty)
   pushIfActive('carry', row.window_end_open_exposure_penalty)
+  pushIfActive('carry-avg', row.avg_window_end_open_exposure_penalty)
   pushIfActive('c-freq', row.carry_window_penalty)
   pushIfActive('cov', row.resolved_share_penalty)
   pushIfActive('sz-cov', row.resolved_size_share_penalty)
@@ -1915,6 +1928,7 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     const liveGuardWindowPenaltyUsd = Number(breakdown.live_guard_window_penalty_usd || 0)
     const openExposurePenaltyUsd = Number(breakdown.open_exposure_penalty_usd || 0)
     const windowEndOpenExposurePenaltyUsd = Number(breakdown.window_end_open_exposure_penalty_usd || 0)
+    const avgWindowEndOpenExposurePenaltyUsd = Number(breakdown.avg_window_end_open_exposure_penalty_usd || 0)
     const carryWindowPenaltyUsd = Number(breakdown.carry_window_penalty_usd || 0)
     const resolvedSharePenaltyUsd = Number(breakdown.resolved_share_penalty_usd || 0)
     const resolvedSizeSharePenaltyUsd = Number(breakdown.resolved_size_share_penalty_usd || 0)
@@ -1955,6 +1969,7 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     if (Math.abs(liveGuardWindowPenaltyUsd) > 1e-9) parts.push(`p-freq ${formatDollar(-liveGuardWindowPenaltyUsd)}`)
     if (Math.abs(openExposurePenaltyUsd) > 1e-9) parts.push(`exp ${formatDollar(-openExposurePenaltyUsd)}`)
     if (Math.abs(windowEndOpenExposurePenaltyUsd) > 1e-9) parts.push(`carry ${formatDollar(-windowEndOpenExposurePenaltyUsd)}`)
+    if (Math.abs(avgWindowEndOpenExposurePenaltyUsd) > 1e-9) parts.push(`carry-avg ${formatDollar(-avgWindowEndOpenExposurePenaltyUsd)}`)
     if (Math.abs(carryWindowPenaltyUsd) > 1e-9) parts.push(`c-freq ${formatDollar(-carryWindowPenaltyUsd)}`)
     if (Math.abs(resolvedSharePenaltyUsd) > 1e-9) parts.push(`cov ${formatDollar(-resolvedSharePenaltyUsd)}`)
     if (Math.abs(resolvedSizeSharePenaltyUsd) > 1e-9) parts.push(`sz-cov ${formatDollar(-resolvedSizeSharePenaltyUsd)}`)
@@ -2013,6 +2028,7 @@ function replaySearchScoreDriftSummary(
         live_guard_window_penalty_usd: Number(breakdown.live_guard_window_penalty_usd || 0),
         open_exposure_penalty_usd: Number(breakdown.open_exposure_penalty_usd || 0),
         window_end_open_exposure_penalty_usd: Number(breakdown.window_end_open_exposure_penalty_usd || 0),
+        avg_window_end_open_exposure_penalty_usd: Number(breakdown.avg_window_end_open_exposure_penalty_usd || 0),
         carry_window_penalty_usd: Number(breakdown.carry_window_penalty_usd || 0),
         resolved_share_penalty_usd: Number(breakdown.resolved_share_penalty_usd || 0),
         resolved_size_share_penalty_usd: Number(breakdown.resolved_size_share_penalty_usd || 0),
@@ -2062,6 +2078,7 @@ function replaySearchScoreDriftSummary(
   const liveGuardWindowDelta = current.live_guard_window_penalty_usd - best.live_guard_window_penalty_usd
   const openExposureDelta = current.open_exposure_penalty_usd - best.open_exposure_penalty_usd
   const carryDelta = current.window_end_open_exposure_penalty_usd - best.window_end_open_exposure_penalty_usd
+  const avgCarryDelta = current.avg_window_end_open_exposure_penalty_usd - best.avg_window_end_open_exposure_penalty_usd
   const carryWindowDelta = current.carry_window_penalty_usd - best.carry_window_penalty_usd
   const coverageDelta = current.resolved_share_penalty_usd - best.resolved_share_penalty_usd
   const sizeCoverageDelta = current.resolved_size_share_penalty_usd - best.resolved_size_share_penalty_usd
@@ -2102,6 +2119,7 @@ function replaySearchScoreDriftSummary(
   if (Math.abs(liveGuardWindowDelta) > 1e-9) parts.push(`p-freq ${formatDollar(liveGuardWindowDelta)}`)
   if (Math.abs(openExposureDelta) > 1e-9) parts.push(`exp ${formatDollar(openExposureDelta)}`)
   if (Math.abs(carryDelta) > 1e-9) parts.push(`carry ${formatDollar(carryDelta)}`)
+  if (Math.abs(avgCarryDelta) > 1e-9) parts.push(`carry-avg ${formatDollar(avgCarryDelta)}`)
   if (Math.abs(carryWindowDelta) > 1e-9) parts.push(`c-freq ${formatDollar(carryWindowDelta)}`)
   if (Math.abs(coverageDelta) > 1e-9) parts.push(`cov ${formatDollar(coverageDelta)}`)
   if (Math.abs(sizeCoverageDelta) > 1e-9) parts.push(`sz-cov ${formatDollar(sizeCoverageDelta)}`)
@@ -2906,6 +2924,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'exposure'
         case 'max_window_end_open_exposure_share':
           return 'carry'
+        case 'avg_window_end_open_exposure_share':
+          return 'carry avg'
         case 'carry_window_share':
           return 'carry-freq'
         case 'trader_count':
@@ -3101,6 +3121,7 @@ function replaySearchHeadroomSummary(
       ?? resultParsed.window_end_open_exposure_share
       ?? 0
     )
+    const globalAvgWindowEndOpenExposureShare = replaySearchAvgWindowEndOpenExposureShareFromPayload(resultParsed as Record<string, unknown>)
     const globalCarryWindowShare = replaySearchCarryWindowShareFromPayload(resultParsed as Record<string, unknown>)
     const globalLiveGuardWindowShare = replaySearchLiveGuardWindowShareFromPayload(resultParsed as Record<string, unknown>)
     const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
@@ -3135,6 +3156,7 @@ function replaySearchHeadroomSummary(
     const maxLiveGuardWindowShare = Number(constraints.max_live_guard_window_share || 0)
     const maxOpenExposureShare = Number(constraints.max_open_exposure_share || 0)
     const maxWindowEndOpenExposureShare = Number(constraints.max_window_end_open_exposure_share || 0)
+    const maxAvgWindowEndOpenExposureShare = Number(constraints.max_avg_window_end_open_exposure_share || 0)
     const maxCarryWindowShare = Number(constraints.max_carry_window_share || 0)
     const minTraderCount = Number(constraints.min_trader_count || 0)
     const minMarketCount = Number(constraints.min_market_count || 0)
@@ -3189,6 +3211,7 @@ function replaySearchHeadroomSummary(
     if (maxLiveGuardWindowShare > 0) pushHeadroom('global', 'pause-freq', globalLiveGuardWindowShare, maxLiveGuardWindowShare, replayHeadroomPctPoints, 'max')
     if (maxOpenExposureShare > 0) pushHeadroom('global', 'exp', globalOpenExposureShare, maxOpenExposureShare, replayHeadroomPctPoints, 'max')
     if (maxWindowEndOpenExposureShare > 0) pushHeadroom('global', 'carry', globalWindowEndOpenExposureShare, maxWindowEndOpenExposureShare, replayHeadroomPctPoints, 'max')
+    if (maxAvgWindowEndOpenExposureShare > 0) pushHeadroom('global', 'carry avg', globalAvgWindowEndOpenExposureShare, maxAvgWindowEndOpenExposureShare, replayHeadroomPctPoints, 'max')
     if (maxCarryWindowShare > 0) pushHeadroom('global', 'carry-freq', globalCarryWindowShare, maxCarryWindowShare, replayHeadroomPctPoints, 'max')
     if (minTraderCount > 0) pushHeadroom('global', 'wallet worst cnt', traderCount, minTraderCount, replayHeadroomCount, 'min')
     if (minMarketCount > 0) pushHeadroom('global', 'market worst cnt', marketCount, minMarketCount, replayHeadroomCount, 'min')
@@ -3364,6 +3387,7 @@ function replaySearchWindowSummary(latestSearch: ReplaySearchSummaryRow | null |
       ?? parsed.window_end_open_exposure_share
       ?? 0
     )
+    const avgCarryShare = replaySearchAvgWindowEndOpenExposureShareFromPayload(parsed as Record<string, unknown>)
     const carryUsd = Number(
       parsed.max_window_end_open_exposure_usd
       ?? parsed.window_end_open_exposure_usd
@@ -3371,10 +3395,10 @@ function replaySearchWindowSummary(latestSearch: ReplaySearchSummaryRow | null |
     )
     const carryWindowCount = Number(parsed.carry_window_count || 0)
     const carrySuffix = carryShare > 0 || carryUsd > 0
-      ? ` | carry ${formatPct(carryShare, 0)} | carry$ ${formatDollar(carryUsd)}`
+      ? ` | carry ${formatPct(carryShare, 0)} | carry avg ${formatPct(avgCarryShare, 0)} | carry$ ${formatDollar(carryUsd)}`
       : ''
-    const carryFreqSuffix = windowCount > 1
-      ? ` | carry-freq ${formatCount(carryWindowCount)}/${formatCount(windowCount)}`
+    const carryFreqSuffix = activeWindowCount > 0
+      ? ` | carry-freq ${formatCount(carryWindowCount)}/${formatCount(activeWindowCount)}`
       : (carryWindowCount > 0 ? ' | carry-freq yes' : '')
     if (windowCount <= 1) return `${positive}+ / ${negative}-${carrySuffix}${carryFreqSuffix} | ${worst}`
     return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | idle ${formatCount(inactiveWindowCount)}${carryFreqSuffix} | worst act ${formatCount(worstActiveWindowAcceptedCount)} | worst act$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}${carrySuffix} | ${worst}`

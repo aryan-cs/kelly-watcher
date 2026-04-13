@@ -90,6 +90,8 @@ def _score_breakdown(
     mode_inactivity_penalty: float = 0.0,
     mode_accepted_window_count_penalty: float = 0.0,
     mode_accepted_window_share_penalty: float = 0.0,
+    mode_accepting_window_accepted_share_penalty: float = 0.0,
+    mode_accepting_window_accepted_size_share_penalty: float = 0.0,
     accepted_window_count_penalty: float = 0.0,
     accepted_window_share_penalty: float = 0.0,
     accepting_window_accepted_share_penalty: float = 0.0,
@@ -311,6 +313,22 @@ def _score_breakdown(
         ),
         default=0.0,
     )
+    mode_accepting_window_accepted_share_risk = max(
+        (
+            _mode_max_accepting_window_accepted_share(signal_mode_summary, mode, window_count)
+            for mode in enabled_modes
+            if int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0) > 0
+        ),
+        default=0.0,
+    )
+    mode_accepting_window_accepted_size_share_risk = max(
+        (
+            _mode_max_accepting_window_accepted_size_share(signal_mode_summary, mode, window_count)
+            for mode in enabled_modes
+            if float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0) > 0
+        ),
+        default=0.0,
+    )
     window_inactivity_share = (
         float(inactive_window_count) / float(window_count)
         if window_count > 0 else 0.0
@@ -400,6 +418,16 @@ def _score_breakdown(
         * mode_accepted_window_share_penalty
         * mode_accepted_window_share_risk
     )
+    mode_accepting_window_accepted_share_penalty_usd = (
+        initial_bankroll_usd
+        * mode_accepting_window_accepted_share_penalty
+        * mode_accepting_window_accepted_share_risk
+    )
+    mode_accepting_window_accepted_size_share_penalty_usd = (
+        initial_bankroll_usd
+        * mode_accepting_window_accepted_size_share_penalty
+        * mode_accepting_window_accepted_size_share_risk
+    )
     window_inactivity_penalty_usd = initial_bankroll_usd * window_inactivity_penalty * window_inactivity_share
     accepted_window_count_penalty_usd = (
         initial_bankroll_usd
@@ -454,6 +482,8 @@ def _score_breakdown(
         - mode_inactivity_penalty_usd
         - mode_accepted_window_count_penalty_usd
         - mode_accepted_window_share_penalty_usd
+        - mode_accepting_window_accepted_share_penalty_usd
+        - mode_accepting_window_accepted_size_share_penalty_usd
         - window_inactivity_penalty_usd
         - accepted_window_count_penalty_usd
         - accepted_window_share_penalty_usd
@@ -505,6 +535,8 @@ def _score_breakdown(
         "mode_inactivity_penalty_usd": round(mode_inactivity_penalty_usd, 6),
         "mode_accepted_window_count_penalty_usd": round(mode_accepted_window_count_penalty_usd, 6),
         "mode_accepted_window_share_penalty_usd": round(mode_accepted_window_share_penalty_usd, 6),
+        "mode_accepting_window_accepted_share_penalty_usd": round(mode_accepting_window_accepted_share_penalty_usd, 6),
+        "mode_accepting_window_accepted_size_share_penalty_usd": round(mode_accepting_window_accepted_size_share_penalty_usd, 6),
         "window_inactivity_penalty_usd": round(window_inactivity_penalty_usd, 6),
         "accepted_window_count_penalty_usd": round(accepted_window_count_penalty_usd, 6),
         "accepted_window_share_penalty_usd": round(accepted_window_share_penalty_usd, 6),
@@ -557,6 +589,8 @@ def _score_result(
     mode_inactivity_penalty: float = 0.0,
     mode_accepted_window_count_penalty: float = 0.0,
     mode_accepted_window_share_penalty: float = 0.0,
+    mode_accepting_window_accepted_share_penalty: float = 0.0,
+    mode_accepting_window_accepted_size_share_penalty: float = 0.0,
     accepted_window_count_penalty: float = 0.0,
     accepted_window_share_penalty: float = 0.0,
     accepting_window_accepted_share_penalty: float = 0.0,
@@ -616,6 +650,8 @@ def _score_result(
             mode_inactivity_penalty=mode_inactivity_penalty,
             mode_accepted_window_count_penalty=mode_accepted_window_count_penalty,
             mode_accepted_window_share_penalty=mode_accepted_window_share_penalty,
+            mode_accepting_window_accepted_share_penalty=mode_accepting_window_accepted_share_penalty,
+            mode_accepting_window_accepted_size_share_penalty=mode_accepting_window_accepted_size_share_penalty,
             accepted_window_count_penalty=accepted_window_count_penalty,
             accepted_window_share_penalty=accepted_window_share_penalty,
             accepting_window_accepted_share_penalty=accepting_window_accepted_share_penalty,
@@ -670,6 +706,8 @@ def _with_score_breakdown(
     mode_inactivity_penalty: float = 0.0,
     mode_accepted_window_count_penalty: float = 0.0,
     mode_accepted_window_share_penalty: float = 0.0,
+    mode_accepting_window_accepted_share_penalty: float = 0.0,
+    mode_accepting_window_accepted_size_share_penalty: float = 0.0,
     accepted_window_count_penalty: float = 0.0,
     accepted_window_share_penalty: float = 0.0,
     accepting_window_accepted_share_penalty: float = 0.0,
@@ -729,6 +767,8 @@ def _with_score_breakdown(
         mode_inactivity_penalty=mode_inactivity_penalty,
         mode_accepted_window_count_penalty=mode_accepted_window_count_penalty,
         mode_accepted_window_share_penalty=mode_accepted_window_share_penalty,
+        mode_accepting_window_accepted_share_penalty=mode_accepting_window_accepted_share_penalty,
+        mode_accepting_window_accepted_size_share_penalty=mode_accepting_window_accepted_size_share_penalty,
         accepted_window_count_penalty=accepted_window_count_penalty,
         accepted_window_share_penalty=accepted_window_share_penalty,
         accepting_window_accepted_share_penalty=accepting_window_accepted_share_penalty,
@@ -787,6 +827,8 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "max_active_window_accepted_share": None,
                 "min_active_window_accepted_size_share": None,
                 "max_active_window_accepted_size_share": None,
+                "max_accepting_window_accepted_share": None,
+                "max_accepting_window_accepted_size_share": None,
                 "win_count": 0,
                 "win_rate": None,
             },
@@ -933,6 +975,22 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
             else 0
         )
+        raw_max_accepting_window_accepted_share = raw_values.get("max_accepting_window_accepted_share")
+        resolved_max_accepting_window_accepted_share = (
+            _clamp_fraction(float(raw_max_accepting_window_accepted_share))
+            if raw_max_accepting_window_accepted_share is not None
+            else 1.0
+            if resolved_accepted_window_count <= 1 and int(raw_values.get("accepted_count") or 0) > 0
+            else 0.0
+        )
+        raw_max_accepting_window_accepted_size_share = raw_values.get("max_accepting_window_accepted_size_share")
+        resolved_max_accepting_window_accepted_size_share = (
+            _clamp_fraction(float(raw_max_accepting_window_accepted_size_share))
+            if raw_max_accepting_window_accepted_size_share is not None
+            else 1.0
+            if resolved_accepted_window_count <= 1 and float(raw_values.get("accepted_size_usd") or 0.0) > 0
+            else 0.0
+        )
         bucket["trade_count"] += int(raw_values.get("trade_count") or 0)
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
         bucket["accepted_size_usd"] += float(raw_values.get("accepted_size_usd") or 0.0)
@@ -1004,6 +1062,16 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 if bucket["max_active_window_accepted_size_share"] is None
                 else max(float(bucket["max_active_window_accepted_size_share"]), resolved_max_active_window_accepted_size_share)
             )
+        bucket["max_accepting_window_accepted_share"] = (
+            resolved_max_accepting_window_accepted_share
+            if bucket["max_accepting_window_accepted_share"] is None
+            else max(float(bucket["max_accepting_window_accepted_share"]), resolved_max_accepting_window_accepted_share)
+        )
+        bucket["max_accepting_window_accepted_size_share"] = (
+            resolved_max_accepting_window_accepted_size_share
+            if bucket["max_accepting_window_accepted_size_share"] is None
+            else max(float(bucket["max_accepting_window_accepted_size_share"]), resolved_max_accepting_window_accepted_size_share)
+        )
         bucket["best_window_pnl_usd"] = (
             resolved_best_window_pnl_usd
             if bucket["best_window_pnl_usd"] is None
@@ -1072,6 +1140,16 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         values["max_active_window_accepted_size_share"] = (
             round(float(values["max_active_window_accepted_size_share"]), 6)
             if values["max_active_window_accepted_size_share"] is not None
+            else None
+        )
+        values["max_accepting_window_accepted_share"] = (
+            round(float(values["max_accepting_window_accepted_share"]), 6)
+            if values["max_accepting_window_accepted_share"] is not None
+            else None
+        )
+        values["max_accepting_window_accepted_size_share"] = (
+            round(float(values["max_accepting_window_accepted_size_share"]), 6)
+            if values["max_accepting_window_accepted_size_share"] is not None
             else None
         )
         values["best_window_pnl_usd"] = (
@@ -1695,6 +1773,34 @@ def _mode_accepted_window_share(
     return 1.0 if accepted_window_count > 0 else 0.0
 
 
+def _mode_max_accepting_window_accepted_share(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> float:
+    payload = signal_mode_summary.get(mode, {})
+    raw_value = payload.get("max_accepting_window_accepted_share")
+    if raw_value is not None:
+        return _clamp_fraction(float(raw_value))
+    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
+    accepted_count = int(payload.get("accepted_count") or 0)
+    return 1.0 if accepted_window_count <= 1 and accepted_count > 0 else 0.0
+
+
+def _mode_max_accepting_window_accepted_size_share(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> float:
+    payload = signal_mode_summary.get(mode, {})
+    raw_value = payload.get("max_accepting_window_accepted_size_share")
+    if raw_value is not None:
+        return _clamp_fraction(float(raw_value))
+    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
+    accepted_size_usd = float(payload.get("accepted_size_usd") or 0.0)
+    return 1.0 if accepted_window_count <= 1 and accepted_size_usd > 0 else 0.0
+
+
 def _carry_window_share(result: dict[str, Any]) -> float:
     raw_share = result.get("carry_window_share")
     if raw_share is not None:
@@ -1901,6 +2007,10 @@ def _constraint_failures(
     min_xgboost_accepted_windows: int = 0,
     min_heuristic_accepted_window_share: float = 0.0,
     min_xgboost_accepted_window_share: float = 0.0,
+    max_heuristic_accepting_window_accepted_share: float = 0.0,
+    max_heuristic_accepting_window_accepted_size_share: float = 0.0,
+    max_xgboost_accepting_window_accepted_share: float = 0.0,
+    max_xgboost_accepting_window_accepted_size_share: float = 0.0,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
@@ -2055,6 +2165,10 @@ def _constraint_failures(
     xgboost_accepted_window_count = _mode_accepted_window_count(signal_mode_summary, "xgboost", mode_window_count)
     heuristic_accepted_window_share = _mode_accepted_window_share(signal_mode_summary, "heuristic", mode_window_count)
     xgboost_accepted_window_share = _mode_accepted_window_share(signal_mode_summary, "xgboost", mode_window_count)
+    heuristic_max_accepting_window_accepted_share = _mode_max_accepting_window_accepted_share(signal_mode_summary, "heuristic", mode_window_count)
+    heuristic_max_accepting_window_accepted_size_share = _mode_max_accepting_window_accepted_size_share(signal_mode_summary, "heuristic", mode_window_count)
+    xgboost_max_accepting_window_accepted_share = _mode_max_accepting_window_accepted_share(signal_mode_summary, "xgboost", mode_window_count)
+    xgboost_max_accepting_window_accepted_size_share = _mode_max_accepting_window_accepted_size_share(signal_mode_summary, "xgboost", mode_window_count)
     heuristic_worst_active_window_accepted_count = signal_mode_summary.get("heuristic", {}).get("worst_active_window_accepted_count")
     heuristic_worst_active_window_accepted_size_usd = signal_mode_summary.get("heuristic", {}).get("worst_active_window_accepted_size_usd")
     xgboost_worst_active_window_accepted_count = signal_mode_summary.get("xgboost", {}).get("worst_active_window_accepted_count")
@@ -2081,6 +2195,34 @@ def _constraint_failures(
         and xgboost_accepted_window_share < min_xgboost_accepted_window_share
     ):
         failures.append("xgboost_accepted_window_share")
+    if (
+        allow_heuristic
+        and max_heuristic_accepting_window_accepted_share > 0
+        and int(signal_mode_summary.get("heuristic", {}).get("accepted_count") or 0) > 0
+        and heuristic_max_accepting_window_accepted_share > max_heuristic_accepting_window_accepted_share
+    ):
+        failures.append("heuristic_max_accepting_window_accepted_share")
+    if (
+        allow_heuristic
+        and max_heuristic_accepting_window_accepted_size_share > 0
+        and float(signal_mode_summary.get("heuristic", {}).get("accepted_size_usd") or 0.0) > 0
+        and heuristic_max_accepting_window_accepted_size_share > max_heuristic_accepting_window_accepted_size_share
+    ):
+        failures.append("heuristic_max_accepting_window_accepted_size_share")
+    if (
+        allow_xgboost
+        and max_xgboost_accepting_window_accepted_share > 0
+        and int(signal_mode_summary.get("xgboost", {}).get("accepted_count") or 0) > 0
+        and xgboost_max_accepting_window_accepted_share > max_xgboost_accepting_window_accepted_share
+    ):
+        failures.append("xgboost_max_accepting_window_accepted_share")
+    if (
+        allow_xgboost
+        and max_xgboost_accepting_window_accepted_size_share > 0
+        and float(signal_mode_summary.get("xgboost", {}).get("accepted_size_usd") or 0.0) > 0
+        and xgboost_max_accepting_window_accepted_size_share > max_xgboost_accepting_window_accepted_size_share
+    ):
+        failures.append("xgboost_max_accepting_window_accepted_size_share")
     if (
         allow_heuristic
         and min_heuristic_worst_active_window_accepted_count > 0
@@ -2807,6 +2949,20 @@ def _aggregate_window_results(
                 if values["active_window_accepted_size_shares"]
                 else None
             ),
+            "max_accepting_window_accepted_share": (
+                round(float(max(values["active_window_accepted_counts"])) / float(values["accepted_count"]), 6)
+                if values["active_window_accepted_counts"] and values["accepted_count"] > 0
+                else 1.0
+                if values["accepted_count"] > 0 and int(values["accepted_window_count"]) <= 1
+                else 0.0
+            ),
+            "max_accepting_window_accepted_size_share": (
+                round(float(max(values["active_window_accepted_sizes_usd"])) / float(values["accepted_size_usd"]), 6)
+                if values["active_window_accepted_sizes_usd"] and values["accepted_size_usd"] > 0
+                else 1.0
+                if values["accepted_size_usd"] > 0 and int(values["accepted_window_count"]) <= 1
+                else 0.0
+            ),
             "best_window_pnl_usd": round(max(values["window_pnls"]), 6) if values["window_pnls"] else None,
             "win_count": int(values["win_count"]),
             "win_rate": round(values["win_count"] / values["resolved_count"], 6) if values["resolved_count"] > 0 else None,
@@ -3102,6 +3258,8 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             mode_inactivity_penalty       REAL NOT NULL DEFAULT 0,
             mode_accepted_window_count_penalty REAL NOT NULL DEFAULT 0,
             mode_accepted_window_share_penalty REAL NOT NULL DEFAULT 0,
+            mode_accepting_window_accepted_share_penalty REAL NOT NULL DEFAULT 0,
+            mode_accepting_window_accepted_size_share_penalty REAL NOT NULL DEFAULT 0,
             window_inactivity_penalty     REAL NOT NULL DEFAULT 0,
             accepted_window_count_penalty REAL NOT NULL DEFAULT 0,
             accepted_window_share_penalty REAL NOT NULL DEFAULT 0,
@@ -3206,6 +3364,8 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "mode_inactivity_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_accepted_window_count_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_accepted_window_share_penalty": "REAL NOT NULL DEFAULT 0",
+            "mode_accepting_window_accepted_share_penalty": "REAL NOT NULL DEFAULT 0",
+            "mode_accepting_window_accepted_size_share_penalty": "REAL NOT NULL DEFAULT 0",
             "window_inactivity_penalty": "REAL NOT NULL DEFAULT 0",
             "accepted_window_count_penalty": "REAL NOT NULL DEFAULT 0",
             "accepted_window_share_penalty": "REAL NOT NULL DEFAULT 0",
@@ -3306,6 +3466,8 @@ def _persist_search_results(
     mode_inactivity_penalty: float,
     mode_accepted_window_count_penalty: float,
     mode_accepted_window_share_penalty: float,
+    mode_accepting_window_accepted_share_penalty: float,
+    mode_accepting_window_accepted_size_share_penalty: float,
     window_inactivity_penalty: float,
     accepted_window_count_penalty: float,
     accepted_window_share_penalty: float,
@@ -3379,6 +3541,8 @@ def _persist_search_results(
             mode_inactivity_penalty,
             mode_accepted_window_count_penalty,
             mode_accepted_window_share_penalty,
+            mode_accepting_window_accepted_share_penalty,
+            mode_accepting_window_accepted_size_share_penalty,
             window_inactivity_penalty,
             accepted_window_count_penalty,
             accepted_window_share_penalty,
@@ -3423,7 +3587,7 @@ def _persist_search_results(
             INSERT INTO replay_search_runs (
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
-                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, daily_guard_window_penalty, live_guard_window_penalty, daily_guard_restart_window_penalty, live_guard_restart_window_penalty, open_exposure_penalty, window_end_open_exposure_penalty, avg_window_end_open_exposure_penalty, carry_window_penalty, carry_restart_window_penalty, resolved_share_penalty, resolved_size_share_penalty, worst_window_resolved_share_penalty, worst_window_resolved_size_share_penalty, mode_resolved_share_penalty, mode_resolved_size_share_penalty, mode_worst_window_resolved_share_penalty, mode_worst_window_resolved_size_share_penalty, mode_active_window_accepted_share_penalty, mode_active_window_accepted_size_share_penalty, worst_active_window_accepted_penalty, worst_active_window_accepted_size_penalty, mode_worst_active_window_accepted_penalty, mode_worst_active_window_accepted_size_penalty, mode_loss_penalty, mode_inactivity_penalty, mode_accepted_window_count_penalty, mode_accepted_window_share_penalty, window_inactivity_penalty, accepted_window_count_penalty, accepted_window_share_penalty, accepting_window_accepted_share_penalty, accepting_window_accepted_size_share_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
+                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, daily_guard_window_penalty, live_guard_window_penalty, daily_guard_restart_window_penalty, live_guard_restart_window_penalty, open_exposure_penalty, window_end_open_exposure_penalty, avg_window_end_open_exposure_penalty, carry_window_penalty, carry_restart_window_penalty, resolved_share_penalty, resolved_size_share_penalty, worst_window_resolved_share_penalty, worst_window_resolved_size_share_penalty, mode_resolved_share_penalty, mode_resolved_size_share_penalty, mode_worst_window_resolved_share_penalty, mode_worst_window_resolved_size_share_penalty, mode_active_window_accepted_share_penalty, mode_active_window_accepted_size_share_penalty, worst_active_window_accepted_penalty, worst_active_window_accepted_size_penalty, mode_worst_active_window_accepted_penalty, mode_worst_active_window_accepted_size_penalty, mode_loss_penalty, mode_inactivity_penalty, mode_accepted_window_count_penalty, mode_accepted_window_share_penalty, mode_accepting_window_accepted_share_penalty, mode_accepting_window_accepted_size_share_penalty, window_inactivity_penalty, accepted_window_count_penalty, accepted_window_share_penalty, accepting_window_accepted_share_penalty, accepting_window_accepted_size_share_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
                 wallet_size_concentration_penalty, market_size_concentration_penalty, entry_price_band_size_concentration_penalty, time_to_close_band_size_concentration_penalty,
                 candidate_count, feasible_count, rejected_count, current_candidate_score, current_candidate_feasible,
                 current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
@@ -3554,6 +3718,8 @@ def main() -> None:
     parser.add_argument("--mode-inactivity-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer inactive-window share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--mode-accepted-window-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse fresh accepting-window breadth for the worst enabled scorer across stitched scorer-active replay windows.")
     parser.add_argument("--mode-accepted-window-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer shortfall in fresh accepting-window participation share across stitched scorer-active replay windows.")
+    parser.add_argument("--mode-accepting-window-accepted-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to concentration of accepted replay trades into a single stitched accepting window for the worst enabled scorer.")
+    parser.add_argument("--mode-accepting-window-accepted-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to concentration of accepted replay deployed dollars into a single stitched accepting window for the worst enabled scorer.")
     parser.add_argument("--window-inactivity-penalty", type=float, default=0.0, help="Penalty multiplier applied to global replay inactive-window share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--accepted-window-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse stitched fresh accepting-window breadth when ranking candidates.")
     parser.add_argument("--accepted-window-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of stitched active replay windows that fail to produce fresh accepted entries.")
@@ -3627,6 +3793,10 @@ def main() -> None:
     parser.add_argument("--min-xgboost-accepted-windows", type=int, default=0, help="Minimum count of stitched replay windows that must still produce fresh xgboost accepts.")
     parser.add_argument("--min-heuristic-accepted-window-share", type=float, default=0.0, help="Minimum share of heuristic stitched active windows that must still produce fresh heuristic accepts.")
     parser.add_argument("--min-xgboost-accepted-window-share", type=float, default=0.0, help="Minimum share of xgboost stitched active windows that must still produce fresh xgboost accepts.")
+    parser.add_argument("--max-heuristic-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of heuristic accepted replay trades allowed to fall into a single stitched heuristic accepting window.")
+    parser.add_argument("--max-heuristic-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of heuristic accepted replay deployed dollars allowed to fall into a single stitched heuristic accepting window.")
+    parser.add_argument("--max-xgboost-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of xgboost accepted replay trades allowed to fall into a single stitched xgboost accepting window.")
+    parser.add_argument("--max-xgboost-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of xgboost accepted replay deployed dollars allowed to fall into a single stitched xgboost accepting window.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--max-heuristic-accepted-size-share", type=float, default=0.0, help="Maximum fraction of accepted replay deployed dollars allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
@@ -3714,6 +3884,8 @@ def main() -> None:
         mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
         mode_accepted_window_count_penalty=max(args.mode_accepted_window_count_penalty, 0.0),
         mode_accepted_window_share_penalty=max(args.mode_accepted_window_share_penalty, 0.0),
+        mode_accepting_window_accepted_share_penalty=max(args.mode_accepting_window_accepted_share_penalty, 0.0),
+        mode_accepting_window_accepted_size_share_penalty=max(args.mode_accepting_window_accepted_size_share_penalty, 0.0),
         window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
         accepted_window_count_penalty=max(args.accepted_window_count_penalty, 0.0),
         accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
@@ -3783,12 +3955,16 @@ def main() -> None:
         max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
         min_heuristic_accepted_windows=max(args.min_heuristic_accepted_windows, 0),
         min_heuristic_accepted_window_share=_clamp_fraction(args.min_heuristic_accepted_window_share),
+        max_heuristic_accepting_window_accepted_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
+        max_heuristic_accepting_window_accepted_size_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         max_heuristic_accepted_size_share=_clamp_fraction(args.max_heuristic_accepted_size_share),
         max_heuristic_active_window_accepted_share=_clamp_fraction(args.max_heuristic_active_window_accepted_share),
         max_heuristic_active_window_accepted_size_share=_clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
         min_xgboost_accepted_windows=max(args.min_xgboost_accepted_windows, 0),
         min_xgboost_accepted_window_share=_clamp_fraction(args.min_xgboost_accepted_window_share),
+        max_xgboost_accepting_window_accepted_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
+        max_xgboost_accepting_window_accepted_size_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         min_xgboost_accepted_size_share=_clamp_fraction(args.min_xgboost_accepted_size_share),
         min_xgboost_active_window_accepted_share=_clamp_fraction(args.min_xgboost_active_window_accepted_share),
@@ -3861,6 +4037,8 @@ def main() -> None:
                 mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
                 mode_accepted_window_count_penalty=max(args.mode_accepted_window_count_penalty, 0.0),
                 mode_accepted_window_share_penalty=max(args.mode_accepted_window_share_penalty, 0.0),
+                mode_accepting_window_accepted_share_penalty=max(args.mode_accepting_window_accepted_share_penalty, 0.0),
+                mode_accepting_window_accepted_size_share_penalty=max(args.mode_accepting_window_accepted_size_share_penalty, 0.0),
                 window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
                 accepted_window_count_penalty=max(args.accepted_window_count_penalty, 0.0),
                 accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
@@ -3938,9 +4116,13 @@ def main() -> None:
                 mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
                 mode_accepted_window_count_penalty=max(args.mode_accepted_window_count_penalty, 0.0),
                 mode_accepted_window_share_penalty=max(args.mode_accepted_window_share_penalty, 0.0),
+                mode_accepting_window_accepted_share_penalty=max(args.mode_accepting_window_accepted_share_penalty, 0.0),
+                mode_accepting_window_accepted_size_share_penalty=max(args.mode_accepting_window_accepted_size_share_penalty, 0.0),
                 window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
                 accepted_window_count_penalty=max(args.accepted_window_count_penalty, 0.0),
                 accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
+                accepting_window_accepted_share_penalty=max(args.accepting_window_accepted_share_penalty, 0.0),
+                accepting_window_accepted_size_share_penalty=max(args.accepting_window_accepted_size_share_penalty, 0.0),
                 wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
                 market_count_penalty=max(args.market_count_penalty, 0.0),
                 entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
@@ -3986,15 +4168,17 @@ def main() -> None:
             worst_active_window_accepted_size_penalty=max(args.worst_active_window_accepted_size_penalty, 0.0),
             mode_worst_active_window_accepted_penalty=max(args.mode_worst_active_window_accepted_penalty, 0.0),
             mode_worst_active_window_accepted_size_penalty=max(args.mode_worst_active_window_accepted_size_penalty, 0.0),
-                mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
-                mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
-                mode_accepted_window_count_penalty=max(args.mode_accepted_window_count_penalty, 0.0),
-                mode_accepted_window_share_penalty=max(args.mode_accepted_window_share_penalty, 0.0),
-                window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
-                accepted_window_count_penalty=max(args.accepted_window_count_penalty, 0.0),
-                accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
-                accepting_window_accepted_share_penalty=max(args.accepting_window_accepted_share_penalty, 0.0),
-                accepting_window_accepted_size_share_penalty=max(args.accepting_window_accepted_size_share_penalty, 0.0),
+            mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
+            mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
+            mode_accepted_window_count_penalty=max(args.mode_accepted_window_count_penalty, 0.0),
+            mode_accepted_window_share_penalty=max(args.mode_accepted_window_share_penalty, 0.0),
+            mode_accepting_window_accepted_share_penalty=max(args.mode_accepting_window_accepted_share_penalty, 0.0),
+            mode_accepting_window_accepted_size_share_penalty=max(args.mode_accepting_window_accepted_size_share_penalty, 0.0),
+            window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
+            accepted_window_count_penalty=max(args.accepted_window_count_penalty, 0.0),
+            accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
+            accepting_window_accepted_share_penalty=max(args.accepting_window_accepted_share_penalty, 0.0),
+            accepting_window_accepted_size_share_penalty=max(args.accepting_window_accepted_size_share_penalty, 0.0),
             wallet_count_penalty=max(args.wallet_count_penalty, 0.0),
             market_count_penalty=max(args.market_count_penalty, 0.0),
             entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
@@ -4059,12 +4243,16 @@ def main() -> None:
             max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
             min_heuristic_accepted_windows=max(args.min_heuristic_accepted_windows, 0),
             min_heuristic_accepted_window_share=_clamp_fraction(args.min_heuristic_accepted_window_share),
+            max_heuristic_accepting_window_accepted_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
+            max_heuristic_accepting_window_accepted_size_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             max_heuristic_accepted_size_share=_clamp_fraction(args.max_heuristic_accepted_size_share),
             max_heuristic_active_window_accepted_share=_clamp_fraction(args.max_heuristic_active_window_accepted_share),
             max_heuristic_active_window_accepted_size_share=_clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
             min_xgboost_accepted_windows=max(args.min_xgboost_accepted_windows, 0),
             min_xgboost_accepted_window_share=_clamp_fraction(args.min_xgboost_accepted_window_share),
+            max_xgboost_accepting_window_accepted_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
+            max_xgboost_accepting_window_accepted_size_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
             min_xgboost_accepted_size_share=_clamp_fraction(args.min_xgboost_accepted_size_share),
             min_xgboost_active_window_accepted_share=_clamp_fraction(args.min_xgboost_active_window_accepted_share),
@@ -4180,12 +4368,16 @@ def main() -> None:
         "max_xgboost_inactive_windows": int(args.max_xgboost_inactive_windows),
         "min_heuristic_accepted_windows": max(args.min_heuristic_accepted_windows, 0),
         "min_heuristic_accepted_window_share": _clamp_fraction(args.min_heuristic_accepted_window_share),
+        "max_heuristic_accepting_window_accepted_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
+        "max_heuristic_accepting_window_accepted_size_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "max_heuristic_accepted_size_share": _clamp_fraction(args.max_heuristic_accepted_size_share),
         "max_heuristic_active_window_accepted_share": _clamp_fraction(args.max_heuristic_active_window_accepted_share),
         "max_heuristic_active_window_accepted_size_share": _clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
         "min_xgboost_accepted_windows": max(args.min_xgboost_accepted_windows, 0),
         "min_xgboost_accepted_window_share": _clamp_fraction(args.min_xgboost_accepted_window_share),
+        "max_xgboost_accepting_window_accepted_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
+        "max_xgboost_accepting_window_accepted_size_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
         "min_xgboost_accepted_size_share": _clamp_fraction(args.min_xgboost_accepted_size_share),
         "min_xgboost_active_window_accepted_share": _clamp_fraction(args.min_xgboost_active_window_accepted_share),
@@ -4250,10 +4442,12 @@ def main() -> None:
         worst_active_window_accepted_size_penalty=max(args.worst_active_window_accepted_size_penalty, 0.0),
         mode_worst_active_window_accepted_penalty=max(args.mode_worst_active_window_accepted_penalty, 0.0),
         mode_worst_active_window_accepted_size_penalty=max(args.mode_worst_active_window_accepted_size_penalty, 0.0),
-            mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
+        mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         mode_inactivity_penalty=max(args.mode_inactivity_penalty, 0.0),
         mode_accepted_window_count_penalty=max(args.mode_accepted_window_count_penalty, 0.0),
         mode_accepted_window_share_penalty=max(args.mode_accepted_window_share_penalty, 0.0),
+        mode_accepting_window_accepted_share_penalty=max(args.mode_accepting_window_accepted_share_penalty, 0.0),
+        mode_accepting_window_accepted_size_share_penalty=max(args.mode_accepting_window_accepted_size_share_penalty, 0.0),
         window_inactivity_penalty=max(args.window_inactivity_penalty, 0.0),
         accepted_window_count_penalty=max(args.accepted_window_count_penalty, 0.0),
         accepted_window_share_penalty=max(args.accepted_window_share_penalty, 0.0),
@@ -4317,6 +4511,8 @@ def main() -> None:
                 "mode_inactivity_penalty": max(args.mode_inactivity_penalty, 0.0),
                 "mode_accepted_window_count_penalty": max(args.mode_accepted_window_count_penalty, 0.0),
                 "mode_accepted_window_share_penalty": max(args.mode_accepted_window_share_penalty, 0.0),
+                "mode_accepting_window_accepted_share_penalty": max(args.mode_accepting_window_accepted_share_penalty, 0.0),
+                "mode_accepting_window_accepted_size_share_penalty": max(args.mode_accepting_window_accepted_size_share_penalty, 0.0),
                 "window_inactivity_penalty": max(args.window_inactivity_penalty, 0.0),
                 "accepted_window_count_penalty": max(args.accepted_window_count_penalty, 0.0),
                 "accepted_window_share_penalty": max(args.accepted_window_share_penalty, 0.0),

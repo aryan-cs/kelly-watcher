@@ -2446,6 +2446,25 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("--constraints-json", command)
         self.assertIn(json.dumps({"min_accepted_count": 12}, separators=(",", ":"), sort_keys=True), command)
 
+    def test_replay_search_file_getters_default_to_checked_in_specs(self) -> None:
+        with (
+            patch.object(config, "_get_env_file_value", return_value=None),
+            patch.object(config, "_get", side_effect=lambda _name, default="": default),
+        ):
+            self.assertEqual(config.replay_search_base_policy_file(), "replay_search_specs/base_policy.json")
+            self.assertEqual(config.replay_search_grid_file(), "replay_search_specs/grid.json")
+            self.assertEqual(config.replay_search_constraints_file(), "replay_search_specs/constraints.json")
+
+    def test_replay_auto_promote_defaults_true_without_explicit_env(self) -> None:
+        def fake_get(name: str, default: str = "") -> str:
+            return default
+
+        with (
+            patch.object(config, "_get_env_file_value", return_value=None),
+            patch.object(config, "_get", side_effect=fake_get),
+        ):
+            self.assertTrue(config.replay_auto_promote())
+
     def test_validate_startup_blocks_live_until_post_promotion_shadow_history_is_ready(self) -> None:
         valid_wallet = "0x1111111111111111111111111111111111111111"
         watched_wallet = "0x2222222222222222222222222222222222222222"

@@ -2251,6 +2251,107 @@ def _resolved_shadow_trade_count_since_last_promotion() -> tuple[int, dict[str, 
     return _resolved_shadow_trade_count_since(since_ts), promotion
 
 
+def _replay_promotion_state_payload(
+    *,
+    prefix: str,
+    promotion_id: Any = 0,
+    applied_at: Any = 0,
+    status: Any = "",
+    message: Any = "",
+    scope: Any = "shadow_only",
+    run_id: Any = 0,
+    candidate_id: Any = 0,
+    score_delta: Any = None,
+    pnl_delta_usd: Any = None,
+) -> dict[str, object]:
+    return {
+        f"{prefix}_id": int(promotion_id or 0),
+        f"{prefix}_at": int(applied_at or 0),
+        f"{prefix}_status": str(status or ""),
+        f"{prefix}_message": str(message or ""),
+        f"{prefix}_scope": str(scope or "shadow_only"),
+        f"{prefix}_run_id": int(run_id or 0),
+        f"{prefix}_candidate_id": int(candidate_id or 0),
+        f"{prefix}_score_delta": score_delta,
+        f"{prefix}_pnl_delta_usd": pnl_delta_usd,
+    }
+
+
+def _applied_replay_promotion_state_payload(promotion: dict[str, Any] | None) -> dict[str, object]:
+    row = promotion or {}
+    return _replay_promotion_state_payload(
+        prefix="last_applied_replay_promotion",
+        promotion_id=row.get("id"),
+        applied_at=row.get("applied_at"),
+        status=row.get("status"),
+        message=row.get("reason"),
+        scope=row.get("scope"),
+        run_id=row.get("replay_search_run_id"),
+        candidate_id=row.get("replay_search_candidate_id"),
+        score_delta=row.get("score_delta"),
+        pnl_delta_usd=row.get("pnl_delta_usd"),
+    )
+
+
+def _replay_promotion_state_updates(result: dict[str, Any]) -> dict[str, object]:
+    payload = _replay_promotion_state_payload(
+        prefix="last_replay_promotion",
+        promotion_id=result.get("promotion_id"),
+        applied_at=result.get("applied_at"),
+        status=result.get("status"),
+        message=result.get("message"),
+        scope=result.get("scope"),
+        run_id=result.get("run_id"),
+        candidate_id=result.get("candidate_id"),
+        score_delta=result.get("score_delta"),
+        pnl_delta_usd=result.get("pnl_delta_usd"),
+    )
+    if str(result.get("status") or "").strip().lower() == "applied":
+        payload.update(
+            _applied_replay_promotion_state_payload(
+                {
+                    "id": result.get("promotion_id"),
+                    "applied_at": result.get("applied_at"),
+                    "status": result.get("status"),
+                    "reason": result.get("message"),
+                    "scope": result.get("scope"),
+                    "replay_search_run_id": result.get("run_id"),
+                    "replay_search_candidate_id": result.get("candidate_id"),
+                    "score_delta": result.get("score_delta"),
+                    "pnl_delta_usd": result.get("pnl_delta_usd"),
+                }
+            )
+        )
+    return payload
+
+
+def _shadow_history_state_payload(
+    *,
+    total_resolved_shadow: int,
+    resolved_since_promotion: int,
+    last_promotion: dict[str, Any] | None,
+    require_total_history: bool,
+    minimum_total: int,
+    minimum_since_promotion: int,
+) -> dict[str, object]:
+    total_resolved = max(int(total_resolved_shadow or 0), 0)
+    resolved_since = max(int(resolved_since_promotion or 0), 0)
+    total_required = max(int(minimum_total or 0), 0) if require_total_history else 0
+    since_required = max(int(minimum_since_promotion or 0), 0)
+    payload: dict[str, object] = {
+        "shadow_history_state_known": True,
+        "resolved_shadow_trade_count": total_resolved,
+        "live_require_shadow_history_enabled": bool(require_total_history),
+        "live_min_shadow_resolved": total_required,
+        "live_shadow_history_total_ready": (total_resolved >= total_required) if require_total_history else True,
+        "resolved_shadow_since_last_promotion": resolved_since,
+        "live_min_shadow_resolved_since_last_promotion": since_required,
+        "live_shadow_history_ready": resolved_since >= since_required,
+    }
+    payload.update(_applied_replay_promotion_state_payload(last_promotion))
+    return payload
+
+
 def _latest_replay_search_run_id() -> int:
     conn = get_conn()
     try:
@@ -3609,7 +3710,20 @@ def main() -> None:
         "last_replay_promotion_candidate_id": 0,
         "last_replay_promotion_score_delta": None,
         "last_replay_promotion_pnl_delta_usd": None,
+        "last_applied_replay_promotion_id": 0,
+        "last_applied_replay_promotion_at": 0,
+        "last_applied_replay_promotion_status": "",
+        "last_applied_replay_promotion_message": "",
+        "last_applied_replay_promotion_scope": "shadow_only",
+        "last_applied_replay_promotion_run_id": 0,
+        "last_applied_replay_promotion_candidate_id": 0,
+        "last_applied_replay_promotion_score_delta": None,
+        "last_applied_replay_promotion_pnl_delta_usd": None,
+        "shadow_history_state_known": False,
         "resolved_shadow_trade_count": 0,
+        "live_require_shadow_history_enabled": False,
+        "live_min_shadow_resolved": 0,
+        "live_shadow_history_total_ready": True,
         "resolved_shadow_since_last_promotion": 0,
         "live_min_shadow_resolved_since_last_promotion": 0,
         "live_shadow_history_ready": True,
@@ -3631,18 +3745,20 @@ def main() -> None:
     latest_promotion = _latest_applied_replay_promotion()
     if latest_promotion is not None:
         bot_state_snapshot.update(
-            {
-                "last_replay_promotion_id": int(latest_promotion.get("id") or 0),
-                "last_replay_promotion_at": int(latest_promotion.get("applied_at") or 0),
-                "last_replay_promotion_status": str(latest_promotion.get("status") or ""),
-                "last_replay_promotion_message": str(latest_promotion.get("reason") or ""),
-                "last_replay_promotion_scope": str(latest_promotion.get("scope") or "shadow_only"),
-                "last_replay_promotion_run_id": int(latest_promotion.get("replay_search_run_id") or 0),
-                "last_replay_promotion_candidate_id": int(latest_promotion.get("replay_search_candidate_id") or 0),
-                "last_replay_promotion_score_delta": latest_promotion.get("score_delta"),
-                "last_replay_promotion_pnl_delta_usd": latest_promotion.get("pnl_delta_usd"),
-            }
+            _replay_promotion_state_payload(
+                prefix="last_replay_promotion",
+                promotion_id=latest_promotion.get("id"),
+                applied_at=latest_promotion.get("applied_at"),
+                status=latest_promotion.get("status"),
+                message=latest_promotion.get("reason"),
+                scope=latest_promotion.get("scope"),
+                run_id=latest_promotion.get("replay_search_run_id"),
+                candidate_id=latest_promotion.get("replay_search_candidate_id"),
+                score_delta=latest_promotion.get("score_delta"),
+                pnl_delta_usd=latest_promotion.get("pnl_delta_usd"),
+            )
         )
+        bot_state_snapshot.update(_applied_replay_promotion_state_payload(latest_promotion))
     last_activity_write_at = 0.0
     current_loop_started_at = 0
     bot_state_lock = threading.Lock()
@@ -3678,27 +3794,23 @@ def main() -> None:
         _persist_bot_state(**engine.runtime_info())
 
     def _persist_replay_promotion_state(result: dict[str, Any]) -> None:
-        _persist_bot_state(
-            last_replay_promotion_id=int(result.get("promotion_id") or 0),
-            last_replay_promotion_at=int(result.get("applied_at") or 0),
-            last_replay_promotion_status=str(result.get("status") or ""),
-            last_replay_promotion_message=str(result.get("message") or ""),
-            last_replay_promotion_scope=str(result.get("scope") or "shadow_only"),
-            last_replay_promotion_run_id=int(result.get("run_id") or 0),
-            last_replay_promotion_candidate_id=int(result.get("candidate_id") or 0),
-            last_replay_promotion_score_delta=result.get("score_delta"),
-            last_replay_promotion_pnl_delta_usd=result.get("pnl_delta_usd"),
-        )
+        _persist_bot_state(**_replay_promotion_state_updates(result))
 
     def _refresh_shadow_history_state() -> None:
         total_resolved_shadow = _resolved_shadow_trade_count()
-        resolved_since_promotion, _ = _resolved_shadow_trade_count_since_last_promotion()
+        resolved_since_promotion, last_promotion = _resolved_shadow_trade_count_since_last_promotion()
+        require_total_history = live_require_shadow_history()
+        minimum_total = live_min_shadow_resolved() if require_total_history else 0
         required_since_promotion = max(live_min_shadow_resolved_since_promotion(), 0)
         _persist_bot_state(
-            resolved_shadow_trade_count=total_resolved_shadow,
-            resolved_shadow_since_last_promotion=resolved_since_promotion,
-            live_min_shadow_resolved_since_last_promotion=required_since_promotion,
-            live_shadow_history_ready=resolved_since_promotion >= required_since_promotion,
+            **_shadow_history_state_payload(
+                total_resolved_shadow=total_resolved_shadow,
+                resolved_since_promotion=resolved_since_promotion,
+                last_promotion=last_promotion,
+                require_total_history=require_total_history,
+                minimum_total=minimum_total,
+                minimum_since_promotion=required_since_promotion,
+            )
         )
 
     def _record_replay_promotion(

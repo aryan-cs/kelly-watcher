@@ -2563,6 +2563,77 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIsNone(busy_state["last_replay_search_best_pnl_usd"])
         self.assertNotIn("replay_search_in_progress", busy_state)
 
+    def test_replay_promotion_state_updates_only_advances_applied_baseline_on_apply(self) -> None:
+        skipped_updates = main._replay_promotion_state_updates(
+            {
+                "promotion_id": 9,
+                "applied_at": 0,
+                "status": "skipped_score_delta",
+                "message": "score delta too small",
+                "scope": "shadow_only",
+                "run_id": 21,
+                "candidate_id": 3,
+                "score_delta": 0.0,
+                "pnl_delta_usd": 0.0,
+            }
+        )
+        applied_updates = main._replay_promotion_state_updates(
+            {
+                "promotion_id": 10,
+                "applied_at": 1_700_000_123,
+                "status": "applied",
+                "message": "auto-promoted best feasible replay candidate",
+                "scope": "shadow_only",
+                "run_id": 22,
+                "candidate_id": 4,
+                "score_delta": 1.25,
+                "pnl_delta_usd": 18.0,
+            }
+        )
+
+        self.assertEqual(skipped_updates["last_replay_promotion_status"], "skipped_score_delta")
+        self.assertEqual(skipped_updates["last_replay_promotion_run_id"], 21)
+        self.assertNotIn("last_applied_replay_promotion_id", skipped_updates)
+
+        self.assertEqual(applied_updates["last_replay_promotion_id"], 10)
+        self.assertEqual(applied_updates["last_applied_replay_promotion_id"], 10)
+        self.assertEqual(applied_updates["last_applied_replay_promotion_at"], 1_700_000_123)
+        self.assertEqual(applied_updates["last_applied_replay_promotion_status"], "applied")
+        self.assertEqual(applied_updates["last_applied_replay_promotion_run_id"], 22)
+        self.assertAlmostEqual(float(applied_updates["last_applied_replay_promotion_pnl_delta_usd"]), 18.0)
+
+    def test_shadow_history_state_payload_reports_base_and_promo_gates(self) -> None:
+        payload = main._shadow_history_state_payload(
+            total_resolved_shadow=8,
+            resolved_since_promotion=3,
+            last_promotion={
+                "id": 17,
+                "applied_at": 1_700_000_456,
+                "status": "applied",
+                "reason": "auto-promoted best feasible replay candidate",
+                "scope": "shadow_only",
+                "replay_search_run_id": 31,
+                "replay_search_candidate_id": 6,
+                "score_delta": 2.5,
+                "pnl_delta_usd": 12.0,
+            },
+            require_total_history=True,
+            minimum_total=10,
+            minimum_since_promotion=5,
+        )
+
+        self.assertTrue(payload["shadow_history_state_known"])
+        self.assertEqual(payload["resolved_shadow_trade_count"], 8)
+        self.assertTrue(payload["live_require_shadow_history_enabled"])
+        self.assertEqual(payload["live_min_shadow_resolved"], 10)
+        self.assertFalse(payload["live_shadow_history_total_ready"])
+        self.assertEqual(payload["resolved_shadow_since_last_promotion"], 3)
+        self.assertEqual(payload["live_min_shadow_resolved_since_last_promotion"], 5)
+        self.assertFalse(payload["live_shadow_history_ready"])
+        self.assertEqual(payload["last_applied_replay_promotion_id"], 17)
+        self.assertEqual(payload["last_applied_replay_promotion_at"], 1_700_000_456)
+        self.assertEqual(payload["last_applied_replay_promotion_run_id"], 31)
+
     def test_apply_env_config_payload_only_writes_promotable_replay_keys(self) -> None:
         with patch.object(main, "_write_env_value") as write_env_value:
             result = main._apply_env_config_payload(

@@ -38,7 +38,20 @@ export interface BotState {
   last_replay_promotion_candidate_id?: number
   last_replay_promotion_score_delta?: number | null
   last_replay_promotion_pnl_delta_usd?: number | null
+  last_applied_replay_promotion_id?: number
+  last_applied_replay_promotion_at?: number
+  last_applied_replay_promotion_status?: string
+  last_applied_replay_promotion_message?: string
+  last_applied_replay_promotion_scope?: string
+  last_applied_replay_promotion_run_id?: number
+  last_applied_replay_promotion_candidate_id?: number
+  last_applied_replay_promotion_score_delta?: number | null
+  last_applied_replay_promotion_pnl_delta_usd?: number | null
+  shadow_history_state_known?: boolean
   resolved_shadow_trade_count?: number
+  live_require_shadow_history_enabled?: boolean
+  live_min_shadow_resolved?: number
+  live_shadow_history_total_ready?: boolean
   resolved_shadow_since_last_promotion?: number
   live_min_shadow_resolved_since_last_promotion?: number
   live_shadow_history_ready?: boolean

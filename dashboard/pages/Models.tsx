@@ -6137,21 +6137,68 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     : safePromotionScoreDelta != null
       ? signedMetricColor(safePromotionScoreDelta)
       : promotionValueColor
+  const appliedPromotionStatusText = replayPromotionStatusLabel(botState.last_applied_replay_promotion_status)
+  const appliedPromotionScopeText = replaySearchScopeLabel(botState.last_applied_replay_promotion_scope)
+  const appliedPromotionAt = Math.max(0, Number(botState.last_applied_replay_promotion_at || 0))
+  const appliedPromotionValue = useMemo(() => {
+    if (appliedPromotionStatusText === '-' && appliedPromotionAt <= 0) return '-'
+    const parts: string[] = []
+    if (appliedPromotionStatusText !== '-') parts.push(appliedPromotionStatusText)
+    if (appliedPromotionScopeText !== '-') parts.push(appliedPromotionScopeText)
+    if (appliedPromotionAt > 0) parts.push(secondsAgo(appliedPromotionAt))
+    return parts.length ? parts.join(' | ') : '-'
+  }, [appliedPromotionAt, appliedPromotionScopeText, appliedPromotionStatusText])
+  const appliedPromotionValueColor = appliedPromotionAt > 0
+    ? replayPromotionStatusColor(botState.last_applied_replay_promotion_status || 'applied')
+    : theme.dim
+  const shadowHistoryStateKnown = Boolean(botState.shadow_history_state_known)
   const resolvedShadowTradeCount = Math.max(0, Number(botState.resolved_shadow_trade_count || 0))
+  const requireTotalShadowHistory = Boolean(botState.live_require_shadow_history_enabled)
+  const minShadowResolved = Math.max(0, Number(botState.live_min_shadow_resolved || 0))
+  const shadowHistoryTotalReady = Boolean(botState.live_shadow_history_total_ready)
   const resolvedShadowSincePromotion = Math.max(0, Number(botState.resolved_shadow_since_last_promotion || 0))
   const minShadowSincePromotion = Math.max(0, Number(botState.live_min_shadow_resolved_since_last_promotion || 0))
   const shadowHistoryReady = Boolean(botState.live_shadow_history_ready)
   const shadowValidationValue = useMemo(() => {
-    if (minShadowSincePromotion <= 0) {
-      return `not required | ${formatCount(resolvedShadowTradeCount)} total`
+    if (!shadowHistoryStateKnown) return 'checking shadow history'
+    const parts: string[] = []
+    if (requireTotalShadowHistory && minShadowResolved > 0) {
+      parts.push(`base ${shadowHistoryTotalReady ? 'ready' : 'need'} ${formatCount(resolvedShadowTradeCount)}/${formatCount(minShadowResolved)}`)
+    } else {
+      parts.push('base off')
     }
-    return `${shadowHistoryReady ? 'ready' : 'need'} ${formatCount(resolvedShadowSincePromotion)}/${formatCount(minShadowSincePromotion)} | ${formatCount(resolvedShadowTradeCount)} total`
-  }, [minShadowSincePromotion, resolvedShadowSincePromotion, resolvedShadowTradeCount, shadowHistoryReady])
-  const shadowValidationColor = minShadowSincePromotion <= 0
+    if (minShadowSincePromotion > 0) {
+      const sinceLabel = appliedPromotionAt > 0 ? secondsAgo(appliedPromotionAt) : 'initial'
+      parts.push(
+        `promo ${shadowHistoryReady ? 'ready' : 'need'} ${formatCount(resolvedShadowSincePromotion)}/${formatCount(minShadowSincePromotion)} since ${sinceLabel}`
+      )
+    } else {
+      parts.push('promo off')
+    }
+    parts.push(`${formatCount(resolvedShadowTradeCount)} total`)
+    return parts.join(' | ')
+  }, [
+    appliedPromotionAt,
+    minShadowResolved,
+    minShadowSincePromotion,
+    requireTotalShadowHistory,
+    resolvedShadowSincePromotion,
+    resolvedShadowTradeCount,
+    shadowHistoryReady,
+    shadowHistoryStateKnown,
+    shadowHistoryTotalReady
+  ])
+  const shadowGateRequired = (requireTotalShadowHistory && minShadowResolved > 0) || minShadowSincePromotion > 0
+  const shadowGateReady = (!requireTotalShadowHistory || minShadowResolved <= 0 || shadowHistoryTotalReady)
+    && (minShadowSincePromotion <= 0 || shadowHistoryReady)
+  const shadowGateProgress = (requireTotalShadowHistory && resolvedShadowTradeCount > 0) || (minShadowSincePromotion > 0 && resolvedShadowSincePromotion > 0)
+  const shadowValidationColor = !shadowHistoryStateKnown
     ? theme.dim
-    : shadowHistoryReady
+    : !shadowGateRequired
+    ? theme.dim
+    : shadowGateReady
       ? theme.green
-      : resolvedShadowSincePromotion > 0
+      : shadowGateProgress
         ? theme.yellow
         : theme.red
   const recentActiveMode = useMemo(
@@ -6354,6 +6401,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         label: 'Promote delta',
         value: promotionDeltaValue,
         color: promotionDeltaColor
+      },
+      {
+        label: 'Promo base',
+        value: appliedPromotionValue,
+        color: appliedPromotionValueColor
       },
       {
         label: 'Shadow gate',

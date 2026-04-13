@@ -1109,45 +1109,43 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 else None
             )
         )
+        fallback_min_active_window_accepted_share, fallback_max_active_window_accepted_share = (
+            _active_window_mix_share_fallback(
+                float(int(raw_values.get("accepted_count") or 0)),
+                float(raw_total_active_accepted_count),
+                result_window_count,
+            )
+        )
         raw_min_active_window_accepted_share = raw_values.get("min_active_window_accepted_share")
         resolved_min_active_window_accepted_share = (
             float(raw_min_active_window_accepted_share)
             if raw_min_active_window_accepted_share is not None
-            else (
-                float(int(raw_values.get("accepted_count") or 0)) / float(raw_total_active_accepted_count)
-                if raw_total_active_accepted_count > 0
-                else None
-            )
+            else fallback_min_active_window_accepted_share
         )
         raw_max_active_window_accepted_share = raw_values.get("max_active_window_accepted_share")
         resolved_max_active_window_accepted_share = (
             float(raw_max_active_window_accepted_share)
             if raw_max_active_window_accepted_share is not None
-            else (
-                float(int(raw_values.get("accepted_count") or 0)) / float(raw_total_active_accepted_count)
-                if raw_total_active_accepted_count > 0
-                else None
+            else fallback_max_active_window_accepted_share
+        )
+        fallback_min_active_window_accepted_size_share, fallback_max_active_window_accepted_size_share = (
+            _active_window_mix_share_fallback(
+                float(raw_values.get("accepted_size_usd") or 0.0),
+                float(raw_total_active_accepted_size_usd),
+                result_window_count,
             )
         )
         raw_min_active_window_accepted_size_share = raw_values.get("min_active_window_accepted_size_share")
         resolved_min_active_window_accepted_size_share = (
             float(raw_min_active_window_accepted_size_share)
             if raw_min_active_window_accepted_size_share is not None
-            else (
-                float(raw_values.get("accepted_size_usd") or 0.0) / float(raw_total_active_accepted_size_usd)
-                if raw_total_active_accepted_size_usd > 0
-                else None
-            )
+            else fallback_min_active_window_accepted_size_share
         )
         raw_max_active_window_accepted_size_share = raw_values.get("max_active_window_accepted_size_share")
         resolved_max_active_window_accepted_size_share = (
             float(raw_max_active_window_accepted_size_share)
             if raw_max_active_window_accepted_size_share is not None
-            else (
-                float(raw_values.get("accepted_size_usd") or 0.0) / float(raw_total_active_accepted_size_usd)
-                if raw_total_active_accepted_size_usd > 0
-                else None
-            )
+            else fallback_max_active_window_accepted_size_share
         )
         resolved_positive_window_count = (
             int(raw_values.get("positive_window_count") or 0)
@@ -1512,6 +1510,19 @@ def _accepted_size_share(signal_mode_summary: dict[str, dict[str, Any]], mode: s
     if total_accepted_size_usd <= 0:
         return 0.0
     return float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0) / float(total_accepted_size_usd)
+
+
+def _active_window_mix_share_fallback(mode_value: float, total_value: float, window_count: int) -> tuple[float | None, float | None]:
+    if total_value <= 0:
+        return None, None
+    if window_count <= 1:
+        share = mode_value / total_value
+        return share, share
+    if mode_value <= 0:
+        return 0.0, 0.0
+    if mode_value >= total_value:
+        return 1.0, 1.0
+    return 0.0, 1.0
 
 
 def _min_active_window_accepted_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:

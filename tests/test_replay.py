@@ -199,6 +199,8 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(result["time_to_close_band_concentration"]["time_to_close_band_count"], 1)
                 self.assertEqual(result["time_to_close_band_concentration"]["top_accepted_time_to_close_band"], "<=5m")
                 self.assertEqual(result["time_to_close_band_concentration"]["top_abs_pnl_share"], 1.0)
+                self.assertGreater(result["peak_open_exposure_usd"], 0.0)
+                self.assertGreater(result["max_open_exposure_share"], 0.0)
 
                 conn = sqlite3.connect(str(test_db_path))
                 conn.row_factory = sqlite3.Row
@@ -226,6 +228,8 @@ class ReplayTest(unittest.TestCase):
 
                 self.assertEqual(run_row["label"], "unit-test")
                 self.assertEqual(run_row["accepted_count"], 1)
+                self.assertGreater(run_row["peak_open_exposure_usd"], 0.0)
+                self.assertGreater(run_row["max_open_exposure_share"], 0.0)
                 self.assertEqual(
                     [(row["trade_id"], row["decision"], row["reason"]) for row in trade_rows],
                     [

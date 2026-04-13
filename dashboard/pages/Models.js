@@ -366,8 +366,9 @@ WITH latest_search AS (
     drawdown_penalty,
     window_stddev_penalty,
     worst_window_penalty,
-	    pause_guard_penalty,
-	    resolved_share_penalty,
+    pause_guard_penalty,
+    open_exposure_penalty,
+    resolved_share_penalty,
     resolved_size_share_penalty,
     worst_window_resolved_share_penalty,
     worst_window_resolved_size_share_penalty,
@@ -440,8 +441,9 @@ SELECT
   latest_search.drawdown_penalty,
   latest_search.window_stddev_penalty,
   latest_search.worst_window_penalty,
-	  latest_search.pause_guard_penalty,
-	  latest_search.resolved_share_penalty,
+  latest_search.pause_guard_penalty,
+  latest_search.open_exposure_penalty,
+  latest_search.resolved_share_penalty,
   latest_search.resolved_size_share_penalty,
   latest_search.worst_window_resolved_share_penalty,
   latest_search.worst_window_resolved_size_share_penalty,
@@ -1669,6 +1671,7 @@ function replaySearchScoreBreakdownSummary(raw) {
         const windowStddevPenaltyUsd = Number(breakdown.window_stddev_penalty_usd || 0);
         const worstWindowPenaltyUsd = Number(breakdown.worst_window_penalty_usd || 0);
         const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0);
+        const openExposurePenaltyUsd = Number(breakdown.open_exposure_penalty_usd || 0);
         const resolvedSharePenaltyUsd = Number(breakdown.resolved_share_penalty_usd || 0);
         const resolvedSizeSharePenaltyUsd = Number(breakdown.resolved_size_share_penalty_usd || 0);
         const windowInactivityPenaltyUsd = Number(breakdown.window_inactivity_penalty_usd || 0);
@@ -1708,6 +1711,8 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`worst ${formatDollar(-worstWindowPenaltyUsd)}`);
         if (Math.abs(pauseGuardPenaltyUsd) > 1e-9)
             parts.push(`pause ${formatDollar(-pauseGuardPenaltyUsd)}`);
+        if (Math.abs(openExposurePenaltyUsd) > 1e-9)
+            parts.push(`exp ${formatDollar(-openExposurePenaltyUsd)}`);
         if (Math.abs(resolvedSharePenaltyUsd) > 1e-9)
             parts.push(`cov ${formatDollar(-resolvedSharePenaltyUsd)}`);
         if (Math.abs(resolvedSizeSharePenaltyUsd) > 1e-9)
@@ -1785,6 +1790,7 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('std', row.window_stddev_penalty);
     pushIfActive('worst', row.worst_window_penalty);
     pushIfActive('pause', row.pause_guard_penalty);
+    pushIfActive('exp', row.open_exposure_penalty);
     pushIfActive('cov', row.resolved_share_penalty);
     pushIfActive('sz-cov', row.resolved_size_share_penalty);
     pushIfActive('w-idle', row.window_inactivity_penalty);
@@ -1835,6 +1841,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 window_stddev_penalty_usd: Number(breakdown.window_stddev_penalty_usd || 0),
                 worst_window_penalty_usd: Number(breakdown.worst_window_penalty_usd || 0),
                 pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0),
+                open_exposure_penalty_usd: Number(breakdown.open_exposure_penalty_usd || 0),
                 resolved_share_penalty_usd: Number(breakdown.resolved_share_penalty_usd || 0),
                 resolved_size_share_penalty_usd: Number(breakdown.resolved_size_share_penalty_usd || 0),
                 window_inactivity_penalty_usd: Number(breakdown.window_inactivity_penalty_usd || 0),
@@ -1880,6 +1887,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const stddevDelta = current.window_stddev_penalty_usd - best.window_stddev_penalty_usd;
     const worstDelta = current.worst_window_penalty_usd - best.worst_window_penalty_usd;
     const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd;
+    const openExposureDelta = current.open_exposure_penalty_usd - best.open_exposure_penalty_usd;
     const coverageDelta = current.resolved_share_penalty_usd - best.resolved_share_penalty_usd;
     const sizeCoverageDelta = current.resolved_size_share_penalty_usd - best.resolved_size_share_penalty_usd;
     const windowInactivityDelta = current.window_inactivity_penalty_usd - best.window_inactivity_penalty_usd;
@@ -1919,6 +1927,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`worst ${formatDollar(worstDelta)}`);
     if (Math.abs(pauseDelta) > 1e-9)
         parts.push(`pause ${formatDollar(pauseDelta)}`);
+    if (Math.abs(openExposureDelta) > 1e-9)
+        parts.push(`exp ${formatDollar(openExposureDelta)}`);
     if (Math.abs(coverageDelta) > 1e-9)
         parts.push(`cov ${formatDollar(coverageDelta)}`);
     if (Math.abs(sizeCoverageDelta) > 1e-9)
@@ -2607,6 +2617,8 @@ function replaySearchFailureSummary(raw, feasible) {
                     return 'worst act$';
                 case 'pause_guard_reject_share':
                     return 'pause share';
+                case 'max_open_exposure_share':
+                    return 'exposure';
                 case 'trader_count':
                     return 'wallet worst count';
                 case 'market_count':
@@ -2762,6 +2774,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalWorstWindowResolvedShare = Number(resultParsed.worst_active_window_resolved_share ?? resultParsed.worst_window_resolved_share ?? globalResolvedShare);
         const globalWorstWindowResolvedSizeShare = Number(resultParsed.worst_active_window_resolved_size_share ?? resultParsed.worst_window_resolved_size_share ?? globalResolvedSizeShare);
         const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0);
+        const globalOpenExposureShare = Number(resultParsed.max_open_exposure_share || 0);
         const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
             ? resultParsed.reject_reason_summary
             : {};
@@ -2788,6 +2801,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const minTotalPnlUsd = Number(constraints.min_total_pnl_usd ?? -1000000000);
         const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0);
         const maxPauseGuardRejectShare = Number(constraints.max_pause_guard_reject_share || 0);
+        const maxOpenExposureShare = Number(constraints.max_open_exposure_share || 0);
         const minTraderCount = Number(constraints.min_trader_count || 0);
         const minMarketCount = Number(constraints.min_market_count || 0);
         const minEntryPriceBandCount = Number(constraints.min_entry_price_band_count || 0);
@@ -2845,6 +2859,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max');
         if (maxPauseGuardRejectShare > 0)
             pushHeadroom('global', 'pause', pauseGuardRejectShare, maxPauseGuardRejectShare, replayHeadroomPctPoints, 'max');
+        if (maxOpenExposureShare > 0)
+            pushHeadroom('global', 'exp', globalOpenExposureShare, maxOpenExposureShare, replayHeadroomPctPoints, 'max');
         if (minTraderCount > 0)
             pushHeadroom('global', 'wallet worst cnt', traderCount, minTraderCount, replayHeadroomCount, 'min');
         if (minMarketCount > 0)

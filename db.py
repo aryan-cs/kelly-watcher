@@ -482,6 +482,8 @@ def init_db() -> None:
             final_bankroll_usd      REAL NOT NULL DEFAULT 0,
             total_pnl_usd           REAL NOT NULL DEFAULT 0,
             max_drawdown_pct        REAL,
+            peak_open_exposure_usd  REAL NOT NULL DEFAULT 0,
+            max_open_exposure_share REAL NOT NULL DEFAULT 0,
             trade_count             INTEGER NOT NULL DEFAULT 0,
             accepted_count          INTEGER NOT NULL DEFAULT 0,
             rejected_count          INTEGER NOT NULL DEFAULT 0,
@@ -545,6 +547,7 @@ def init_db() -> None:
             window_stddev_penalty        REAL NOT NULL DEFAULT 0,
             worst_window_penalty         REAL NOT NULL DEFAULT 0,
             pause_guard_penalty          REAL NOT NULL DEFAULT 0,
+            open_exposure_penalty        REAL NOT NULL DEFAULT 0,
             resolved_share_penalty       REAL NOT NULL DEFAULT 0,
             resolved_size_share_penalty  REAL NOT NULL DEFAULT 0,
             worst_window_resolved_share_penalty REAL NOT NULL DEFAULT 0,
@@ -751,6 +754,8 @@ def init_db() -> None:
         {
             "window_start_ts": "INTEGER",
             "window_end_ts": "INTEGER",
+            "peak_open_exposure_usd": "REAL NOT NULL DEFAULT 0",
+            "max_open_exposure_share": "REAL NOT NULL DEFAULT 0",
         },
     )
     _ensure_table_columns(
@@ -776,6 +781,7 @@ def init_db() -> None:
             "window_stddev_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
             "pause_guard_penalty": "REAL NOT NULL DEFAULT 0",
+            "open_exposure_penalty": "REAL NOT NULL DEFAULT 0",
             "resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
             "resolved_size_share_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_window_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",

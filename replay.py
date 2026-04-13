@@ -318,6 +318,8 @@ def _simulate(
     peak_equity = max(policy.initial_bankroll_usd, 0.0)
     min_equity = max(policy.initial_bankroll_usd, 0.0)
     max_drawdown_pct = 0.0
+    peak_open_exposure_usd = 0.0
+    max_open_exposure_share = 0.0
     replay_rows: list[dict[str, Any]] = []
     unresolved_count = 0
     live_guard_triggered = False
@@ -346,6 +348,18 @@ def _simulate(
         if peak_equity > 0:
             max_drawdown_pct = max(max_drawdown_pct, (peak_equity - current_equity) / peak_equity)
 
+    def update_open_exposure_metrics() -> None:
+        nonlocal peak_open_exposure_usd, max_open_exposure_share
+        current_equity = account_equity()
+        current_open_exposure = open_exposure()
+        if current_open_exposure > peak_open_exposure_usd:
+            peak_open_exposure_usd = current_open_exposure
+        if current_equity > 0:
+            max_open_exposure_share = max(
+                max_open_exposure_share,
+                current_open_exposure / current_equity,
+            )
+
     def close_due_positions(now_ts: int) -> None:
         nonlocal realized_pnl
         remaining: list[dict[str, Any]] = []
@@ -356,6 +370,7 @@ def _simulate(
                 remaining.append(position)
         open_positions[:] = remaining
         update_drawdown()
+        update_open_exposure_metrics()
 
     def sync_daily_guard(now_ts: int) -> None:
         nonlocal daily_guard_day_key, daily_guard_locked, daily_guard_start_equity
@@ -634,6 +649,7 @@ def _simulate(
                     "pnl_usd": 0.0,
                 }
             )
+            update_open_exposure_metrics()
             replay_rows.append(
                 _replay_trade_row(
                     replay_run_id=0,
@@ -664,6 +680,7 @@ def _simulate(
         if close_ts <= placed_at:
             realized_pnl += pnl_usd
             update_drawdown()
+            update_open_exposure_metrics()
         else:
             open_positions.append(
                 {
@@ -674,6 +691,7 @@ def _simulate(
                     "pnl_usd": pnl_usd,
                 }
             )
+            update_open_exposure_metrics()
         replay_rows.append(
             _replay_trade_row(
                 replay_run_id=0,
@@ -733,6 +751,8 @@ def _simulate(
             "final_bankroll_usd": final_bankroll,
             "total_pnl_usd": round(final_bankroll - policy.initial_bankroll_usd, 6),
             "max_drawdown_pct": round(max_drawdown_pct, 6),
+            "peak_open_exposure_usd": round(peak_open_exposure_usd, 6),
+            "max_open_exposure_share": round(max_open_exposure_share, 6),
             "trade_count": len(replay_rows),
             "accepted_count": len(accepted_rows),
             "rejected_count": len(replay_rows) - len(accepted_rows),
@@ -761,8 +781,10 @@ def _simulate(
         "final_bankroll_usd": final_bankroll,
         "peak_equity_usd": round(peak_equity, 6),
         "min_equity_usd": round(min_equity, 6),
+        "peak_open_exposure_usd": round(peak_open_exposure_usd, 6),
         "total_pnl_usd": round(final_bankroll - policy.initial_bankroll_usd, 6),
         "max_drawdown_pct": round(max_drawdown_pct, 6),
+        "max_open_exposure_share": round(max_open_exposure_share, 6),
         "trade_count": len(replay_rows),
         "accepted_count": len(accepted_rows),
         "accepted_size_usd": round(accepted_size_usd, 6),
@@ -1355,6 +1377,8 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
             final_bankroll_usd      REAL NOT NULL DEFAULT 0,
             total_pnl_usd           REAL NOT NULL DEFAULT 0,
             max_drawdown_pct        REAL,
+            peak_open_exposure_usd  REAL NOT NULL DEFAULT 0,
+            max_open_exposure_share REAL NOT NULL DEFAULT 0,
             trade_count             INTEGER NOT NULL DEFAULT 0,
             accepted_count          INTEGER NOT NULL DEFAULT 0,
             rejected_count          INTEGER NOT NULL DEFAULT 0,
@@ -1408,6 +1432,14 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
     for column_name in ("window_start_ts", "window_end_ts"):
         try:
             conn.execute(f"ALTER TABLE replay_runs ADD COLUMN {column_name} INTEGER")
+        except sqlite3.OperationalError:
+            pass
+    for column_name, column_type in (
+        ("peak_open_exposure_usd", "REAL NOT NULL DEFAULT 0"),
+        ("max_open_exposure_share", "REAL NOT NULL DEFAULT 0"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE replay_runs ADD COLUMN {column_name} {column_type}")
         except sqlite3.OperationalError:
             pass
     try:

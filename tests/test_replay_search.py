@@ -34,6 +34,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("current_candidate_constraint_failures_json", columns)
         self.assertIn("current_candidate_result_json", columns)
         self.assertIn("pause_guard_penalty", columns)
+        self.assertIn("open_exposure_penalty", columns)
         self.assertIn("resolved_share_penalty", columns)
         self.assertIn("resolved_size_share_penalty", columns)
         self.assertIn("worst_window_resolved_share_penalty", columns)
@@ -61,6 +62,26 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("market_size_concentration_penalty", columns)
         self.assertIn("entry_price_band_size_concentration_penalty", columns)
         self.assertIn("time_to_close_band_size_concentration_penalty", columns)
+
+    def test_db_init_db_backfills_replay_run_open_exposure_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    columns = {
+                        str(row["name"])
+                        for row in conn.execute("PRAGMA table_info(replay_runs)").fetchall()
+                    }
+                finally:
+                    conn.close()
+            finally:
+                db.DB_PATH = original_db_path
+
+        self.assertIn("peak_open_exposure_usd", columns)
+        self.assertIn("max_open_exposure_share", columns)
 
     def test_main_ranks_grid_candidates_and_keeps_json_on_stdout(self) -> None:
         calls: list[dict[str, object]] = []
@@ -363,6 +384,116 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(breakdown["window_inactivity_penalty_usd"], 150.0)
         self.assertEqual(breakdown["score_usd"], -130.0)
+
+    def test_score_breakdown_penalizes_open_exposure_share(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "max_open_exposure_share": 0.4,
+                "accepted_count": 6,
+                "resolved_count": 6,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            open_exposure_penalty=0.2,
+            resolved_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["open_exposure_penalty_usd"], 240.0)
+        self.assertEqual(breakdown["score_usd"], -220.0)
+
+    def test_constraint_failures_reject_open_exposure_share(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 6,
+                "resolved_count": 6,
+                "trade_count": 6,
+                "rejected_count": 0,
+                "max_open_exposure_share": 0.41,
+            },
+            allow_heuristic=True,
+            allow_xgboost=True,
+            min_accepted_count=0,
+            min_resolved_count=0,
+            min_resolved_share=0.0,
+            min_resolved_size_share=0.0,
+            min_win_rate=0.0,
+            min_total_pnl_usd=-1_000_000_000.0,
+            max_drawdown_pct=0.0,
+            max_open_exposure_share=0.4,
+            min_worst_window_pnl_usd=-1_000_000_000.0,
+            min_worst_window_resolved_share=0.0,
+            min_worst_window_resolved_size_share=0.0,
+            max_worst_window_drawdown_pct=0.0,
+            min_heuristic_accepted_count=0,
+            min_xgboost_accepted_count=0,
+            min_heuristic_resolved_count=0,
+            min_xgboost_resolved_count=0,
+            min_heuristic_win_rate=0.0,
+            min_xgboost_win_rate=0.0,
+            min_heuristic_resolved_share=0.0,
+            min_xgboost_resolved_share=0.0,
+            min_heuristic_resolved_size_share=0.0,
+            min_xgboost_resolved_size_share=0.0,
+            min_heuristic_pnl_usd=0.0,
+            min_xgboost_pnl_usd=0.0,
+            min_heuristic_worst_window_pnl_usd=-1_000_000_000.0,
+            min_xgboost_worst_window_pnl_usd=-1_000_000_000.0,
+            min_heuristic_worst_window_resolved_share=0.0,
+            min_xgboost_worst_window_resolved_share=0.0,
+            min_heuristic_worst_window_resolved_size_share=0.0,
+            min_xgboost_worst_window_resolved_size_share=0.0,
+            min_heuristic_positive_window_count=0,
+            min_xgboost_positive_window_count=0,
+            min_heuristic_worst_active_window_accepted_count=0,
+            min_heuristic_worst_active_window_accepted_size_usd=0.0,
+            min_xgboost_worst_active_window_accepted_count=0,
+            min_xgboost_worst_active_window_accepted_size_usd=0.0,
+            max_heuristic_inactive_window_count=-1,
+            max_xgboost_inactive_window_count=-1,
+            max_heuristic_accepted_share=0.0,
+            max_heuristic_accepted_size_share=0.0,
+            max_heuristic_active_window_accepted_share=0.0,
+            max_heuristic_active_window_accepted_size_share=0.0,
+            min_xgboost_accepted_share=0.0,
+            min_xgboost_accepted_size_share=0.0,
+            min_xgboost_active_window_accepted_share=0.0,
+            min_xgboost_active_window_accepted_size_share=0.0,
+            max_pause_guard_reject_share=0.0,
+            min_active_window_count=0,
+            max_inactive_window_count=-1,
+            min_trader_count=0,
+            min_market_count=0,
+            min_entry_price_band_count=0,
+            min_time_to_close_band_count=0,
+            max_top_trader_accepted_share=0.0,
+            max_top_trader_abs_pnl_share=0.0,
+            max_top_trader_size_share=0.0,
+            max_top_market_accepted_share=0.0,
+            max_top_market_abs_pnl_share=0.0,
+            max_top_market_size_share=0.0,
+            max_top_entry_price_band_accepted_share=0.0,
+            max_top_entry_price_band_abs_pnl_share=0.0,
+            max_top_entry_price_band_size_share=0.0,
+            max_top_time_to_close_band_accepted_share=0.0,
+            max_top_time_to_close_band_abs_pnl_share=0.0,
+            max_top_time_to_close_band_size_share=0.0,
+        )
+
+        self.assertEqual(failures, ["max_open_exposure_share"])
 
     def test_score_breakdown_does_not_treat_losing_active_windows_as_inactive(self) -> None:
         breakdown = replay_search._score_breakdown(

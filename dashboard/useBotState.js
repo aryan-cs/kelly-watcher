@@ -154,12 +154,19 @@ export function useBotState(intervalMs = 1000) {
                     : error instanceof Error && String(error.message || '').trim()
                         ? String(error.message || '').trim()
                         : `Could not reach backend API at ${apiBaseUrl}.`;
+                const cachedShadowRestartPending = Boolean(botStateCache.shadow_restart_pending);
+                const effectiveShadowRestartPending = cachedShadowRestartPending || shadowRestartPending;
+                const effectiveShadowRestartMessage = cachedShadowRestartPending
+                    ? String(botStateCache.shadow_restart_message || '')
+                    : shadowRestartPending
+                        ? shadowRestartPendingMessage()
+                        : '';
                 const nextState = {
                     ...botStateCache,
                     api_base_url: apiBaseUrl,
                     api_error: message,
-                    shadow_restart_pending: shadowRestartPending,
-                    shadow_restart_message: shadowRestartPending ? shadowRestartPendingMessage() : ''
+                    shadow_restart_pending: effectiveShadowRestartPending,
+                    shadow_restart_message: effectiveShadowRestartMessage
                 };
             botStateCache = nextState;
             if (!cancelled) {

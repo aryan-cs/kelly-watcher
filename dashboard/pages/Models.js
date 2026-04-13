@@ -69,10 +69,10 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search run', text: 'How recently the latest persisted replay search finished.' },
             { label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.' },
             { label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.' },
-            { label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, count and deployed-dollar active-window depth, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-window depth, scorer active-window mix, scorer-loss, scorer-inactivity, and concentration terms.' },
-            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, active-window depth, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-window depth, scorer-loss, scorer-inactivity, and concentration penalties.' },
+            { label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, count and deployed-dollar active-window depth, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-window depth, scorer active-window mix, scorer-loss, scorer-inactivity, and concentration terms.' },
+            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, active-window depth, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-window depth, scorer-loss, scorer-inactivity, and concentration penalties.' },
             { label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.' },
-            { label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, sparsest active-window trade depth and deployed dollars, window-end carry exposure, and the worst window P&L for the latest best feasible search candidate.' },
+            { label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, carry-window frequency, sparsest active-window trade depth and deployed dollars, window-end carry exposure, and the worst window P&L for the latest best feasible search candidate.' },
             { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
             { label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.' },
             { label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.' },
@@ -93,8 +93,8 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.' },
             { label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.' },
             { label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.' },
-            { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
-            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including count-weighted and deployed-dollar coverage, worst-window coverage, inactivity, scorer-path, and concentration penalties.' },
+            { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, pause-guard, global coverage, global window inactivity, worst-window coverage, scorer coverage, scorer worst-window coverage, scorer-loss, scorer-inactivity, and concentration penalties.' },
+            { label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including carry-window frequency, count-weighted and deployed-dollar coverage, worst-window coverage, inactivity, scorer-path, and concentration penalties.' },
             { label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.' },
             { label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
             { label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
@@ -369,6 +369,7 @@ WITH latest_search AS (
     pause_guard_penalty,
     open_exposure_penalty,
     window_end_open_exposure_penalty,
+    carry_window_penalty,
     resolved_share_penalty,
     resolved_size_share_penalty,
     worst_window_resolved_share_penalty,
@@ -445,6 +446,7 @@ SELECT
   latest_search.pause_guard_penalty,
   latest_search.open_exposure_penalty,
   latest_search.window_end_open_exposure_penalty,
+  latest_search.carry_window_penalty,
   latest_search.resolved_share_penalty,
   latest_search.resolved_size_share_penalty,
   latest_search.worst_window_resolved_share_penalty,
@@ -1675,6 +1677,7 @@ function replaySearchScoreBreakdownSummary(raw) {
         const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0);
         const openExposurePenaltyUsd = Number(breakdown.open_exposure_penalty_usd || 0);
         const windowEndOpenExposurePenaltyUsd = Number(breakdown.window_end_open_exposure_penalty_usd || 0);
+        const carryWindowPenaltyUsd = Number(breakdown.carry_window_penalty_usd || 0);
         const resolvedSharePenaltyUsd = Number(breakdown.resolved_share_penalty_usd || 0);
         const resolvedSizeSharePenaltyUsd = Number(breakdown.resolved_size_share_penalty_usd || 0);
         const windowInactivityPenaltyUsd = Number(breakdown.window_inactivity_penalty_usd || 0);
@@ -1718,6 +1721,8 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`exp ${formatDollar(-openExposurePenaltyUsd)}`);
         if (Math.abs(windowEndOpenExposurePenaltyUsd) > 1e-9)
             parts.push(`carry ${formatDollar(-windowEndOpenExposurePenaltyUsd)}`);
+        if (Math.abs(carryWindowPenaltyUsd) > 1e-9)
+            parts.push(`c-freq ${formatDollar(-carryWindowPenaltyUsd)}`);
         if (Math.abs(resolvedSharePenaltyUsd) > 1e-9)
             parts.push(`cov ${formatDollar(-resolvedSharePenaltyUsd)}`);
         if (Math.abs(resolvedSizeSharePenaltyUsd) > 1e-9)
@@ -1797,6 +1802,7 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('pause', row.pause_guard_penalty);
     pushIfActive('exp', row.open_exposure_penalty);
     pushIfActive('carry', row.window_end_open_exposure_penalty);
+    pushIfActive('c-freq', row.carry_window_penalty);
     pushIfActive('cov', row.resolved_share_penalty);
     pushIfActive('sz-cov', row.resolved_size_share_penalty);
     pushIfActive('w-idle', row.window_inactivity_penalty);
@@ -1849,6 +1855,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0),
                 open_exposure_penalty_usd: Number(breakdown.open_exposure_penalty_usd || 0),
                 window_end_open_exposure_penalty_usd: Number(breakdown.window_end_open_exposure_penalty_usd || 0),
+                carry_window_penalty_usd: Number(breakdown.carry_window_penalty_usd || 0),
                 resolved_share_penalty_usd: Number(breakdown.resolved_share_penalty_usd || 0),
                 resolved_size_share_penalty_usd: Number(breakdown.resolved_size_share_penalty_usd || 0),
                 window_inactivity_penalty_usd: Number(breakdown.window_inactivity_penalty_usd || 0),
@@ -1896,6 +1903,7 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd;
     const openExposureDelta = current.open_exposure_penalty_usd - best.open_exposure_penalty_usd;
     const carryDelta = current.window_end_open_exposure_penalty_usd - best.window_end_open_exposure_penalty_usd;
+    const carryWindowDelta = current.carry_window_penalty_usd - best.carry_window_penalty_usd;
     const coverageDelta = current.resolved_share_penalty_usd - best.resolved_share_penalty_usd;
     const sizeCoverageDelta = current.resolved_size_share_penalty_usd - best.resolved_size_share_penalty_usd;
     const windowInactivityDelta = current.window_inactivity_penalty_usd - best.window_inactivity_penalty_usd;
@@ -1939,6 +1947,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`exp ${formatDollar(openExposureDelta)}`);
     if (Math.abs(carryDelta) > 1e-9)
         parts.push(`carry ${formatDollar(carryDelta)}`);
+    if (Math.abs(carryWindowDelta) > 1e-9)
+        parts.push(`c-freq ${formatDollar(carryWindowDelta)}`);
     if (Math.abs(coverageDelta) > 1e-9)
         parts.push(`cov ${formatDollar(coverageDelta)}`);
     if (Math.abs(sizeCoverageDelta) > 1e-9)
@@ -2631,6 +2641,8 @@ function replaySearchFailureSummary(raw, feasible) {
                     return 'exposure';
                 case 'max_window_end_open_exposure_share':
                     return 'carry';
+                case 'carry_window_share':
+                    return 'carry-freq';
                 case 'trader_count':
                     return 'wallet worst count';
                 case 'market_count':
@@ -2788,6 +2800,9 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0);
         const globalOpenExposureShare = Number(resultParsed.max_open_exposure_share || 0);
         const globalWindowEndOpenExposureShare = Number(resultParsed.max_window_end_open_exposure_share ?? resultParsed.window_end_open_exposure_share ?? 0);
+        const globalCarryWindowShare = Number(resultParsed.carry_window_share ?? (Number(resultParsed.window_count || 0) > 0
+            ? Number(resultParsed.carry_window_count || 0) / Math.max(Number(resultParsed.window_count || 0), 1)
+            : 0));
         const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
             ? resultParsed.reject_reason_summary
             : {};
@@ -2816,6 +2831,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const maxPauseGuardRejectShare = Number(constraints.max_pause_guard_reject_share || 0);
         const maxOpenExposureShare = Number(constraints.max_open_exposure_share || 0);
         const maxWindowEndOpenExposureShare = Number(constraints.max_window_end_open_exposure_share || 0);
+        const maxCarryWindowShare = Number(constraints.max_carry_window_share || 0);
         const minTraderCount = Number(constraints.min_trader_count || 0);
         const minMarketCount = Number(constraints.min_market_count || 0);
         const minEntryPriceBandCount = Number(constraints.min_entry_price_band_count || 0);
@@ -2877,6 +2893,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             pushHeadroom('global', 'exp', globalOpenExposureShare, maxOpenExposureShare, replayHeadroomPctPoints, 'max');
         if (maxWindowEndOpenExposureShare > 0)
             pushHeadroom('global', 'carry', globalWindowEndOpenExposureShare, maxWindowEndOpenExposureShare, replayHeadroomPctPoints, 'max');
+        if (maxCarryWindowShare > 0)
+            pushHeadroom('global', 'carry-freq', globalCarryWindowShare, maxCarryWindowShare, replayHeadroomPctPoints, 'max');
         if (minTraderCount > 0)
             pushHeadroom('global', 'wallet worst cnt', traderCount, minTraderCount, replayHeadroomCount, 'min');
         if (minMarketCount > 0)
@@ -3064,14 +3082,18 @@ function replaySearchWindowSummary(latestSearch) {
         const inactiveWindowCount = Number(parsed.inactive_window_count || 0);
         const worstActiveWindowAcceptedCount = Number(parsed.worst_active_window_accepted_count || 0);
         const worstActiveWindowAcceptedSizeUsd = Number(parsed.worst_active_window_accepted_size_usd || 0);
+        const carryWindowCount = Number(parsed.carry_window_count || 0);
         const carryShare = Number(parsed.max_window_end_open_exposure_share ?? parsed.window_end_open_exposure_share ?? 0);
         const carryUsd = Number(parsed.max_window_end_open_exposure_usd ?? parsed.window_end_open_exposure_usd ?? 0);
         const carrySuffix = carryShare > 0 || carryUsd > 0
             ? ` | carry ${formatPct(carryShare, 0)} | carry$ ${formatDollar(carryUsd)}`
             : '';
+        const carryFreqSuffix = windowCount > 1
+            ? ` | carry-freq ${formatCount(carryWindowCount)}/${formatCount(windowCount)}`
+            : (carryWindowCount > 0 ? ' | carry-freq yes' : '');
         if (windowCount <= 1)
-            return `${positive}+ / ${negative}-${carrySuffix} | ${worst}`;
-        return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | idle ${formatCount(inactiveWindowCount)} | worst act ${formatCount(worstActiveWindowAcceptedCount)} | worst act$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}${carrySuffix} | ${worst}`;
+            return `${positive}+ / ${negative}-${carrySuffix}${carryFreqSuffix} | ${worst}`;
+        return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | idle ${formatCount(inactiveWindowCount)}${carryFreqSuffix} | worst act ${formatCount(worstActiveWindowAcceptedCount)} | worst act$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}${carrySuffix} | ${worst}`;
     }
     catch {
         return `${positive}+ / ${negative}- | ${worst}`;

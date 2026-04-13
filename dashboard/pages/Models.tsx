@@ -335,7 +335,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window concentration, scorer accepting-window count/share, count and deployed-dollar accepting-window depth, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, global and worst-window count-weighted and deployed-dollar coverage, scorer-path count-weighted and deployed-dollar coverage and depth, scorer accepting-window mix, and count/share plus deployed-dollar concentration terms.'},
       {label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, peak open-exposure, window-end carry exposure, carry-window frequency, carry-restart continuity, accepting-window count/share, accepting-window concentration, scorer accepting-window count/share, count and deployed-dollar accepting-window depth, daily/live guard frequency and restart continuity, count-weighted and deployed-dollar coverage, worst-window count-weighted and deployed-dollar coverage, scorer-path count-weighted and deployed-dollar coverage and depth, scorer-loss, scorer-inactivity, and concentration penalties.'},
       {label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.'},
-      {label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, fresh-entry accepting-window count/share, top accepting-window trade-share and deployed-dollar-share concentration, carry-window frequency, carry-restart continuity risk, sparsest accepting-window trade depth and deployed dollars, peak and average window-end carry exposure, and the worst window P&L for the latest best feasible search candidate.'},
+      {label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, fresh-entry accepting-window count/share, maximum stitched active-window accepting drought, top accepting-window trade-share and deployed-dollar-share concentration, carry-window frequency, carry-restart continuity risk, sparsest accepting-window trade depth and deployed dollars, peak and average window-end carry exposure, and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
       {label: 'Suggest cfg', text: 'Compact summary of the recommended config values from the latest best feasible replay-search candidate.'},
       {label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.'},
@@ -1945,6 +1945,17 @@ function replaySearchAcceptedWindowShareFromPayload(payload: Record<string, unkn
   return acceptedWindowCount > 0 ? 1 : 0
 }
 
+function replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload: Record<string, unknown>): number {
+  if (payload.max_non_accepting_active_window_streak != null) {
+    return Math.max(Number(payload.max_non_accepting_active_window_streak || 0), 0)
+  }
+  const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload)
+  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload)
+  if (activeWindowCount <= 0) return 0
+  if (acceptedWindowCount <= 0) return activeWindowCount
+  return Math.max(activeWindowCount - acceptedWindowCount, 0)
+}
+
 function replaySearchMaxAcceptingWindowAcceptedShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.max_accepting_window_accepted_share != null) {
     return Number(payload.max_accepting_window_accepted_share || 0)
@@ -3361,6 +3372,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'acc-win'
         case 'accepted_window_share':
           return 'acc-freq'
+        case 'max_non_accepting_active_window_streak':
+          return 'acc-gap'
         case 'max_accepting_window_accepted_share':
           return 'top-acc'
         case 'max_accepting_window_accepted_size_share':
@@ -3580,6 +3593,7 @@ function replaySearchHeadroomSummary(
     const globalInactiveWindows = Number(resultParsed.inactive_window_count || 0)
     const globalAcceptedWindows = replaySearchAcceptedWindowCountFromPayload(resultParsed as Record<string, unknown>)
     const globalAcceptedWindowShare = replaySearchAcceptedWindowShareFromPayload(resultParsed as Record<string, unknown>)
+    const globalMaxNonAcceptingActiveWindowStreak = replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(resultParsed as Record<string, unknown>)
     const globalMaxAcceptingWindowAcceptedShare = replaySearchMaxAcceptingWindowAcceptedShareFromPayload(resultParsed as Record<string, unknown>)
     const globalMaxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(resultParsed as Record<string, unknown>)
     const globalWorstActiveWindowAcceptedCount = Number(resultParsed.worst_active_window_accepted_count || 0)
@@ -3668,6 +3682,7 @@ function replaySearchHeadroomSummary(
     const maxInactiveWindows = Number(constraints.max_inactive_windows ?? -1)
     const minAcceptedWindows = Number(constraints.min_accepted_windows || 0)
     const minAcceptedWindowShare = Number(constraints.min_accepted_window_share || 0)
+    const maxNonAcceptingActiveWindowStreak = Number(constraints.max_non_accepting_active_window_streak ?? -1)
     const maxAcceptingWindowAcceptedShare = Number(constraints.max_accepting_window_accepted_share || 0)
     const maxAcceptingWindowAcceptedSizeShare = Number(constraints.max_accepting_window_accepted_size_share || 0)
     const minWorstActiveWindowAcceptedCount = Number(constraints.min_worst_active_window_accepted_count || 0)
@@ -3731,6 +3746,9 @@ function replaySearchHeadroomSummary(
     if (maxInactiveWindows >= 0) pushHeadroom('global', 'idle', globalInactiveWindows, maxInactiveWindows, replayHeadroomCount, 'max')
     if (minAcceptedWindows > 0) pushHeadroom('global', 'acc-win', globalAcceptedWindows, minAcceptedWindows, replayHeadroomCount, 'min')
     if (minAcceptedWindowShare > 0) pushHeadroom('global', 'acc-freq', globalAcceptedWindowShare, minAcceptedWindowShare, replayHeadroomPctPoints, 'min')
+    if (maxNonAcceptingActiveWindowStreak >= 0) {
+      pushHeadroom('global', 'acc-gap', globalMaxNonAcceptingActiveWindowStreak, maxNonAcceptingActiveWindowStreak, replayHeadroomCount, 'max')
+    }
     if (maxAcceptingWindowAcceptedShare > 0) pushHeadroom('global', 'top-acc', globalMaxAcceptingWindowAcceptedShare, maxAcceptingWindowAcceptedShare, replayHeadroomPctPoints, 'max')
     if (maxAcceptingWindowAcceptedSizeShare > 0) pushHeadroom('global', 'top-acc$', globalMaxAcceptingWindowAcceptedSizeShare, maxAcceptingWindowAcceptedSizeShare, replayHeadroomPctPoints, 'max')
     if (minWorstActiveWindowAcceptedCount > 0) pushHeadroom('global', 'worst act n', globalWorstActiveWindowAcceptedCount, minWorstActiveWindowAcceptedCount, replayHeadroomCount, 'min')
@@ -3903,6 +3921,7 @@ function replaySearchWindowSummary(latestSearch: ReplaySearchSummaryRow | null |
     const activeWindowCount = Number(parsed.active_window_count || 0)
     const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(parsed)
     const acceptedWindowShare = replaySearchAcceptedWindowShareFromPayload(parsed)
+    const maxNonAcceptingActiveWindowStreak = replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(parsed as Record<string, unknown>)
     const inactiveWindowCount = Number(parsed.inactive_window_count || 0)
     const maxAcceptingWindowAcceptedShare = replaySearchMaxAcceptingWindowAcceptedShareFromPayload(parsed as Record<string, unknown>)
     const maxAcceptingWindowAcceptedSizeShare = replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(parsed as Record<string, unknown>)
@@ -3938,7 +3957,7 @@ function replaySearchWindowSummary(latestSearch: ReplaySearchSummaryRow | null |
       ? ` | top-acc$ ${formatPct(maxAcceptingWindowAcceptedSizeShare, 0)}`
       : ''
     if (windowCount <= 1) return `${positive}+ / ${negative}-${topAcceptSuffix}${topAcceptSizeSuffix}${carrySuffix}${carryFreqSuffix}${carryRestartSuffix} | ${worst}`
-    return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | accept ${formatCount(acceptedWindowCount)}/${formatCount(windowCount)} | acc-freq ${formatPct(acceptedWindowShare, 0)}${topAcceptSuffix}${topAcceptSizeSuffix} | idle ${formatCount(inactiveWindowCount)}${carryFreqSuffix}${carryRestartSuffix} | worst act ${formatCount(worstActiveWindowAcceptedCount)} | worst act$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}${carrySuffix} | ${worst}`
+    return `${positive}+ / ${negative}- | act ${formatCount(activeWindowCount)}/${formatCount(windowCount)} | accept ${formatCount(acceptedWindowCount)}/${formatCount(windowCount)} | acc-freq ${formatPct(acceptedWindowShare, 0)} | acc-gap ${formatCount(maxNonAcceptingActiveWindowStreak)}${topAcceptSuffix}${topAcceptSizeSuffix} | idle ${formatCount(inactiveWindowCount)}${carryFreqSuffix}${carryRestartSuffix} | worst act ${formatCount(worstActiveWindowAcceptedCount)} | worst act$ ${formatDollar(worstActiveWindowAcceptedSizeUsd)}${carrySuffix} | ${worst}`
   } catch {
     return `${positive}+ / ${negative}- | ${worst}`
   }

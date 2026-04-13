@@ -1608,6 +1608,85 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(result["accepted_window_count"], 2)
         self.assertEqual(result["signal_mode_summary"]["heuristic"]["accepted_window_count"], 2)
 
+    def test_aggregate_window_results_tracks_non_accepting_active_window_streak(self) -> None:
+        result = replay_search._aggregate_window_results(
+            [
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 101.0,
+                    "peak_equity_usd": 101.0,
+                    "min_equity_usd": 100.0,
+                    "total_pnl_usd": 1.0,
+                    "accepted_count": 1,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 20.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 1,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 101.0,
+                    "final_equity_usd": 103.0,
+                    "peak_equity_usd": 103.0,
+                    "min_equity_usd": 101.0,
+                    "total_pnl_usd": 2.0,
+                    "accepted_count": 0,
+                    "accepted_size_usd": 0.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 20.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 0,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 103.0,
+                    "final_equity_usd": 104.0,
+                    "peak_equity_usd": 104.0,
+                    "min_equity_usd": 103.0,
+                    "total_pnl_usd": 1.0,
+                    "accepted_count": 0,
+                    "accepted_size_usd": 0.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 0,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 104.0,
+                    "final_equity_usd": 106.0,
+                    "peak_equity_usd": 106.0,
+                    "min_equity_usd": 104.0,
+                    "total_pnl_usd": 2.0,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 30.0,
+                    "resolved_count": 2,
+                    "resolved_size_usd": 30.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 2,
+                    "window_end_open_exposure_usd": 0.0,
+                    "window_end_open_exposure_share": 0.0,
+                    "signal_mode_summary": {},
+                },
+            ],
+            initial_bankroll_usd=100.0,
+        )
+
+        self.assertEqual(result["active_window_count"], 4)
+        self.assertEqual(result["accepted_window_count"], 2)
+        self.assertEqual(result["max_non_accepting_active_window_streak"], 2)
+
     def test_aggregate_window_results_tracks_live_guard_restart_across_inactive_gap(self) -> None:
         result = replay_search._aggregate_window_results(
             [
@@ -2748,6 +2827,102 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(failures, ["accepted_window_count"])
+
+    def test_constraint_failures_reject_high_non_accepting_active_window_streak(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 6,
+                "resolved_count": 6,
+                "trade_count": 6,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "accepted_window_count": 2,
+                "max_non_accepting_active_window_streak": 2,
+            },
+            allow_heuristic=True,
+            allow_xgboost=True,
+            min_accepted_count=0,
+            min_resolved_count=0,
+            min_resolved_share=0.0,
+            min_resolved_size_share=0.0,
+            min_win_rate=0.0,
+            min_total_pnl_usd=-1_000_000_000.0,
+            max_drawdown_pct=0.0,
+            max_open_exposure_share=0.0,
+            min_worst_window_pnl_usd=-1_000_000_000.0,
+            min_worst_window_resolved_share=0.0,
+            min_worst_window_resolved_size_share=0.0,
+            max_worst_window_drawdown_pct=0.0,
+            min_heuristic_accepted_count=0,
+            min_xgboost_accepted_count=0,
+            min_heuristic_resolved_count=0,
+            min_xgboost_resolved_count=0,
+            min_heuristic_win_rate=0.0,
+            min_xgboost_win_rate=0.0,
+            min_heuristic_resolved_share=0.0,
+            min_xgboost_resolved_share=0.0,
+            min_heuristic_resolved_size_share=0.0,
+            min_xgboost_resolved_size_share=0.0,
+            min_heuristic_pnl_usd=0.0,
+            min_xgboost_pnl_usd=0.0,
+            min_heuristic_worst_window_pnl_usd=-1_000_000_000.0,
+            min_xgboost_worst_window_pnl_usd=-1_000_000_000.0,
+            min_heuristic_worst_window_resolved_share=0.0,
+            min_xgboost_worst_window_resolved_share=0.0,
+            min_heuristic_worst_window_resolved_size_share=0.0,
+            min_xgboost_worst_window_resolved_size_share=0.0,
+            min_heuristic_positive_window_count=0,
+            min_xgboost_positive_window_count=0,
+            min_heuristic_worst_active_window_accepted_count=0,
+            min_heuristic_worst_active_window_accepted_size_usd=0.0,
+            min_xgboost_worst_active_window_accepted_count=0,
+            min_xgboost_worst_active_window_accepted_size_usd=0.0,
+            max_heuristic_inactive_window_count=-1,
+            max_xgboost_inactive_window_count=-1,
+            max_heuristic_accepted_share=0.0,
+            max_heuristic_accepted_size_share=0.0,
+            max_heuristic_active_window_accepted_share=0.0,
+            max_heuristic_active_window_accepted_size_share=0.0,
+            min_xgboost_accepted_share=0.0,
+            min_xgboost_accepted_size_share=0.0,
+            min_xgboost_active_window_accepted_share=0.0,
+            min_xgboost_active_window_accepted_size_share=0.0,
+            max_pause_guard_reject_share=0.0,
+            max_daily_guard_window_share=0.0,
+            max_live_guard_window_share=0.0,
+            max_daily_guard_restart_window_share=0.0,
+            max_live_guard_restart_window_share=0.0,
+            min_active_window_count=0,
+            max_inactive_window_count=-1,
+            min_accepted_window_count=0,
+            min_accepted_window_share=0.0,
+            max_non_accepting_active_window_streak=1,
+            min_trader_count=0,
+            min_market_count=0,
+            min_entry_price_band_count=0,
+            min_time_to_close_band_count=0,
+            max_top_trader_accepted_share=0.0,
+            max_top_trader_abs_pnl_share=0.0,
+            max_top_trader_size_share=0.0,
+            max_top_market_accepted_share=0.0,
+            max_top_market_abs_pnl_share=0.0,
+            max_top_market_size_share=0.0,
+            max_top_entry_price_band_accepted_share=0.0,
+            max_top_entry_price_band_abs_pnl_share=0.0,
+            max_top_entry_price_band_size_share=0.0,
+            max_top_time_to_close_band_accepted_share=0.0,
+            max_top_time_to_close_band_abs_pnl_share=0.0,
+            max_top_time_to_close_band_size_share=0.0,
+            min_worst_active_window_accepted_count=0,
+            min_worst_active_window_accepted_size_usd=0.0,
+            max_window_end_open_exposure_share=0.0,
+            max_avg_window_end_open_exposure_share=0.0,
+            max_carry_window_share=0.0,
+            max_carry_restart_window_share=0.0,
+        )
+
+        self.assertEqual(failures, ["max_non_accepting_active_window_streak"])
 
     def test_constraint_failures_reject_high_accepting_window_trade_share(self) -> None:
         failures = replay_search._constraint_failures(
@@ -9195,6 +9370,82 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_accepted_windows"], 2)
         self.assertEqual(rejected["result"]["accepted_window_count"], 1)
         self.assertIn("reject accepted_window_count", stderr.getvalue())
+
+    def test_main_rejects_high_non_accepting_active_window_streak(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                if start_ts == 1:
+                    return {
+                        "run_id": 1,
+                        "window_start_ts": start_ts,
+                        "window_end_ts": end_ts,
+                        "total_pnl_usd": 6.0,
+                        "max_drawdown_pct": 0.03,
+                        "accepted_count": 3,
+                        "resolved_count": 3,
+                        "rejected_count": 0,
+                        "unresolved_count": 0,
+                        "trade_count": 3,
+                        "win_rate": 2 / 3,
+                    }
+                return {
+                    "run_id": 2,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "total_pnl_usd": 2.0,
+                    "max_drawdown_pct": 0.03,
+                    "accepted_count": 0,
+                    "resolved_count": 1,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 0,
+                    "win_rate": 1.0,
+                }
+            return {
+                "run_id": 1 if start_ts == 1 else 2,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 5.0 if start_ts == 1 else 4.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": 2,
+                "resolved_count": 2,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 2,
+                "win_rate": 0.5,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--max-non-accepting-active-window-streak",
+            "0",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        self.assertEqual(rejected["constraint_failures"], ["max_non_accepting_active_window_streak"])
+        self.assertEqual(payload["constraints"]["max_non_accepting_active_window_streak"], 0)
+        self.assertEqual(rejected["result"]["max_non_accepting_active_window_streak"], 1)
+        self.assertIn("acc-gap 1", stderr.getvalue())
+        self.assertIn("reject max_non_accepting_active_window_streak", stderr.getvalue())
 
     def test_main_treats_zero_accepted_mode_windows_as_inactive_not_shallow(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):

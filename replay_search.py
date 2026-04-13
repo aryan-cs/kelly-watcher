@@ -1653,6 +1653,18 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             enriched["accepted_window_count"] = active_window_count
         else:
             enriched["accepted_window_count"] = 0
+    if "max_non_accepting_active_window_streak" not in enriched:
+        if window_count == 1:
+            enriched["max_non_accepting_active_window_streak"] = (
+                1
+                if _window_has_participation(enriched) and not (accepted_count > 0 or accepted_size_usd > 0)
+                else 0
+            )
+        else:
+            enriched["max_non_accepting_active_window_streak"] = max(
+                int(enriched.get("active_window_count") or 0) - int(enriched.get("accepted_window_count") or 0),
+                0,
+            )
     if "max_accepting_window_accepted_share" not in enriched:
         enriched["max_accepting_window_accepted_share"] = 1.0 if enriched.get("accepted_window_count") else 0.0
     if "max_accepting_window_accepted_size_share" not in enriched:
@@ -1712,6 +1724,19 @@ def _accepted_window_share(result: dict[str, Any]) -> float:
     if active_window_count > 0:
         return _clamp_fraction(float(accepted_window_count) / float(active_window_count))
     return 1.0 if accepted_window_count > 0 else 0.0
+
+
+def _max_non_accepting_active_window_streak(result: dict[str, Any]) -> int:
+    raw_value = result.get("max_non_accepting_active_window_streak")
+    if raw_value is not None:
+        return max(int(raw_value), 0)
+    active_window_count = _active_window_count(result)
+    accepted_window_count = _accepted_window_count(result)
+    if active_window_count <= 0:
+        return 0
+    if accepted_window_count <= 0:
+        return active_window_count
+    return max(active_window_count - accepted_window_count, 0)
 
 
 def _max_accepting_window_accepted_share(result: dict[str, Any]) -> float:
@@ -1979,6 +2004,7 @@ def _constraint_failures(
     max_inactive_window_count: int,
     min_accepted_window_count: int = 0,
     min_accepted_window_share: float = 0.0,
+    max_non_accepting_active_window_streak: int = -1,
     max_accepting_window_accepted_share: float = 0.0,
     max_accepting_window_accepted_size_share: float = 0.0,
     min_trader_count: int,
@@ -2047,6 +2073,7 @@ def _constraint_failures(
     inactive_window_count = int(result.get("inactive_window_count") or 0)
     accepted_window_count = _accepted_window_count(result)
     accepted_window_share = _accepted_window_share(result)
+    non_accepting_active_window_streak = _max_non_accepting_active_window_streak(result)
     max_accepting_window_accepted_share_value = _max_accepting_window_accepted_share(result)
     max_accepting_window_accepted_size_share_value = _max_accepting_window_accepted_size_share(result)
     worst_active_window_accepted_count = int(result.get("worst_active_window_accepted_count") or 0)
@@ -2303,6 +2330,11 @@ def _constraint_failures(
     if min_accepted_window_share > 0 and accepted_window_share < min_accepted_window_share:
         failures.append("accepted_window_share")
     if (
+        max_non_accepting_active_window_streak >= 0
+        and non_accepting_active_window_streak > max_non_accepting_active_window_streak
+    ):
+        failures.append("max_non_accepting_active_window_streak")
+    if (
         max_accepting_window_accepted_share > 0
         and max_accepting_window_accepted_share_value > max_accepting_window_accepted_share
     ):
@@ -2448,6 +2480,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             positive_window_count = int(row["result"].get("positive_window_count") or 0)
             active_window_count = _active_window_count(row["result"])
             accepted_window_count = _accepted_window_count(row["result"])
+            max_non_accepting_active_window_streak = _max_non_accepting_active_window_streak(row["result"])
             worst_active_window_accepted_count = int(row["result"].get("worst_active_window_accepted_count") or 0)
             worst_active_window_accepted_size_usd = float(row["result"].get("worst_active_window_accepted_size_usd") or 0.0)
             worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
@@ -2467,6 +2500,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
                 f" | windows {positive_window_count}/{window_count}+"
                 f" active {active_window_count}/{window_count}"
                 f" accept {accepted_window_count}/{window_count}"
+                f" acc-gap {max_non_accepting_active_window_streak}"
                 f" carry {carry_summary}"
                 f"{carry_restart_suffix}"
                 f" carry-avg {avg_window_end_open_exposure_share * 100:.0f}%"
@@ -2645,6 +2679,19 @@ def _aggregate_window_results(
     active_window_count = len(active_rows)
     accepted_window_count = len(accepting_rows)
     inactive_window_count = max(len(window_results) - active_window_count, 0)
+    max_non_accepting_active_window_streak = 0
+    current_non_accepting_active_window_streak = 0
+    for row in window_results:
+        if not _window_has_participation(row):
+            continue
+        if int(row.get("accepted_count") or 0) > 0 or float(row.get("accepted_size_usd") or 0.0) > 0:
+            current_non_accepting_active_window_streak = 0
+            continue
+        current_non_accepting_active_window_streak += 1
+        max_non_accepting_active_window_streak = max(
+            max_non_accepting_active_window_streak,
+            current_non_accepting_active_window_streak,
+        )
     total_accepted_count_in_accepting_windows = sum(int(row.get("accepted_count") or 0) for row in accepting_rows)
     total_accepted_size_in_accepting_windows = sum(float(row.get("accepted_size_usd") or 0.0) for row in accepting_rows)
     max_accepting_window_accepted_share = max(
@@ -3174,6 +3221,7 @@ def _aggregate_window_results(
         "active_window_count": active_window_count,
         "accepted_window_count": accepted_window_count,
         "inactive_window_count": inactive_window_count,
+        "max_non_accepting_active_window_streak": max_non_accepting_active_window_streak,
         "max_accepting_window_accepted_share": round(max_accepting_window_accepted_share, 6),
         "max_accepting_window_accepted_size_share": round(max_accepting_window_accepted_size_share, 6),
         "worst_active_window_accepted_count": worst_active_window_accepted_count,
@@ -3745,6 +3793,7 @@ def main() -> None:
     parser.add_argument("--max-inactive-windows", type=int, default=-1, help="Maximum count of inactive replay windows allowed before a candidate is rejected.")
     parser.add_argument("--min-accepted-windows", type=int, default=0, help="Minimum count of stitched replay windows that must still produce fresh accepted entries.")
     parser.add_argument("--min-accepted-window-share", type=float, default=0.0, help="Minimum share of stitched active replay windows that must produce fresh accepted entries.")
+    parser.add_argument("--max-non-accepting-active-window-streak", type=int, default=-1, help="Maximum stitched run of active replay windows allowed to participate without producing a fresh accepted entry.")
     parser.add_argument("--max-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of accepted replay trades allowed to fall into a single stitched accepting window.")
     parser.add_argument("--max-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of accepted replay deployed dollars allowed to fall into a single stitched accepting window.")
     parser.add_argument("--min-worst-active-window-accepted-count", type=int, default=0, help="Minimum accepted-trade count required in the sparsest active replay window.")
@@ -3976,6 +4025,7 @@ def main() -> None:
         max_inactive_window_count=int(args.max_inactive_windows),
         min_accepted_window_count=max(args.min_accepted_windows, 0),
         min_accepted_window_share=_clamp_fraction(args.min_accepted_window_share),
+        max_non_accepting_active_window_streak=int(args.max_non_accepting_active_window_streak),
         max_accepting_window_accepted_share=_clamp_fraction(args.max_accepting_window_accepted_share),
         max_accepting_window_accepted_size_share=_clamp_fraction(args.max_accepting_window_accepted_size_share),
         min_worst_active_window_accepted_count=max(args.min_worst_active_window_accepted_count, 0),
@@ -4264,6 +4314,7 @@ def main() -> None:
             max_inactive_window_count=int(args.max_inactive_windows),
             min_accepted_window_count=max(args.min_accepted_windows, 0),
             min_accepted_window_share=_clamp_fraction(args.min_accepted_window_share),
+            max_non_accepting_active_window_streak=int(args.max_non_accepting_active_window_streak),
             max_accepting_window_accepted_share=_clamp_fraction(args.max_accepting_window_accepted_share),
             max_accepting_window_accepted_size_share=_clamp_fraction(args.max_accepting_window_accepted_size_share),
             min_worst_active_window_accepted_count=max(args.min_worst_active_window_accepted_count, 0),
@@ -4332,6 +4383,7 @@ def main() -> None:
         "max_inactive_windows": int(args.max_inactive_windows),
         "min_accepted_windows": max(args.min_accepted_windows, 0),
         "min_accepted_window_share": _clamp_fraction(args.min_accepted_window_share),
+        "max_non_accepting_active_window_streak": int(args.max_non_accepting_active_window_streak),
         "max_accepting_window_accepted_share": _clamp_fraction(args.max_accepting_window_accepted_share),
         "max_accepting_window_accepted_size_share": _clamp_fraction(args.max_accepting_window_accepted_size_share),
         "min_worst_active_window_accepted_count": max(args.min_worst_active_window_accepted_count, 0),

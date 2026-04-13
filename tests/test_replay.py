@@ -312,7 +312,7 @@ class ReplayTest(unittest.TestCase):
                     market_id="market-a-1",
                     trader_address="0xaaa",
                     signal_mode="heuristic",
-                    confidence=0.70,
+                    confidence=0.56,
                     price_at_signal=0.68,
                     actual_entry_price=0.68,
                     actual_entry_size_usd=100.0,
@@ -331,7 +331,7 @@ class ReplayTest(unittest.TestCase):
                     market_id="market-a-2",
                     trader_address="0xaaa",
                     signal_mode="heuristic",
-                    confidence=0.72,
+                    confidence=0.57,
                     price_at_signal=0.69,
                     actual_entry_price=0.69,
                     actual_entry_size_usd=100.0,
@@ -350,7 +350,7 @@ class ReplayTest(unittest.TestCase):
                     market_id="market-b-1",
                     trader_address="0xbbb",
                     signal_mode="heuristic",
-                    confidence=0.74,
+                    confidence=0.90,
                     price_at_signal=0.70,
                     actual_entry_price=0.70,
                     actual_entry_size_usd=100.0,
@@ -397,6 +397,9 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(result["trader_concentration"]["top_abs_pnl_trader_address"], "0xbbb")
                 self.assertGreater(result["trader_concentration"]["top_abs_pnl_usd"], abs(result["trader_concentration"]["top_accepted_total_pnl_usd"]))
                 self.assertGreater(result["trader_concentration"]["top_abs_pnl_share"], 0.5)
+                self.assertEqual(result["trader_concentration"]["top_size_trader_address"], "0xbbb")
+                self.assertGreater(result["trader_concentration"]["top_size_usd"], 0.0)
+                self.assertGreater(result["trader_concentration"]["top_size_share"], 0.5)
             finally:
                 db.DB_PATH = original_db_path
 

@@ -1066,6 +1066,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
                 {
                     "trade_count": 0.0,
                     "accepted_count": 0.0,
+                    "accepted_size_usd": 0.0,
                     "resolved_count": 0.0,
                     "total_pnl_usd": 0.0,
                     "wins": 0.0,
@@ -1075,6 +1076,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
             bucket["trade_count"] += 1
             if row["decision"] == "accept":
                 bucket["accepted_count"] += 1
+                bucket["accepted_size_usd"] += float(row.get("simulated_size_usd") or 0.0)
             if row["pnl_usd"] is not None:
                 bucket["resolved_count"] += 1
                 bucket["total_pnl_usd"] += float(row["pnl_usd"] or 0.0)
@@ -1091,6 +1093,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
                 "segment_value": segment_value,
                 "trade_count": int(values["trade_count"]),
                 "accepted_count": int(values["accepted_count"]),
+                "accepted_size_usd": round(values["accepted_size_usd"], 6),
                 "resolved_count": resolved_count,
                 "total_pnl_usd": round(values["total_pnl_usd"], 6),
                 "win_count": int(values["wins"]),
@@ -1109,6 +1112,7 @@ def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: 
             row["segment_value"],
             row["trade_count"],
             row["accepted_count"],
+            row["accepted_size_usd"],
             row["resolved_count"],
             row["total_pnl_usd"],
             row["win_rate"],
@@ -1121,8 +1125,8 @@ def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: 
             """
             INSERT INTO segment_metrics (
                 replay_run_id, segment_kind, segment_value, trade_count,
-                accepted_count, resolved_count, total_pnl_usd, win_rate, avg_return_pct
-            ) VALUES (?,?,?,?,?,?,?,?,?)
+                accepted_count, accepted_size_usd, resolved_count, total_pnl_usd, win_rate, avg_return_pct
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
             inserts,
         )
@@ -1176,6 +1180,7 @@ def _trader_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
         segment_count_key="trader_count",
         count_key="top_accepted_trader_address",
         pnl_key="top_abs_pnl_trader_address",
+        size_key="top_size_trader_address",
     )
 
 
@@ -1186,6 +1191,7 @@ def _market_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
         segment_count_key="market_count",
         count_key="top_accepted_market_id",
         pnl_key="top_abs_pnl_market_id",
+        size_key="top_size_market_id",
     )
 
 
@@ -1196,6 +1202,7 @@ def _entry_price_band_concentration(rows: list[dict[str, Any]]) -> dict[str, Any
         segment_count_key="entry_price_band_count",
         count_key="top_accepted_entry_price_band",
         pnl_key="top_abs_pnl_entry_price_band",
+        size_key="top_size_entry_price_band",
     )
 
 
@@ -1206,6 +1213,7 @@ def _time_to_close_band_concentration(rows: list[dict[str, Any]]) -> dict[str, A
         segment_count_key="time_to_close_band_count",
         count_key="top_accepted_time_to_close_band",
         pnl_key="top_abs_pnl_time_to_close_band",
+        size_key="top_size_time_to_close_band",
     )
 
 
@@ -1216,6 +1224,7 @@ def _segment_concentration(
     segment_count_key: str,
     count_key: str,
     pnl_key: str,
+    size_key: str,
 ) -> dict[str, Any]:
     trader_rows = [
         row
@@ -1234,13 +1243,18 @@ def _segment_concentration(
             pnl_key: "",
             "top_abs_pnl_usd": 0.0,
             "top_abs_pnl_share": 0.0,
+            size_key: "",
+            "top_size_usd": 0.0,
+            "top_size_share": 0.0,
         }
 
     total_accepted = sum(int(row.get("accepted_count") or 0) for row in trader_rows)
+    total_accepted_size_usd = sum(float(row.get("accepted_size_usd") or 0.0) for row in trader_rows)
     top_accepted_row = max(
         trader_rows,
         key=lambda row: (
             int(row.get("accepted_count") or 0),
+            float(row.get("accepted_size_usd") or 0.0),
             float(row.get("total_pnl_usd") or 0.0),
             str(row.get("segment_value") or ""),
         ),
@@ -1250,11 +1264,22 @@ def _segment_concentration(
         trader_rows,
         key=lambda row: (
             abs(float(row.get("total_pnl_usd") or 0.0)),
+            float(row.get("accepted_size_usd") or 0.0),
             int(row.get("accepted_count") or 0),
             str(row.get("segment_value") or ""),
         ),
     )
+    top_size_row = max(
+        trader_rows,
+        key=lambda row: (
+            float(row.get("accepted_size_usd") or 0.0),
+            int(row.get("accepted_count") or 0),
+            abs(float(row.get("total_pnl_usd") or 0.0)),
+            str(row.get("segment_value") or ""),
+        ),
+    )
     top_abs_pnl_usd = abs(float(top_abs_pnl_row.get("total_pnl_usd") or 0.0))
+    top_size_usd = float(top_size_row.get("accepted_size_usd") or 0.0)
     return {
         segment_count_key: len(trader_rows),
         count_key: str(top_accepted_row.get("segment_value") or ""),
@@ -1267,6 +1292,9 @@ def _segment_concentration(
         pnl_key: str(top_abs_pnl_row.get("segment_value") or ""),
         "top_abs_pnl_usd": round(top_abs_pnl_usd, 6),
         "top_abs_pnl_share": round(top_abs_pnl_usd / total_abs_pnl_usd, 6) if total_abs_pnl_usd > 0 else 0.0,
+        size_key: str(top_size_row.get("segment_value") or ""),
+        "top_size_usd": round(top_size_usd, 6),
+        "top_size_share": round(top_size_usd / total_accepted_size_usd, 6) if total_accepted_size_usd > 0 else 0.0,
     }
 
 
@@ -1326,6 +1354,7 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
             segment_value    TEXT NOT NULL,
             trade_count      INTEGER NOT NULL DEFAULT 0,
             accepted_count   INTEGER NOT NULL DEFAULT 0,
+            accepted_size_usd REAL NOT NULL DEFAULT 0,
             resolved_count   INTEGER NOT NULL DEFAULT 0,
             total_pnl_usd    REAL NOT NULL DEFAULT 0,
             win_rate         REAL,
@@ -1342,6 +1371,10 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE replay_runs ADD COLUMN {column_name} INTEGER")
         except sqlite3.OperationalError:
             pass
+    try:
+        conn.execute("ALTER TABLE segment_metrics ADD COLUMN accepted_size_usd REAL NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
 
 def _entry_price_band(value: float | None) -> str:

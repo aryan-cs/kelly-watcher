@@ -520,6 +520,7 @@ def init_db() -> None:
             segment_value    TEXT NOT NULL,
             trade_count      INTEGER NOT NULL DEFAULT 0,
             accepted_count   INTEGER NOT NULL DEFAULT 0,
+            accepted_size_usd REAL NOT NULL DEFAULT 0,
             resolved_count   INTEGER NOT NULL DEFAULT 0,
             total_pnl_usd    REAL NOT NULL DEFAULT 0,
             win_rate         REAL,
@@ -560,6 +561,10 @@ def init_db() -> None:
             market_concentration_penalty REAL NOT NULL DEFAULT 0,
             entry_price_band_concentration_penalty REAL NOT NULL DEFAULT 0,
             time_to_close_band_concentration_penalty REAL NOT NULL DEFAULT 0,
+            wallet_size_concentration_penalty REAL NOT NULL DEFAULT 0,
+            market_size_concentration_penalty REAL NOT NULL DEFAULT 0,
+            entry_price_band_size_concentration_penalty REAL NOT NULL DEFAULT 0,
+            time_to_close_band_size_concentration_penalty REAL NOT NULL DEFAULT 0,
             candidate_count              INTEGER NOT NULL DEFAULT 0,
             feasible_count               INTEGER NOT NULL DEFAULT 0,
             rejected_count               INTEGER NOT NULL DEFAULT 0,
@@ -741,6 +746,13 @@ def init_db() -> None:
     )
     _ensure_table_columns(
         conn,
+        "segment_metrics",
+        {
+            "accepted_size_usd": "REAL NOT NULL DEFAULT 0",
+        },
+    )
+    _ensure_table_columns(
+        conn,
         "replay_search_runs",
         {
             "status": "TEXT NOT NULL DEFAULT ''",
@@ -771,6 +783,10 @@ def init_db() -> None:
             "market_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "entry_price_band_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "time_to_close_band_concentration_penalty": "REAL NOT NULL DEFAULT 0",
+            "wallet_size_concentration_penalty": "REAL NOT NULL DEFAULT 0",
+            "market_size_concentration_penalty": "REAL NOT NULL DEFAULT 0",
+            "entry_price_band_size_concentration_penalty": "REAL NOT NULL DEFAULT 0",
+            "time_to_close_band_size_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "candidate_count": "INTEGER NOT NULL DEFAULT 0",
             "feasible_count": "INTEGER NOT NULL DEFAULT 0",
             "rejected_count": "INTEGER NOT NULL DEFAULT 0",

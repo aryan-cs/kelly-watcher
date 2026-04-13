@@ -51,6 +51,10 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("market_concentration_penalty", columns)
         self.assertIn("entry_price_band_concentration_penalty", columns)
         self.assertIn("time_to_close_band_concentration_penalty", columns)
+        self.assertIn("wallet_size_concentration_penalty", columns)
+        self.assertIn("market_size_concentration_penalty", columns)
+        self.assertIn("entry_price_band_size_concentration_penalty", columns)
+        self.assertIn("time_to_close_band_size_concentration_penalty", columns)
 
     def test_main_ranks_grid_candidates_and_keeps_json_on_stdout(self) -> None:
         calls: list[dict[str, object]] = []
@@ -340,6 +344,59 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["entry_price_band_count_penalty_usd"], 60.0)
         self.assertEqual(breakdown["time_to_close_band_count_penalty_usd"], 30.0)
         self.assertEqual(breakdown["score_usd"], -295.0)
+
+    def test_score_breakdown_penalizes_deployed_dollar_concentration(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trader_concentration": {
+                    "trader_count": 4,
+                    "top_size_share": 0.50,
+                },
+                "market_concentration": {
+                    "market_count": 4,
+                    "top_size_share": 0.40,
+                },
+                "entry_price_band_concentration": {
+                    "entry_price_band_count": 5,
+                    "top_size_share": 0.30,
+                },
+                "time_to_close_band_concentration": {
+                    "time_to_close_band_count": 5,
+                    "top_size_share": 0.20,
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+            wallet_size_concentration_penalty=0.1,
+            market_size_concentration_penalty=0.1,
+            entry_price_band_size_concentration_penalty=0.1,
+            time_to_close_band_size_concentration_penalty=0.1,
+        )
+
+        self.assertEqual(breakdown["wallet_size_concentration_penalty_usd"], 150.0)
+        self.assertEqual(breakdown["market_size_concentration_penalty_usd"], 120.0)
+        self.assertEqual(breakdown["entry_price_band_size_concentration_penalty_usd"], 90.0)
+        self.assertEqual(breakdown["time_to_close_band_size_concentration_penalty_usd"], 60.0)
+        self.assertEqual(breakdown["score_usd"], -400.0)
 
     def test_score_breakdown_penalizes_mode_worst_active_window_depth(self) -> None:
         breakdown = replay_search._score_breakdown(
@@ -693,12 +750,16 @@ class ReplaySearchTest(unittest.TestCase):
             min_time_to_close_band_count=0,
             max_top_trader_accepted_share=0.0,
             max_top_trader_abs_pnl_share=0.0,
+            max_top_trader_size_share=0.0,
             max_top_market_accepted_share=0.0,
             max_top_market_abs_pnl_share=0.0,
+            max_top_market_size_share=0.0,
             max_top_entry_price_band_accepted_share=0.0,
             max_top_entry_price_band_abs_pnl_share=0.0,
+            max_top_entry_price_band_size_share=0.0,
             max_top_time_to_close_band_accepted_share=0.0,
             max_top_time_to_close_band_abs_pnl_share=0.0,
+            max_top_time_to_close_band_size_share=0.0,
         )
 
         self.assertEqual(failures, [])
@@ -1454,6 +1515,119 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["max_top_time_to_close_band_abs_pnl_share"], 0.6)
         self.assertIn("hzn n 40%", stderr.getvalue())
         self.assertIn("hzn pnl 45%", stderr.getvalue())
+
+    def test_main_can_limit_top_deployed_dollar_concentration(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 60.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "win_rate": 0.6,
+                    "trader_concentration": {
+                        "trader_count": 4,
+                        "top_size_trader_address": "0xbbb",
+                        "top_size_usd": 160.0,
+                        "top_size_share": 0.40,
+                    },
+                    "market_concentration": {
+                        "market_count": 4,
+                        "top_size_market_id": "market-b",
+                        "top_size_usd": 156.0,
+                        "top_size_share": 0.39,
+                    },
+                    "entry_price_band_concentration": {
+                        "entry_price_band_count": 3,
+                        "top_size_entry_price_band": "0.60-0.69",
+                        "top_size_usd": 140.0,
+                        "top_size_share": 0.35,
+                    },
+                    "time_to_close_band_concentration": {
+                        "time_to_close_band_count": 3,
+                        "top_size_time_to_close_band": "2h-12h",
+                        "top_size_usd": 144.0,
+                        "top_size_share": 0.36,
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 76.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.6,
+                "trader_concentration": {
+                    "trader_count": 2,
+                    "top_size_trader_address": "0xaaa",
+                    "top_size_usd": 290.0,
+                    "top_size_share": 0.725,
+                },
+                "market_concentration": {
+                    "market_count": 2,
+                    "top_size_market_id": "market-a",
+                    "top_size_usd": 276.0,
+                    "top_size_share": 0.69,
+                },
+                "entry_price_band_concentration": {
+                    "entry_price_band_count": 2,
+                    "top_size_entry_price_band": "0.60-0.69",
+                    "top_size_usd": 288.0,
+                    "top_size_share": 0.72,
+                },
+                "time_to_close_band_concentration": {
+                    "time_to_close_band_count": 2,
+                    "top_size_time_to_close_band": "2h-12h",
+                    "top_size_usd": 280.0,
+                    "top_size_share": 0.70,
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--max-top-trader-size-share",
+            "0.60",
+            "--max-top-market-size-share",
+            "0.60",
+            "--max-top-entry-price-band-size-share",
+            "0.60",
+            "--max-top-time-to-close-band-size-share",
+            "0.60",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(
+            rejected["constraint_failures"],
+            [
+                "top_trader_size_share",
+                "top_market_size_share",
+                "top_entry_price_band_size_share",
+                "top_time_to_close_band_size_share",
+            ],
+        )
+        self.assertEqual(payload["constraints"]["max_top_trader_size_share"], 0.6)
+        self.assertEqual(payload["constraints"]["max_top_market_size_share"], 0.6)
+        self.assertEqual(payload["constraints"]["max_top_entry_price_band_size_share"], 0.6)
+        self.assertEqual(payload["constraints"]["max_top_time_to_close_band_size_share"], 0.6)
+        self.assertIn("wallet sz 40%", stderr.getvalue())
+        self.assertIn("market sz 39%", stderr.getvalue())
+        self.assertIn("band sz 35%", stderr.getvalue())
+        self.assertIn("hzn sz 36%", stderr.getvalue())
 
     def test_main_can_require_minimum_distinct_concentration_counts(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -4154,12 +4328,16 @@ class ReplaySearchTest(unittest.TestCase):
                     "max_pause_guard_reject_share": 0.0,
                     "max_top_market_accepted_share": 0.0,
                     "max_top_market_abs_pnl_share": 0.0,
+                    "max_top_market_size_share": 0.0,
                     "max_top_entry_price_band_accepted_share": 0.0,
                     "max_top_entry_price_band_abs_pnl_share": 0.0,
+                    "max_top_entry_price_band_size_share": 0.0,
                     "max_top_time_to_close_band_accepted_share": 0.0,
                     "max_top_time_to_close_band_abs_pnl_share": 0.0,
+                    "max_top_time_to_close_band_size_share": 0.0,
                     "max_top_trader_accepted_share": 0.0,
                     "max_top_trader_abs_pnl_share": 0.0,
+                    "max_top_trader_size_share": 0.0,
                     "max_worst_window_drawdown_pct": 0.0,
                     "max_xgboost_inactive_windows": -1,
                     "min_accepted_count": 5,
@@ -4317,6 +4495,10 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertIn("time_to_close_band_count_penalty", run_columns)
             self.assertIn("wallet_concentration_penalty", run_columns)
             self.assertIn("market_concentration_penalty", run_columns)
+            self.assertIn("wallet_size_concentration_penalty", run_columns)
+            self.assertIn("market_size_concentration_penalty", run_columns)
+            self.assertIn("entry_price_band_size_concentration_penalty", run_columns)
+            self.assertIn("time_to_close_band_size_concentration_penalty", run_columns)
             self.assertIn("feasible", candidate_columns)
             self.assertIn("config_json", candidate_columns)
             self.assertIn("result_json", candidate_columns)
@@ -4343,10 +4525,10 @@ class ReplaySearchTest(unittest.TestCase):
                     "unresolved_count": 0,
                     "trade_count": 10,
                     "win_rate": 0.6,
-                    "trader_concentration": {"trader_count": 4, "top_accepted_share": 0.4, "top_abs_pnl_share": 0.45},
-                    "market_concentration": {"market_count": 5, "top_accepted_share": 0.35, "top_abs_pnl_share": 0.3},
-                    "entry_price_band_concentration": {"entry_price_band_count": 3, "top_accepted_share": 0.25, "top_abs_pnl_share": 0.2},
-                    "time_to_close_band_concentration": {"time_to_close_band_count": 3, "top_accepted_share": 0.30, "top_abs_pnl_share": 0.28},
+                    "trader_concentration": {"trader_count": 4, "top_accepted_share": 0.4, "top_abs_pnl_share": 0.45, "top_size_share": 0.42},
+                    "market_concentration": {"market_count": 5, "top_accepted_share": 0.35, "top_abs_pnl_share": 0.3, "top_size_share": 0.33},
+                    "entry_price_band_concentration": {"entry_price_band_count": 3, "top_accepted_share": 0.25, "top_abs_pnl_share": 0.2, "top_size_share": 0.22},
+                    "time_to_close_band_concentration": {"time_to_close_band_count": 3, "top_accepted_share": 0.30, "top_abs_pnl_share": 0.28, "top_size_share": 0.26},
                     "signal_mode_summary": {"xgboost": {"accepted_count": 10, "resolved_count": 10, "trade_count": 10, "total_pnl_usd": 55.0, "win_count": 6}},
                 }
             return {
@@ -4359,10 +4541,10 @@ class ReplaySearchTest(unittest.TestCase):
                 "unresolved_count": 0,
                 "trade_count": 12,
                 "win_rate": 7 / 12,
-                "trader_concentration": {"trader_count": 2, "top_accepted_share": 0.75, "top_abs_pnl_share": 0.7},
-                "market_concentration": {"market_count": 3, "top_accepted_share": 0.5, "top_abs_pnl_share": 0.55},
-                "entry_price_band_concentration": {"entry_price_band_count": 2, "top_accepted_share": 0.7, "top_abs_pnl_share": 0.68},
-                "time_to_close_band_concentration": {"time_to_close_band_count": 2, "top_accepted_share": 0.72, "top_abs_pnl_share": 0.74},
+                "trader_concentration": {"trader_count": 2, "top_accepted_share": 0.75, "top_abs_pnl_share": 0.7, "top_size_share": 0.78},
+                "market_concentration": {"market_count": 3, "top_accepted_share": 0.5, "top_abs_pnl_share": 0.55, "top_size_share": 0.58},
+                "entry_price_band_concentration": {"entry_price_band_count": 2, "top_accepted_share": 0.7, "top_abs_pnl_share": 0.68, "top_size_share": 0.71},
+                "time_to_close_band_concentration": {"time_to_close_band_count": 2, "top_accepted_share": 0.72, "top_abs_pnl_share": 0.74, "top_size_share": 0.76},
                 "signal_mode_summary": {"heuristic": {"accepted_count": 12, "resolved_count": 12, "trade_count": 12, "total_pnl_usd": 40.0, "win_count": 7}},
             }
 
@@ -4384,6 +4566,14 @@ class ReplaySearchTest(unittest.TestCase):
                 "0.15",
                 "--time-to-close-band-concentration-penalty",
                 "0.20",
+                "--wallet-size-concentration-penalty",
+                "0.11",
+                "--market-size-concentration-penalty",
+                "0.12",
+                "--entry-price-band-size-concentration-penalty",
+                "0.13",
+                "--time-to-close-band-size-concentration-penalty",
+                "0.14",
             ]
             with (
                 patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
@@ -4399,6 +4589,8 @@ class ReplaySearchTest(unittest.TestCase):
                     """
                     SELECT wallet_concentration_penalty, market_concentration_penalty,
                            entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
+                           wallet_size_concentration_penalty, market_size_concentration_penalty,
+                           entry_price_band_size_concentration_penalty, time_to_close_band_size_concentration_penalty,
                            current_candidate_result_json
                     FROM replay_search_runs
                     """
@@ -4418,11 +4610,19 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(run_row[1], 0.10)
             self.assertEqual(run_row[2], 0.15)
             self.assertEqual(run_row[3], 0.20)
-            current_result_json = json.loads(run_row[4])
+            self.assertEqual(run_row[4], 0.11)
+            self.assertEqual(run_row[5], 0.12)
+            self.assertEqual(run_row[6], 0.13)
+            self.assertEqual(run_row[7], 0.14)
+            current_result_json = json.loads(run_row[8])
             self.assertGreater(current_result_json["score_breakdown"]["wallet_concentration_penalty_usd"], 0.0)
             self.assertGreater(current_result_json["score_breakdown"]["market_concentration_penalty_usd"], 0.0)
             self.assertGreater(current_result_json["score_breakdown"]["entry_price_band_concentration_penalty_usd"], 0.0)
             self.assertGreater(current_result_json["score_breakdown"]["time_to_close_band_concentration_penalty_usd"], 0.0)
+            self.assertGreater(current_result_json["score_breakdown"]["wallet_size_concentration_penalty_usd"], 0.0)
+            self.assertGreater(current_result_json["score_breakdown"]["market_size_concentration_penalty_usd"], 0.0)
+            self.assertGreater(current_result_json["score_breakdown"]["entry_price_band_size_concentration_penalty_usd"], 0.0)
+            self.assertGreater(current_result_json["score_breakdown"]["time_to_close_band_size_concentration_penalty_usd"], 0.0)
             current_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 1))
             best_candidate_json = json.loads(next(row[1] for row in candidate_rows if row[0] == 0))
             self.assertGreater(

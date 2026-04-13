@@ -86,6 +86,10 @@ def _score_breakdown(
     market_count_penalty: float = 0.0,
     entry_price_band_count_penalty: float = 0.0,
     time_to_close_band_count_penalty: float = 0.0,
+    wallet_size_concentration_penalty: float = 0.0,
+    market_size_concentration_penalty: float = 0.0,
+    entry_price_band_size_concentration_penalty: float = 0.0,
+    time_to_close_band_size_concentration_penalty: float = 0.0,
 ) -> dict[str, float]:
     pnl = float(result.get("total_pnl_usd") or 0.0)
     max_drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
@@ -181,6 +185,10 @@ def _score_breakdown(
         float(_time_to_close_band_concentration(result).get("top_accepted_share") or 0.0),
         float(_time_to_close_band_concentration(result).get("top_abs_pnl_share") or 0.0),
     )
+    wallet_size_concentration_share = float(_trader_concentration(result).get("top_size_share") or 0.0)
+    market_size_concentration_share = float(_market_concentration(result).get("top_size_share") or 0.0)
+    entry_price_band_size_concentration_share = float(_entry_price_band_concentration(result).get("top_size_share") or 0.0)
+    time_to_close_band_size_concentration_share = float(_time_to_close_band_concentration(result).get("top_size_share") or 0.0)
     wallet_count_risk = _inverse_count_risk(_trader_concentration(result).get("trader_count"))
     market_count_risk = _inverse_count_risk(_market_concentration(result).get("market_count"))
     entry_price_band_count_risk = _inverse_count_risk(_entry_price_band_concentration(result).get("entry_price_band_count"))
@@ -203,6 +211,10 @@ def _score_breakdown(
     market_count_penalty_usd = initial_bankroll_usd * market_count_penalty * market_count_risk
     entry_price_band_count_penalty_usd = initial_bankroll_usd * entry_price_band_count_penalty * entry_price_band_count_risk
     time_to_close_band_count_penalty_usd = initial_bankroll_usd * time_to_close_band_count_penalty * time_to_close_band_count_risk
+    wallet_size_concentration_penalty_usd = initial_bankroll_usd * wallet_size_concentration_penalty * wallet_size_concentration_share
+    market_size_concentration_penalty_usd = initial_bankroll_usd * market_size_concentration_penalty * market_size_concentration_share
+    entry_price_band_size_concentration_penalty_usd = initial_bankroll_usd * entry_price_band_size_concentration_penalty * entry_price_band_size_concentration_share
+    time_to_close_band_size_concentration_penalty_usd = initial_bankroll_usd * time_to_close_band_size_concentration_penalty * time_to_close_band_size_concentration_share
     mode_inactivity_penalty_usd = initial_bankroll_usd * mode_inactivity_penalty * mode_inactivity_share
     window_inactivity_penalty_usd = initial_bankroll_usd * window_inactivity_penalty * window_inactivity_share
     score_usd = (
@@ -228,6 +240,10 @@ def _score_breakdown(
         - market_concentration_penalty_usd
         - entry_price_band_concentration_penalty_usd
         - time_to_close_band_concentration_penalty_usd
+        - wallet_size_concentration_penalty_usd
+        - market_size_concentration_penalty_usd
+        - entry_price_band_size_concentration_penalty_usd
+        - time_to_close_band_size_concentration_penalty_usd
     )
     return {
         "pnl_usd": round(pnl, 6),
@@ -252,6 +268,10 @@ def _score_breakdown(
         "market_concentration_penalty_usd": round(market_concentration_penalty_usd, 6),
         "entry_price_band_concentration_penalty_usd": round(entry_price_band_concentration_penalty_usd, 6),
         "time_to_close_band_concentration_penalty_usd": round(time_to_close_band_concentration_penalty_usd, 6),
+        "wallet_size_concentration_penalty_usd": round(wallet_size_concentration_penalty_usd, 6),
+        "market_size_concentration_penalty_usd": round(market_size_concentration_penalty_usd, 6),
+        "entry_price_band_size_concentration_penalty_usd": round(entry_price_band_size_concentration_penalty_usd, 6),
+        "time_to_close_band_size_concentration_penalty_usd": round(time_to_close_band_size_concentration_penalty_usd, 6),
         "score_usd": round(score_usd, 6),
     }
 
@@ -283,6 +303,10 @@ def _score_result(
     market_count_penalty: float = 0.0,
     entry_price_band_count_penalty: float = 0.0,
     time_to_close_band_count_penalty: float = 0.0,
+    wallet_size_concentration_penalty: float = 0.0,
+    market_size_concentration_penalty: float = 0.0,
+    entry_price_band_size_concentration_penalty: float = 0.0,
+    time_to_close_band_size_concentration_penalty: float = 0.0,
 ) -> float:
     return float(
         _score_breakdown(
@@ -305,6 +329,10 @@ def _score_result(
             market_count_penalty=market_count_penalty,
             entry_price_band_count_penalty=entry_price_band_count_penalty,
             time_to_close_band_count_penalty=time_to_close_band_count_penalty,
+            wallet_size_concentration_penalty=wallet_size_concentration_penalty,
+            market_size_concentration_penalty=market_size_concentration_penalty,
+            entry_price_band_size_concentration_penalty=entry_price_band_size_concentration_penalty,
+            time_to_close_band_size_concentration_penalty=time_to_close_band_size_concentration_penalty,
             allow_heuristic=allow_heuristic,
             allow_xgboost=allow_xgboost,
             wallet_concentration_penalty=wallet_concentration_penalty,
@@ -342,6 +370,10 @@ def _with_score_breakdown(
     market_count_penalty: float = 0.0,
     entry_price_band_count_penalty: float = 0.0,
     time_to_close_band_count_penalty: float = 0.0,
+    wallet_size_concentration_penalty: float = 0.0,
+    market_size_concentration_penalty: float = 0.0,
+    entry_price_band_size_concentration_penalty: float = 0.0,
+    time_to_close_band_size_concentration_penalty: float = 0.0,
 ) -> dict[str, Any]:
     payload = dict(result)
     payload["score_breakdown"] = _score_breakdown(
@@ -364,6 +396,10 @@ def _with_score_breakdown(
         market_count_penalty=market_count_penalty,
         entry_price_band_count_penalty=entry_price_band_count_penalty,
         time_to_close_band_count_penalty=time_to_close_band_count_penalty,
+        wallet_size_concentration_penalty=wallet_size_concentration_penalty,
+        market_size_concentration_penalty=market_size_concentration_penalty,
+        entry_price_band_size_concentration_penalty=entry_price_band_size_concentration_penalty,
+        time_to_close_band_size_concentration_penalty=time_to_close_band_size_concentration_penalty,
         allow_heuristic=allow_heuristic,
         allow_xgboost=allow_xgboost,
         wallet_concentration_penalty=wallet_concentration_penalty,
@@ -737,12 +773,16 @@ def _constraint_failures(
     min_time_to_close_band_count: int,
     max_top_trader_accepted_share: float,
     max_top_trader_abs_pnl_share: float,
+    max_top_trader_size_share: float,
     max_top_market_accepted_share: float,
     max_top_market_abs_pnl_share: float,
+    max_top_market_size_share: float,
     max_top_entry_price_band_accepted_share: float,
     max_top_entry_price_band_abs_pnl_share: float,
+    max_top_entry_price_band_size_share: float,
     max_top_time_to_close_band_accepted_share: float,
     max_top_time_to_close_band_abs_pnl_share: float,
+    max_top_time_to_close_band_size_share: float,
     min_worst_active_window_accepted_count: int = 0,
 ) -> list[str]:
     failures: list[str] = []
@@ -865,18 +905,26 @@ def _constraint_failures(
         failures.append("top_trader_accepted_share")
     if max_top_trader_abs_pnl_share > 0 and float(trader_concentration.get("top_abs_pnl_share") or 0.0) > max_top_trader_abs_pnl_share:
         failures.append("top_trader_abs_pnl_share")
+    if max_top_trader_size_share > 0 and float(trader_concentration.get("top_size_share") or 0.0) > max_top_trader_size_share:
+        failures.append("top_trader_size_share")
     if max_top_market_accepted_share > 0 and float(market_concentration.get("top_accepted_share") or 0.0) > max_top_market_accepted_share:
         failures.append("top_market_accepted_share")
     if max_top_market_abs_pnl_share > 0 and float(market_concentration.get("top_abs_pnl_share") or 0.0) > max_top_market_abs_pnl_share:
         failures.append("top_market_abs_pnl_share")
+    if max_top_market_size_share > 0 and float(market_concentration.get("top_size_share") or 0.0) > max_top_market_size_share:
+        failures.append("top_market_size_share")
     if max_top_entry_price_band_accepted_share > 0 and float(entry_price_band_concentration.get("top_accepted_share") or 0.0) > max_top_entry_price_band_accepted_share:
         failures.append("top_entry_price_band_accepted_share")
     if max_top_entry_price_band_abs_pnl_share > 0 and float(entry_price_band_concentration.get("top_abs_pnl_share") or 0.0) > max_top_entry_price_band_abs_pnl_share:
         failures.append("top_entry_price_band_abs_pnl_share")
+    if max_top_entry_price_band_size_share > 0 and float(entry_price_band_concentration.get("top_size_share") or 0.0) > max_top_entry_price_band_size_share:
+        failures.append("top_entry_price_band_size_share")
     if max_top_time_to_close_band_accepted_share > 0 and float(time_to_close_band_concentration.get("top_accepted_share") or 0.0) > max_top_time_to_close_band_accepted_share:
         failures.append("top_time_to_close_band_accepted_share")
     if max_top_time_to_close_band_abs_pnl_share > 0 and float(time_to_close_band_concentration.get("top_abs_pnl_share") or 0.0) > max_top_time_to_close_band_abs_pnl_share:
         failures.append("top_time_to_close_band_abs_pnl_share")
+    if max_top_time_to_close_band_size_share > 0 and float(time_to_close_band_concentration.get("top_size_share") or 0.0) > max_top_time_to_close_band_size_share:
+        failures.append("top_time_to_close_band_size_share")
     return failures
 
 
@@ -908,28 +956,40 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         concentration_parts: list[str] = []
         top_accepted_share = float(trader_concentration.get("top_accepted_share") or 0.0)
         top_abs_pnl_share = float(trader_concentration.get("top_abs_pnl_share") or 0.0)
+        top_size_share = float(trader_concentration.get("top_size_share") or 0.0)
         top_market_accepted_share = float(market_concentration.get("top_accepted_share") or 0.0)
         top_market_abs_pnl_share = float(market_concentration.get("top_abs_pnl_share") or 0.0)
+        top_market_size_share = float(market_concentration.get("top_size_share") or 0.0)
         top_entry_band_accepted_share = float(entry_price_band_concentration.get("top_accepted_share") or 0.0)
         top_entry_band_abs_pnl_share = float(entry_price_band_concentration.get("top_abs_pnl_share") or 0.0)
+        top_entry_band_size_share = float(entry_price_band_concentration.get("top_size_share") or 0.0)
         top_horizon_accepted_share = float(time_to_close_band_concentration.get("top_accepted_share") or 0.0)
         top_horizon_abs_pnl_share = float(time_to_close_band_concentration.get("top_abs_pnl_share") or 0.0)
+        top_horizon_size_share = float(time_to_close_band_concentration.get("top_size_share") or 0.0)
         if top_accepted_share > 0:
             concentration_parts.append(f"wallet n {top_accepted_share * 100:.0f}%")
         if top_abs_pnl_share > 0:
             concentration_parts.append(f"wallet pnl {top_abs_pnl_share * 100:.0f}%")
+        if top_size_share > 0:
+            concentration_parts.append(f"wallet sz {top_size_share * 100:.0f}%")
         if top_market_accepted_share > 0:
             concentration_parts.append(f"market n {top_market_accepted_share * 100:.0f}%")
         if top_market_abs_pnl_share > 0:
             concentration_parts.append(f"market pnl {top_market_abs_pnl_share * 100:.0f}%")
+        if top_market_size_share > 0:
+            concentration_parts.append(f"market sz {top_market_size_share * 100:.0f}%")
         if top_entry_band_accepted_share > 0:
             concentration_parts.append(f"band n {top_entry_band_accepted_share * 100:.0f}%")
         if top_entry_band_abs_pnl_share > 0:
             concentration_parts.append(f"band pnl {top_entry_band_abs_pnl_share * 100:.0f}%")
+        if top_entry_band_size_share > 0:
+            concentration_parts.append(f"band sz {top_entry_band_size_share * 100:.0f}%")
         if top_horizon_accepted_share > 0:
             concentration_parts.append(f"hzn n {top_horizon_accepted_share * 100:.0f}%")
         if top_horizon_abs_pnl_share > 0:
             concentration_parts.append(f"hzn pnl {top_horizon_abs_pnl_share * 100:.0f}%")
+        if top_horizon_size_share > 0:
+            concentration_parts.append(f"hzn sz {top_horizon_size_share * 100:.0f}%")
         concentration_suffix = f" | {' / '.join(concentration_parts)}" if concentration_parts else ""
         window_count = int(row["result"].get("window_count") or 0)
         window_suffix = ""
@@ -1207,6 +1267,11 @@ def _aggregate_window_results(
         key=lambda row: float((row or {}).get("top_abs_pnl_share") or 0.0),
         default=None,
     )
+    top_size_window = max(
+        trader_concentration_rows,
+        key=lambda row: float((row or {}).get("top_size_share") or 0.0),
+        default=None,
+    )
     trader_concentration = {
         "window_mode": "max_window",
         "top_accepted_trader_address": str((top_accepted_window or {}).get("top_accepted_trader_address") or ""),
@@ -1216,6 +1281,9 @@ def _aggregate_window_results(
         "top_abs_pnl_trader_address": str((top_abs_pnl_window or {}).get("top_abs_pnl_trader_address") or ""),
         "top_abs_pnl_usd": round(float((top_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
+        "top_size_trader_address": str((top_size_window or {}).get("top_size_trader_address") or ""),
+        "top_size_usd": round(float((top_size_window or {}).get("top_size_usd") or 0.0), 6),
+        "top_size_share": round(float((top_size_window or {}).get("top_size_share") or 0.0), 6),
         "trader_count": min((int((row or {}).get("trader_count") or 0) for row in active_trader_concentration_rows), default=0),
         "peak_trader_count": max((int((row or {}).get("trader_count") or 0) for row in trader_concentration_rows), default=0),
     }
@@ -1229,6 +1297,11 @@ def _aggregate_window_results(
         key=lambda row: float((row or {}).get("top_abs_pnl_share") or 0.0),
         default=None,
     )
+    top_market_size_window = max(
+        market_concentration_rows,
+        key=lambda row: float((row or {}).get("top_size_share") or 0.0),
+        default=None,
+    )
     market_concentration = {
         "window_mode": "max_window",
         "top_accepted_market_id": str((top_market_accepted_window or {}).get("top_accepted_market_id") or ""),
@@ -1238,6 +1311,9 @@ def _aggregate_window_results(
         "top_abs_pnl_market_id": str((top_market_abs_pnl_window or {}).get("top_abs_pnl_market_id") or ""),
         "top_abs_pnl_usd": round(float((top_market_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_market_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
+        "top_size_market_id": str((top_market_size_window or {}).get("top_size_market_id") or ""),
+        "top_size_usd": round(float((top_market_size_window or {}).get("top_size_usd") or 0.0), 6),
+        "top_size_share": round(float((top_market_size_window or {}).get("top_size_share") or 0.0), 6),
         "market_count": min((int((row or {}).get("market_count") or 0) for row in active_market_concentration_rows), default=0),
         "peak_market_count": max((int((row or {}).get("market_count") or 0) for row in market_concentration_rows), default=0),
     }
@@ -1251,6 +1327,11 @@ def _aggregate_window_results(
         key=lambda row: float((row or {}).get("top_abs_pnl_share") or 0.0),
         default=None,
     )
+    top_entry_price_band_size_window = max(
+        entry_price_band_concentration_rows,
+        key=lambda row: float((row or {}).get("top_size_share") or 0.0),
+        default=None,
+    )
     entry_price_band_concentration = {
         "window_mode": "max_window",
         "top_accepted_entry_price_band": str((top_entry_price_band_accepted_window or {}).get("top_accepted_entry_price_band") or ""),
@@ -1260,6 +1341,9 @@ def _aggregate_window_results(
         "top_abs_pnl_entry_price_band": str((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_entry_price_band") or ""),
         "top_abs_pnl_usd": round(float((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
+        "top_size_entry_price_band": str((top_entry_price_band_size_window or {}).get("top_size_entry_price_band") or ""),
+        "top_size_usd": round(float((top_entry_price_band_size_window or {}).get("top_size_usd") or 0.0), 6),
+        "top_size_share": round(float((top_entry_price_band_size_window or {}).get("top_size_share") or 0.0), 6),
         "entry_price_band_count": min((int((row or {}).get("entry_price_band_count") or 0) for row in active_entry_price_band_concentration_rows), default=0),
         "peak_entry_price_band_count": max((int((row or {}).get("entry_price_band_count") or 0) for row in entry_price_band_concentration_rows), default=0),
     }
@@ -1273,6 +1357,11 @@ def _aggregate_window_results(
         key=lambda row: float((row or {}).get("top_abs_pnl_share") or 0.0),
         default=None,
     )
+    top_time_to_close_band_size_window = max(
+        time_to_close_band_concentration_rows,
+        key=lambda row: float((row or {}).get("top_size_share") or 0.0),
+        default=None,
+    )
     time_to_close_band_concentration = {
         "window_mode": "max_window",
         "top_accepted_time_to_close_band": str((top_time_to_close_band_accepted_window or {}).get("top_accepted_time_to_close_band") or ""),
@@ -1282,6 +1371,9 @@ def _aggregate_window_results(
         "top_abs_pnl_time_to_close_band": str((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_time_to_close_band") or ""),
         "top_abs_pnl_usd": round(float((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
+        "top_size_time_to_close_band": str((top_time_to_close_band_size_window or {}).get("top_size_time_to_close_band") or ""),
+        "top_size_usd": round(float((top_time_to_close_band_size_window or {}).get("top_size_usd") or 0.0), 6),
+        "top_size_share": round(float((top_time_to_close_band_size_window or {}).get("top_size_share") or 0.0), 6),
         "time_to_close_band_count": min((int((row or {}).get("time_to_close_band_count") or 0) for row in active_time_to_close_band_concentration_rows), default=0),
         "peak_time_to_close_band_count": max((int((row or {}).get("time_to_close_band_count") or 0) for row in time_to_close_band_concentration_rows), default=0),
     }
@@ -1367,6 +1459,10 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             market_concentration_penalty  REAL NOT NULL DEFAULT 0,
             entry_price_band_concentration_penalty REAL NOT NULL DEFAULT 0,
             time_to_close_band_concentration_penalty REAL NOT NULL DEFAULT 0,
+            wallet_size_concentration_penalty REAL NOT NULL DEFAULT 0,
+            market_size_concentration_penalty REAL NOT NULL DEFAULT 0,
+            entry_price_band_size_concentration_penalty REAL NOT NULL DEFAULT 0,
+            time_to_close_band_size_concentration_penalty REAL NOT NULL DEFAULT 0,
             candidate_count               INTEGER NOT NULL DEFAULT 0,
             feasible_count                INTEGER NOT NULL DEFAULT 0,
             rejected_count                INTEGER NOT NULL DEFAULT 0,
@@ -1444,6 +1540,10 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "market_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "entry_price_band_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "time_to_close_band_concentration_penalty": "REAL NOT NULL DEFAULT 0",
+            "wallet_size_concentration_penalty": "REAL NOT NULL DEFAULT 0",
+            "market_size_concentration_penalty": "REAL NOT NULL DEFAULT 0",
+            "entry_price_band_size_concentration_penalty": "REAL NOT NULL DEFAULT 0",
+            "time_to_close_band_size_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "candidate_count": "INTEGER NOT NULL DEFAULT 0",
             "feasible_count": "INTEGER NOT NULL DEFAULT 0",
             "rejected_count": "INTEGER NOT NULL DEFAULT 0",
@@ -1517,6 +1617,10 @@ def _persist_search_results(
     market_concentration_penalty: float,
     entry_price_band_concentration_penalty: float,
     time_to_close_band_concentration_penalty: float,
+    wallet_size_concentration_penalty: float,
+    market_size_concentration_penalty: float,
+    entry_price_band_size_concentration_penalty: float,
+    time_to_close_band_size_concentration_penalty: float,
     window_days: int,
     window_count: int,
     current_candidate: dict[str, Any] | None,
@@ -1563,6 +1667,10 @@ def _persist_search_results(
             market_concentration_penalty,
             entry_price_band_concentration_penalty,
             time_to_close_band_concentration_penalty,
+            wallet_size_concentration_penalty,
+            market_size_concentration_penalty,
+            entry_price_band_size_concentration_penalty,
+            time_to_close_band_size_concentration_penalty,
             len(ranked),
             len(feasible),
             len(rejected),
@@ -1591,6 +1699,7 @@ def _persist_search_results(
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
                 window_stddev_penalty, worst_window_penalty, pause_guard_penalty, resolved_share_penalty, worst_window_resolved_share_penalty, mode_resolved_share_penalty, mode_worst_window_resolved_share_penalty, worst_active_window_accepted_penalty, mode_worst_active_window_accepted_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
+                wallet_size_concentration_penalty, market_size_concentration_penalty, entry_price_band_size_concentration_penalty, time_to_close_band_size_concentration_penalty,
                 candidate_count, feasible_count, rejected_count, current_candidate_score, current_candidate_feasible,
                 current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
                 best_vs_current_pnl_usd, best_vs_current_score,
@@ -1710,6 +1819,10 @@ def main() -> None:
     parser.add_argument("--market-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay market concentration share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--entry-price-band-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay entry-price-band concentration share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--time-to-close-band-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay time-to-close-band concentration share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--wallet-size-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay wallet deployed-dollar concentration share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--market-size-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay market deployed-dollar concentration share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--entry-price-band-size-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay entry-price-band deployed-dollar concentration share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--time-to-close-band-size-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay time-to-close-band deployed-dollar concentration share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--max-combos", type=int, default=256, help="Safety cap on total grid combinations.")
     parser.add_argument("--window-days", type=int, default=0, help="Replay over rolling windows of this many days instead of the full history.")
     parser.add_argument("--window-count", type=int, default=1, help="How many most-recent rolling windows to evaluate when --window-days is set.")
@@ -1755,12 +1868,16 @@ def main() -> None:
     parser.add_argument("--min-time-to-close-band-count", type=int, default=0, help="Minimum distinct time-to-close-band count required for a candidate to be feasible.")
     parser.add_argument("--max-top-trader-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single trader.")
     parser.add_argument("--max-top-trader-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single trader.")
+    parser.add_argument("--max-top-trader-size-share", type=float, default=0.0, help="Maximum fraction of deployed replay dollars allowed to come from a single trader.")
     parser.add_argument("--max-top-market-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single market.")
     parser.add_argument("--max-top-market-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single market.")
+    parser.add_argument("--max-top-market-size-share", type=float, default=0.0, help="Maximum fraction of deployed replay dollars allowed to come from a single market.")
     parser.add_argument("--max-top-entry-price-band-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single entry-price band.")
     parser.add_argument("--max-top-entry-price-band-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single entry-price band.")
+    parser.add_argument("--max-top-entry-price-band-size-share", type=float, default=0.0, help="Maximum fraction of deployed replay dollars allowed to come from a single entry-price band.")
     parser.add_argument("--max-top-time-to-close-band-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single time-to-close band.")
     parser.add_argument("--max-top-time-to-close-band-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single time-to-close band.")
+    parser.add_argument("--max-top-time-to-close-band-size-share", type=float, default=0.0, help="Maximum fraction of deployed replay dollars allowed to come from a single time-to-close band.")
     args = parser.parse_args()
 
     base_policy = _load_base_policy(args)
@@ -1803,6 +1920,10 @@ def main() -> None:
         market_count_penalty=max(args.market_count_penalty, 0.0),
         entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
         time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
+        wallet_size_concentration_penalty=max(args.wallet_size_concentration_penalty, 0.0),
+        market_size_concentration_penalty=max(args.market_size_concentration_penalty, 0.0),
+        entry_price_band_size_concentration_penalty=max(args.entry_price_band_size_concentration_penalty, 0.0),
+        time_to_close_band_size_concentration_penalty=max(args.time_to_close_band_size_concentration_penalty, 0.0),
         allow_heuristic=bool(base_policy.allow_heuristic),
         allow_xgboost=bool(base_policy.allow_xgboost),
         wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -1855,12 +1976,16 @@ def main() -> None:
         min_time_to_close_band_count=max(args.min_time_to_close_band_count, 0),
         max_top_trader_accepted_share=_clamp_fraction(args.max_top_trader_accepted_share),
         max_top_trader_abs_pnl_share=_clamp_fraction(args.max_top_trader_abs_pnl_share),
+        max_top_trader_size_share=_clamp_fraction(args.max_top_trader_size_share),
         max_top_market_accepted_share=_clamp_fraction(args.max_top_market_accepted_share),
         max_top_market_abs_pnl_share=_clamp_fraction(args.max_top_market_abs_pnl_share),
+        max_top_market_size_share=_clamp_fraction(args.max_top_market_size_share),
         max_top_entry_price_band_accepted_share=_clamp_fraction(args.max_top_entry_price_band_accepted_share),
         max_top_entry_price_band_abs_pnl_share=_clamp_fraction(args.max_top_entry_price_band_abs_pnl_share),
+        max_top_entry_price_band_size_share=_clamp_fraction(args.max_top_entry_price_band_size_share),
         max_top_time_to_close_band_accepted_share=_clamp_fraction(args.max_top_time_to_close_band_accepted_share),
         max_top_time_to_close_band_abs_pnl_share=_clamp_fraction(args.max_top_time_to_close_band_abs_pnl_share),
+        max_top_time_to_close_band_size_share=_clamp_fraction(args.max_top_time_to_close_band_size_share),
     )
     if int(current_result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
         current_constraint_failures.append("positive_window_count")
@@ -1887,6 +2012,10 @@ def main() -> None:
                 market_count_penalty=max(args.market_count_penalty, 0.0),
                 entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
                 time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
+                wallet_size_concentration_penalty=max(args.wallet_size_concentration_penalty, 0.0),
+                market_size_concentration_penalty=max(args.market_size_concentration_penalty, 0.0),
+                entry_price_band_size_concentration_penalty=max(args.entry_price_band_size_concentration_penalty, 0.0),
+                time_to_close_band_size_concentration_penalty=max(args.time_to_close_band_size_concentration_penalty, 0.0),
                 allow_heuristic=bool(base_policy.allow_heuristic),
                 allow_xgboost=bool(base_policy.allow_xgboost),
                 wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -1938,6 +2067,10 @@ def main() -> None:
                 market_count_penalty=max(args.market_count_penalty, 0.0),
                 entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
                 time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
+                wallet_size_concentration_penalty=max(args.wallet_size_concentration_penalty, 0.0),
+                market_size_concentration_penalty=max(args.market_size_concentration_penalty, 0.0),
+                entry_price_band_size_concentration_penalty=max(args.entry_price_band_size_concentration_penalty, 0.0),
+                time_to_close_band_size_concentration_penalty=max(args.time_to_close_band_size_concentration_penalty, 0.0),
                 allow_heuristic=bool(policy.allow_heuristic),
                 allow_xgboost=bool(policy.allow_xgboost),
                 wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -1965,6 +2098,10 @@ def main() -> None:
             market_count_penalty=max(args.market_count_penalty, 0.0),
             entry_price_band_count_penalty=max(args.entry_price_band_count_penalty, 0.0),
             time_to_close_band_count_penalty=max(args.time_to_close_band_count_penalty, 0.0),
+            wallet_size_concentration_penalty=max(args.wallet_size_concentration_penalty, 0.0),
+            market_size_concentration_penalty=max(args.market_size_concentration_penalty, 0.0),
+            entry_price_band_size_concentration_penalty=max(args.entry_price_band_size_concentration_penalty, 0.0),
+            time_to_close_band_size_concentration_penalty=max(args.time_to_close_band_size_concentration_penalty, 0.0),
             allow_heuristic=bool(policy.allow_heuristic),
             allow_xgboost=bool(policy.allow_xgboost),
             wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
@@ -2017,12 +2154,16 @@ def main() -> None:
             min_time_to_close_band_count=max(args.min_time_to_close_band_count, 0),
             max_top_trader_accepted_share=_clamp_fraction(args.max_top_trader_accepted_share),
             max_top_trader_abs_pnl_share=_clamp_fraction(args.max_top_trader_abs_pnl_share),
+            max_top_trader_size_share=_clamp_fraction(args.max_top_trader_size_share),
             max_top_market_accepted_share=_clamp_fraction(args.max_top_market_accepted_share),
             max_top_market_abs_pnl_share=_clamp_fraction(args.max_top_market_abs_pnl_share),
+            max_top_market_size_share=_clamp_fraction(args.max_top_market_size_share),
             max_top_entry_price_band_accepted_share=_clamp_fraction(args.max_top_entry_price_band_accepted_share),
             max_top_entry_price_band_abs_pnl_share=_clamp_fraction(args.max_top_entry_price_band_abs_pnl_share),
+            max_top_entry_price_band_size_share=_clamp_fraction(args.max_top_entry_price_band_size_share),
             max_top_time_to_close_band_accepted_share=_clamp_fraction(args.max_top_time_to_close_band_accepted_share),
             max_top_time_to_close_band_abs_pnl_share=_clamp_fraction(args.max_top_time_to_close_band_abs_pnl_share),
+            max_top_time_to_close_band_size_share=_clamp_fraction(args.max_top_time_to_close_band_size_share),
         )
         if int(result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
             constraint_failures.append("positive_window_count")
@@ -2096,12 +2237,16 @@ def main() -> None:
         "min_time_to_close_band_count": max(args.min_time_to_close_band_count, 0),
         "max_top_trader_accepted_share": _clamp_fraction(args.max_top_trader_accepted_share),
         "max_top_trader_abs_pnl_share": _clamp_fraction(args.max_top_trader_abs_pnl_share),
+        "max_top_trader_size_share": _clamp_fraction(args.max_top_trader_size_share),
         "max_top_market_accepted_share": _clamp_fraction(args.max_top_market_accepted_share),
         "max_top_market_abs_pnl_share": _clamp_fraction(args.max_top_market_abs_pnl_share),
+        "max_top_market_size_share": _clamp_fraction(args.max_top_market_size_share),
         "max_top_entry_price_band_accepted_share": _clamp_fraction(args.max_top_entry_price_band_accepted_share),
         "max_top_entry_price_band_abs_pnl_share": _clamp_fraction(args.max_top_entry_price_band_abs_pnl_share),
+        "max_top_entry_price_band_size_share": _clamp_fraction(args.max_top_entry_price_band_size_share),
         "max_top_time_to_close_band_accepted_share": _clamp_fraction(args.max_top_time_to_close_band_accepted_share),
         "max_top_time_to_close_band_abs_pnl_share": _clamp_fraction(args.max_top_time_to_close_band_abs_pnl_share),
+        "max_top_time_to_close_band_size_share": _clamp_fraction(args.max_top_time_to_close_band_size_share),
     }
     finished_at = int(time.time())
     search_run_id = _persist_search_results(
@@ -2134,6 +2279,10 @@ def main() -> None:
         market_concentration_penalty=max(args.market_concentration_penalty, 0.0),
         entry_price_band_concentration_penalty=max(args.entry_price_band_concentration_penalty, 0.0),
         time_to_close_band_concentration_penalty=max(args.time_to_close_band_concentration_penalty, 0.0),
+        wallet_size_concentration_penalty=max(args.wallet_size_concentration_penalty, 0.0),
+        market_size_concentration_penalty=max(args.market_size_concentration_penalty, 0.0),
+        entry_price_band_size_concentration_penalty=max(args.entry_price_band_size_concentration_penalty, 0.0),
+        time_to_close_band_size_concentration_penalty=max(args.time_to_close_band_size_concentration_penalty, 0.0),
         window_days=max(args.window_days, 0),
         window_count=max(args.window_count, 1),
         current_candidate=current_candidate,
@@ -2170,6 +2319,10 @@ def main() -> None:
                 "market_concentration_penalty": max(args.market_concentration_penalty, 0.0),
                 "entry_price_band_concentration_penalty": max(args.entry_price_band_concentration_penalty, 0.0),
                 "time_to_close_band_concentration_penalty": max(args.time_to_close_band_concentration_penalty, 0.0),
+                "wallet_size_concentration_penalty": max(args.wallet_size_concentration_penalty, 0.0),
+                "market_size_concentration_penalty": max(args.market_size_concentration_penalty, 0.0),
+                "entry_price_band_size_concentration_penalty": max(args.entry_price_band_size_concentration_penalty, 0.0),
+                "time_to_close_band_size_concentration_penalty": max(args.time_to_close_band_size_concentration_penalty, 0.0),
                 "constraints": constraints,
                 "candidate_count": len(ranked),
                 "feasible_count": len(feasible),

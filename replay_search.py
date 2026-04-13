@@ -2207,7 +2207,8 @@ def _aggregate_window_results(
     )
     positive_window_count = sum(1 for pnl in pnl_values if pnl > 0)
     negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
-    active_window_count = sum(1 for row in window_results if _window_has_participation(row))
+    active_rows = [row for row in window_results if _window_has_participation(row)]
+    active_window_count = len(active_rows)
     inactive_window_count = max(len(window_results) - active_window_count, 0)
     avg_window_end_open_exposure_share = (
         sum(
@@ -2216,8 +2217,7 @@ def _aggregate_window_results(
                 or row.get("window_end_open_exposure_share")
                 or 0.0
             )
-            for row in window_results
-            if int(row.get("accepted_count") or 0) > 0
+            for row in active_rows
         ) / float(active_window_count)
         if active_window_count > 0
         else 0.0

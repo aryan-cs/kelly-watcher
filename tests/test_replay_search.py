@@ -528,6 +528,51 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(result["active_window_count"], 2)
         self.assertEqual(result["avg_window_end_open_exposure_share"], round((10.0 / 95.0) / 2.0, 6))
 
+    def test_aggregate_window_results_uses_active_carry_only_windows_for_avg_carry_share(self) -> None:
+        result = replay_search._aggregate_window_results(
+            [
+                {
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 95.0,
+                    "peak_equity_usd": 100.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": -5.0,
+                    "accepted_count": 2,
+                    "accepted_size_usd": 20.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 2,
+                    "window_end_open_exposure_usd": 10.0,
+                    "window_end_open_exposure_share": 10.0 / 95.0,
+                    "signal_mode_summary": {},
+                },
+                {
+                    "initial_bankroll_usd": 95.0,
+                    "final_equity_usd": 101.0,
+                    "peak_equity_usd": 101.0,
+                    "min_equity_usd": 95.0,
+                    "total_pnl_usd": 6.0,
+                    "accepted_count": 0,
+                    "accepted_size_usd": 0.0,
+                    "resolved_count": 1,
+                    "resolved_size_usd": 10.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 0,
+                    "window_end_open_exposure_usd": 5.0,
+                    "window_end_open_exposure_share": 5.0 / 101.0,
+                    "signal_mode_summary": {},
+                },
+            ],
+            initial_bankroll_usd=100.0,
+        )
+
+        expected_avg = round(((10.0 / 95.0) + (5.0 / 101.0)) / 2.0, 6)
+        self.assertEqual(result["active_window_count"], 2)
+        self.assertEqual(result["avg_window_end_open_exposure_share"], expected_avg)
+
     def test_aggregate_window_results_tracks_final_bankroll_separately_from_max_carry(self) -> None:
         result = replay_search._aggregate_window_results(
             [

@@ -1231,6 +1231,36 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["manual_retrain_message"], "requested by dashboard_api")
         self.assertEqual(snapshot["session_id"], "abc123")
 
+    def test_dashboard_bot_state_snapshot_clears_stale_persisted_manual_retrain_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            bot_state_file.write_text(
+                json.dumps(
+                    {
+                        "session_id": "abc123",
+                        "started_at": 100,
+                        "manual_retrain_pending": True,
+                        "manual_retrain_requested_at": 123,
+                        "manual_retrain_message": "requested by dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+                persisted = json.loads(bot_state_file.read_text(encoding="utf-8"))
+
+        self.assertFalse(snapshot["manual_retrain_pending"])
+        self.assertEqual(snapshot["manual_retrain_requested_at"], 0)
+        self.assertEqual(snapshot["manual_retrain_message"], "")
+        self.assertFalse(persisted["manual_retrain_pending"])
+        self.assertEqual(persisted["manual_retrain_requested_at"], 0)
+        self.assertEqual(persisted["manual_retrain_message"], "")
+
     def test_dashboard_bot_state_snapshot_cleans_stale_manual_retrain_request(self) -> None:
         with TemporaryDirectory() as tmpdir:
             bot_state_file = Path(tmpdir) / "bot_state.json"
@@ -1291,6 +1321,36 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["manual_trade_requested_at"], requested_at)
         self.assertEqual(snapshot["manual_trade_message"], "buy more market-1")
         self.assertEqual(snapshot["session_id"], "abc123")
+
+    def test_dashboard_bot_state_snapshot_clears_stale_persisted_manual_trade_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            bot_state_file.write_text(
+                json.dumps(
+                    {
+                        "session_id": "abc123",
+                        "started_at": 100,
+                        "manual_trade_pending": True,
+                        "manual_trade_requested_at": 456,
+                        "manual_trade_message": "buy more market-1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+                persisted = json.loads(bot_state_file.read_text(encoding="utf-8"))
+
+        self.assertFalse(snapshot["manual_trade_pending"])
+        self.assertEqual(snapshot["manual_trade_requested_at"], 0)
+        self.assertEqual(snapshot["manual_trade_message"], "")
+        self.assertFalse(persisted["manual_trade_pending"])
+        self.assertEqual(persisted["manual_trade_requested_at"], 0)
+        self.assertEqual(persisted["manual_trade_message"], "")
 
     def test_dashboard_bot_state_snapshot_cleans_stale_manual_trade_request(self) -> None:
         with TemporaryDirectory() as tmpdir:

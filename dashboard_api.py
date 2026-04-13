@@ -355,6 +355,28 @@ def _persist_shadow_restart_cleared_state(bot_state: dict[str, Any]) -> None:
     _write_atomic_json(BOT_STATE_FILE, updated_state)
 
 
+def _persist_manual_request_cleared_state(
+    bot_state: dict[str, Any],
+    *,
+    retrain: bool = False,
+    trade: bool = False,
+) -> None:
+    updated_state = dict(bot_state)
+    if retrain:
+        updated_state.update(
+            manual_retrain_pending=False,
+            manual_retrain_requested_at=0,
+            manual_retrain_message="",
+        )
+    if trade:
+        updated_state.update(
+            manual_trade_pending=False,
+            manual_trade_requested_at=0,
+            manual_trade_message="",
+        )
+    _write_atomic_json(BOT_STATE_FILE, updated_state)
+
+
 def _bot_state_snapshot() -> dict[str, Any]:
     bot_state = _read_json_dict(BOT_STATE_FILE)
     bot_state.update(
@@ -374,6 +396,13 @@ def _bot_state_snapshot() -> dict[str, Any]:
             manual_retrain_requested_at=int(request_payload.get("requested_at") or 0),
             manual_retrain_message=_manual_retrain_pending_message(request_payload),
         )
+    elif bool(bot_state.get("manual_retrain_pending")):
+        bot_state.update(
+            manual_retrain_pending=False,
+            manual_retrain_requested_at=0,
+            manual_retrain_message="",
+        )
+        _persist_manual_request_cleared_state(bot_state, retrain=True)
     request_payload = _request_payload_if_fresh(SHADOW_RESET_REQUEST_FILE, 900)
     if request_payload is not None:
         bot_state.update(
@@ -402,6 +431,13 @@ def _bot_state_snapshot() -> dict[str, Any]:
             manual_trade_requested_at=int(request_payload.get("requested_at") or 0),
             manual_trade_message=_manual_trade_pending_message(request_payload),
         )
+    elif bool(bot_state.get("manual_trade_pending")):
+        bot_state.update(
+            manual_trade_pending=False,
+            manual_trade_requested_at=0,
+            manual_trade_message="",
+        )
+        _persist_manual_request_cleared_state(bot_state, trade=True)
     return bot_state
 
 

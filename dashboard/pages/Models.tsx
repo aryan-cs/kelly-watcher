@@ -1858,23 +1858,24 @@ function replaySearchTraderConcentrationSummary(
   constraintsRaw: string | null | undefined,
   penalty: number | null | undefined
 ): ReplaySearchTraderConcentrationSummary {
-  const parse = (raw: string | null | undefined): {count: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
-    if (!raw) return {count: null, acceptedShare: null, absPnlShare: null}
+  const parse = (raw: string | null | undefined): {count: number | null; peakCount: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
+    if (!raw) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
     try {
       const parsed = JSON.parse(raw)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {count: null, acceptedShare: null, absPnlShare: null}
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
       const concentration = (parsed as Record<string, unknown>).trader_concentration
       if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
-        return {count: null, acceptedShare: null, absPnlShare: null}
+        return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
       }
       const payload = concentration as Record<string, unknown>
       return {
         count: Number(payload.trader_count || 0),
+        peakCount: Number(payload.peak_trader_count || payload.trader_count || 0),
         acceptedShare: Number(payload.top_accepted_share || 0),
         absPnlShare: Number(payload.top_abs_pnl_share || 0)
       }
     } catch {
-      return {count: null, acceptedShare: null, absPnlShare: null}
+      return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
     }
   }
 
@@ -1900,12 +1901,16 @@ function replaySearchTraderConcentrationSummary(
   }
   const parts: string[] = []
   if (best.count != null || best.acceptedShare != null || best.absPnlShare != null) {
-    const countText = best.count != null ? `cnt ${formatCount(best.count)}` : null
+    const countText = best.count != null
+      ? `worst cnt ${formatCount(best.count)}${best.peakCount != null && best.peakCount > best.count ? ` peak ${formatCount(best.peakCount)}` : ''}`
+      : null
     const mixText = best.acceptedShare != null || best.absPnlShare != null ? `n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}` : null
     parts.push(`best ${[countText, mixText].filter(Boolean).join(' ')}`)
   }
   if (current.count != null || current.acceptedShare != null || current.absPnlShare != null) {
-    const countText = current.count != null ? `cnt ${formatCount(current.count)}` : null
+    const countText = current.count != null
+      ? `worst cnt ${formatCount(current.count)}${current.peakCount != null && current.peakCount > current.count ? ` peak ${formatCount(current.peakCount)}` : ''}`
+      : null
     const mixText = current.acceptedShare != null || current.absPnlShare != null ? `n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}` : null
     parts.push(`cur ${[countText, mixText].filter(Boolean).join(' ')}`)
   }
@@ -1940,23 +1945,24 @@ function replaySearchMarketConcentrationSummary(
   constraintsRaw: string | null | undefined,
   penalty: number | null | undefined
 ): ReplaySearchMarketConcentrationSummary {
-  const parse = (raw: string | null | undefined): {count: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
-    if (!raw) return {count: null, acceptedShare: null, absPnlShare: null}
+  const parse = (raw: string | null | undefined): {count: number | null; peakCount: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
+    if (!raw) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
     try {
       const parsed = JSON.parse(raw)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {count: null, acceptedShare: null, absPnlShare: null}
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
       const concentration = (parsed as Record<string, unknown>).market_concentration
       if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
-        return {count: null, acceptedShare: null, absPnlShare: null}
+        return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
       }
       const payload = concentration as Record<string, unknown>
       return {
         count: Number(payload.market_count || 0),
+        peakCount: Number(payload.peak_market_count || payload.market_count || 0),
         acceptedShare: Number(payload.top_accepted_share || 0),
         absPnlShare: Number(payload.top_abs_pnl_share || 0)
       }
     } catch {
-      return {count: null, acceptedShare: null, absPnlShare: null}
+      return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
     }
   }
 
@@ -1982,12 +1988,16 @@ function replaySearchMarketConcentrationSummary(
   }
   const parts: string[] = []
   if (best.count != null || best.acceptedShare != null || best.absPnlShare != null) {
-    const countText = best.count != null ? `cnt ${formatCount(best.count)}` : null
+    const countText = best.count != null
+      ? `worst cnt ${formatCount(best.count)}${best.peakCount != null && best.peakCount > best.count ? ` peak ${formatCount(best.peakCount)}` : ''}`
+      : null
     const mixText = best.acceptedShare != null || best.absPnlShare != null ? `n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}` : null
     parts.push(`best ${[countText, mixText].filter(Boolean).join(' ')}`)
   }
   if (current.count != null || current.acceptedShare != null || current.absPnlShare != null) {
-    const countText = current.count != null ? `cnt ${formatCount(current.count)}` : null
+    const countText = current.count != null
+      ? `worst cnt ${formatCount(current.count)}${current.peakCount != null && current.peakCount > current.count ? ` peak ${formatCount(current.peakCount)}` : ''}`
+      : null
     const mixText = current.acceptedShare != null || current.absPnlShare != null ? `n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}` : null
     parts.push(`cur ${[countText, mixText].filter(Boolean).join(' ')}`)
   }
@@ -2016,23 +2026,24 @@ function replaySearchEntryPriceBandConcentrationSummary(
   constraintsRaw: string | null | undefined,
   penalty: number | null | undefined
 ): ReplaySearchTraderConcentrationSummary {
-  const parse = (raw: string | null | undefined): {count: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
-    if (!raw) return {count: null, acceptedShare: null, absPnlShare: null}
+  const parse = (raw: string | null | undefined): {count: number | null; peakCount: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
+    if (!raw) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
     try {
       const parsed = JSON.parse(raw)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {count: null, acceptedShare: null, absPnlShare: null}
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
       const concentration = (parsed as Record<string, unknown>).entry_price_band_concentration
       if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
-        return {count: null, acceptedShare: null, absPnlShare: null}
+        return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
       }
       const payload = concentration as Record<string, unknown>
       return {
         count: Number(payload.entry_price_band_count || 0),
+        peakCount: Number(payload.peak_entry_price_band_count || payload.entry_price_band_count || 0),
         acceptedShare: Number(payload.top_accepted_share || 0),
         absPnlShare: Number(payload.top_abs_pnl_share || 0)
       }
     } catch {
-      return {count: null, acceptedShare: null, absPnlShare: null}
+      return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
     }
   }
 
@@ -2058,12 +2069,16 @@ function replaySearchEntryPriceBandConcentrationSummary(
   }
   const parts: string[] = []
   if (best.count != null || best.acceptedShare != null || best.absPnlShare != null) {
-    const countText = best.count != null ? `cnt ${formatCount(best.count)}` : null
+    const countText = best.count != null
+      ? `worst cnt ${formatCount(best.count)}${best.peakCount != null && best.peakCount > best.count ? ` peak ${formatCount(best.peakCount)}` : ''}`
+      : null
     const mixText = best.acceptedShare != null || best.absPnlShare != null ? `n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}` : null
     parts.push(`best ${[countText, mixText].filter(Boolean).join(' ')}`)
   }
   if (current.count != null || current.acceptedShare != null || current.absPnlShare != null) {
-    const countText = current.count != null ? `cnt ${formatCount(current.count)}` : null
+    const countText = current.count != null
+      ? `worst cnt ${formatCount(current.count)}${current.peakCount != null && current.peakCount > current.count ? ` peak ${formatCount(current.peakCount)}` : ''}`
+      : null
     const mixText = current.acceptedShare != null || current.absPnlShare != null ? `n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}` : null
     parts.push(`cur ${[countText, mixText].filter(Boolean).join(' ')}`)
   }
@@ -2092,23 +2107,24 @@ function replaySearchTimeToCloseBandConcentrationSummary(
   constraintsRaw: string | null | undefined,
   penalty: number | null | undefined
 ): ReplaySearchTraderConcentrationSummary {
-  const parse = (raw: string | null | undefined): {count: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
-    if (!raw) return {count: null, acceptedShare: null, absPnlShare: null}
+  const parse = (raw: string | null | undefined): {count: number | null; peakCount: number | null; acceptedShare: number | null; absPnlShare: number | null} => {
+    if (!raw) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
     try {
       const parsed = JSON.parse(raw)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {count: null, acceptedShare: null, absPnlShare: null}
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
       const concentration = (parsed as Record<string, unknown>).time_to_close_band_concentration
       if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
-        return {count: null, acceptedShare: null, absPnlShare: null}
+        return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
       }
       const payload = concentration as Record<string, unknown>
       return {
         count: Number(payload.time_to_close_band_count || 0),
+        peakCount: Number(payload.peak_time_to_close_band_count || payload.time_to_close_band_count || 0),
         acceptedShare: Number(payload.top_accepted_share || 0),
         absPnlShare: Number(payload.top_abs_pnl_share || 0)
       }
     } catch {
-      return {count: null, acceptedShare: null, absPnlShare: null}
+      return {count: null, peakCount: null, acceptedShare: null, absPnlShare: null}
     }
   }
 
@@ -2134,12 +2150,16 @@ function replaySearchTimeToCloseBandConcentrationSummary(
   }
   const parts: string[] = []
   if (best.count != null || best.acceptedShare != null || best.absPnlShare != null) {
-    const countText = best.count != null ? `cnt ${formatCount(best.count)}` : null
+    const countText = best.count != null
+      ? `worst cnt ${formatCount(best.count)}${best.peakCount != null && best.peakCount > best.count ? ` peak ${formatCount(best.peakCount)}` : ''}`
+      : null
     const mixText = best.acceptedShare != null || best.absPnlShare != null ? `n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}` : null
     parts.push(`best ${[countText, mixText].filter(Boolean).join(' ')}`)
   }
   if (current.count != null || current.acceptedShare != null || current.absPnlShare != null) {
-    const countText = current.count != null ? `cnt ${formatCount(current.count)}` : null
+    const countText = current.count != null
+      ? `worst cnt ${formatCount(current.count)}${current.peakCount != null && current.peakCount > current.count ? ` peak ${formatCount(current.peakCount)}` : ''}`
+      : null
     const mixText = current.acceptedShare != null || current.absPnlShare != null ? `n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}` : null
     parts.push(`cur ${[countText, mixText].filter(Boolean).join(' ')}`)
   }
@@ -2408,13 +2428,13 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
         case 'pause_guard_reject_share':
           return 'pause share'
         case 'trader_count':
-          return 'wallet count'
+          return 'wallet worst count'
         case 'market_count':
-          return 'market count'
+          return 'market worst count'
         case 'entry_price_band_count':
-          return 'entry count'
+          return 'entry worst count'
         case 'time_to_close_band_count':
-          return 'horizon count'
+          return 'horizon worst count'
         case 'top_trader_accepted_share':
           return 'wallet n share'
         case 'top_trader_abs_pnl_share':
@@ -2601,10 +2621,10 @@ function replaySearchHeadroomSummary(
     if (minTotalPnlUsd > -999_999_999) pushHeadroom('global', 'pnl', globalTotalPnl, minTotalPnlUsd, formatDollar, 'min')
     if (maxDrawdownPct > 0) pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max')
     if (maxPauseGuardRejectShare > 0) pushHeadroom('global', 'pause', pauseGuardRejectShare, maxPauseGuardRejectShare, replayHeadroomPctPoints, 'max')
-    if (minTraderCount > 0) pushHeadroom('global', 'wallet cnt', traderCount, minTraderCount, replayHeadroomCount, 'min')
-    if (minMarketCount > 0) pushHeadroom('global', 'market cnt', marketCount, minMarketCount, replayHeadroomCount, 'min')
-    if (minEntryPriceBandCount > 0) pushHeadroom('global', 'entry cnt', entryPriceBandCount, minEntryPriceBandCount, replayHeadroomCount, 'min')
-    if (minTimeToCloseBandCount > 0) pushHeadroom('global', 'horizon cnt', timeToCloseBandCount, minTimeToCloseBandCount, replayHeadroomCount, 'min')
+    if (minTraderCount > 0) pushHeadroom('global', 'wallet worst cnt', traderCount, minTraderCount, replayHeadroomCount, 'min')
+    if (minMarketCount > 0) pushHeadroom('global', 'market worst cnt', marketCount, minMarketCount, replayHeadroomCount, 'min')
+    if (minEntryPriceBandCount > 0) pushHeadroom('global', 'entry worst cnt', entryPriceBandCount, minEntryPriceBandCount, replayHeadroomCount, 'min')
+    if (minTimeToCloseBandCount > 0) pushHeadroom('global', 'horizon worst cnt', timeToCloseBandCount, minTimeToCloseBandCount, replayHeadroomCount, 'min')
     if (maxTopTraderAcceptedShare > 0) pushHeadroom('global', 'wallet n', topTraderAcceptedShare, maxTopTraderAcceptedShare, replayHeadroomPctPoints, 'max')
     if (maxTopTraderAbsPnlShare > 0) pushHeadroom('global', 'wallet pnl', topTraderAbsPnlShare, maxTopTraderAbsPnlShare, replayHeadroomPctPoints, 'max')
     if (maxTopMarketAcceptedShare > 0) pushHeadroom('global', 'market n', topMarketAcceptedShare, maxTopMarketAcceptedShare, replayHeadroomPctPoints, 'max')

@@ -1247,6 +1247,108 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_entry_price_band_count"], 3)
         self.assertEqual(payload["constraints"]["min_time_to_close_band_count"], 3)
 
+    def test_main_uses_worst_active_window_counts_for_distinct_concentration_floors(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                if start_ts == 1:
+                    return {
+                        "run_id": 1,
+                        "window_start_ts": start_ts,
+                        "window_end_ts": end_ts,
+                        "total_pnl_usd": 34.0,
+                        "max_drawdown_pct": 0.03,
+                        "accepted_count": 8,
+                        "resolved_count": 8,
+                        "rejected_count": 0,
+                        "unresolved_count": 0,
+                        "trade_count": 8,
+                        "win_rate": 0.625,
+                        "trader_concentration": {"trader_count": 4, "top_accepted_share": 0.35, "top_abs_pnl_share": 0.32},
+                        "market_concentration": {"market_count": 4, "top_accepted_share": 0.40, "top_abs_pnl_share": 0.34},
+                        "entry_price_band_concentration": {"entry_price_band_count": 3, "top_accepted_share": 0.45, "top_abs_pnl_share": 0.38},
+                        "time_to_close_band_concentration": {"time_to_close_band_count": 4, "top_accepted_share": 0.36, "top_abs_pnl_share": 0.30},
+                    }
+                return {
+                    "run_id": 2,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "total_pnl_usd": 30.0,
+                    "max_drawdown_pct": 0.03,
+                    "accepted_count": 8,
+                    "resolved_count": 8,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 8,
+                    "win_rate": 0.625,
+                    "trader_concentration": {"trader_count": 2, "top_accepted_share": 0.50, "top_abs_pnl_share": 0.46},
+                    "market_concentration": {"market_count": 2, "top_accepted_share": 0.48, "top_abs_pnl_share": 0.44},
+                    "entry_price_band_concentration": {"entry_price_band_count": 2, "top_accepted_share": 0.52, "top_abs_pnl_share": 0.47},
+                    "time_to_close_band_concentration": {"time_to_close_band_count": 2, "top_accepted_share": 0.50, "top_abs_pnl_share": 0.45},
+                }
+            return {
+                "run_id": 3 if start_ts == 1 else 4,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 26.0 if start_ts == 1 else 24.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 8,
+                "win_rate": 0.625,
+                "trader_concentration": {"trader_count": 3, "top_accepted_share": 0.40, "top_abs_pnl_share": 0.36},
+                "market_concentration": {"market_count": 3, "top_accepted_share": 0.42, "top_abs_pnl_share": 0.37},
+                "entry_price_band_concentration": {"entry_price_band_count": 3, "top_accepted_share": 0.43, "top_abs_pnl_share": 0.39},
+                "time_to_close_band_concentration": {"time_to_close_band_count": 3, "top_accepted_share": 0.41, "top_abs_pnl_share": 0.35},
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--min-trader-count",
+            "3",
+            "--min-market-count",
+            "3",
+            "--min-entry-price-band-count",
+            "3",
+            "--min-time-to-close-band-count",
+            "3",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        self.assertEqual(
+            rejected["constraint_failures"],
+            ["trader_count", "market_count", "entry_price_band_count", "time_to_close_band_count"],
+        )
+        self.assertEqual(rejected["result"]["trader_concentration"]["trader_count"], 2)
+        self.assertEqual(rejected["result"]["trader_concentration"]["peak_trader_count"], 4)
+        self.assertEqual(rejected["result"]["market_concentration"]["market_count"], 2)
+        self.assertEqual(rejected["result"]["market_concentration"]["peak_market_count"], 4)
+        self.assertEqual(rejected["result"]["entry_price_band_concentration"]["entry_price_band_count"], 2)
+        self.assertEqual(rejected["result"]["entry_price_band_concentration"]["peak_entry_price_band_count"], 3)
+        self.assertEqual(rejected["result"]["time_to_close_band_concentration"]["time_to_close_band_count"], 2)
+        self.assertEqual(rejected["result"]["time_to_close_band_concentration"]["peak_time_to_close_band_count"], 4)
+        self.assertIn("reject trader_count,market_count,entry_price_band_count,time_to_close_band_count", stderr.getvalue())
+
     def test_main_can_penalize_pause_guard_reject_share_in_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])

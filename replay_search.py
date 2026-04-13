@@ -987,6 +987,26 @@ def _aggregate_window_results(
         for row in window_results
         if isinstance(row.get("time_to_close_band_concentration"), dict)
     ]
+    active_trader_concentration_rows = [
+        row.get("trader_concentration")
+        for row in window_results
+        if int(row.get("accepted_count") or 0) > 0 and isinstance(row.get("trader_concentration"), dict)
+    ]
+    active_market_concentration_rows = [
+        row.get("market_concentration")
+        for row in window_results
+        if int(row.get("accepted_count") or 0) > 0 and isinstance(row.get("market_concentration"), dict)
+    ]
+    active_entry_price_band_concentration_rows = [
+        row.get("entry_price_band_concentration")
+        for row in window_results
+        if int(row.get("accepted_count") or 0) > 0 and isinstance(row.get("entry_price_band_concentration"), dict)
+    ]
+    active_time_to_close_band_concentration_rows = [
+        row.get("time_to_close_band_concentration")
+        for row in window_results
+        if int(row.get("accepted_count") or 0) > 0 and isinstance(row.get("time_to_close_band_concentration"), dict)
+    ]
     top_accepted_window = max(
         trader_concentration_rows,
         key=lambda row: float((row or {}).get("top_accepted_share") or 0.0),
@@ -1006,7 +1026,8 @@ def _aggregate_window_results(
         "top_abs_pnl_trader_address": str((top_abs_pnl_window or {}).get("top_abs_pnl_trader_address") or ""),
         "top_abs_pnl_usd": round(float((top_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
-        "trader_count": max((int((row or {}).get("trader_count") or 0) for row in trader_concentration_rows), default=0),
+        "trader_count": min((int((row or {}).get("trader_count") or 0) for row in active_trader_concentration_rows), default=0),
+        "peak_trader_count": max((int((row or {}).get("trader_count") or 0) for row in trader_concentration_rows), default=0),
     }
     top_market_accepted_window = max(
         market_concentration_rows,
@@ -1027,7 +1048,8 @@ def _aggregate_window_results(
         "top_abs_pnl_market_id": str((top_market_abs_pnl_window or {}).get("top_abs_pnl_market_id") or ""),
         "top_abs_pnl_usd": round(float((top_market_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_market_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
-        "market_count": max((int((row or {}).get("market_count") or 0) for row in market_concentration_rows), default=0),
+        "market_count": min((int((row or {}).get("market_count") or 0) for row in active_market_concentration_rows), default=0),
+        "peak_market_count": max((int((row or {}).get("market_count") or 0) for row in market_concentration_rows), default=0),
     }
     top_entry_price_band_accepted_window = max(
         entry_price_band_concentration_rows,
@@ -1048,7 +1070,8 @@ def _aggregate_window_results(
         "top_abs_pnl_entry_price_band": str((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_entry_price_band") or ""),
         "top_abs_pnl_usd": round(float((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_entry_price_band_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
-        "entry_price_band_count": max((int((row or {}).get("entry_price_band_count") or 0) for row in entry_price_band_concentration_rows), default=0),
+        "entry_price_band_count": min((int((row or {}).get("entry_price_band_count") or 0) for row in active_entry_price_band_concentration_rows), default=0),
+        "peak_entry_price_band_count": max((int((row or {}).get("entry_price_band_count") or 0) for row in entry_price_band_concentration_rows), default=0),
     }
     top_time_to_close_band_accepted_window = max(
         time_to_close_band_concentration_rows,
@@ -1069,7 +1092,8 @@ def _aggregate_window_results(
         "top_abs_pnl_time_to_close_band": str((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_time_to_close_band") or ""),
         "top_abs_pnl_usd": round(float((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_usd") or 0.0), 6),
         "top_abs_pnl_share": round(float((top_time_to_close_band_abs_pnl_window or {}).get("top_abs_pnl_share") or 0.0), 6),
-        "time_to_close_band_count": max((int((row or {}).get("time_to_close_band_count") or 0) for row in time_to_close_band_concentration_rows), default=0),
+        "time_to_close_band_count": min((int((row or {}).get("time_to_close_band_count") or 0) for row in active_time_to_close_band_concentration_rows), default=0),
+        "peak_time_to_close_band_count": max((int((row or {}).get("time_to_close_band_count") or 0) for row in time_to_close_band_concentration_rows), default=0),
     }
     return {
         "window_count": len(window_results),

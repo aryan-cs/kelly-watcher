@@ -2321,11 +2321,55 @@ function replaySearchModeTopTwoAcceptingWindowAcceptedSizeShareFromPayload(paylo
   return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0)
 }
 
+function replaySearchFinalEquityUsdFromPayload(payload: Record<string, unknown>): number {
+  if (payload.final_equity_usd != null) return Number(payload.final_equity_usd || 0)
+  if (Number(payload.window_count || 0) <= 1 && payload.total_pnl_usd != null) {
+    return Number(payload.initial_bankroll_usd || 0) + Number(payload.total_pnl_usd || 0)
+  }
+  if (payload.final_bankroll_usd != null) return Number(payload.final_bankroll_usd || 0)
+  return 0
+}
+
+function replaySearchWindowEndOpenExposureUsdFromPayload(payload: Record<string, unknown>): number {
+  if (payload.max_window_end_open_exposure_usd != null) {
+    return Number(payload.max_window_end_open_exposure_usd || 0)
+  }
+  if (payload.window_end_open_exposure_usd != null) {
+    return Number(payload.window_end_open_exposure_usd || 0)
+  }
+  if (Number(payload.window_count || 0) <= 1 && payload.final_bankroll_usd != null) {
+    const finalEquityUsd = Math.max(replaySearchFinalEquityUsdFromPayload(payload), 0)
+    const finalBankrollUsd = Number(payload.final_bankroll_usd || 0)
+    return Math.max(finalEquityUsd - finalBankrollUsd, 0)
+  }
+  return 0
+}
+
+function replaySearchWindowEndOpenExposureShareFromPayload(payload: Record<string, unknown>): number {
+  if (payload.max_window_end_open_exposure_share != null) {
+    return Number(payload.max_window_end_open_exposure_share || 0)
+  }
+  if (payload.window_end_open_exposure_share != null) {
+    return Number(payload.window_end_open_exposure_share || 0)
+  }
+  if (Number(payload.window_count || 0) <= 1) {
+    const carryUsd = replaySearchWindowEndOpenExposureUsdFromPayload(payload)
+    const finalEquityUsd = Math.max(replaySearchFinalEquityUsdFromPayload(payload), 0)
+    if (finalEquityUsd > 0) return carryUsd / finalEquityUsd
+    return carryUsd > 0 ? 1 : 0
+  }
+  return 0
+}
+
 function replaySearchCarryWindowShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.carry_window_share != null) return Number(payload.carry_window_share || 0)
   const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload)
-  if (activeWindowCount <= 0) return 0
-  return Number(payload.carry_window_count || 0) / activeWindowCount
+  const carryWindowCount = Number(payload.carry_window_count || 0)
+  if (activeWindowCount > 0 && carryWindowCount > 0) return carryWindowCount / activeWindowCount
+  if (Number(payload.window_count || 0) <= 1) {
+    return replaySearchWindowEndOpenExposureUsdFromPayload(payload) > 0 ? 1 : 0
+  }
+  return 0
 }
 
 function replaySearchCarryRestartWindowShareFromPayload(payload: Record<string, unknown>): number {
@@ -2358,11 +2402,7 @@ function replaySearchLiveGuardRestartWindowShareFromPayload(payload: Record<stri
 
 function replaySearchAvgWindowEndOpenExposureShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.avg_window_end_open_exposure_share != null) return Number(payload.avg_window_end_open_exposure_share || 0)
-  return Number(
-    payload.max_window_end_open_exposure_share
-    ?? payload.window_end_open_exposure_share
-    ?? 0
-  )
+  return replaySearchWindowEndOpenExposureShareFromPayload(payload)
 }
 
 function replaySearchLiveGuardWindowShareFromPayload(payload: Record<string, unknown>): number {
@@ -4058,11 +4098,7 @@ function replaySearchHeadroomSummary(
     const globalWorstWindowResolvedSizeShare = replaySearchWorstActiveWindowResolvedSizeShareFromPayload(resultParsed as Record<string, unknown>)
     const globalWorstWindowDrawdown = replaySearchWorstWindowDrawdownPctFromPayload(resultParsed as Record<string, unknown>)
     const globalOpenExposureShare = Number(resultParsed.max_open_exposure_share || 0)
-    const globalWindowEndOpenExposureShare = Number(
-      resultParsed.max_window_end_open_exposure_share
-      ?? resultParsed.window_end_open_exposure_share
-      ?? 0
-    )
+    const globalWindowEndOpenExposureShare = replaySearchWindowEndOpenExposureShareFromPayload(resultParsed as Record<string, unknown>)
     const globalAvgWindowEndOpenExposureShare = replaySearchAvgWindowEndOpenExposureShareFromPayload(resultParsed as Record<string, unknown>)
     const globalCarryWindowShare = replaySearchCarryWindowShareFromPayload(resultParsed as Record<string, unknown>)
     const globalCarryRestartWindowShare = replaySearchCarryRestartWindowShareFromPayload(resultParsed as Record<string, unknown>)
@@ -4410,17 +4446,9 @@ function replaySearchWindowSummary(latestSearch: ReplaySearchSummaryRow | null |
     const acceptingWindowAcceptedSizeConcentrationIndex = replaySearchAcceptingWindowAcceptedSizeConcentrationIndexFromPayload(parsed as Record<string, unknown>)
     const worstActiveWindowAcceptedCount = replaySearchWorstActiveWindowAcceptedCountFromPayload(parsed as Record<string, unknown>)
     const worstActiveWindowAcceptedSizeUsd = replaySearchWorstActiveWindowAcceptedSizeUsdFromPayload(parsed as Record<string, unknown>)
-    const carryShare = Number(
-      parsed.max_window_end_open_exposure_share
-      ?? parsed.window_end_open_exposure_share
-      ?? 0
-    )
+    const carryShare = replaySearchWindowEndOpenExposureShareFromPayload(parsed as Record<string, unknown>)
     const avgCarryShare = replaySearchAvgWindowEndOpenExposureShareFromPayload(parsed as Record<string, unknown>)
-    const carryUsd = Number(
-      parsed.max_window_end_open_exposure_usd
-      ?? parsed.window_end_open_exposure_usd
-      ?? 0
-    )
+    const carryUsd = replaySearchWindowEndOpenExposureUsdFromPayload(parsed as Record<string, unknown>)
     const carryWindowCount = Number(parsed.carry_window_count || 0)
     const carryRestartWindowCount = Number(parsed.carry_restart_window_count || 0)
     const carryRestartWindowOpportunityCount = Number(parsed.carry_restart_window_opportunity_count || 0)

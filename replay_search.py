@@ -1980,10 +1980,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
     initial_bankroll_usd = max(float(enriched.get("initial_bankroll_usd") or 0.0), 0.0)
     enriched.setdefault("window_count", window_count)
     if "final_equity_usd" not in enriched and window_count == 1:
-        if enriched.get("final_bankroll_usd") is not None:
-            enriched["final_equity_usd"] = round(float(enriched.get("final_bankroll_usd") or 0.0), 6)
-        else:
-            enriched["final_equity_usd"] = round(initial_bankroll_usd + total_pnl_usd, 6)
+        enriched["final_equity_usd"] = round(initial_bankroll_usd + total_pnl_usd, 6)
     if "peak_equity_usd" not in enriched and window_count == 1:
         final_equity_usd = float(enriched.get("final_equity_usd") or initial_bankroll_usd)
         enriched["peak_equity_usd"] = round(max(initial_bankroll_usd, final_equity_usd), 6)

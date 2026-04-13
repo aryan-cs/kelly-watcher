@@ -1167,6 +1167,22 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(stressed["carry_window_count"], 1)
         self.assertEqual(stressed["carry_window_share"], 1.0)
 
+        legacy_single_window = replay_search._with_window_activity_fields(
+            {
+                "initial_bankroll_usd": 100.0,
+                "total_pnl_usd": 5.0,
+                "final_bankroll_usd": 90.0,
+                "accepted_count": 2,
+                "resolved_count": 1,
+            }
+        )
+
+        self.assertEqual(legacy_single_window["final_equity_usd"], 105.0)
+        self.assertEqual(legacy_single_window["window_end_open_exposure_usd"], 15.0)
+        self.assertAlmostEqual(legacy_single_window["window_end_open_exposure_share"], 15.0 / 105.0, places=6)
+        self.assertEqual(legacy_single_window["carry_window_count"], 1)
+        self.assertEqual(legacy_single_window["carry_window_share"], 1.0)
+
         live_guarded = replay_search._with_window_activity_fields(
             {
                 "initial_bankroll_usd": 100.0,

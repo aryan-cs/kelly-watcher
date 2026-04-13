@@ -328,6 +328,11 @@ def _simulate(
                 "trader_address": str(raw_position.get("trader_address") or "").lower(),
                 "size_usd": float(raw_position.get("size_usd") or 0.0),
                 "pnl_usd": float(raw_position.get("pnl_usd") or 0.0),
+                "signal_mode": _canonical_signal_mode(raw_position.get("signal_mode") or "heuristic"),
+                "entry_price": _coalesce_float(raw_position.get("entry_price")),
+                "source_status": str(raw_position.get("source_status") or ""),
+                "time_to_close_band": str(raw_position.get("time_to_close_band") or ""),
+                "carry_resolution": True,
             }
         )
     realized_pnl = float(continuity_seed.get("realized_pnl_usd") or 0.0)
@@ -341,7 +346,11 @@ def _simulate(
     window_end_live_guard_triggered = False
     window_end_daily_guard_triggered = False
     replay_rows: list[dict[str, Any]] = []
+    carry_resolved_rows: list[dict[str, Any]] = []
     unresolved_count = 0
+    carry_resolved_count = 0
+    carry_resolved_size_usd = 0.0
+    carry_resolved_win_count = 0
     live_guard_triggered = bool(continuity_seed.get("live_guard_triggered"))
     live_guard_start_equity = max(
         float(continuity_seed.get("live_guard_start_equity") or policy.initial_bankroll_usd),
@@ -388,12 +397,34 @@ def _simulate(
                 current_open_exposure / current_equity,
             )
 
-    def close_due_positions(now_ts: int) -> None:
-        nonlocal realized_pnl
+    def close_due_positions(now_ts: int, *, record_carry_resolution: bool) -> None:
+        nonlocal carry_resolved_count, carry_resolved_size_usd, carry_resolved_win_count, realized_pnl
         remaining: list[dict[str, Any]] = []
         for position in open_positions:
             if int(position["close_ts"]) <= now_ts:
-                realized_pnl += float(position["pnl_usd"])
+                pnl_usd = float(position["pnl_usd"])
+                size_usd = float(position["size_usd"])
+                realized_pnl += pnl_usd
+                if record_carry_resolution and bool(position.get("carry_resolution")):
+                    carry_resolved_count += 1
+                    carry_resolved_size_usd += size_usd
+                    if pnl_usd > 0:
+                        carry_resolved_win_count += 1
+                    carry_resolved_rows.append(
+                        {
+                            "decision": "carry_resolve",
+                            "counts_as_trade": False,
+                            "signal_mode": str(position.get("signal_mode") or ""),
+                            "market_id": str(position.get("market_id") or ""),
+                            "trader_address": str(position.get("trader_address") or "").lower(),
+                            "entry_price": _coalesce_float(position.get("entry_price")),
+                            "source_status": str(position.get("source_status") or ""),
+                            "time_to_close_band": str(position.get("time_to_close_band") or ""),
+                            "simulated_size_usd": size_usd,
+                            "return_pct": (pnl_usd / size_usd) if size_usd > 0 else None,
+                            "pnl_usd": pnl_usd,
+                        }
+                    )
             else:
                 remaining.append(position)
         open_positions[:] = remaining
@@ -424,7 +455,7 @@ def _simulate(
                 return "daily_loss_guard"
         return None
 
-    close_due_positions(simulation_start_ts)
+    close_due_positions(simulation_start_ts, record_carry_resolution=False)
     if start_ts is not None:
         sync_daily_guard(simulation_start_ts)
     starting_equity = account_equity()
@@ -434,7 +465,7 @@ def _simulate(
 
     for row in rows:
         placed_at = int(row["placed_at"] or 0)
-        close_due_positions(placed_at)
+        close_due_positions(placed_at, record_carry_resolution=True)
         sync_daily_guard(placed_at)
 
         decision_context = _json_dict(row["decision_context_json"])
@@ -680,6 +711,11 @@ def _simulate(
                     "trader_address": str(row["trader_address"] or "").lower(),
                     "size_usd": requested_size_usd,
                     "pnl_usd": 0.0,
+                    "signal_mode": signal_mode,
+                    "entry_price": entry_price,
+                    "source_status": source_status,
+                    "time_to_close_band": time_to_close_band,
+                    "carry_resolution": False,
                 }
             )
             update_open_exposure_metrics()
@@ -729,6 +765,11 @@ def _simulate(
                     "trader_address": str(row["trader_address"] or "").lower(),
                     "size_usd": requested_size_usd,
                     "pnl_usd": pnl_usd,
+                    "signal_mode": signal_mode,
+                    "entry_price": entry_price,
+                    "source_status": source_status,
+                    "time_to_close_band": time_to_close_band,
+                    "carry_resolution": False,
                 }
             )
             update_open_exposure_metrics()
@@ -757,13 +798,16 @@ def _simulate(
             )
         )
 
-    close_due_positions(simulation_end_ts)
+    close_due_positions(simulation_end_ts, record_carry_resolution=True)
 
     policy_json = json.dumps(policy.as_dict(), sort_keys=True, separators=(",", ":"))
     accepted_rows = [row for row in replay_rows if row["decision"] == "accept"]
     rejected_rows = [row for row in replay_rows if row["decision"] == "reject"]
     resolved_rows = [row for row in accepted_rows if row["pnl_usd"] is not None]
     wins = sum(1 for row in resolved_rows if float(row["pnl_usd"] or 0.0) > 0)
+    total_resolved_count = len(resolved_rows) + carry_resolved_count
+    total_resolved_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in resolved_rows) + carry_resolved_size_usd
+    total_wins = wins + carry_resolved_win_count
     final_equity = round(account_equity(), 6)
     window_end_open_exposure_usd = open_exposure()
     if final_equity > 0:
@@ -788,7 +832,6 @@ def _simulate(
     final_bankroll = round(final_equity - window_end_open_exposure_usd, 6)
     total_pnl_usd = round(final_equity - starting_equity, 6)
     accepted_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in accepted_rows)
-    resolved_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in resolved_rows)
     reject_reason_summary: dict[str, int] = {}
     for row in rejected_rows:
         reason = str(row.get("reason") or "").strip()
@@ -822,12 +865,12 @@ def _simulate(
             "accepted_count": len(accepted_rows),
             "rejected_count": len(replay_rows) - len(accepted_rows),
             "unresolved_count": unresolved_count,
-            "resolved_count": len(resolved_rows),
-            "win_rate": round(wins / len(resolved_rows), 6) if resolved_rows else None,
+            "resolved_count": total_resolved_count,
+            "win_rate": round(total_wins / total_resolved_count, 6) if total_resolved_count else None,
         },
     )
     _insert_replay_trades(conn, run_id, replay_rows)
-    segment_metric_rows = _build_segment_metric_rows(replay_rows)
+    segment_metric_rows = _build_segment_metric_rows(replay_rows + carry_resolved_rows)
     signal_mode_summary = _segment_summary(segment_metric_rows, segment_kind="signal_mode")
     trader_concentration = _trader_concentration(segment_metric_rows)
     market_concentration = _market_concentration(segment_metric_rows)
@@ -859,9 +902,9 @@ def _simulate(
         "accepted_size_usd": round(accepted_size_usd, 6),
         "rejected_count": len(replay_rows) - len(accepted_rows),
         "unresolved_count": unresolved_count,
-        "resolved_count": len(resolved_rows),
-        "resolved_size_usd": round(resolved_size_usd, 6),
-        "win_rate": round(wins / len(resolved_rows), 6) if resolved_rows else None,
+        "resolved_count": total_resolved_count,
+        "resolved_size_usd": round(total_resolved_size_usd, 6),
+        "win_rate": round(total_wins / total_resolved_count, 6) if total_resolved_count else None,
         "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
         "segment_leaders": _segment_leaders(segment_metric_rows),
         "signal_mode_summary": signal_mode_summary,
@@ -880,6 +923,10 @@ def _simulate(
                     "trader_address": str(position["trader_address"] or "").lower(),
                     "size_usd": round(float(position["size_usd"] or 0.0), 6),
                     "pnl_usd": round(float(position["pnl_usd"] or 0.0), 6),
+                    "signal_mode": str(position.get("signal_mode") or ""),
+                    "entry_price": _coalesce_float(position.get("entry_price")),
+                    "source_status": str(position.get("source_status") or ""),
+                    "time_to_close_band": str(position.get("time_to_close_band") or ""),
                 }
                 for position in open_positions
             ],
@@ -1217,7 +1264,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
                     "return_sum": 0.0,
                 },
             )
-            bucket["trade_count"] += 1
+            bucket["trade_count"] += 1 if bool(row.get("counts_as_trade", True)) else 0
             if row["decision"] == "accept":
                 bucket["accepted_count"] += 1
                 bucket["accepted_size_usd"] += float(row.get("simulated_size_usd") or 0.0)
@@ -1380,7 +1427,10 @@ def _segment_concentration(
         for row in rows
         if str(row.get("segment_kind") or "") == segment_kind
         and str(row.get("segment_value") or "")
-        and int(row.get("accepted_count") or 0) > 0
+        and (
+            int(row.get("accepted_count") or 0) > 0
+            or int(row.get("resolved_count") or 0) > 0
+        )
     ]
     if not trader_rows:
         return {

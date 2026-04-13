@@ -616,14 +616,29 @@ class ReplayTest(unittest.TestCase):
                 self.assertGreater(first_window["window_end_open_exposure_usd"], 0.0)
                 self.assertEqual(len(first_window["continuity_state"]["open_positions"]), 1)
                 carried_pnl_usd = float(first_window["continuity_state"]["open_positions"][0]["pnl_usd"])
+                carried_size_usd = float(first_window["continuity_state"]["open_positions"][0]["size_usd"])
 
                 self.assertEqual(second_window["accepted_count"], 0)
-                self.assertEqual(second_window["resolved_count"], 0)
+                self.assertEqual(second_window["resolved_count"], 1)
                 self.assertEqual(second_window["unresolved_count"], 0)
                 self.assertAlmostEqual(second_window["initial_bankroll_usd"], 1000.0, places=6)
                 self.assertAlmostEqual(second_window["total_pnl_usd"], carried_pnl_usd, places=6)
                 self.assertAlmostEqual(second_window["final_equity_usd"], 1000.0 + carried_pnl_usd, places=6)
                 self.assertAlmostEqual(second_window["final_bankroll_usd"], 1000.0 + carried_pnl_usd, places=6)
+                self.assertAlmostEqual(second_window["resolved_size_usd"], carried_size_usd, places=6)
+                self.assertAlmostEqual(second_window["win_rate"], 1.0, places=6)
+                self.assertEqual(second_window["signal_mode_summary"]["heuristic"]["accepted_count"], 0)
+                self.assertEqual(second_window["signal_mode_summary"]["heuristic"]["resolved_count"], 1)
+                self.assertAlmostEqual(
+                    second_window["signal_mode_summary"]["heuristic"]["resolved_size_usd"],
+                    carried_size_usd,
+                    places=6,
+                )
+                self.assertAlmostEqual(
+                    second_window["signal_mode_summary"]["heuristic"]["total_pnl_usd"],
+                    carried_pnl_usd,
+                    places=6,
+                )
                 self.assertEqual(second_window["window_end_open_exposure_usd"], 0.0)
                 self.assertEqual(second_window["continuity_state"]["open_positions"], [])
             finally:

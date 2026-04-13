@@ -203,12 +203,12 @@ class ReplaySearchTest(unittest.TestCase):
                 "max_drawdown_pct": 0.0,
                 "accepted_count": 0,
                 "accepted_size_usd": 0.0,
-                "resolved_count": 0,
-                "resolved_size_usd": 0.0,
+                "resolved_count": 1,
+                "resolved_size_usd": 100.0,
                 "rejected_count": 0,
                 "unresolved_count": 0,
                 "trade_count": 0,
-                "win_rate": None,
+                "win_rate": 1.0,
                 "window_end_open_exposure_usd": 0.0,
                 "window_end_open_exposure_share": 0.0,
                 "continuity_state": {
@@ -238,7 +238,9 @@ class ReplaySearchTest(unittest.TestCase):
             "market-a",
         )
         self.assertEqual(result["accepted_count"], 1)
-        self.assertEqual(result["unresolved_count"], 1)
+        self.assertEqual(result["resolved_count"], 1)
+        self.assertEqual(result["unresolved_count"], 0)
+        self.assertEqual(result["active_window_count"], 2)
         self.assertAlmostEqual(result["total_pnl_usd"], 20.0)
 
     def test_main_single_window_materializes_window_activity_fields(self) -> None:

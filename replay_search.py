@@ -1112,6 +1112,28 @@ def _resolved_share_from_sizes(accepted_size_usd: Any, resolved_size_usd: Any) -
     return min(max(resolved / accepted, 0.0), 1.0)
 
 
+def _window_has_participation(result: dict[str, Any]) -> bool:
+    if int(result.get("accepted_count") or 0) > 0:
+        return True
+    if float(result.get("accepted_size_usd") or 0.0) > 0:
+        return True
+    if int(result.get("resolved_count") or 0) > 0:
+        return True
+    if float(result.get("resolved_size_usd") or 0.0) > 0:
+        return True
+    if abs(float(result.get("total_pnl_usd") or 0.0)) > 1e-9:
+        return True
+    if float(result.get("peak_open_exposure_usd") or 0.0) > 0:
+        return True
+    if float(result.get("window_end_open_exposure_usd") or 0.0) > 0:
+        return True
+    if int(result.get("window_end_live_guard_triggered") or 0) > 0:
+        return True
+    if int(result.get("window_end_daily_guard_triggered") or 0) > 0:
+        return True
+    return False
+
+
 def _window_equity_summary(
     result: dict[str, Any],
     *,
@@ -1323,12 +1345,12 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
         enriched["negative_window_count"] = 1 if total_pnl_usd < 0 else 0
     if "active_window_count" not in enriched:
         if window_count == 1:
-            enriched["active_window_count"] = 1 if accepted_count > 0 else 0
+            enriched["active_window_count"] = 1 if _window_has_participation(enriched) else 0
         elif "inactive_window_count" in enriched:
             enriched["active_window_count"] = max(window_count - int(enriched.get("inactive_window_count") or 0), 0)
     if "inactive_window_count" not in enriched:
         if window_count == 1:
-            enriched["inactive_window_count"] = 0 if accepted_count > 0 else 1
+            enriched["inactive_window_count"] = 0 if _window_has_participation(enriched) else 1
         elif "active_window_count" in enriched:
             enriched["inactive_window_count"] = max(window_count - int(enriched.get("active_window_count") or 0), 0)
     if "carry_window_share" not in enriched:
@@ -2142,8 +2164,8 @@ def _aggregate_window_results(
     resolved_count = sum(int(row.get("resolved_count") or 0) for row in window_results)
     resolved_size_usd = sum(float(row.get("resolved_size_usd") or 0.0) for row in window_results)
     rejected_count = sum(int(row.get("rejected_count") or 0) for row in window_results)
-    unresolved_count = sum(int(row.get("unresolved_count") or 0) for row in window_results)
     trade_count = sum(int(row.get("trade_count") or 0) for row in window_results)
+    unresolved_count = max(accepted_count - resolved_count, 0)
     weighted_wins = sum(
         float(row.get("win_rate") or 0.0) * int(row.get("resolved_count") or 0)
         for row in window_results
@@ -2185,7 +2207,7 @@ def _aggregate_window_results(
     )
     positive_window_count = sum(1 for pnl in pnl_values if pnl > 0)
     negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
-    active_window_count = sum(1 for row in window_results if int(row.get("accepted_count") or 0) > 0)
+    active_window_count = sum(1 for row in window_results if _window_has_participation(row))
     inactive_window_count = max(len(window_results) - active_window_count, 0)
     avg_window_end_open_exposure_share = (
         sum(

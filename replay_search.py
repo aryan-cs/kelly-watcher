@@ -67,16 +67,18 @@ def _score_breakdown(
     window_stddev_penalty: float,
     worst_window_penalty: float,
     pause_guard_penalty: float,
-    resolved_share_penalty: float,
-    worst_window_resolved_share_penalty: float,
-    mode_resolved_share_penalty: float,
-    mode_worst_window_resolved_share_penalty: float,
-    mode_loss_penalty: float,
-    mode_inactivity_penalty: float,
-    allow_heuristic: bool,
-    allow_xgboost: bool,
-    wallet_concentration_penalty: float,
-    market_concentration_penalty: float,
+    resolved_share_penalty: float = 0.0,
+    resolved_size_share_penalty: float = 0.0,
+    worst_window_resolved_share_penalty: float = 0.0,
+    mode_resolved_share_penalty: float = 0.0,
+    mode_resolved_size_share_penalty: float = 0.0,
+    mode_worst_window_resolved_share_penalty: float = 0.0,
+    mode_loss_penalty: float = 0.0,
+    mode_inactivity_penalty: float = 0.0,
+    allow_heuristic: bool = True,
+    allow_xgboost: bool = True,
+    wallet_concentration_penalty: float = 0.0,
+    market_concentration_penalty: float = 0.0,
     worst_active_window_accepted_penalty: float = 0.0,
     mode_worst_active_window_accepted_penalty: float = 0.0,
     entry_price_band_concentration_penalty: float = 0.0,
@@ -99,10 +101,17 @@ def _score_breakdown(
     pause_guard_reject_share = _pause_guard_reject_share(result)
     accepted_count = int(result.get("accepted_count") or 0)
     resolved_count = int(result.get("resolved_count") or 0)
+    accepted_size_usd = float(result.get("accepted_size_usd") or 0.0)
+    resolved_size_usd = float(result.get("resolved_size_usd") or 0.0)
     worst_window_resolved_share = _global_worst_active_window_resolved_share(result)
     unresolved_share = (
         float(max(accepted_count - resolved_count, 0)) / float(accepted_count)
         if accepted_count > 0 else 0.0
+    )
+    unresolved_size_share = (
+        max(accepted_size_usd - resolved_size_usd, 0.0) / accepted_size_usd
+        if accepted_size_usd > 0
+        else 0.0
     )
     worst_window_unresolved_share = max(1.0 - worst_window_resolved_share, 0.0) if accepted_count > 0 else 0.0
     signal_mode_summary = _signal_mode_summary(result)
@@ -134,6 +143,15 @@ def _score_breakdown(
         if int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0) > 0
     ]
     mode_resolved_share_risk = max(mode_resolved_share_candidates) if mode_resolved_share_candidates else 0.0
+    mode_resolved_size_share_candidates = [
+        max(1.0 - _resolved_size_share(signal_mode_summary, mode), 0.0)
+        for mode in enabled_modes
+        if float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0) > 0
+    ]
+    mode_resolved_size_share_risk = (
+        max(mode_resolved_size_share_candidates)
+        if mode_resolved_size_share_candidates else 0.0
+    )
     mode_worst_window_resolved_share_candidates = [
         max(1.0 - _worst_active_window_resolved_share(signal_mode_summary, mode), 0.0)
         for mode in enabled_modes
@@ -198,8 +216,10 @@ def _score_breakdown(
     worst_window_penalty_usd = worst_window_penalty * worst_window_loss_usd
     pause_guard_penalty_usd = initial_bankroll_usd * pause_guard_penalty * pause_guard_reject_share
     resolved_share_penalty_usd = initial_bankroll_usd * resolved_share_penalty * unresolved_share
+    resolved_size_share_penalty_usd = initial_bankroll_usd * resolved_size_share_penalty * unresolved_size_share
     worst_window_resolved_share_penalty_usd = initial_bankroll_usd * worst_window_resolved_share_penalty * worst_window_unresolved_share
     mode_resolved_share_penalty_usd = initial_bankroll_usd * mode_resolved_share_penalty * mode_resolved_share_risk
+    mode_resolved_size_share_penalty_usd = initial_bankroll_usd * mode_resolved_size_share_penalty * mode_resolved_size_share_risk
     mode_worst_window_resolved_share_penalty_usd = initial_bankroll_usd * mode_worst_window_resolved_share_penalty * mode_worst_window_resolved_share_risk
     worst_active_window_accepted_penalty_usd = initial_bankroll_usd * worst_active_window_accepted_penalty * worst_active_window_accepted_risk
     mode_worst_active_window_accepted_penalty_usd = initial_bankroll_usd * mode_worst_active_window_accepted_penalty * mode_worst_active_window_accepted_risk
@@ -224,8 +244,10 @@ def _score_breakdown(
         - worst_window_penalty_usd
         - pause_guard_penalty_usd
         - resolved_share_penalty_usd
+        - resolved_size_share_penalty_usd
         - worst_window_resolved_share_penalty_usd
         - mode_resolved_share_penalty_usd
+        - mode_resolved_size_share_penalty_usd
         - mode_worst_window_resolved_share_penalty_usd
         - worst_active_window_accepted_penalty_usd
         - mode_worst_active_window_accepted_penalty_usd
@@ -252,8 +274,10 @@ def _score_breakdown(
         "worst_window_penalty_usd": round(worst_window_penalty_usd, 6),
         "pause_guard_penalty_usd": round(pause_guard_penalty_usd, 6),
         "resolved_share_penalty_usd": round(resolved_share_penalty_usd, 6),
+        "resolved_size_share_penalty_usd": round(resolved_size_share_penalty_usd, 6),
         "worst_window_resolved_share_penalty_usd": round(worst_window_resolved_share_penalty_usd, 6),
         "mode_resolved_share_penalty_usd": round(mode_resolved_share_penalty_usd, 6),
+        "mode_resolved_size_share_penalty_usd": round(mode_resolved_size_share_penalty_usd, 6),
         "mode_worst_window_resolved_share_penalty_usd": round(mode_worst_window_resolved_share_penalty_usd, 6),
         "worst_active_window_accepted_penalty_usd": round(worst_active_window_accepted_penalty_usd, 6),
         "mode_worst_active_window_accepted_penalty_usd": round(mode_worst_active_window_accepted_penalty_usd, 6),
@@ -284,16 +308,18 @@ def _score_result(
     window_stddev_penalty: float,
     worst_window_penalty: float,
     pause_guard_penalty: float,
-    resolved_share_penalty: float,
-    worst_window_resolved_share_penalty: float,
-    mode_resolved_share_penalty: float,
-    mode_worst_window_resolved_share_penalty: float,
-    mode_loss_penalty: float,
-    mode_inactivity_penalty: float,
-    allow_heuristic: bool,
-    allow_xgboost: bool,
-    wallet_concentration_penalty: float,
-    market_concentration_penalty: float,
+    resolved_share_penalty: float = 0.0,
+    resolved_size_share_penalty: float = 0.0,
+    worst_window_resolved_share_penalty: float = 0.0,
+    mode_resolved_share_penalty: float = 0.0,
+    mode_resolved_size_share_penalty: float = 0.0,
+    mode_worst_window_resolved_share_penalty: float = 0.0,
+    mode_loss_penalty: float = 0.0,
+    mode_inactivity_penalty: float = 0.0,
+    allow_heuristic: bool = True,
+    allow_xgboost: bool = True,
+    wallet_concentration_penalty: float = 0.0,
+    market_concentration_penalty: float = 0.0,
     worst_active_window_accepted_penalty: float = 0.0,
     mode_worst_active_window_accepted_penalty: float = 0.0,
     entry_price_band_concentration_penalty: float = 0.0,
@@ -317,8 +343,10 @@ def _score_result(
             worst_window_penalty=worst_window_penalty,
             pause_guard_penalty=pause_guard_penalty,
             resolved_share_penalty=resolved_share_penalty,
+            resolved_size_share_penalty=resolved_size_share_penalty,
             worst_window_resolved_share_penalty=worst_window_resolved_share_penalty,
             mode_resolved_share_penalty=mode_resolved_share_penalty,
+            mode_resolved_size_share_penalty=mode_resolved_size_share_penalty,
             mode_worst_window_resolved_share_penalty=mode_worst_window_resolved_share_penalty,
             worst_active_window_accepted_penalty=worst_active_window_accepted_penalty,
             mode_worst_active_window_accepted_penalty=mode_worst_active_window_accepted_penalty,
@@ -351,16 +379,18 @@ def _with_score_breakdown(
     window_stddev_penalty: float,
     worst_window_penalty: float,
     pause_guard_penalty: float,
-    resolved_share_penalty: float,
-    worst_window_resolved_share_penalty: float,
-    mode_resolved_share_penalty: float,
-    mode_worst_window_resolved_share_penalty: float,
-    mode_loss_penalty: float,
-    mode_inactivity_penalty: float,
-    allow_heuristic: bool,
-    allow_xgboost: bool,
-    wallet_concentration_penalty: float,
-    market_concentration_penalty: float,
+    resolved_share_penalty: float = 0.0,
+    resolved_size_share_penalty: float = 0.0,
+    worst_window_resolved_share_penalty: float = 0.0,
+    mode_resolved_share_penalty: float = 0.0,
+    mode_resolved_size_share_penalty: float = 0.0,
+    mode_worst_window_resolved_share_penalty: float = 0.0,
+    mode_loss_penalty: float = 0.0,
+    mode_inactivity_penalty: float = 0.0,
+    allow_heuristic: bool = True,
+    allow_xgboost: bool = True,
+    wallet_concentration_penalty: float = 0.0,
+    market_concentration_penalty: float = 0.0,
     worst_active_window_accepted_penalty: float = 0.0,
     mode_worst_active_window_accepted_penalty: float = 0.0,
     entry_price_band_concentration_penalty: float = 0.0,
@@ -384,8 +414,10 @@ def _with_score_breakdown(
         worst_window_penalty=worst_window_penalty,
         pause_guard_penalty=pause_guard_penalty,
         resolved_share_penalty=resolved_share_penalty,
+        resolved_size_share_penalty=resolved_size_share_penalty,
         worst_window_resolved_share_penalty=worst_window_resolved_share_penalty,
         mode_resolved_share_penalty=mode_resolved_share_penalty,
+        mode_resolved_size_share_penalty=mode_resolved_size_share_penalty,
         mode_worst_window_resolved_share_penalty=mode_worst_window_resolved_share_penalty,
         worst_active_window_accepted_penalty=worst_active_window_accepted_penalty,
         mode_worst_active_window_accepted_penalty=mode_worst_active_window_accepted_penalty,
@@ -424,7 +456,9 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             {
                 "trade_count": 0,
                 "accepted_count": 0,
+                "accepted_size_usd": 0.0,
                 "resolved_count": 0,
+                "resolved_size_usd": 0.0,
                 "total_pnl_usd": 0.0,
                 "positive_window_count": 0,
                 "negative_window_count": 0,
@@ -490,7 +524,9 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         )
         bucket["trade_count"] += int(raw_values.get("trade_count") or 0)
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
+        bucket["accepted_size_usd"] += float(raw_values.get("accepted_size_usd") or 0.0)
         bucket["resolved_count"] += int(raw_values.get("resolved_count") or 0)
+        bucket["resolved_size_usd"] += float(raw_values.get("resolved_size_usd") or 0.0)
         bucket["total_pnl_usd"] += raw_total_pnl_usd
         bucket["positive_window_count"] += resolved_positive_window_count
         bucket["negative_window_count"] += resolved_negative_window_count
@@ -528,6 +564,8 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if int(values["resolved_count"] or 0) > 0
             else None
         )
+        values["accepted_size_usd"] = round(float(values["accepted_size_usd"]), 6)
+        values["resolved_size_usd"] = round(float(values["resolved_size_usd"]), 6)
         values["worst_window_pnl_usd"] = (
             round(float(values["worst_window_pnl_usd"]), 6)
             if values["worst_window_pnl_usd"] is not None
@@ -579,6 +617,14 @@ def _resolved_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -
     return float(int(signal_mode_summary.get(mode, {}).get("resolved_count") or 0)) / float(accepted_count)
 
 
+def _resolved_size_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
+    accepted_size_usd = float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0)
+    if accepted_size_usd <= 0:
+        return 0.0
+    resolved_size_usd = float(signal_mode_summary.get(mode, {}).get("resolved_size_usd") or 0.0)
+    return min(max(resolved_size_usd / accepted_size_usd, 0.0), 1.0)
+
+
 def _worst_window_pnl(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
     raw_value = signal_mode_summary.get(mode, {}).get("worst_window_pnl_usd")
     if raw_value is None:
@@ -616,6 +662,14 @@ def _resolved_share_from_counts(accepted_count: Any, resolved_count: Any) -> flo
     if accepted <= 0:
         return 0.0
     return float(int(resolved_count or 0)) / float(accepted)
+
+
+def _resolved_share_from_sizes(accepted_size_usd: Any, resolved_size_usd: Any) -> float:
+    accepted = float(accepted_size_usd or 0.0)
+    if accepted <= 0:
+        return 0.0
+    resolved = float(resolved_size_usd or 0.0)
+    return min(max(resolved / accepted, 0.0), 1.0)
 
 
 def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
@@ -736,6 +790,7 @@ def _constraint_failures(
     min_accepted_count: int,
     min_resolved_count: int,
     min_resolved_share: float,
+    min_resolved_size_share: float,
     min_win_rate: float,
     min_total_pnl_usd: float,
     max_drawdown_pct: float,
@@ -750,6 +805,8 @@ def _constraint_failures(
     min_xgboost_win_rate: float,
     min_heuristic_resolved_share: float,
     min_xgboost_resolved_share: float,
+    min_heuristic_resolved_size_share: float,
+    min_xgboost_resolved_size_share: float,
     min_heuristic_pnl_usd: float,
     min_xgboost_pnl_usd: float,
     min_heuristic_worst_window_pnl_usd: float,
@@ -789,6 +846,7 @@ def _constraint_failures(
     accepted_count = int(result.get("accepted_count") or 0)
     resolved_count = int(result.get("resolved_count") or 0)
     resolved_share = _resolved_share_from_counts(accepted_count, resolved_count)
+    resolved_size_share = _resolved_share_from_sizes(result.get("accepted_size_usd"), result.get("resolved_size_usd"))
     signal_mode_summary = _signal_mode_summary(result)
     trader_concentration = _trader_concentration(result)
     market_concentration = _market_concentration(result)
@@ -811,6 +869,8 @@ def _constraint_failures(
         failures.append("resolved_count")
     if min_resolved_share > 0 and resolved_share < min_resolved_share:
         failures.append("resolved_share")
+    if min_resolved_size_share > 0 and resolved_size_share < min_resolved_size_share:
+        failures.append("resolved_size_share")
     if min_win_rate > 0 and (win_rate is None or win_rate < min_win_rate):
         failures.append("win_rate")
     if total_pnl_usd < min_total_pnl_usd:
@@ -841,6 +901,18 @@ def _constraint_failures(
         failures.append("heuristic_resolved_share")
     if allow_xgboost and min_xgboost_resolved_share > 0 and _resolved_share(signal_mode_summary, "xgboost") < min_xgboost_resolved_share:
         failures.append("xgboost_resolved_share")
+    if (
+        allow_heuristic
+        and min_heuristic_resolved_size_share > 0
+        and _resolved_size_share(signal_mode_summary, "heuristic") < min_heuristic_resolved_size_share
+    ):
+        failures.append("heuristic_resolved_size_share")
+    if (
+        allow_xgboost
+        and min_xgboost_resolved_size_share > 0
+        and _resolved_size_share(signal_mode_summary, "xgboost") < min_xgboost_resolved_size_share
+    ):
+        failures.append("xgboost_resolved_size_share")
     if allow_heuristic and float(signal_mode_summary.get("heuristic", {}).get("total_pnl_usd") or 0.0) < min_heuristic_pnl_usd:
         failures.append("heuristic_total_pnl_usd")
     if allow_xgboost and float(signal_mode_summary.get("xgboost", {}).get("total_pnl_usd") or 0.0) < min_xgboost_pnl_usd:
@@ -1112,7 +1184,9 @@ def _aggregate_window_results(
     drawdown_values = [float(row.get("max_drawdown_pct") or 0.0) for row in window_results]
     total_pnl = sum(float(row.get("total_pnl_usd") or 0.0) for row in window_results)
     accepted_count = sum(int(row.get("accepted_count") or 0) for row in window_results)
+    accepted_size_usd = sum(float(row.get("accepted_size_usd") or 0.0) for row in window_results)
     resolved_count = sum(int(row.get("resolved_count") or 0) for row in window_results)
+    resolved_size_usd = sum(float(row.get("resolved_size_usd") or 0.0) for row in window_results)
     rejected_count = sum(int(row.get("rejected_count") or 0) for row in window_results)
     unresolved_count = sum(int(row.get("unresolved_count") or 0) for row in window_results)
     trade_count = sum(int(row.get("trade_count") or 0) for row in window_results)
@@ -1168,7 +1242,9 @@ def _aggregate_window_results(
                 {
                     "trade_count": 0.0,
                     "accepted_count": 0.0,
+                    "accepted_size_usd": 0.0,
                     "resolved_count": 0.0,
+                    "resolved_size_usd": 0.0,
                     "total_pnl_usd": 0.0,
                     "positive_window_count": 0.0,
                     "negative_window_count": 0.0,
@@ -1181,11 +1257,15 @@ def _aggregate_window_results(
                 },
             )
             mode_accepted_count = int(values.get("accepted_count") or 0)
+            mode_accepted_size_usd = float(values.get("accepted_size_usd") or 0.0)
             mode_resolved_count = int(values.get("resolved_count") or 0)
+            mode_resolved_size_usd = float(values.get("resolved_size_usd") or 0.0)
             is_inactive_window = mode_accepted_count <= 0
             bucket["trade_count"] += int(values.get("trade_count") or 0)
             bucket["accepted_count"] += mode_accepted_count
+            bucket["accepted_size_usd"] += mode_accepted_size_usd
             bucket["resolved_count"] += mode_resolved_count
+            bucket["resolved_size_usd"] += mode_resolved_size_usd
             window_pnl_usd = float(values.get("total_pnl_usd") or 0.0)
             bucket["total_pnl_usd"] += window_pnl_usd
             bucket["positive_window_count"] += 1 if window_pnl_usd > 0 else 0
@@ -1202,7 +1282,9 @@ def _aggregate_window_results(
         mode: {
             "trade_count": int(values["trade_count"]),
             "accepted_count": int(values["accepted_count"]),
+            "accepted_size_usd": round(values["accepted_size_usd"], 6),
             "resolved_count": int(values["resolved_count"]),
+            "resolved_size_usd": round(values["resolved_size_usd"], 6),
             "total_pnl_usd": round(values["total_pnl_usd"], 6),
             "positive_window_count": int(values["positive_window_count"]),
             "negative_window_count": int(values["negative_window_count"]),
@@ -1386,9 +1468,11 @@ def _aggregate_window_results(
         "max_drawdown_pct": round(max_drawdown_pct, 6),
         "trade_count": trade_count,
         "accepted_count": accepted_count,
+        "accepted_size_usd": round(accepted_size_usd, 6),
         "rejected_count": rejected_count,
         "unresolved_count": unresolved_count,
         "resolved_count": resolved_count,
+        "resolved_size_usd": round(resolved_size_usd, 6),
         "win_rate": round(weighted_wins / resolved_count, 6) if resolved_count else None,
         "positive_window_count": positive_window_count,
         "negative_window_count": negative_window_count,
@@ -1443,8 +1527,10 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             worst_window_penalty          REAL NOT NULL DEFAULT 0,
             pause_guard_penalty           REAL NOT NULL DEFAULT 0,
             resolved_share_penalty        REAL NOT NULL DEFAULT 0,
+            resolved_size_share_penalty   REAL NOT NULL DEFAULT 0,
             worst_window_resolved_share_penalty REAL NOT NULL DEFAULT 0,
             mode_resolved_share_penalty   REAL NOT NULL DEFAULT 0,
+            mode_resolved_size_share_penalty REAL NOT NULL DEFAULT 0,
             mode_worst_window_resolved_share_penalty REAL NOT NULL DEFAULT 0,
             worst_active_window_accepted_penalty REAL NOT NULL DEFAULT 0,
             mode_worst_active_window_accepted_penalty REAL NOT NULL DEFAULT 0,
@@ -1524,8 +1610,10 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
             "pause_guard_penalty": "REAL NOT NULL DEFAULT 0",
             "resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
+            "resolved_size_share_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_window_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
+            "mode_resolved_size_share_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_worst_window_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_active_window_accepted_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_worst_active_window_accepted_penalty": "REAL NOT NULL DEFAULT 0",
@@ -1601,8 +1689,10 @@ def _persist_search_results(
     worst_window_penalty: float,
     pause_guard_penalty: float,
     resolved_share_penalty: float,
+    resolved_size_share_penalty: float,
     worst_window_resolved_share_penalty: float,
     mode_resolved_share_penalty: float,
+    mode_resolved_size_share_penalty: float,
     mode_worst_window_resolved_share_penalty: float,
     worst_active_window_accepted_penalty: float,
     mode_worst_active_window_accepted_penalty: float,
@@ -1651,8 +1741,10 @@ def _persist_search_results(
             worst_window_penalty,
             pause_guard_penalty,
             resolved_share_penalty,
+            resolved_size_share_penalty,
             worst_window_resolved_share_penalty,
             mode_resolved_share_penalty,
+            mode_resolved_size_share_penalty,
             mode_worst_window_resolved_share_penalty,
             worst_active_window_accepted_penalty,
             mode_worst_active_window_accepted_penalty,
@@ -1698,7 +1790,7 @@ def _persist_search_results(
             INSERT INTO replay_search_runs (
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
-                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, resolved_share_penalty, worst_window_resolved_share_penalty, mode_resolved_share_penalty, mode_worst_window_resolved_share_penalty, worst_active_window_accepted_penalty, mode_worst_active_window_accepted_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
+                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, resolved_share_penalty, resolved_size_share_penalty, worst_window_resolved_share_penalty, mode_resolved_share_penalty, mode_resolved_size_share_penalty, mode_worst_window_resolved_share_penalty, worst_active_window_accepted_penalty, mode_worst_active_window_accepted_penalty, mode_loss_penalty, mode_inactivity_penalty, window_inactivity_penalty, wallet_count_penalty, market_count_penalty, entry_price_band_count_penalty, time_to_close_band_count_penalty, wallet_concentration_penalty, market_concentration_penalty, entry_price_band_concentration_penalty, time_to_close_band_concentration_penalty,
                 wallet_size_concentration_penalty, market_size_concentration_penalty, entry_price_band_size_concentration_penalty, time_to_close_band_size_concentration_penalty,
                 candidate_count, feasible_count, rejected_count, current_candidate_score, current_candidate_feasible,
                 current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
@@ -1803,8 +1895,10 @@ def main() -> None:
     parser.add_argument("--worst-window-penalty", type=float, default=0.0, help="Penalty per dollar of worst-window loss magnitude.")
     parser.add_argument("--pause-guard-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay pause-guard reject share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved accepted-share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--resolved-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved accepted deployed-dollar share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--worst-window-resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved-share in the worst replay window in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--mode-resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer unresolved-share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--mode-resolved-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer unresolved deployed-dollar share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--mode-worst-window-resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer unresolved-share in its worst replay window in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--worst-active-window-accepted-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse accepted depth in the sparsest active replay window in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--mode-worst-active-window-accepted-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse accepted depth in the sparsest active enabled scorer window in bankroll-dollar terms when ranking candidates.")
@@ -1833,6 +1927,7 @@ def main() -> None:
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-count", type=int, default=0, help="Minimum resolved trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades that must be resolved.")
+    parser.add_argument("--min-resolved-size-share", type=float, default=0.0, help="Minimum fraction of accepted replay deployed dollars that must be resolved.")
     parser.add_argument("--min-win-rate", type=float, default=0.0, help="Minimum replay win rate required for a candidate to be feasible.")
     parser.add_argument("--min-total-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum total replay P&L required for a candidate to be feasible.")
     parser.add_argument("--max-drawdown-pct", type=float, default=0.0, help="Maximum replay drawdown allowed for a candidate to be feasible.")
@@ -1847,6 +1942,8 @@ def main() -> None:
     parser.add_argument("--min-xgboost-win-rate", type=float, default=0.0, help="Minimum xgboost win rate required for a candidate to be feasible.")
     parser.add_argument("--min-heuristic-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted heuristic trades that must be resolved.")
     parser.add_argument("--min-xgboost-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted xgboost trades that must be resolved.")
+    parser.add_argument("--min-heuristic-resolved-size-share", type=float, default=0.0, help="Minimum fraction of accepted heuristic deployed dollars that must be resolved.")
+    parser.add_argument("--min-xgboost-resolved-size-share", type=float, default=0.0, help="Minimum fraction of accepted xgboost deployed dollars that must be resolved.")
     parser.add_argument("--min-heuristic-pnl-usd", type=float, default=0.0, help="Minimum replay P&L contribution required from heuristic trades.")
     parser.add_argument("--min-xgboost-pnl-usd", type=float, default=0.0, help="Minimum replay P&L contribution required from xgboost trades.")
     parser.add_argument("--min-heuristic-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed heuristic P&L in the worst replay window for that scorer path.")
@@ -1908,8 +2005,10 @@ def main() -> None:
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
         resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+        resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
         worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
         mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
+        mode_resolved_size_share_penalty=max(args.mode_resolved_size_share_penalty, 0.0),
         mode_worst_window_resolved_share_penalty=max(args.mode_worst_window_resolved_share_penalty, 0.0),
         worst_active_window_accepted_penalty=max(args.worst_active_window_accepted_penalty, 0.0),
         mode_worst_active_window_accepted_penalty=max(args.mode_worst_active_window_accepted_penalty, 0.0),
@@ -1938,6 +2037,7 @@ def main() -> None:
         min_accepted_count=args.min_accepted_count,
         min_resolved_count=args.min_resolved_count,
         min_resolved_share=_clamp_fraction(args.min_resolved_share),
+        min_resolved_size_share=_clamp_fraction(args.min_resolved_size_share),
         min_win_rate=max(args.min_win_rate, 0.0),
         min_total_pnl_usd=float(args.min_total_pnl_usd),
         max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
@@ -1952,6 +2052,8 @@ def main() -> None:
         min_xgboost_win_rate=_clamp_fraction(args.min_xgboost_win_rate),
         min_heuristic_resolved_share=_clamp_fraction(args.min_heuristic_resolved_share),
         min_xgboost_resolved_share=_clamp_fraction(args.min_xgboost_resolved_share),
+        min_heuristic_resolved_size_share=_clamp_fraction(args.min_heuristic_resolved_size_share),
+        min_xgboost_resolved_size_share=_clamp_fraction(args.min_xgboost_resolved_size_share),
         min_heuristic_pnl_usd=float(args.min_heuristic_pnl_usd),
         min_xgboost_pnl_usd=float(args.min_xgboost_pnl_usd),
         min_heuristic_worst_window_pnl_usd=float(args.min_heuristic_worst_window_pnl_usd),
@@ -2000,8 +2102,10 @@ def main() -> None:
                 worst_window_penalty=max(args.worst_window_penalty, 0.0),
                 pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
                 resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+                resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
                 worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
                 mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
+                mode_resolved_size_share_penalty=max(args.mode_resolved_size_share_penalty, 0.0),
                 mode_worst_window_resolved_share_penalty=max(args.mode_worst_window_resolved_share_penalty, 0.0),
                 worst_active_window_accepted_penalty=max(args.worst_active_window_accepted_penalty, 0.0),
                 mode_worst_active_window_accepted_penalty=max(args.mode_worst_active_window_accepted_penalty, 0.0),
@@ -2055,8 +2159,10 @@ def main() -> None:
                 worst_window_penalty=max(args.worst_window_penalty, 0.0),
                 pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
                 resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+                resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
                 worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
                 mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
+                mode_resolved_size_share_penalty=max(args.mode_resolved_size_share_penalty, 0.0),
                 mode_worst_window_resolved_share_penalty=max(args.mode_worst_window_resolved_share_penalty, 0.0),
                 worst_active_window_accepted_penalty=max(args.worst_active_window_accepted_penalty, 0.0),
                 mode_worst_active_window_accepted_penalty=max(args.mode_worst_active_window_accepted_penalty, 0.0),
@@ -2086,8 +2192,10 @@ def main() -> None:
             worst_window_penalty=max(args.worst_window_penalty, 0.0),
             pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
             resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+            resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
             worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
             mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
+            mode_resolved_size_share_penalty=max(args.mode_resolved_size_share_penalty, 0.0),
             mode_worst_window_resolved_share_penalty=max(args.mode_worst_window_resolved_share_penalty, 0.0),
             worst_active_window_accepted_penalty=max(args.worst_active_window_accepted_penalty, 0.0),
             mode_worst_active_window_accepted_penalty=max(args.mode_worst_active_window_accepted_penalty, 0.0),
@@ -2116,6 +2224,7 @@ def main() -> None:
             min_accepted_count=args.min_accepted_count,
             min_resolved_count=args.min_resolved_count,
             min_resolved_share=_clamp_fraction(args.min_resolved_share),
+            min_resolved_size_share=_clamp_fraction(args.min_resolved_size_share),
             min_win_rate=max(args.min_win_rate, 0.0),
             min_total_pnl_usd=float(args.min_total_pnl_usd),
             max_drawdown_pct=max(args.max_drawdown_pct, 0.0),
@@ -2130,6 +2239,8 @@ def main() -> None:
             min_xgboost_win_rate=_clamp_fraction(args.min_xgboost_win_rate),
             min_heuristic_resolved_share=_clamp_fraction(args.min_heuristic_resolved_share),
             min_xgboost_resolved_share=_clamp_fraction(args.min_xgboost_resolved_share),
+            min_heuristic_resolved_size_share=_clamp_fraction(args.min_heuristic_resolved_size_share),
+            min_xgboost_resolved_size_share=_clamp_fraction(args.min_xgboost_resolved_size_share),
             min_heuristic_pnl_usd=float(args.min_heuristic_pnl_usd),
             min_xgboost_pnl_usd=float(args.min_xgboost_pnl_usd),
             min_heuristic_worst_window_pnl_usd=float(args.min_heuristic_worst_window_pnl_usd),
@@ -2198,6 +2309,7 @@ def main() -> None:
         "min_accepted_count": max(args.min_accepted_count, 0),
         "min_resolved_count": max(args.min_resolved_count, 0),
         "min_resolved_share": _clamp_fraction(args.min_resolved_share),
+        "min_resolved_size_share": _clamp_fraction(args.min_resolved_size_share),
         "min_win_rate": max(args.min_win_rate, 0.0),
         "min_total_pnl_usd": float(args.min_total_pnl_usd),
         "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
@@ -2216,6 +2328,8 @@ def main() -> None:
         "min_xgboost_win_rate": _clamp_fraction(args.min_xgboost_win_rate),
         "min_heuristic_resolved_share": _clamp_fraction(args.min_heuristic_resolved_share),
         "min_xgboost_resolved_share": _clamp_fraction(args.min_xgboost_resolved_share),
+        "min_heuristic_resolved_size_share": _clamp_fraction(args.min_heuristic_resolved_size_share),
+        "min_xgboost_resolved_size_share": _clamp_fraction(args.min_xgboost_resolved_size_share),
         "min_heuristic_pnl_usd": float(args.min_heuristic_pnl_usd),
         "min_xgboost_pnl_usd": float(args.min_xgboost_pnl_usd),
         "min_heuristic_worst_window_pnl_usd": float(args.min_heuristic_worst_window_pnl_usd),
@@ -2263,8 +2377,10 @@ def main() -> None:
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
         resolved_share_penalty=max(args.resolved_share_penalty, 0.0),
+        resolved_size_share_penalty=max(args.resolved_size_share_penalty, 0.0),
         worst_window_resolved_share_penalty=max(args.worst_window_resolved_share_penalty, 0.0),
         mode_resolved_share_penalty=max(args.mode_resolved_share_penalty, 0.0),
+        mode_resolved_size_share_penalty=max(args.mode_resolved_size_share_penalty, 0.0),
         mode_worst_window_resolved_share_penalty=max(args.mode_worst_window_resolved_share_penalty, 0.0),
         worst_active_window_accepted_penalty=max(args.worst_active_window_accepted_penalty, 0.0),
         mode_worst_active_window_accepted_penalty=max(args.mode_worst_active_window_accepted_penalty, 0.0),
@@ -2303,8 +2419,10 @@ def main() -> None:
                 "worst_window_penalty": max(args.worst_window_penalty, 0.0),
                 "pause_guard_penalty": max(args.pause_guard_penalty, 0.0),
                 "resolved_share_penalty": max(args.resolved_share_penalty, 0.0),
+                "resolved_size_share_penalty": max(args.resolved_size_share_penalty, 0.0),
                 "worst_window_resolved_share_penalty": max(args.worst_window_resolved_share_penalty, 0.0),
                 "mode_resolved_share_penalty": max(args.mode_resolved_share_penalty, 0.0),
+                "mode_resolved_size_share_penalty": max(args.mode_resolved_size_share_penalty, 0.0),
                 "mode_worst_window_resolved_share_penalty": max(args.mode_worst_window_resolved_share_penalty, 0.0),
                 "worst_active_window_accepted_penalty": max(args.worst_active_window_accepted_penalty, 0.0),
                 "mode_worst_active_window_accepted_penalty": max(args.mode_worst_active_window_accepted_penalty, 0.0),

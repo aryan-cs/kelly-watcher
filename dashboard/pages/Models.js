@@ -366,11 +366,13 @@ WITH latest_search AS (
     drawdown_penalty,
     window_stddev_penalty,
     worst_window_penalty,
-    pause_guard_penalty,
-    resolved_share_penalty,
-    worst_window_resolved_share_penalty,
-    mode_resolved_share_penalty,
-    mode_worst_window_resolved_share_penalty,
+	    pause_guard_penalty,
+	    resolved_share_penalty,
+	    resolved_size_share_penalty,
+	    worst_window_resolved_share_penalty,
+	    mode_resolved_share_penalty,
+	    mode_resolved_size_share_penalty,
+	    mode_worst_window_resolved_share_penalty,
     worst_active_window_accepted_penalty,
     mode_worst_active_window_accepted_penalty,
     mode_loss_penalty,
@@ -432,11 +434,13 @@ SELECT
   latest_search.drawdown_penalty,
   latest_search.window_stddev_penalty,
   latest_search.worst_window_penalty,
-  latest_search.pause_guard_penalty,
-  latest_search.resolved_share_penalty,
-  latest_search.worst_window_resolved_share_penalty,
-  latest_search.mode_resolved_share_penalty,
-  latest_search.mode_worst_window_resolved_share_penalty,
+	  latest_search.pause_guard_penalty,
+	  latest_search.resolved_share_penalty,
+	  latest_search.resolved_size_share_penalty,
+	  latest_search.worst_window_resolved_share_penalty,
+	  latest_search.mode_resolved_share_penalty,
+	  latest_search.mode_resolved_size_share_penalty,
+	  latest_search.mode_worst_window_resolved_share_penalty,
   latest_search.worst_active_window_accepted_penalty,
   latest_search.mode_worst_active_window_accepted_penalty,
   latest_search.mode_loss_penalty,
@@ -1168,11 +1172,13 @@ function replaySearchModeMixSummary(raw, policyRaw) {
                 return null;
             const payload = value;
             return {
-                    mode,
-                    acceptedCount: Number(payload.accepted_count || 0),
-                    resolvedCount: Number(payload.resolved_count || 0),
-                    totalPnlUsd: Number(payload.total_pnl_usd || 0)
-                };
+                mode,
+                acceptedCount: Number(payload.accepted_count || 0),
+                resolvedCount: Number(payload.resolved_count || 0),
+                acceptedSizeUsd: Number(payload.accepted_size_usd || 0),
+                resolvedSizeUsd: Number(payload.resolved_size_usd || 0),
+                totalPnlUsd: Number(payload.total_pnl_usd || 0)
+            };
             })
             .filter((entry) => Boolean(entry))
             .filter((entry) => {
@@ -1189,6 +1195,8 @@ function replaySearchModeMixSummary(raw, policyRaw) {
                 mode: 'heuristic',
                 acceptedCount: 0,
                 resolvedCount: 0,
+                acceptedSizeUsd: 0,
+                resolvedSizeUsd: 0,
                 totalPnlUsd: 0
             });
         }
@@ -1197,6 +1205,8 @@ function replaySearchModeMixSummary(raw, policyRaw) {
                 mode: 'xgboost',
                 acceptedCount: 0,
                 resolvedCount: 0,
+                acceptedSizeUsd: 0,
+                resolvedSizeUsd: 0,
                 totalPnlUsd: 0
             });
         }
@@ -1220,7 +1230,8 @@ function replaySearchModeMixSummary(raw, policyRaw) {
             .map((entry) => {
             const share = totalAccepted > 0 ? `${Math.round((entry.acceptedCount / totalAccepted) * 100)}%` : '0%';
             const resolvedShare = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%';
-            return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} cov ${resolvedShare} ${formatDollar(entry.totalPnlUsd)}`;
+            const resolvedSizeShare = entry.acceptedSizeUsd > 0 ? formatPct(entry.resolvedSizeUsd / entry.acceptedSizeUsd, 0) : '0%';
+            return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} cov ${resolvedShare} sz-cov ${resolvedSizeShare} ${formatDollar(entry.totalPnlUsd)}`;
         })
         if (!enabled.heuristic)
             parts.push('Heuristic off');
@@ -1317,6 +1328,8 @@ function replaySearchCurrentModeEvidenceSummary(raw, policyRaw) {
                 mode,
                 acceptedCount: Number(payload.accepted_count || 0),
                 resolvedCount: Number(payload.resolved_count || 0),
+                acceptedSizeUsd: Number(payload.accepted_size_usd || 0),
+                resolvedSizeUsd: Number(payload.resolved_size_usd || 0),
                 totalPnlUsd: Number(payload.total_pnl_usd || 0),
                 winRate: payload.win_rate == null ? null : Number(payload.win_rate)
             };
@@ -1336,6 +1349,8 @@ function replaySearchCurrentModeEvidenceSummary(raw, policyRaw) {
                 mode: 'heuristic',
                 acceptedCount: 0,
                 resolvedCount: 0,
+                acceptedSizeUsd: 0,
+                resolvedSizeUsd: 0,
                 totalPnlUsd: 0,
                 winRate: null
             });
@@ -1345,6 +1360,8 @@ function replaySearchCurrentModeEvidenceSummary(raw, policyRaw) {
                 mode: 'xgboost',
                 acceptedCount: 0,
                 resolvedCount: 0,
+                acceptedSizeUsd: 0,
+                resolvedSizeUsd: 0,
                 totalPnlUsd: 0,
                 winRate: null
             });
@@ -1367,8 +1384,9 @@ function replaySearchCurrentModeEvidenceSummary(raw, policyRaw) {
         const parts = entries
             .map((entry) => {
             const coverage = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%';
+            const sizeCoverage = entry.acceptedSizeUsd > 0 ? formatPct(entry.resolvedSizeUsd / entry.acceptedSizeUsd, 0) : '0%';
             const rate = entry.winRate == null ? '-' : formatPct(entry.winRate, 0);
-            return `${modeLabel(entry.mode)} ${formatCount(entry.resolvedCount)}r/${formatCount(entry.acceptedCount)}a ${coverage} ${rate} ${formatDollar(entry.totalPnlUsd)}`;
+            return `${modeLabel(entry.mode)} ${formatCount(entry.resolvedCount)}r/${formatCount(entry.acceptedCount)}a ${coverage} sz-cov ${sizeCoverage} ${rate} ${formatDollar(entry.totalPnlUsd)}`;
         })
         if (!enabled.heuristic)
             parts.push('Heuristic off');
@@ -1414,6 +1432,8 @@ function replaySearchModeFloorSummary(raw, policyRaw) {
         const minXgboostResolved = Number(payload.min_xgboost_resolved_count || 0);
         const minHeuristicResolvedShare = Number(payload.min_heuristic_resolved_share || 0);
         const minXgboostResolvedShare = Number(payload.min_xgboost_resolved_share || 0);
+        const minHeuristicResolvedSizeShare = Number(payload.min_heuristic_resolved_size_share || 0);
+        const minXgboostResolvedSizeShare = Number(payload.min_xgboost_resolved_size_share || 0);
         const minHeuristicWinRate = Number(payload.min_heuristic_win_rate || 0);
         const minXgboostWinRate = Number(payload.min_xgboost_win_rate || 0);
         const minHeuristicPnlUsd = Number(payload.min_heuristic_pnl_usd || 0);
@@ -1440,6 +1460,8 @@ function replaySearchModeFloorSummary(raw, policyRaw) {
                 parts.push(`heur r>=${formatCount(minHeuristicResolved)}`);
             if (minHeuristicResolvedShare > 0)
                 parts.push(`heur cov>=${formatPct(minHeuristicResolvedShare, 0)}`);
+            if (minHeuristicResolvedSizeShare > 0)
+                parts.push(`heur sz-cov>=${formatPct(minHeuristicResolvedSizeShare, 0)}`);
             if (minHeuristicWinRate > 0)
                 parts.push(`heur wr>=${formatPct(minHeuristicWinRate, 0)}`);
             if (minHeuristicPnlUsd !== 0)
@@ -1467,6 +1489,8 @@ function replaySearchModeFloorSummary(raw, policyRaw) {
                 parts.push(`model r>=${formatCount(minXgboostResolved)}`);
             if (minXgboostResolvedShare > 0)
                 parts.push(`model cov>=${formatPct(minXgboostResolvedShare, 0)}`);
+            if (minXgboostResolvedSizeShare > 0)
+                parts.push(`model sz-cov>=${formatPct(minXgboostResolvedSizeShare, 0)}`);
             if (minXgboostWinRate > 0)
                 parts.push(`model wr>=${formatPct(minXgboostWinRate, 0)}`);
             if (minXgboostPnlUsd !== 0)
@@ -1587,10 +1611,12 @@ function replaySearchScoreBreakdownSummary(raw) {
         const worstWindowPenaltyUsd = Number(breakdown.worst_window_penalty_usd || 0);
         const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0);
         const resolvedSharePenaltyUsd = Number(breakdown.resolved_share_penalty_usd || 0);
+        const resolvedSizeSharePenaltyUsd = Number(breakdown.resolved_size_share_penalty_usd || 0);
         const windowInactivityPenaltyUsd = Number(breakdown.window_inactivity_penalty_usd || 0);
         const worstWindowResolvedSharePenaltyUsd = Number(breakdown.worst_window_resolved_share_penalty_usd || 0);
         const worstActiveWindowAcceptedPenaltyUsd = Number(breakdown.worst_active_window_accepted_penalty_usd || 0);
         const modeResolvedSharePenaltyUsd = Number(breakdown.mode_resolved_share_penalty_usd || 0);
+        const modeResolvedSizeSharePenaltyUsd = Number(breakdown.mode_resolved_size_share_penalty_usd || 0);
         const modeWorstWindowResolvedSharePenaltyUsd = Number(breakdown.mode_worst_window_resolved_share_penalty_usd || 0);
         const modeWorstActiveWindowAcceptedPenaltyUsd = Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0);
         const modeLossPenaltyUsd = Number(breakdown.mode_loss_penalty_usd || 0);
@@ -1619,6 +1645,8 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`pause ${formatDollar(-pauseGuardPenaltyUsd)}`);
         if (Math.abs(resolvedSharePenaltyUsd) > 1e-9)
             parts.push(`cov ${formatDollar(-resolvedSharePenaltyUsd)}`);
+        if (Math.abs(resolvedSizeSharePenaltyUsd) > 1e-9)
+            parts.push(`sz-cov ${formatDollar(-resolvedSizeSharePenaltyUsd)}`);
         if (Math.abs(windowInactivityPenaltyUsd) > 1e-9)
             parts.push(`w-idle ${formatDollar(-windowInactivityPenaltyUsd)}`);
         if (Math.abs(worstWindowResolvedSharePenaltyUsd) > 1e-9)
@@ -1627,6 +1655,8 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`w-act ${formatDollar(-worstActiveWindowAcceptedPenaltyUsd)}`);
         if (Math.abs(modeResolvedSharePenaltyUsd) > 1e-9)
             parts.push(`m-cov ${formatDollar(-modeResolvedSharePenaltyUsd)}`);
+        if (Math.abs(modeResolvedSizeSharePenaltyUsd) > 1e-9)
+            parts.push(`m-sz-cov ${formatDollar(-modeResolvedSizeSharePenaltyUsd)}`);
         if (Math.abs(modeWorstWindowResolvedSharePenaltyUsd) > 1e-9)
             parts.push(`mw-cov ${formatDollar(-modeWorstWindowResolvedSharePenaltyUsd)}`);
         if (Math.abs(modeWorstActiveWindowAcceptedPenaltyUsd) > 1e-9)
@@ -1679,10 +1709,12 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('worst', row.worst_window_penalty);
     pushIfActive('pause', row.pause_guard_penalty);
     pushIfActive('cov', row.resolved_share_penalty);
+    pushIfActive('sz-cov', row.resolved_size_share_penalty);
     pushIfActive('w-idle', row.window_inactivity_penalty);
     pushIfActive('w-cov', row.worst_window_resolved_share_penalty);
     pushIfActive('w-act', row.worst_active_window_accepted_penalty);
     pushIfActive('m-cov', row.mode_resolved_share_penalty);
+    pushIfActive('m-sz-cov', row.mode_resolved_size_share_penalty);
     pushIfActive('mw-cov', row.mode_worst_window_resolved_share_penalty);
     pushIfActive('mw-act', row.mode_worst_active_window_accepted_penalty);
     pushIfActive('mode', row.mode_loss_penalty);
@@ -1721,10 +1753,12 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 worst_window_penalty_usd: Number(breakdown.worst_window_penalty_usd || 0),
                 pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0),
                 resolved_share_penalty_usd: Number(breakdown.resolved_share_penalty_usd || 0),
+                resolved_size_share_penalty_usd: Number(breakdown.resolved_size_share_penalty_usd || 0),
                 window_inactivity_penalty_usd: Number(breakdown.window_inactivity_penalty_usd || 0),
                 worst_window_resolved_share_penalty_usd: Number(breakdown.worst_window_resolved_share_penalty_usd || 0),
                 worst_active_window_accepted_penalty_usd: Number(breakdown.worst_active_window_accepted_penalty_usd || 0),
                 mode_resolved_share_penalty_usd: Number(breakdown.mode_resolved_share_penalty_usd || 0),
+                mode_resolved_size_share_penalty_usd: Number(breakdown.mode_resolved_size_share_penalty_usd || 0),
                 mode_worst_window_resolved_share_penalty_usd: Number(breakdown.mode_worst_window_resolved_share_penalty_usd || 0),
                 mode_worst_active_window_accepted_penalty_usd: Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0),
                 mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
@@ -1758,10 +1792,12 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const worstDelta = current.worst_window_penalty_usd - best.worst_window_penalty_usd;
     const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd;
     const coverageDelta = current.resolved_share_penalty_usd - best.resolved_share_penalty_usd;
+    const sizeCoverageDelta = current.resolved_size_share_penalty_usd - best.resolved_size_share_penalty_usd;
     const windowInactivityDelta = current.window_inactivity_penalty_usd - best.window_inactivity_penalty_usd;
     const worstCoverageDelta = current.worst_window_resolved_share_penalty_usd - best.worst_window_resolved_share_penalty_usd;
     const worstActiveDepthDelta = current.worst_active_window_accepted_penalty_usd - best.worst_active_window_accepted_penalty_usd;
     const modeCoverageDelta = current.mode_resolved_share_penalty_usd - best.mode_resolved_share_penalty_usd;
+    const modeSizeCoverageDelta = current.mode_resolved_size_share_penalty_usd - best.mode_resolved_size_share_penalty_usd;
     const modeWorstCoverageDelta = current.mode_worst_window_resolved_share_penalty_usd - best.mode_worst_window_resolved_share_penalty_usd;
     const modeWorstActiveDepthDelta = current.mode_worst_active_window_accepted_penalty_usd - best.mode_worst_active_window_accepted_penalty_usd;
     const modeDelta = current.mode_loss_penalty_usd - best.mode_loss_penalty_usd;
@@ -1790,6 +1826,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`pause ${formatDollar(pauseDelta)}`);
     if (Math.abs(coverageDelta) > 1e-9)
         parts.push(`cov ${formatDollar(coverageDelta)}`);
+    if (Math.abs(sizeCoverageDelta) > 1e-9)
+        parts.push(`sz-cov ${formatDollar(sizeCoverageDelta)}`);
     if (Math.abs(windowInactivityDelta) > 1e-9)
         parts.push(`w-idle ${formatDollar(windowInactivityDelta)}`);
     if (Math.abs(worstCoverageDelta) > 1e-9)
@@ -1798,6 +1836,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`w-act ${formatDollar(worstActiveDepthDelta)}`);
     if (Math.abs(modeCoverageDelta) > 1e-9)
         parts.push(`m-cov ${formatDollar(modeCoverageDelta)}`);
+    if (Math.abs(modeSizeCoverageDelta) > 1e-9)
+        parts.push(`m-sz-cov ${formatDollar(modeSizeCoverageDelta)}`);
     if (Math.abs(modeWorstCoverageDelta) > 1e-9)
         parts.push(`mw-cov ${formatDollar(modeWorstCoverageDelta)}`);
     if (Math.abs(modeWorstActiveDepthDelta) > 1e-9)
@@ -2219,8 +2259,11 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
                 : {};
             const acceptedCount = Number(payload.accepted_count || 0);
             const resolvedCount = Number(payload.resolved_count || 0);
+            const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
+            const resolvedSizeUsd = Number(payload.resolved_size_usd || 0);
             const acceptedShare = totalAccepted > 0 ? acceptedCount / totalAccepted : 0;
             const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0;
+            const resolvedSizeShare = acceptedSizeUsd > 0 ? resolvedSizeUsd / acceptedSizeUsd : 0;
             const rawWinRate = payload.win_rate;
             const winRate = rawWinRate == null ? null : Number(rawWinRate);
             const totalPnlUsd = Number(payload.total_pnl_usd || 0);
@@ -2234,6 +2277,7 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
             const minAccepted = Number(constraints[`min_${mode}_accepted_count`] || 0);
             const minResolved = Number(constraints[`min_${mode}_resolved_count`] || 0);
             const minResolvedShare = Number(constraints[`min_${mode}_resolved_share`] || 0);
+            const minResolvedSizeShare = Number(constraints[`min_${mode}_resolved_size_share`] || 0);
             const minWinRate = Number(constraints[`min_${mode}_win_rate`] || 0);
             const minPnlUsd = Number(constraints[`min_${mode}_pnl_usd`] || 0);
             const minWorstWindowPnlUsd = Number(constraints[`min_${mode}_worst_window_pnl_usd`] ?? sentinelWorstWindow);
@@ -2255,6 +2299,11 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
                 hasActiveGuard = true;
                 if (resolvedShare < minResolvedShare)
                     breaches.push(`${prefix} cov ${formatPct(resolvedShare, 0)}<${formatPct(minResolvedShare, 0)}`);
+            }
+            if (minResolvedSizeShare > 0) {
+                hasActiveGuard = true;
+                if (resolvedSizeShare < minResolvedSizeShare)
+                    breaches.push(`${prefix} sz-cov ${formatPct(resolvedSizeShare, 0)}<${formatPct(minResolvedSizeShare, 0)}`);
             }
             if (minWinRate > 0) {
                 hasActiveGuard = true;
@@ -2317,12 +2366,15 @@ function replaySearchModePenaltySummary(row) {
         return '-';
     const parts = [];
     const modeResolvedSharePenalty = Math.max(Number(row.mode_resolved_share_penalty || 0), 0);
+    const modeResolvedSizeSharePenalty = Math.max(Number(row.mode_resolved_size_share_penalty || 0), 0);
     const modeWorstWindowResolvedSharePenalty = Math.max(Number(row.mode_worst_window_resolved_share_penalty || 0), 0);
     const modeWorstActiveWindowAcceptedPenalty = Math.max(Number(row.mode_worst_active_window_accepted_penalty || 0), 0);
     const modeLossPenalty = Math.max(Number(row.mode_loss_penalty || 0), 0);
     const modeInactivityPenalty = Math.max(Number(row.mode_inactivity_penalty || 0), 0);
     if (modeResolvedSharePenalty > 0)
         parts.push(`cov ${modeResolvedSharePenalty.toFixed(2)}x`);
+    if (modeResolvedSizeSharePenalty > 0)
+        parts.push(`sz-cov ${modeResolvedSizeSharePenalty.toFixed(2)}x`);
     if (modeWorstWindowResolvedSharePenalty > 0)
         parts.push(`w-cov ${modeWorstWindowResolvedSharePenalty.toFixed(2)}x`);
     if (modeWorstActiveWindowAcceptedPenalty > 0)
@@ -2355,6 +2407,8 @@ function replaySearchFailureSummary(raw, feasible) {
                     return 'resolved';
                 case 'resolved_share':
                     return 'coverage';
+                case 'resolved_size_share':
+                    return 'size cov';
                 case 'win_rate':
                     return 'win rate';
                 case 'total_pnl_usd':
@@ -2411,10 +2465,14 @@ function replaySearchFailureSummary(raw, feasible) {
                     return 'horizon size share';
                 case 'heuristic_inactive_window_count':
                     return 'heur idle';
+                case 'heuristic_resolved_size_share':
+                    return 'heur size cov';
                 case 'heuristic_worst_active_window_accepted_count':
                     return 'heur worst act';
                 case 'xgboost_inactive_window_count':
                     return 'model idle';
+                case 'xgboost_resolved_size_share':
+                    return 'model size cov';
                 case 'xgboost_worst_active_window_accepted_count':
                     return 'model worst act';
                 default:
@@ -2483,6 +2541,9 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalAccepted = Number(resultParsed.accepted_count || 0);
         const globalResolved = Number(resultParsed.resolved_count || 0);
         const globalResolvedShare = globalAccepted > 0 ? globalResolved / globalAccepted : 0;
+        const globalAcceptedSizeUsd = Number(resultParsed.accepted_size_usd || 0);
+        const globalResolvedSizeUsd = Number(resultParsed.resolved_size_usd || 0);
+        const globalResolvedSizeShare = globalAcceptedSizeUsd > 0 ? globalResolvedSizeUsd / globalAcceptedSizeUsd : 0;
         const globalWinRate = resultParsed.win_rate == null ? null : Number(resultParsed.win_rate);
         const globalTotalPnl = Number(resultParsed.total_pnl_usd || 0);
         const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0);
@@ -2514,6 +2575,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const minAccepted = Number(constraints.min_accepted_count || 0);
         const minResolved = Number(constraints.min_resolved_count || 0);
         const minResolvedShare = Number(constraints.min_resolved_share || 0);
+        const minResolvedSizeShare = Number(constraints.min_resolved_size_share || 0);
         const minWinRate = Number(constraints.min_win_rate || 0);
         const minTotalPnlUsd = Number(constraints.min_total_pnl_usd ?? -1000000000);
         const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0);
@@ -2563,6 +2625,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             pushHeadroom('global', 'res', globalResolved, minResolved, replayHeadroomCount, 'min');
         if (minResolvedShare > 0)
             pushHeadroom('global', 'cov', globalResolvedShare, minResolvedShare, replayHeadroomPctPoints, 'min');
+        if (minResolvedSizeShare > 0)
+            pushHeadroom('global', 'sz-cov', globalResolvedSizeShare, minResolvedSizeShare, replayHeadroomPctPoints, 'min');
         if (minWinRate > 0 && globalWinRate != null)
             pushHeadroom('global', 'win', globalWinRate, minWinRate, replayHeadroomPctPoints, 'min');
         if (minTotalPnlUsd > -999999999)
@@ -2626,11 +2690,14 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
                 : {};
             const acceptedCount = Number(payload.accepted_count || 0);
             const resolvedCount = Number(payload.resolved_count || 0);
+            const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
+            const resolvedSizeUsd = Number(payload.resolved_size_usd || 0);
             const winRate = payload.win_rate == null ? null : Number(payload.win_rate);
             const totalPnlUsd = Number(payload.total_pnl_usd || 0);
             const positiveWindowCount = Number(payload.positive_window_count || 0);
             const worstWindowPnlUsd = Number(payload.worst_window_pnl_usd ?? totalPnlUsd);
             const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0;
+            const resolvedSizeShare = acceptedSizeUsd > 0 ? resolvedSizeUsd / acceptedSizeUsd : 0;
             const worstWindowResolvedShare = Number(payload.worst_active_window_resolved_share ?? payload.worst_window_resolved_share ?? resolvedShare);
             const worstActiveWindowAcceptedCount = payload.worst_active_window_accepted_count == null
                 ? null
@@ -2640,6 +2707,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             const minModeAccepted = Number(constraints[`min_${mode}_accepted_count`] || 0);
             const minModeResolved = Number(constraints[`min_${mode}_resolved_count`] || 0);
             const minModeResolvedShare = Number(constraints[`min_${mode}_resolved_share`] || 0);
+            const minModeResolvedSizeShare = Number(constraints[`min_${mode}_resolved_size_share`] || 0);
             const minModeWinRate = Number(constraints[`min_${mode}_win_rate`] || 0);
             const minModePnlUsd = Number(constraints[`min_${mode}_pnl_usd`] || 0);
             const minModeWorstWindowPnlUsd = Number(constraints[`min_${mode}_worst_window_pnl_usd`] ?? -1000000000);
@@ -2653,6 +2721,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
                 pushHeadroom(mode, `${prefix} r`, resolvedCount, minModeResolved, replayHeadroomCount, 'min');
             if (minModeResolvedShare > 0)
                 pushHeadroom(mode, `${prefix} cov`, resolvedShare, minModeResolvedShare, replayHeadroomPctPoints, 'min');
+            if (minModeResolvedSizeShare > 0)
+                pushHeadroom(mode, `${prefix} sz-cov`, resolvedSizeShare, minModeResolvedSizeShare, replayHeadroomPctPoints, 'min');
             if (minModeWinRate > 0 && winRate != null)
                 pushHeadroom(mode, `${prefix} wr`, winRate, minModeWinRate, replayHeadroomPctPoints, 'min');
             if (minModePnlUsd !== 0)

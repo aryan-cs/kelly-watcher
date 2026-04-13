@@ -449,33 +449,6 @@ def _simulate(
             continue
 
         return_pct, source_status = _resolve_return_pct(row)
-        if return_pct is None:
-            unresolved_count += 1
-            replay_rows.append(
-                _replay_trade_row(
-                    replay_run_id=0,
-                    trade_log_id=int(row["id"]),
-                    trade_id=str(row["trade_id"] or ""),
-                    placed_at=placed_at,
-                    market_id=str(row["market_id"] or ""),
-                    trader_address=str(row["trader_address"] or "").lower(),
-                    signal_mode=signal_mode,
-                    decision="reject",
-                    reason="unresolved_outcome",
-                    source_status=source_status,
-                    entry_price=entry_price,
-                    time_to_close_seconds=time_to_close_seconds,
-                    time_to_close_band=time_to_close_band,
-                    requested_size_usd=0.0,
-                    simulated_size_usd=0.0,
-                    return_pct=None,
-                    pnl_usd=None,
-                    bankroll_after_usd=free_cash(),
-                    open_exposure_after_usd=open_exposure(),
-                    metadata=base_metadata,
-                )
-            )
-            continue
 
         accepted, reason, requested_size_usd, metadata = _evaluate_trade(
             row=row,
@@ -489,8 +462,11 @@ def _simulate(
             available_cash=free_cash(),
             base_metadata=base_metadata,
         )
-        metadata["return_pct"] = round(return_pct, 6)
+        if return_pct is not None:
+            metadata["return_pct"] = round(return_pct, 6)
         if not accepted or requested_size_usd <= 0:
+            if return_pct is None:
+                unresolved_count += 1
             replay_rows.append(
                 _replay_trade_row(
                     replay_run_id=0,
@@ -519,6 +495,8 @@ def _simulate(
 
         entry_pause_reason = pause_reason(placed_at)
         if entry_pause_reason:
+            if return_pct is None:
+                unresolved_count += 1
             replay_rows.append(
                 _replay_trade_row(
                     replay_run_id=0,
@@ -558,6 +536,8 @@ def _simulate(
         )
         equity = account_equity()
         if policy.max_total_open_exposure_fraction > 0 and total_open + requested_size_usd > equity * policy.max_total_open_exposure_fraction + 1e-9:
+            if return_pct is None:
+                unresolved_count += 1
             replay_rows.append(
                 _replay_trade_row(
                     replay_run_id=0,
@@ -584,6 +564,8 @@ def _simulate(
             )
             continue
         if policy.max_market_exposure_fraction > 0 and market_open + requested_size_usd > equity * policy.max_market_exposure_fraction + 1e-9:
+            if return_pct is None:
+                unresolved_count += 1
             replay_rows.append(
                 _replay_trade_row(
                     replay_run_id=0,
@@ -610,6 +592,8 @@ def _simulate(
             )
             continue
         if policy.max_trader_exposure_fraction > 0 and trader_open + requested_size_usd > equity * policy.max_trader_exposure_fraction + 1e-9:
+            if return_pct is None:
+                unresolved_count += 1
             replay_rows.append(
                 _replay_trade_row(
                     replay_run_id=0,
@@ -628,6 +612,43 @@ def _simulate(
                     requested_size_usd=requested_size_usd,
                     simulated_size_usd=0.0,
                     return_pct=return_pct,
+                    pnl_usd=None,
+                    bankroll_after_usd=free_cash(),
+                    open_exposure_after_usd=open_exposure(),
+                    metadata=metadata,
+                )
+            )
+            continue
+
+        if return_pct is None:
+            unresolved_count += 1
+            open_positions.append(
+                {
+                    "close_ts": 10**12 + 1,
+                    "market_id": str(row["market_id"] or ""),
+                    "trader_address": str(row["trader_address"] or "").lower(),
+                    "size_usd": requested_size_usd,
+                    "pnl_usd": 0.0,
+                }
+            )
+            replay_rows.append(
+                _replay_trade_row(
+                    replay_run_id=0,
+                    trade_log_id=int(row["id"]),
+                    trade_id=str(row["trade_id"] or ""),
+                    placed_at=placed_at,
+                    market_id=str(row["market_id"] or ""),
+                    trader_address=str(row["trader_address"] or "").lower(),
+                    signal_mode=signal_mode,
+                    decision="accept",
+                    reason="accepted",
+                    source_status=source_status,
+                    entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
+                    requested_size_usd=requested_size_usd,
+                    simulated_size_usd=requested_size_usd,
+                    return_pct=None,
                     pnl_usd=None,
                     bankroll_after_usd=free_cash(),
                     open_exposure_after_usd=open_exposure(),
@@ -683,6 +704,8 @@ def _simulate(
     resolved_rows = [row for row in accepted_rows if row["pnl_usd"] is not None]
     wins = sum(1 for row in resolved_rows if float(row["pnl_usd"] or 0.0) > 0)
     final_bankroll = round(policy.initial_bankroll_usd + realized_pnl - open_exposure(), 6)
+    accepted_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in accepted_rows)
+    resolved_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in resolved_rows)
     reject_reason_summary: dict[str, int] = {}
     for row in rejected_rows:
         reason = str(row.get("reason") or "").strip()
@@ -735,9 +758,11 @@ def _simulate(
         "max_drawdown_pct": round(max_drawdown_pct, 6),
         "trade_count": len(replay_rows),
         "accepted_count": len(accepted_rows),
+        "accepted_size_usd": round(accepted_size_usd, 6),
         "rejected_count": len(replay_rows) - len(accepted_rows),
         "unresolved_count": unresolved_count,
         "resolved_count": len(resolved_rows),
+        "resolved_size_usd": round(resolved_size_usd, 6),
         "win_rate": round(wins / len(resolved_rows), 6) if resolved_rows else None,
         "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
         "segment_leaders": _segment_leaders(segment_metric_rows),
@@ -1068,6 +1093,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
                     "accepted_count": 0.0,
                     "accepted_size_usd": 0.0,
                     "resolved_count": 0.0,
+                    "resolved_size_usd": 0.0,
                     "total_pnl_usd": 0.0,
                     "wins": 0.0,
                     "return_sum": 0.0,
@@ -1079,6 +1105,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
                 bucket["accepted_size_usd"] += float(row.get("simulated_size_usd") or 0.0)
             if row["pnl_usd"] is not None:
                 bucket["resolved_count"] += 1
+                bucket["resolved_size_usd"] += float(row.get("simulated_size_usd") or 0.0)
                 bucket["total_pnl_usd"] += float(row["pnl_usd"] or 0.0)
                 bucket["return_sum"] += float(row["return_pct"] or 0.0)
                 if float(row["pnl_usd"] or 0.0) > 0:
@@ -1095,6 +1122,7 @@ def _build_segment_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
                 "accepted_count": int(values["accepted_count"]),
                 "accepted_size_usd": round(values["accepted_size_usd"], 6),
                 "resolved_count": resolved_count,
+                "resolved_size_usd": round(values["resolved_size_usd"], 6),
                 "total_pnl_usd": round(values["total_pnl_usd"], 6),
                 "win_count": int(values["wins"]),
                 "win_rate": round(values["wins"] / resolved_count, 6) if resolved_count else None,
@@ -1114,6 +1142,7 @@ def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: 
             row["accepted_count"],
             row["accepted_size_usd"],
             row["resolved_count"],
+            row["resolved_size_usd"],
             row["total_pnl_usd"],
             row["win_rate"],
             row["avg_return_pct"],
@@ -1125,8 +1154,8 @@ def _insert_segment_metrics(conn: sqlite3.Connection, replay_run_id: int, rows: 
             """
             INSERT INTO segment_metrics (
                 replay_run_id, segment_kind, segment_value, trade_count,
-                accepted_count, accepted_size_usd, resolved_count, total_pnl_usd, win_rate, avg_return_pct
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                accepted_count, accepted_size_usd, resolved_count, resolved_size_usd, total_pnl_usd, win_rate, avg_return_pct
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
             """,
             inserts,
         )
@@ -1164,7 +1193,9 @@ def _segment_summary(rows: list[dict[str, Any]], *, segment_kind: str) -> dict[s
         summary[segment_value] = {
             "trade_count": int(row["trade_count"]),
             "accepted_count": int(row["accepted_count"]),
+            "accepted_size_usd": round(float(row.get("accepted_size_usd") or 0.0), 6),
             "resolved_count": int(row["resolved_count"]),
+            "resolved_size_usd": round(float(row.get("resolved_size_usd") or 0.0), 6),
             "total_pnl_usd": round(float(row["total_pnl_usd"] or 0.0), 6),
             "win_count": int(row.get("win_count") or 0),
             "win_rate": round(float(row["win_rate"]), 6) if row.get("win_rate") is not None else None,
@@ -1356,6 +1387,7 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
             accepted_count   INTEGER NOT NULL DEFAULT 0,
             accepted_size_usd REAL NOT NULL DEFAULT 0,
             resolved_count   INTEGER NOT NULL DEFAULT 0,
+            resolved_size_usd REAL NOT NULL DEFAULT 0,
             total_pnl_usd    REAL NOT NULL DEFAULT 0,
             win_rate         REAL,
             avg_return_pct   REAL
@@ -1373,6 +1405,10 @@ def _ensure_replay_schema(conn: sqlite3.Connection) -> None:
             pass
     try:
         conn.execute("ALTER TABLE segment_metrics ADD COLUMN accepted_size_usd REAL NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE segment_metrics ADD COLUMN resolved_size_usd REAL NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
 

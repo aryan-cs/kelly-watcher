@@ -297,6 +297,131 @@ class ReplayTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_run_replay_keeps_unresolved_accepts_as_open_exposure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="resolved-pass",
+                    market_id="market-resolved",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.70,
+                    price_at_signal=0.68,
+                    actual_entry_price=0.68,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=20.0,
+                    placed_at=1_700_000_000,
+                    resolved_at=1_700_000_100,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.85},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="open-pass",
+                    market_id="market-open",
+                    trader_address="0xbbb",
+                    signal_mode="heuristic",
+                    confidence=0.72,
+                    price_at_signal=0.69,
+                    actual_entry_price=0.69,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=None,
+                    placed_at=1_700_000_010,
+                    resolved_at=None,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.86},
+                        "min_confidence": 0.55,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                    label="open-exposure",
+                )
+
+                self.assertEqual(result["accepted_count"], 2)
+                self.assertEqual(result["resolved_count"], 1)
+                self.assertEqual(result["unresolved_count"], 1)
+                self.assertLess(result["final_bankroll_usd"], result["initial_bankroll_usd"])
+
+                conn = sqlite3.connect(str(test_db_path))
+                conn.row_factory = sqlite3.Row
+                trade_rows = conn.execute(
+                    "SELECT trade_id, decision, pnl_usd, simulated_size_usd FROM replay_trades ORDER BY trade_log_id ASC"
+                ).fetchall()
+                segment_rows = conn.execute(
+                    """
+                    SELECT segment_value, accepted_size_usd, resolved_size_usd
+                    FROM segment_metrics
+                    WHERE segment_kind='signal_mode'
+                    ORDER BY segment_value ASC
+                    """
+                ).fetchall()
+                conn.close()
+
+                accepted_size_usd = sum(float(row["simulated_size_usd"]) for row in trade_rows)
+                resolved_size_usd = sum(
+                    float(row["simulated_size_usd"])
+                    for row in trade_rows
+                    if row["pnl_usd"] is not None
+                )
+
+                self.assertAlmostEqual(result["accepted_size_usd"], accepted_size_usd)
+                self.assertAlmostEqual(result["resolved_size_usd"], resolved_size_usd)
+                self.assertAlmostEqual(
+                    result["signal_mode_summary"]["heuristic"]["accepted_size_usd"],
+                    accepted_size_usd,
+                )
+                self.assertAlmostEqual(
+                    result["signal_mode_summary"]["heuristic"]["resolved_size_usd"],
+                    resolved_size_usd,
+                )
+
+                self.assertEqual(
+                    [(row["trade_id"], row["decision"], row["pnl_usd"] is None) for row in trade_rows],
+                    [
+                        ("resolved-pass", "accept", False),
+                        ("open-pass", "accept", True),
+                    ],
+                )
+                heuristic_segment = next(
+                    row for row in segment_rows if row["segment_value"] == "heuristic"
+                )
+                self.assertAlmostEqual(float(heuristic_segment["accepted_size_usd"]), accepted_size_usd)
+                self.assertAlmostEqual(float(heuristic_segment["resolved_size_usd"]), resolved_size_usd)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_run_replay_reports_trader_concentration(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

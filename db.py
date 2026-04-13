@@ -522,6 +522,7 @@ def init_db() -> None:
             accepted_count   INTEGER NOT NULL DEFAULT 0,
             accepted_size_usd REAL NOT NULL DEFAULT 0,
             resolved_count   INTEGER NOT NULL DEFAULT 0,
+            resolved_size_usd REAL NOT NULL DEFAULT 0,
             total_pnl_usd    REAL NOT NULL DEFAULT 0,
             win_rate         REAL,
             avg_return_pct   REAL,
@@ -545,8 +546,10 @@ def init_db() -> None:
             worst_window_penalty         REAL NOT NULL DEFAULT 0,
             pause_guard_penalty          REAL NOT NULL DEFAULT 0,
             resolved_share_penalty       REAL NOT NULL DEFAULT 0,
+            resolved_size_share_penalty  REAL NOT NULL DEFAULT 0,
             worst_window_resolved_share_penalty REAL NOT NULL DEFAULT 0,
             mode_resolved_share_penalty  REAL NOT NULL DEFAULT 0,
+            mode_resolved_size_share_penalty REAL NOT NULL DEFAULT 0,
             mode_worst_window_resolved_share_penalty REAL NOT NULL DEFAULT 0,
             worst_active_window_accepted_penalty REAL NOT NULL DEFAULT 0,
             mode_worst_active_window_accepted_penalty REAL NOT NULL DEFAULT 0,
@@ -749,6 +752,7 @@ def init_db() -> None:
         "segment_metrics",
         {
             "accepted_size_usd": "REAL NOT NULL DEFAULT 0",
+            "resolved_size_usd": "REAL NOT NULL DEFAULT 0",
         },
     )
     _ensure_table_columns(
@@ -767,8 +771,10 @@ def init_db() -> None:
             "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
             "pause_guard_penalty": "REAL NOT NULL DEFAULT 0",
             "resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
+            "resolved_size_share_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_window_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
+            "mode_resolved_size_share_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_worst_window_resolved_share_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_active_window_accepted_penalty": "REAL NOT NULL DEFAULT 0",
             "mode_worst_active_window_accepted_penalty": "REAL NOT NULL DEFAULT 0",

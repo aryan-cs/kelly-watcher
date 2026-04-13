@@ -67,6 +67,7 @@ def _score_breakdown(
     window_stddev_penalty: float,
     worst_window_penalty: float,
     pause_guard_penalty: float,
+    mode_loss_penalty: float,
     wallet_concentration_penalty: float,
     market_concentration_penalty: float,
 ) -> dict[str, float]:
@@ -76,6 +77,12 @@ def _score_breakdown(
     worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
     worst_window_loss_usd = max(-worst_window_pnl_usd, 0.0)
     pause_guard_reject_share = _pause_guard_reject_share(result)
+    signal_mode_summary = _signal_mode_summary(result)
+    mode_loss_penalty_usd = mode_loss_penalty * sum(
+        max(-float(values.get("total_pnl_usd") or 0.0), 0.0)
+        for values in signal_mode_summary.values()
+        if int(values.get("accepted_count") or 0) > 0
+    )
     wallet_concentration_share = max(
         float(_trader_concentration(result).get("top_accepted_share") or 0.0),
         float(_trader_concentration(result).get("top_abs_pnl_share") or 0.0),
@@ -96,6 +103,7 @@ def _score_breakdown(
         - window_stddev_penalty_usd
         - worst_window_penalty_usd
         - pause_guard_penalty_usd
+        - mode_loss_penalty_usd
         - wallet_concentration_penalty_usd
         - market_concentration_penalty_usd
     )
@@ -105,6 +113,7 @@ def _score_breakdown(
         "window_stddev_penalty_usd": round(window_stddev_penalty_usd, 6),
         "worst_window_penalty_usd": round(worst_window_penalty_usd, 6),
         "pause_guard_penalty_usd": round(pause_guard_penalty_usd, 6),
+        "mode_loss_penalty_usd": round(mode_loss_penalty_usd, 6),
         "wallet_concentration_penalty_usd": round(wallet_concentration_penalty_usd, 6),
         "market_concentration_penalty_usd": round(market_concentration_penalty_usd, 6),
         "score_usd": round(score_usd, 6),
@@ -119,6 +128,7 @@ def _score_result(
     window_stddev_penalty: float,
     worst_window_penalty: float,
     pause_guard_penalty: float,
+    mode_loss_penalty: float,
     wallet_concentration_penalty: float,
     market_concentration_penalty: float,
 ) -> float:
@@ -130,6 +140,7 @@ def _score_result(
             window_stddev_penalty=window_stddev_penalty,
             worst_window_penalty=worst_window_penalty,
             pause_guard_penalty=pause_guard_penalty,
+            mode_loss_penalty=mode_loss_penalty,
             wallet_concentration_penalty=wallet_concentration_penalty,
             market_concentration_penalty=market_concentration_penalty,
         )["score_usd"]
@@ -144,6 +155,7 @@ def _with_score_breakdown(
     window_stddev_penalty: float,
     worst_window_penalty: float,
     pause_guard_penalty: float,
+    mode_loss_penalty: float,
     wallet_concentration_penalty: float,
     market_concentration_penalty: float,
 ) -> dict[str, Any]:
@@ -155,6 +167,7 @@ def _with_score_breakdown(
         window_stddev_penalty=window_stddev_penalty,
         worst_window_penalty=worst_window_penalty,
         pause_guard_penalty=pause_guard_penalty,
+        mode_loss_penalty=mode_loss_penalty,
         wallet_concentration_penalty=wallet_concentration_penalty,
         market_concentration_penalty=market_concentration_penalty,
     )
@@ -718,6 +731,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             window_stddev_penalty         REAL NOT NULL DEFAULT 0,
             worst_window_penalty          REAL NOT NULL DEFAULT 0,
             pause_guard_penalty           REAL NOT NULL DEFAULT 0,
+            mode_loss_penalty             REAL NOT NULL DEFAULT 0,
             wallet_concentration_penalty  REAL NOT NULL DEFAULT 0,
             market_concentration_penalty  REAL NOT NULL DEFAULT 0,
             candidate_count               INTEGER NOT NULL DEFAULT 0,
@@ -780,6 +794,7 @@ def _ensure_search_schema(conn: sqlite3.Connection) -> None:
             "window_stddev_penalty": "REAL NOT NULL DEFAULT 0",
             "worst_window_penalty": "REAL NOT NULL DEFAULT 0",
             "pause_guard_penalty": "REAL NOT NULL DEFAULT 0",
+            "mode_loss_penalty": "REAL NOT NULL DEFAULT 0",
             "wallet_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "market_concentration_penalty": "REAL NOT NULL DEFAULT 0",
             "candidate_count": "INTEGER NOT NULL DEFAULT 0",
@@ -838,6 +853,7 @@ def _persist_search_results(
     window_stddev_penalty: float,
     worst_window_penalty: float,
     pause_guard_penalty: float,
+    mode_loss_penalty: float,
     wallet_concentration_penalty: float,
     market_concentration_penalty: float,
     window_days: int,
@@ -859,13 +875,13 @@ def _persist_search_results(
             INSERT INTO replay_search_runs (
                 started_at, finished_at, label_prefix, status, base_policy_json, grid_json,
                 constraints_json, notes, window_days, window_count, drawdown_penalty,
-                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, wallet_concentration_penalty, market_concentration_penalty,
+                window_stddev_penalty, worst_window_penalty, pause_guard_penalty, mode_loss_penalty, wallet_concentration_penalty, market_concentration_penalty,
                 candidate_count, feasible_count, rejected_count, current_candidate_score, current_candidate_feasible,
                 current_candidate_total_pnl_usd, current_candidate_max_drawdown_pct, current_candidate_constraint_failures_json, current_candidate_result_json,
                 best_vs_current_pnl_usd, best_vs_current_score,
                 best_feasible_candidate_index, best_feasible_score,
                 best_feasible_total_pnl_usd, best_feasible_max_drawdown_pct
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 started_at,
@@ -882,6 +898,7 @@ def _persist_search_results(
                 window_stddev_penalty,
                 worst_window_penalty,
                 pause_guard_penalty,
+                mode_loss_penalty,
                 wallet_concentration_penalty,
                 market_concentration_penalty,
                 len(ranked),
@@ -999,6 +1016,7 @@ def main() -> None:
     parser.add_argument("--window-stddev-penalty", type=float, default=0.0, help="Penalty per dollar of cross-window P&L standard deviation.")
     parser.add_argument("--worst-window-penalty", type=float, default=0.0, help="Penalty per dollar of worst-window loss magnitude.")
     parser.add_argument("--pause-guard-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay pause-guard reject share in bankroll-dollar terms when ranking candidates.")
+    parser.add_argument("--mode-loss-penalty", type=float, default=0.0, help="Penalty per replay dollar lost by any active scorer path when ranking candidates.")
     parser.add_argument("--wallet-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay wallet concentration share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--market-concentration-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay market concentration share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--max-combos", type=int, default=256, help="Safety cap on total grid combinations.")
@@ -1061,6 +1079,7 @@ def main() -> None:
         window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
+        mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
         market_concentration_penalty=max(args.market_concentration_penalty, 0.0),
     )
@@ -1106,6 +1125,7 @@ def main() -> None:
                 window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
                 worst_window_penalty=max(args.worst_window_penalty, 0.0),
                 pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
+                mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
                 wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
                 market_concentration_penalty=max(args.market_concentration_penalty, 0.0),
             ),
@@ -1140,6 +1160,7 @@ def main() -> None:
                 window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
                 worst_window_penalty=max(args.worst_window_penalty, 0.0),
                 pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
+                mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
                 wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
                 market_concentration_penalty=max(args.market_concentration_penalty, 0.0),
             )
@@ -1150,6 +1171,7 @@ def main() -> None:
             window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
             worst_window_penalty=max(args.worst_window_penalty, 0.0),
             pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
+            mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
             wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
             market_concentration_penalty=max(args.market_concentration_penalty, 0.0),
         )
@@ -1256,6 +1278,7 @@ def main() -> None:
         window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
         worst_window_penalty=max(args.worst_window_penalty, 0.0),
         pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
+        mode_loss_penalty=max(args.mode_loss_penalty, 0.0),
         wallet_concentration_penalty=max(args.wallet_concentration_penalty, 0.0),
         market_concentration_penalty=max(args.market_concentration_penalty, 0.0),
         window_days=max(args.window_days, 0),
@@ -1277,6 +1300,7 @@ def main() -> None:
                 "window_stddev_penalty": max(args.window_stddev_penalty, 0.0),
                 "worst_window_penalty": max(args.worst_window_penalty, 0.0),
                 "pause_guard_penalty": max(args.pause_guard_penalty, 0.0),
+                "mode_loss_penalty": max(args.mode_loss_penalty, 0.0),
                 "wallet_concentration_penalty": max(args.wallet_concentration_penalty, 0.0),
                 "market_concentration_penalty": max(args.market_concentration_penalty, 0.0),
                 "constraints": constraints,

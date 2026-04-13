@@ -194,6 +194,7 @@ interface ReplaySearchSummaryRow {
   window_stddev_penalty: number | null
   worst_window_penalty: number | null
   pause_guard_penalty: number | null
+  resolved_share_penalty: number | null
   mode_loss_penalty: number | null
   mode_inactivity_penalty: number | null
   wallet_concentration_penalty: number | null
@@ -290,8 +291,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search run', text: 'How recently the latest persisted replay search finished.'},
       {label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.'},
       {label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.'},
-      {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window, pause-guard, scorer-loss, scorer-inactivity, and concentration terms.'},
-      {label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, scorer-loss, scorer-inactivity, and concentration penalties.'},
+      {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window, pause-guard, resolved-coverage, scorer-loss, scorer-inactivity, and concentration terms.'},
+      {label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, resolved-coverage, scorer-loss, scorer-inactivity, and concentration penalties.'},
       {label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.'},
       {label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.'},
       {label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.'},
@@ -312,8 +313,8 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.'},
       {label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
-      {label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, scorer-loss, scorer-inactivity, and concentration penalties.'},
-      {label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including scorer inactivity.'},
+      {label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, resolved-coverage, scorer-loss, scorer-inactivity, and concentration penalties.'},
+      {label: 'Score drift', text: 'Best feasible minus current/base score decomposition, split into replay P&L and each score penalty term, including resolved-coverage and scorer inactivity.'},
       {label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.'},
       {label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
       {label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.'},
@@ -630,6 +631,7 @@ WITH latest_search AS (
     window_stddev_penalty,
     worst_window_penalty,
     pause_guard_penalty,
+    resolved_share_penalty,
     mode_loss_penalty,
     mode_inactivity_penalty,
     wallet_concentration_penalty,
@@ -679,6 +681,7 @@ SELECT
   latest_search.window_stddev_penalty,
   latest_search.worst_window_penalty,
   latest_search.pause_guard_penalty,
+  latest_search.resolved_share_penalty,
   latest_search.mode_loss_penalty,
   latest_search.mode_inactivity_penalty,
   latest_search.wallet_concentration_penalty,
@@ -1651,6 +1654,7 @@ function replaySearchScoreWeightSummary(row: ReplaySearchSummaryRow | undefined)
   pushIfActive('std', row.window_stddev_penalty)
   pushIfActive('worst', row.worst_window_penalty)
   pushIfActive('pause', row.pause_guard_penalty)
+  pushIfActive('cov', row.resolved_share_penalty)
   pushIfActive('mode', row.mode_loss_penalty)
   pushIfActive('idle', row.mode_inactivity_penalty)
   pushIfActive('wallet', row.wallet_concentration_penalty)
@@ -1672,6 +1676,7 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     const windowStddevPenaltyUsd = Number(breakdown.window_stddev_penalty_usd || 0)
     const worstWindowPenaltyUsd = Number(breakdown.worst_window_penalty_usd || 0)
     const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0)
+    const resolvedSharePenaltyUsd = Number(breakdown.resolved_share_penalty_usd || 0)
     const modeLossPenaltyUsd = Number(breakdown.mode_loss_penalty_usd || 0)
     const modeInactivityPenaltyUsd = Number(breakdown.mode_inactivity_penalty_usd || 0)
     const walletConcentrationPenaltyUsd = Number(breakdown.wallet_concentration_penalty_usd || 0)
@@ -1683,6 +1688,7 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     if (Math.abs(windowStddevPenaltyUsd) > 1e-9) parts.push(`std ${formatDollar(-windowStddevPenaltyUsd)}`)
     if (Math.abs(worstWindowPenaltyUsd) > 1e-9) parts.push(`worst ${formatDollar(-worstWindowPenaltyUsd)}`)
     if (Math.abs(pauseGuardPenaltyUsd) > 1e-9) parts.push(`pause ${formatDollar(-pauseGuardPenaltyUsd)}`)
+    if (Math.abs(resolvedSharePenaltyUsd) > 1e-9) parts.push(`cov ${formatDollar(-resolvedSharePenaltyUsd)}`)
     if (Math.abs(modeLossPenaltyUsd) > 1e-9) parts.push(`mode ${formatDollar(-modeLossPenaltyUsd)}`)
     if (Math.abs(modeInactivityPenaltyUsd) > 1e-9) parts.push(`idle ${formatDollar(-modeInactivityPenaltyUsd)}`)
     if (Math.abs(walletConcentrationPenaltyUsd) > 1e-9) parts.push(`wallet ${formatDollar(-walletConcentrationPenaltyUsd)}`)
@@ -1712,6 +1718,7 @@ function replaySearchScoreDriftSummary(
         window_stddev_penalty_usd: Number(breakdown.window_stddev_penalty_usd || 0),
         worst_window_penalty_usd: Number(breakdown.worst_window_penalty_usd || 0),
         pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0),
+        resolved_share_penalty_usd: Number(breakdown.resolved_share_penalty_usd || 0),
         mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
         mode_inactivity_penalty_usd: Number(breakdown.mode_inactivity_penalty_usd || 0),
         wallet_concentration_penalty_usd: Number(breakdown.wallet_concentration_penalty_usd || 0),
@@ -1732,6 +1739,7 @@ function replaySearchScoreDriftSummary(
   const stddevDelta = current.window_stddev_penalty_usd - best.window_stddev_penalty_usd
   const worstDelta = current.worst_window_penalty_usd - best.worst_window_penalty_usd
   const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd
+  const coverageDelta = current.resolved_share_penalty_usd - best.resolved_share_penalty_usd
   const modeDelta = current.mode_loss_penalty_usd - best.mode_loss_penalty_usd
   const inactivityDelta = current.mode_inactivity_penalty_usd - best.mode_inactivity_penalty_usd
   const walletDelta = current.wallet_concentration_penalty_usd - best.wallet_concentration_penalty_usd
@@ -1743,6 +1751,7 @@ function replaySearchScoreDriftSummary(
   if (Math.abs(stddevDelta) > 1e-9) parts.push(`std ${formatDollar(stddevDelta)}`)
   if (Math.abs(worstDelta) > 1e-9) parts.push(`worst ${formatDollar(worstDelta)}`)
   if (Math.abs(pauseDelta) > 1e-9) parts.push(`pause ${formatDollar(pauseDelta)}`)
+  if (Math.abs(coverageDelta) > 1e-9) parts.push(`cov ${formatDollar(coverageDelta)}`)
   if (Math.abs(modeDelta) > 1e-9) parts.push(`mode ${formatDollar(modeDelta)}`)
   if (Math.abs(inactivityDelta) > 1e-9) parts.push(`idle ${formatDollar(inactivityDelta)}`)
   if (Math.abs(walletDelta) > 1e-9) parts.push(`wallet ${formatDollar(walletDelta)}`)

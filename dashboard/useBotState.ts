@@ -30,8 +30,16 @@ export interface BotState {
   last_retrain_min_samples?: number
   last_retrain_trigger?: string
   last_retrain_deployed?: boolean
+  last_replay_search_started_at?: number
+  last_replay_search_finished_at?: number
   last_replay_search_status?: string
+  last_replay_search_message?: string
+  last_replay_search_trigger?: string
+  last_replay_search_run_id?: number
   last_replay_search_candidate_count?: number
+  last_replay_search_feasible_count?: number
+  last_replay_search_best_score?: number | null
+  last_replay_search_best_pnl_usd?: number | null
   last_replay_search_scope?: string
   last_replay_promotion_id?: number
   last_replay_promotion_at?: number

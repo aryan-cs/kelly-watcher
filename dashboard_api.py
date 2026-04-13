@@ -379,6 +379,12 @@ def _manual_retrain_response() -> dict[str, Any]:
             "message": "Manual retrain is unavailable because the bot state looks stale. Restart or refresh the bot first.",
         }
 
+    if bool(bot_state.get("shadow_restart_pending")):
+        return {
+            "ok": False,
+            "message": "Manual retrain is unavailable while shadow restart is pending. Wait for the restart to finish first.",
+        }
+
     if bool(bot_state.get("retrain_in_progress")):
         return {"ok": False, "message": "A retrain is already running."}
 
@@ -447,6 +453,11 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": False,
             "message": "Manual trade actions are unavailable because the bot state looks stale. Restart or refresh the bot first.",
+        }
+    if bool(bot_state.get("shadow_restart_pending")):
+        return {
+            "ok": False,
+            "message": "Manual trade actions are unavailable while shadow restart is pending. Wait for the restart to finish first.",
         }
     if _request_is_recent(MANUAL_TRADE_REQUEST_FILE, 15):
         return {

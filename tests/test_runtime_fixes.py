@@ -1206,6 +1206,51 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["manual_trade_message"], "buy more market-1")
         self.assertEqual(snapshot["session_id"], "abc123")
 
+    def test_dashboard_manual_retrain_response_blocks_while_shadow_restart_pending(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": True,
+                "retrain_in_progress": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_retrain_response()
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow restart", str(result["message"]).lower())
+        self.assertFalse(request_file.exists())
+
+    def test_dashboard_manual_trade_response_blocks_while_shadow_restart_pending(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": True,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_trade_response(
+                    {
+                        "action": "buy_more",
+                        "marketId": "market-1",
+                        "tokenId": "token-1",
+                        "side": "yes",
+                        "amountUsd": 5.0,
+                    }
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow restart", str(result["message"]).lower())
+        self.assertFalse(request_file.exists())
+
     def test_dashboard_launch_shadow_restart_queues_request(self) -> None:
         with patch.object(dashboard_api, "_live_trading_enabled_in_config", return_value=False), patch.object(
             dashboard_api, "_current_bot_mode", return_value="shadow"

@@ -118,17 +118,24 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
     const pollIsFresh = lastPollAt > 0 && (now - lastPollAt) <= heartbeatWindow;
     const activityIsFresh = lastActivityAt > 0 && (now - lastActivityAt) <= activityWindow;
     const startupDetail = String(botState.startup_detail || '').trim();
+    const startupValidationFailed = Boolean(botState.startup_validation_failed);
+    const startupValidationMessage = String(botState.startup_validation_message || '').trim();
+    const startupFailureText = startupDetail || startupValidationMessage || 'startup validation failed';
     const apiError = String(botState.api_error || '').trim();
     const apiIssueTag = /token|unauthorized/i.test(apiError) ? 'api auth error' : 'api offline';
     const startupInProgress = startedAt > 0 && lastPollAt <= 0;
-    const backendDotColor = apiError
+    const backendDotColor = startupValidationFailed
+        ? theme.red
+        : apiError
         ? theme.red
         : pollIsFresh
             ? theme.green
             : startupInProgress || (startedAt > 0 && activityIsFresh && loopInProgress)
                 ? theme.yellow
                 : theme.red;
-    const backendStatusText = apiError
+    const backendStatusText = startupValidationFailed
+        ? startupFailureText
+        : apiError
         ? apiIssueTag
         : startupInProgress && startupDetail
             ? startupDetail

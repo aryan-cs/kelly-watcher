@@ -5604,6 +5604,27 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         : fallbackLabel === 'No artifact'
             ? theme.yellow
             : theme.red;
+    const startupValidationFailed = Boolean(botState.startup_validation_failed);
+    const startupDetail = String(botState.startup_detail || '').trim();
+    const startupValidationMessage = String(botState.startup_validation_message || '').trim();
+    const startupValue = useMemo(() => {
+        if (startupValidationFailed)
+            return startupDetail || startupValidationMessage || 'startup validation failed';
+        if ((botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail)
+            return startupDetail;
+        return 'ready';
+    }, [
+        botState.last_poll_at,
+        botState.started_at,
+        startupDetail,
+        startupValidationFailed,
+        startupValidationMessage
+    ]);
+    const startupColor = startupValidationFailed
+        ? theme.red
+        : (botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail
+            ? theme.yellow
+            : theme.green;
     const replaySearchStatusText = replaySearchStatusLabel(botState.last_replay_search_status);
     const replaySearchStatusRaw = String(botState.last_replay_search_status || '').trim().toLowerCase();
     const replaySearchScopeText = replaySearchScopeLabel(botState.last_replay_search_scope);
@@ -5875,6 +5896,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         },
         { label: 'Contract', value: contractLabel, color: contractColor },
         { label: 'Fallback', value: fallbackLabel, color: fallbackColor },
+        { label: 'Startup', value: startupValue, color: startupColor },
         {
             label: 'Replay search',
             value: replaySearchValue,

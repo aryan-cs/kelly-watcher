@@ -9,6 +9,8 @@ export interface BotState {
   last_activity_at?: number
   loop_in_progress?: boolean
   startup_detail?: string
+  startup_validation_failed?: boolean
+  startup_validation_message?: string
   mode?: 'shadow' | 'live'
   n_wallets?: number
   poll_interval?: number

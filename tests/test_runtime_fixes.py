@@ -3028,6 +3028,59 @@ class RuntimeFixesTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "MIN_CONFIDENCE must be numeric, got 'abc'"):
                 main._validate_startup()
 
+    def test_persist_startup_validation_failure_writes_state_even_when_runtime_getters_are_broken(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                with (
+                    patch("main.use_real_money", side_effect=main.ConfigError("USE_REAL_MONEY must be boolean")),
+                    patch("main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
+                    patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
+                ):
+                    main._persist_startup_validation_failure(
+                        ["MIN_CONFIDENCE must be numeric, got 'abc'", "MAX_BET_FRACTION must be between 0 and 1, got 2"],
+                        ["warning text"],
+                    )
+
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_validation_failed"])
+                self.assertEqual(payload["startup_detail"], "startup validation failed: 2 errors")
+                self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_validation_message"])
+                self.assertIn("warning text", payload["startup_validation_message"])
+                self.assertEqual(payload["mode"], "shadow")
+                self.assertEqual(payload["poll_interval"], 0.0)
+                self.assertEqual(payload["n_wallets"], 1)
+                self.assertEqual(payload["last_poll_at"], 0)
+                self.assertFalse(payload["loop_in_progress"])
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+
+    def test_validate_startup_persists_failure_state_before_raising(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                with (
+                    patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
+                    patch("main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")),
+                    patch("main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
+                    patch("main.use_real_money", return_value=False),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "MIN_CONFIDENCE must be numeric, got 'abc'"):
+                        main._validate_startup()
+
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_validation_failed"])
+                self.assertEqual(
+                    payload["startup_detail"],
+                    "startup validation failed: MIN_CONFIDENCE must be numeric, got 'abc'",
+                )
+                self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_validation_message"])
+                self.assertEqual(payload["poll_interval"], 0.0)
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+
     def test_partial_bot_state_heartbeat_preserves_last_completed_poll(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_state_file = main.BOT_STATE_FILE

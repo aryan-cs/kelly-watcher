@@ -488,16 +488,64 @@ def _write_bot_state(**extra) -> None:
             existing = {}
 
     state = dict(existing)
+    try:
+        mode = "live" if use_real_money() else "shadow"
+    except Exception:
+        raw_live_mode = str(os.environ.get("USE_REAL_MONEY") or "").strip().lower()
+        if raw_live_mode in {"1", "true", "yes", "on"}:
+            mode = "live"
+        elif raw_live_mode in {"0", "false", "no", "off"}:
+            mode = "shadow"
+        else:
+            mode = str(existing.get("mode") or "shadow")
+    try:
+        interval = poll_interval()
+    except Exception:
+        try:
+            interval = float(existing.get("poll_interval") or 0)
+        except Exception:
+            interval = 0.0
     state.update(
         {
             "started_at": int(extra.pop("started_at", state.get("started_at") or time.time())),
-            "mode": "live" if use_real_money() else "shadow",
+            "mode": mode,
             "n_wallets": len(WATCHED_WALLETS),
-            "poll_interval": poll_interval(),
+            "poll_interval": interval,
         }
     )
     state.update(extra)
     BOT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _persist_startup_validation_failure(errors: list[str], warnings: list[str] | None = None) -> None:
+    cleaned_errors = [str(item or "").strip() for item in errors if str(item or "").strip()]
+    cleaned_warnings = [str(item or "").strip() for item in (warnings or []) if str(item or "").strip()]
+    if not cleaned_errors:
+        cleaned_errors = ["startup validation failed"]
+    failed_at = int(time.time())
+    detail = (
+        f"startup validation failed: {cleaned_errors[0]}"
+        if len(cleaned_errors) == 1
+        else f"startup validation failed: {len(cleaned_errors)} errors"
+    )
+    message_lines = ["startup validation failed", *[f"- {item}" for item in cleaned_errors]]
+    if cleaned_warnings:
+        message_lines.extend(["warnings", *[f"- {item}" for item in cleaned_warnings]])
+    _write_bot_state(
+        started_at=failed_at,
+        last_activity_at=failed_at,
+        last_loop_started_at=0,
+        loop_in_progress=False,
+        last_poll_at=0,
+        last_poll_duration_s=0.0,
+        retrain_in_progress=False,
+        retrain_started_at=0,
+        replay_search_in_progress=False,
+        replay_search_started_at=0,
+        startup_detail=detail,
+        startup_validation_failed=True,
+        startup_validation_message="\n".join(message_lines),
+    )
 
 
 def _send_resolution_alerts(resolved_rows: list[dict[str, object]]) -> None:
@@ -3539,6 +3587,7 @@ def _validate_startup() -> None:
         logger.warning("Startup warning: %s", warning)
 
     if errors:
+        _persist_startup_validation_failure(errors, warnings)
         message = "Startup validation failed:\n- " + "\n- ".join(errors)
         logger.error(message)
         if use_real_money():
@@ -3673,6 +3722,8 @@ def main() -> None:
         "last_activity_at": start_ts,
         "loop_in_progress": False,
         "startup_detail": "starting bot",
+        "startup_validation_failed": False,
+        "startup_validation_message": "",
         "last_poll_at": 0,
         "last_poll_duration_s": 0.0,
         "bankroll_usd": None,

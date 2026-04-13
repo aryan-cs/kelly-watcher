@@ -838,6 +838,31 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(summary["xgboost"]["min_active_window_accepted_size_share"], 0.0)
         self.assertEqual(summary["xgboost"]["max_active_window_accepted_size_share"], 1.0)
 
+    def test_signal_mode_summary_fails_closed_on_legacy_multi_window_accepting_window_concentration(self) -> None:
+        summary = replay_search._signal_mode_summary(
+            {
+                "window_count": 4,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 6,
+                        "accepted_size_usd": 72.0,
+                        "accepted_window_count": 3,
+                        "resolved_count": 6,
+                        "resolved_size_usd": 72.0,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(summary["heuristic"]["max_accepting_window_accepted_share"], 1.0)
+        self.assertEqual(summary["heuristic"]["max_accepting_window_accepted_size_share"], 1.0)
+        self.assertEqual(summary["heuristic"]["top_two_accepting_window_accepted_share"], 1.0)
+        self.assertEqual(summary["heuristic"]["top_two_accepting_window_accepted_size_share"], 1.0)
+        self.assertEqual(summary["heuristic"]["accepting_window_accepted_concentration_index"], 1.0)
+        self.assertEqual(summary["heuristic"]["accepting_window_accepted_size_concentration_index"], 1.0)
+
     def test_signal_mode_summary_fails_closed_on_legacy_multi_window_accept_counts(self) -> None:
         summary = replay_search._signal_mode_summary(
             {
@@ -3070,6 +3095,54 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["accepting_window_accepted_size_share_penalty_usd"], 270.0)
         self.assertEqual(breakdown["score_usd"], -250.0)
 
+    def test_score_breakdown_fails_closed_on_legacy_accepting_window_concentration(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "accepted_window_count": 3,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": 200.0,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+            accepting_window_accepted_share_penalty=0.1,
+            accepting_window_accepted_size_share_penalty=0.2,
+            top_two_accepting_window_accepted_share_penalty=0.05,
+            top_two_accepting_window_accepted_size_share_penalty=0.15,
+            accepting_window_accepted_concentration_index_penalty=0.03,
+            accepting_window_accepted_size_concentration_index_penalty=0.04,
+        )
+
+        self.assertEqual(breakdown["accepting_window_accepted_share_penalty_usd"], 300.0)
+        self.assertEqual(breakdown["accepting_window_accepted_size_share_penalty_usd"], 600.0)
+        self.assertEqual(breakdown["top_two_accepting_window_accepted_share_penalty_usd"], 150.0)
+        self.assertEqual(breakdown["top_two_accepting_window_accepted_size_share_penalty_usd"], 450.0)
+        self.assertEqual(breakdown["accepting_window_accepted_concentration_index_penalty_usd"], 90.0)
+        self.assertEqual(breakdown["accepting_window_accepted_size_concentration_index_penalty_usd"], 120.0)
+        self.assertEqual(breakdown["score_usd"], -1690.0)
+
     def test_score_breakdown_penalizes_top_two_accepting_window_trade_share_concentration(self) -> None:
         breakdown = replay_search._score_breakdown(
             {
@@ -4959,6 +5032,24 @@ class ReplaySearchTest(unittest.TestCase):
             },
             **self._constraint_defaults(
                 max_accepting_window_accepted_concentration_index=0.3,
+            ),
+        )
+
+        self.assertEqual(failures, ["accepting_window_accepted_concentration_index"])
+
+    def test_constraint_failures_fail_closed_on_legacy_accepting_window_trade_concentration_index(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 12,
+                "resolved_count": 12,
+                "trade_count": 12,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "accepted_window_count": 3,
+            },
+            **self._constraint_defaults(
+                max_accepting_window_accepted_concentration_index=0.9,
             ),
         )
 
@@ -7337,6 +7428,68 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["mode_active_window_accepted_share_penalty_usd"], 300.0)
         self.assertEqual(breakdown["mode_active_window_accepted_size_share_penalty_usd"], 600.0)
         self.assertEqual(breakdown["score_usd"], -880.0)
+
+    def test_score_breakdown_fails_closed_on_legacy_mode_accepting_window_concentration(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 4,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 6,
+                        "resolved_count": 6,
+                        "accepted_size_usd": 72.0,
+                        "resolved_size_usd": 72.0,
+                        "accepted_window_count": 3,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                    },
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_size_usd": 48.0,
+                        "resolved_size_usd": 48.0,
+                        "accepted_window_count": 3,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+            mode_accepting_window_accepted_share_penalty=0.1,
+            mode_accepting_window_accepted_size_share_penalty=0.2,
+            mode_top_two_accepting_window_accepted_share_penalty=0.05,
+            mode_top_two_accepting_window_accepted_size_share_penalty=0.15,
+            mode_accepting_window_accepted_concentration_index_penalty=0.03,
+            mode_accepting_window_accepted_size_concentration_index_penalty=0.04,
+        )
+
+        self.assertEqual(breakdown["mode_accepting_window_accepted_share_penalty_usd"], 300.0)
+        self.assertEqual(breakdown["mode_accepting_window_accepted_size_share_penalty_usd"], 600.0)
+        self.assertEqual(breakdown["mode_top_two_accepting_window_accepted_share_penalty_usd"], 150.0)
+        self.assertEqual(breakdown["mode_top_two_accepting_window_accepted_size_share_penalty_usd"], 450.0)
+        self.assertEqual(breakdown["mode_accepting_window_accepted_concentration_index_penalty_usd"], 90.0)
+        self.assertEqual(breakdown["mode_accepting_window_accepted_size_concentration_index_penalty_usd"], 120.0)
+        self.assertEqual(breakdown["score_usd"], -1690.0)
 
     def test_score_breakdown_ignores_disabled_scorer_losses(self) -> None:
         breakdown = replay_search._score_breakdown(

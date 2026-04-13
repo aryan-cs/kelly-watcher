@@ -1208,53 +1208,49 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         resolved_max_accepting_window_accepted_share = (
             _clamp_fraction(float(raw_max_accepting_window_accepted_share))
             if raw_max_accepting_window_accepted_share is not None
-            else 1.0
-            if resolved_accepted_window_count <= 1 and int(raw_values.get("accepted_count") or 0) > 0
-            else 0.0
+            else _legacy_accepting_window_concentration_fallback(
+                int(raw_values.get("accepted_count") or 0) > 0
+            )
         )
         raw_max_accepting_window_accepted_size_share = raw_values.get("max_accepting_window_accepted_size_share")
         resolved_max_accepting_window_accepted_size_share = (
             _clamp_fraction(float(raw_max_accepting_window_accepted_size_share))
             if raw_max_accepting_window_accepted_size_share is not None
-            else 1.0
-            if resolved_accepted_window_count <= 1 and float(raw_values.get("accepted_size_usd") or 0.0) > 0
-            else 0.0
+            else _legacy_accepting_window_concentration_fallback(
+                float(raw_values.get("accepted_size_usd") or 0.0) > 0
+            )
         )
         raw_top_two_accepting_window_accepted_share = raw_values.get("top_two_accepting_window_accepted_share")
         resolved_top_two_accepting_window_accepted_share = (
             _clamp_fraction(float(raw_top_two_accepting_window_accepted_share))
             if raw_top_two_accepting_window_accepted_share is not None
-            else 1.0
-            if resolved_accepted_window_count <= 2 and int(raw_values.get("accepted_count") or 0) > 0
-            else resolved_max_accepting_window_accepted_share
-            if int(raw_values.get("accepted_count") or 0) > 0
-            else 0.0
+            else _legacy_accepting_window_concentration_fallback(
+                int(raw_values.get("accepted_count") or 0) > 0
+            )
         )
         raw_top_two_accepting_window_accepted_size_share = raw_values.get("top_two_accepting_window_accepted_size_share")
         resolved_top_two_accepting_window_accepted_size_share = (
             _clamp_fraction(float(raw_top_two_accepting_window_accepted_size_share))
             if raw_top_two_accepting_window_accepted_size_share is not None
-            else 1.0
-            if resolved_accepted_window_count <= 2 and float(raw_values.get("accepted_size_usd") or 0.0) > 0
-            else resolved_max_accepting_window_accepted_size_share
-            if float(raw_values.get("accepted_size_usd") or 0.0) > 0
-            else 0.0
+            else _legacy_accepting_window_concentration_fallback(
+                float(raw_values.get("accepted_size_usd") or 0.0) > 0
+            )
         )
         raw_accepting_window_accepted_concentration_index = raw_values.get("accepting_window_accepted_concentration_index")
         resolved_accepting_window_accepted_concentration_index = (
             _clamp_fraction(float(raw_accepting_window_accepted_concentration_index))
             if raw_accepting_window_accepted_concentration_index is not None
-            else 1.0
-            if resolved_accepted_window_count <= 1 and int(raw_values.get("accepted_count") or 0) > 0
-            else 0.0
+            else _legacy_accepting_window_concentration_fallback(
+                int(raw_values.get("accepted_count") or 0) > 0
+            )
         )
         raw_accepting_window_accepted_size_concentration_index = raw_values.get("accepting_window_accepted_size_concentration_index")
         resolved_accepting_window_accepted_size_concentration_index = (
             _clamp_fraction(float(raw_accepting_window_accepted_size_concentration_index))
             if raw_accepting_window_accepted_size_concentration_index is not None
-            else 1.0
-            if resolved_accepted_window_count <= 1 and float(raw_values.get("accepted_size_usd") or 0.0) > 0
-            else 0.0
+            else _legacy_accepting_window_concentration_fallback(
+                float(raw_values.get("accepted_size_usd") or 0.0) > 0
+            )
         )
         bucket["trade_count"] += int(raw_values.get("trade_count") or 0)
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
@@ -1523,6 +1519,10 @@ def _active_window_mix_share_fallback(mode_value: float, total_value: float, win
     if mode_value >= total_value:
         return 1.0, 1.0
     return 0.0, 1.0
+
+
+def _legacy_accepting_window_concentration_fallback(has_accepts: bool) -> float:
+    return 1.0 if has_accepts else 0.0
 
 
 def _min_active_window_accepted_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
@@ -2196,58 +2196,54 @@ def _max_accepting_window_accepted_share(result: dict[str, Any]) -> float:
     raw_value = result.get("max_accepting_window_accepted_share")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value or 0.0))
-    if _accepted_window_count(result) <= 1 and int(result.get("accepted_count") or 0) > 0:
-        return 1.0
-    return 0.0
+    return _legacy_accepting_window_concentration_fallback(
+        int(result.get("accepted_count") or 0) > 0
+    )
 
 
 def _top_two_accepting_window_accepted_share(result: dict[str, Any]) -> float:
     raw_value = result.get("top_two_accepting_window_accepted_share")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value or 0.0))
-    accepted_window_count = _accepted_window_count(result)
-    if accepted_window_count <= 2 and int(result.get("accepted_count") or 0) > 0:
-        return 1.0
-    return _max_accepting_window_accepted_share(result)
+    return _legacy_accepting_window_concentration_fallback(
+        int(result.get("accepted_count") or 0) > 0
+    )
 
 
 def _max_accepting_window_accepted_size_share(result: dict[str, Any]) -> float:
     raw_value = result.get("max_accepting_window_accepted_size_share")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value or 0.0))
-    if _accepted_window_count(result) <= 1 and float(result.get("accepted_size_usd") or 0.0) > 0:
-        return 1.0
-    return 0.0
+    return _legacy_accepting_window_concentration_fallback(
+        float(result.get("accepted_size_usd") or 0.0) > 0
+    )
 
 
 def _top_two_accepting_window_accepted_size_share(result: dict[str, Any]) -> float:
     raw_value = result.get("top_two_accepting_window_accepted_size_share")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value or 0.0))
-    accepted_window_count = _accepted_window_count(result)
-    if accepted_window_count <= 2 and float(result.get("accepted_size_usd") or 0.0) > 0:
-        return 1.0
-    return _max_accepting_window_accepted_size_share(result)
+    return _legacy_accepting_window_concentration_fallback(
+        float(result.get("accepted_size_usd") or 0.0) > 0
+    )
 
 
 def _accepting_window_accepted_concentration_index(result: dict[str, Any]) -> float:
     raw_value = result.get("accepting_window_accepted_concentration_index")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value or 0.0))
-    accepted_window_count = _accepted_window_count(result)
-    if accepted_window_count <= 1 and int(result.get("accepted_count") or 0) > 0:
-        return 1.0
-    return 0.0
+    return _legacy_accepting_window_concentration_fallback(
+        int(result.get("accepted_count") or 0) > 0
+    )
 
 
 def _accepting_window_accepted_size_concentration_index(result: dict[str, Any]) -> float:
     raw_value = result.get("accepting_window_accepted_size_concentration_index")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value or 0.0))
-    accepted_window_count = _accepted_window_count(result)
-    if accepted_window_count <= 1 and float(result.get("accepted_size_usd") or 0.0) > 0:
-        return 1.0
-    return 0.0
+    return _legacy_accepting_window_concentration_fallback(
+        float(result.get("accepted_size_usd") or 0.0) > 0
+    )
 
 
 def _mode_active_window_count(
@@ -2386,9 +2382,8 @@ def _mode_max_accepting_window_accepted_share(
     raw_value = payload.get("max_accepting_window_accepted_share")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value))
-    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
     accepted_count = int(payload.get("accepted_count") or 0)
-    return 1.0 if accepted_window_count <= 1 and accepted_count > 0 else 0.0
+    return _legacy_accepting_window_concentration_fallback(accepted_count > 0)
 
 
 def _mode_top_two_accepting_window_accepted_share(
@@ -2400,11 +2395,8 @@ def _mode_top_two_accepting_window_accepted_share(
     raw_value = payload.get("top_two_accepting_window_accepted_share")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value))
-    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
     accepted_count = int(payload.get("accepted_count") or 0)
-    if accepted_window_count <= 2 and accepted_count > 0:
-        return 1.0
-    return _mode_max_accepting_window_accepted_share(signal_mode_summary, mode, window_count)
+    return _legacy_accepting_window_concentration_fallback(accepted_count > 0)
 
 
 def _mode_max_accepting_window_accepted_size_share(
@@ -2416,9 +2408,8 @@ def _mode_max_accepting_window_accepted_size_share(
     raw_value = payload.get("max_accepting_window_accepted_size_share")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value))
-    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
     accepted_size_usd = float(payload.get("accepted_size_usd") or 0.0)
-    return 1.0 if accepted_window_count <= 1 and accepted_size_usd > 0 else 0.0
+    return _legacy_accepting_window_concentration_fallback(accepted_size_usd > 0)
 
 
 def _mode_top_two_accepting_window_accepted_size_share(
@@ -2430,11 +2421,8 @@ def _mode_top_two_accepting_window_accepted_size_share(
     raw_value = payload.get("top_two_accepting_window_accepted_size_share")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value))
-    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
     accepted_size_usd = float(payload.get("accepted_size_usd") or 0.0)
-    if accepted_window_count <= 2 and accepted_size_usd > 0:
-        return 1.0
-    return _mode_max_accepting_window_accepted_size_share(signal_mode_summary, mode, window_count)
+    return _legacy_accepting_window_concentration_fallback(accepted_size_usd > 0)
 
 
 def _mode_accepting_window_accepted_concentration_index(
@@ -2446,9 +2434,8 @@ def _mode_accepting_window_accepted_concentration_index(
     raw_value = payload.get("accepting_window_accepted_concentration_index")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value))
-    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
     accepted_count = int(payload.get("accepted_count") or 0)
-    return 1.0 if accepted_window_count <= 1 and accepted_count > 0 else 0.0
+    return _legacy_accepting_window_concentration_fallback(accepted_count > 0)
 
 
 def _mode_accepting_window_accepted_size_concentration_index(
@@ -2460,9 +2447,8 @@ def _mode_accepting_window_accepted_size_concentration_index(
     raw_value = payload.get("accepting_window_accepted_size_concentration_index")
     if raw_value is not None:
         return _clamp_fraction(float(raw_value))
-    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
     accepted_size_usd = float(payload.get("accepted_size_usd") or 0.0)
-    return 1.0 if accepted_window_count <= 1 and accepted_size_usd > 0 else 0.0
+    return _legacy_accepting_window_concentration_fallback(accepted_size_usd > 0)
 
 
 def _carry_window_share(result: dict[str, Any]) -> float:

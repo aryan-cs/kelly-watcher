@@ -593,6 +593,10 @@ def _constraint_failures(
     max_heuristic_accepted_share: float,
     min_xgboost_accepted_share: float,
     max_pause_guard_reject_share: float,
+    min_trader_count: int,
+    min_market_count: int,
+    min_entry_price_band_count: int,
+    min_time_to_close_band_count: int,
     max_top_trader_accepted_share: float,
     max_top_trader_abs_pnl_share: float,
     max_top_market_accepted_share: float,
@@ -685,6 +689,14 @@ def _constraint_failures(
         failures.append("xgboost_accepted_share")
     if max_pause_guard_reject_share > 0 and _pause_guard_reject_share(result) > max_pause_guard_reject_share:
         failures.append("pause_guard_reject_share")
+    if int(trader_concentration.get("trader_count") or 0) < max(min_trader_count, 0):
+        failures.append("trader_count")
+    if int(market_concentration.get("market_count") or 0) < max(min_market_count, 0):
+        failures.append("market_count")
+    if int(entry_price_band_concentration.get("entry_price_band_count") or 0) < max(min_entry_price_band_count, 0):
+        failures.append("entry_price_band_count")
+    if int(time_to_close_band_concentration.get("time_to_close_band_count") or 0) < max(min_time_to_close_band_count, 0):
+        failures.append("time_to_close_band_count")
     if max_top_trader_accepted_share > 0 and float(trader_concentration.get("top_accepted_share") or 0.0) > max_top_trader_accepted_share:
         failures.append("top_trader_accepted_share")
     if max_top_trader_abs_pnl_share > 0 and float(trader_concentration.get("top_abs_pnl_share") or 0.0) > max_top_trader_abs_pnl_share:
@@ -1478,6 +1490,10 @@ def main() -> None:
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
     parser.add_argument("--max-pause-guard-reject-share", type=float, default=0.0, help="Maximum fraction of replay trades allowed to be rejected by daily-loss or live-drawdown pause guards.")
+    parser.add_argument("--min-trader-count", type=int, default=0, help="Minimum distinct trader count required for a candidate to be feasible.")
+    parser.add_argument("--min-market-count", type=int, default=0, help="Minimum distinct market count required for a candidate to be feasible.")
+    parser.add_argument("--min-entry-price-band-count", type=int, default=0, help="Minimum distinct entry-price-band count required for a candidate to be feasible.")
+    parser.add_argument("--min-time-to-close-band-count", type=int, default=0, help="Minimum distinct time-to-close-band count required for a candidate to be feasible.")
     parser.add_argument("--max-top-trader-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single trader.")
     parser.add_argument("--max-top-trader-abs-pnl-share", type=float, default=0.0, help="Maximum fraction of absolute replay P&L allowed to come from a single trader.")
     parser.add_argument("--max-top-market-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from a single market.")
@@ -1562,6 +1578,10 @@ def main() -> None:
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
+        min_trader_count=max(args.min_trader_count, 0),
+        min_market_count=max(args.min_market_count, 0),
+        min_entry_price_band_count=max(args.min_entry_price_band_count, 0),
+        min_time_to_close_band_count=max(args.min_time_to_close_band_count, 0),
         max_top_trader_accepted_share=_clamp_fraction(args.max_top_trader_accepted_share),
         max_top_trader_abs_pnl_share=_clamp_fraction(args.max_top_trader_abs_pnl_share),
         max_top_market_accepted_share=_clamp_fraction(args.max_top_market_accepted_share),
@@ -1694,6 +1714,10 @@ def main() -> None:
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
             max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
+            min_trader_count=max(args.min_trader_count, 0),
+            min_market_count=max(args.min_market_count, 0),
+            min_entry_price_band_count=max(args.min_entry_price_band_count, 0),
+            min_time_to_close_band_count=max(args.min_time_to_close_band_count, 0),
             max_top_trader_accepted_share=_clamp_fraction(args.max_top_trader_accepted_share),
             max_top_trader_abs_pnl_share=_clamp_fraction(args.max_top_trader_abs_pnl_share),
             max_top_market_accepted_share=_clamp_fraction(args.max_top_market_accepted_share),
@@ -1764,6 +1788,10 @@ def main() -> None:
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
         "max_pause_guard_reject_share": _clamp_fraction(args.max_pause_guard_reject_share),
+        "min_trader_count": max(args.min_trader_count, 0),
+        "min_market_count": max(args.min_market_count, 0),
+        "min_entry_price_band_count": max(args.min_entry_price_band_count, 0),
+        "min_time_to_close_band_count": max(args.min_time_to_close_band_count, 0),
         "max_top_trader_accepted_share": _clamp_fraction(args.max_top_trader_accepted_share),
         "max_top_trader_abs_pnl_share": _clamp_fraction(args.max_top_trader_abs_pnl_share),
         "max_top_market_accepted_share": _clamp_fraction(args.max_top_market_accepted_share),

@@ -387,6 +387,10 @@ class ReplaySearchTest(unittest.TestCase):
             max_heuristic_accepted_share=0.5,
             min_xgboost_accepted_share=0.5,
             max_pause_guard_reject_share=0.0,
+            min_trader_count=0,
+            min_market_count=0,
+            min_entry_price_band_count=0,
+            min_time_to_close_band_count=0,
             max_top_trader_accepted_share=0.0,
             max_top_trader_abs_pnl_share=0.0,
             max_top_market_accepted_share=0.0,
@@ -1148,6 +1152,100 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["max_top_time_to_close_band_abs_pnl_share"], 0.6)
         self.assertIn("hzn n 40%", stderr.getvalue())
         self.assertIn("hzn pnl 45%", stderr.getvalue())
+
+    def test_main_can_require_minimum_distinct_concentration_counts(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 58.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 12,
+                    "resolved_count": 12,
+                    "win_rate": 0.6,
+                    "trader_concentration": {
+                        "trader_count": 4,
+                        "top_accepted_share": 0.35,
+                        "top_abs_pnl_share": 0.30,
+                    },
+                    "market_concentration": {
+                        "market_count": 4,
+                        "top_accepted_share": 0.40,
+                        "top_abs_pnl_share": 0.33,
+                    },
+                    "entry_price_band_concentration": {
+                        "entry_price_band_count": 3,
+                        "top_accepted_share": 0.45,
+                        "top_abs_pnl_share": 0.40,
+                    },
+                    "time_to_close_band_concentration": {
+                        "time_to_close_band_count": 4,
+                        "top_accepted_share": 0.35,
+                        "top_abs_pnl_share": 0.31,
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 64.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 12,
+                "resolved_count": 12,
+                "win_rate": 0.6,
+                "trader_concentration": {
+                    "trader_count": 2,
+                    "top_accepted_share": 0.50,
+                    "top_abs_pnl_share": 0.48,
+                },
+                "market_concentration": {
+                    "market_count": 2,
+                    "top_accepted_share": 0.50,
+                    "top_abs_pnl_share": 0.47,
+                },
+                "entry_price_band_concentration": {
+                    "entry_price_band_count": 2,
+                    "top_accepted_share": 0.50,
+                    "top_abs_pnl_share": 0.49,
+                },
+                "time_to_close_band_concentration": {
+                    "time_to_close_band_count": 2,
+                    "top_accepted_share": 0.55,
+                    "top_abs_pnl_share": 0.50,
+                },
+            }
+
+        stdout = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--min-trader-count",
+            "3",
+            "--min-market-count",
+            "3",
+            "--min-entry-price-band-count",
+            "3",
+            "--min-time-to-close-band-count",
+            "3",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(
+            rejected["constraint_failures"],
+            ["trader_count", "market_count", "entry_price_band_count", "time_to_close_band_count"],
+        )
+        self.assertEqual(payload["constraints"]["min_trader_count"], 3)
+        self.assertEqual(payload["constraints"]["min_market_count"], 3)
+        self.assertEqual(payload["constraints"]["min_entry_price_band_count"], 3)
+        self.assertEqual(payload["constraints"]["min_time_to_close_band_count"], 3)
 
     def test_main_can_penalize_pause_guard_reject_share_in_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -3163,6 +3261,7 @@ class ReplaySearchTest(unittest.TestCase):
                 {
                     "max_drawdown_pct": 0.1,
                     "max_heuristic_accepted_share": 0.0,
+                    "max_heuristic_inactive_windows": -1,
                     "max_pause_guard_reject_share": 0.0,
                     "max_top_market_accepted_share": 0.0,
                     "max_top_market_abs_pnl_share": 0.0,
@@ -3173,20 +3272,24 @@ class ReplaySearchTest(unittest.TestCase):
                     "max_top_trader_accepted_share": 0.0,
                     "max_top_trader_abs_pnl_share": 0.0,
                     "max_worst_window_drawdown_pct": 0.0,
+                    "max_xgboost_inactive_windows": -1,
                     "min_accepted_count": 5,
+                    "min_entry_price_band_count": 0,
                     "min_heuristic_accepted_count": 0,
                     "min_heuristic_resolved_count": 0,
                     "min_heuristic_resolved_share": 0.0,
                     "min_heuristic_win_rate": 0.0,
                     "min_heuristic_pnl_usd": 0.0,
                     "min_heuristic_positive_windows": 0,
-                    "max_heuristic_inactive_windows": -1,
                     "min_heuristic_worst_window_pnl_usd": -1000000000.0,
                     "min_heuristic_worst_window_resolved_share": 0.0,
+                    "min_market_count": 0,
                     "min_positive_windows": 0,
                     "min_resolved_count": 0,
                     "min_resolved_share": 0.0,
                     "min_total_pnl_usd": -1000000000.0,
+                    "min_time_to_close_band_count": 0,
+                    "min_trader_count": 0,
                     "min_win_rate": 0.0,
                     "min_worst_window_pnl_usd": -1000000000.0,
                     "min_worst_window_resolved_share": 0.0,
@@ -3197,7 +3300,6 @@ class ReplaySearchTest(unittest.TestCase):
                     "min_xgboost_win_rate": 0.0,
                     "min_xgboost_pnl_usd": 0.0,
                     "min_xgboost_positive_windows": 0,
-                    "max_xgboost_inactive_windows": -1,
                     "min_xgboost_worst_window_pnl_usd": -1000000000.0,
                     "min_xgboost_worst_window_resolved_share": 0.0,
                 },

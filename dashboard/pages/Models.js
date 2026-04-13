@@ -78,10 +78,10 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.' },
             { label: 'Deploy gap', text: 'Recommendation pieces not currently present in the persisted editable-config payload for the latest best feasible candidate. Older search rows may need a rerun after config-surface changes.' },
             { label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and scorer-path gates on the latest best feasible replay-search candidate.' },
-            { label: 'Wallet conc', text: 'Best and current replay-search dependence on a single wallet, shown as top accepted-share and top absolute-P&L share plus any active caps.' },
-            { label: 'Market conc', text: 'Best and current replay-search dependence on a single market, shown as top accepted-share and top absolute-P&L share plus any active caps.' },
-            { label: 'Entry conc', text: 'Best and current replay-search dependence on a single entry-price band, shown as top accepted-share, top absolute-P&L share, and any active cap or score penalty.' },
-            { label: 'Horizon conc', text: 'Best and current replay-search dependence on a single time-to-close band, shown as top accepted-share, top absolute-P&L share, and any active cap or score penalty.' },
+            { label: 'Wallet conc', text: 'Best and current replay-search dependence on wallets, shown as distinct wallet count, top accepted-share, top absolute-P&L share, and any active floor, cap, or score penalty.' },
+            { label: 'Market conc', text: 'Best and current replay-search dependence on markets, shown as distinct market count, top accepted-share, top absolute-P&L share, and any active floor, cap, or score penalty.' },
+            { label: 'Entry conc', text: 'Best and current replay-search dependence on entry-price bands, shown as distinct band count, top accepted-share, top absolute-P&L share, and any active floor, cap, or score penalty.' },
+            { label: 'Horizon conc', text: 'Best and current replay-search dependence on time-to-close bands, shown as distinct band count, top accepted-share, top absolute-P&L share, and any active floor, cap, or score penalty.' },
             { label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap or ranking penalty.' },
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
@@ -1719,61 +1719,70 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
 function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
     const parse = (raw) => {
         if (!raw)
-            return { acceptedShare: null, absPnlShare: null };
+            return { count: null, acceptedShare: null, absPnlShare: null };
         try {
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return { acceptedShare: null, absPnlShare: null };
+                return { count: null, acceptedShare: null, absPnlShare: null };
             const concentration = parsed.trader_concentration;
             if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
-                return { acceptedShare: null, absPnlShare: null };
+                return { count: null, acceptedShare: null, absPnlShare: null };
             }
             const payload = concentration;
             return {
+                count: Number(payload.trader_count || 0),
                 acceptedShare: Number(payload.top_accepted_share || 0),
                 absPnlShare: Number(payload.top_abs_pnl_share || 0)
             };
         }
         catch {
-            return { acceptedShare: null, absPnlShare: null };
+            return { count: null, acceptedShare: null, absPnlShare: null };
         }
     };
     const best = parse(bestRaw);
     const current = parse(currentRaw);
     const limits = (() => {
         if (!constraintsRaw)
-            return { accepted: 0, pnl: 0 };
+            return { count: 0, accepted: 0, pnl: 0 };
         try {
             const parsed = JSON.parse(constraintsRaw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return { accepted: 0, pnl: 0 };
+                return { count: 0, accepted: 0, pnl: 0 };
             return {
+                count: Number(parsed.min_trader_count || 0),
                 accepted: Number(parsed.max_top_trader_accepted_share || 0),
                 pnl: Number(parsed.max_top_trader_abs_pnl_share || 0)
             };
         }
         catch {
-            return { accepted: 0, pnl: 0 };
+            return { count: 0, accepted: 0, pnl: 0 };
         }
     })();
-    const hasActiveGuard = limits.accepted > 0 || limits.pnl > 0;
-    if (best.acceptedShare == null && current.acceptedShare == null && !hasActiveGuard) {
+    const hasActiveGuard = limits.count > 0 || limits.accepted > 0 || limits.pnl > 0;
+    if (best.acceptedShare == null && current.acceptedShare == null && best.count == null && current.count == null && !hasActiveGuard) {
         return { summary: '-', hasActiveGuard: false, overLimit: false };
     }
     const parts = [];
-    if (best.acceptedShare != null || best.absPnlShare != null) {
-        parts.push(`best n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}`);
+    if (best.count != null || best.acceptedShare != null || best.absPnlShare != null) {
+        const countText = best.count != null ? `cnt ${formatCount(best.count)}` : null;
+        const mixText = best.acceptedShare != null || best.absPnlShare != null ? `n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}` : null;
+        parts.push(`best ${[countText, mixText].filter(Boolean).join(' ')}`);
     }
-    if (current.acceptedShare != null || current.absPnlShare != null) {
-        parts.push(`cur n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}`);
+    if (current.count != null || current.acceptedShare != null || current.absPnlShare != null) {
+        const countText = current.count != null ? `cnt ${formatCount(current.count)}` : null;
+        const mixText = current.acceptedShare != null || current.absPnlShare != null ? `n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}` : null;
+        parts.push(`cur ${[countText, mixText].filter(Boolean).join(' ')}`);
     }
-    if (limits.accepted > 0 || limits.pnl > 0) {
-        parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`);
+    if (limits.count > 0 || limits.accepted > 0 || limits.pnl > 0) {
+        const countText = limits.count > 0 ? `min cnt ${formatCount(limits.count)}` : null;
+        const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null;
+        parts.push([countText, mixText].filter(Boolean).join(' '));
     }
     const resolvedPenalty = Math.max(Number(penalty || 0), 0);
     if (resolvedPenalty > 0)
         parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
-    const overLimit = (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
+    const overLimit = (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
+        || (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
     return {
         summary: parts.join(' | ') || '-',
@@ -1784,61 +1793,70 @@ function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraints
 function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
     const parse = (raw) => {
         if (!raw)
-            return { acceptedShare: null, absPnlShare: null };
+            return { count: null, acceptedShare: null, absPnlShare: null };
         try {
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return { acceptedShare: null, absPnlShare: null };
+                return { count: null, acceptedShare: null, absPnlShare: null };
             const concentration = parsed.market_concentration;
             if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
-                return { acceptedShare: null, absPnlShare: null };
+                return { count: null, acceptedShare: null, absPnlShare: null };
             }
             const payload = concentration;
             return {
+                count: Number(payload.market_count || 0),
                 acceptedShare: Number(payload.top_accepted_share || 0),
                 absPnlShare: Number(payload.top_abs_pnl_share || 0)
             };
         }
         catch {
-            return { acceptedShare: null, absPnlShare: null };
+            return { count: null, acceptedShare: null, absPnlShare: null };
         }
     };
     const best = parse(bestRaw);
     const current = parse(currentRaw);
     const limits = (() => {
         if (!constraintsRaw)
-            return { accepted: 0, pnl: 0 };
+            return { count: 0, accepted: 0, pnl: 0 };
         try {
             const parsed = JSON.parse(constraintsRaw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return { accepted: 0, pnl: 0 };
+                return { count: 0, accepted: 0, pnl: 0 };
             return {
+                count: Number(parsed.min_market_count || 0),
                 accepted: Number(parsed.max_top_market_accepted_share || 0),
                 pnl: Number(parsed.max_top_market_abs_pnl_share || 0)
             };
         }
         catch {
-            return { accepted: 0, pnl: 0 };
+            return { count: 0, accepted: 0, pnl: 0 };
         }
     })();
-    const hasActiveGuard = limits.accepted > 0 || limits.pnl > 0;
-    if (best.acceptedShare == null && current.acceptedShare == null && !hasActiveGuard) {
+    const hasActiveGuard = limits.count > 0 || limits.accepted > 0 || limits.pnl > 0;
+    if (best.acceptedShare == null && current.acceptedShare == null && best.count == null && current.count == null && !hasActiveGuard) {
         return { summary: '-', hasActiveGuard: false, overLimit: false };
     }
     const parts = [];
-    if (best.acceptedShare != null || best.absPnlShare != null) {
-        parts.push(`best n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}`);
+    if (best.count != null || best.acceptedShare != null || best.absPnlShare != null) {
+        const countText = best.count != null ? `cnt ${formatCount(best.count)}` : null;
+        const mixText = best.acceptedShare != null || best.absPnlShare != null ? `n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}` : null;
+        parts.push(`best ${[countText, mixText].filter(Boolean).join(' ')}`);
     }
-    if (current.acceptedShare != null || current.absPnlShare != null) {
-        parts.push(`cur n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}`);
+    if (current.count != null || current.acceptedShare != null || current.absPnlShare != null) {
+        const countText = current.count != null ? `cnt ${formatCount(current.count)}` : null;
+        const mixText = current.acceptedShare != null || current.absPnlShare != null ? `n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}` : null;
+        parts.push(`cur ${[countText, mixText].filter(Boolean).join(' ')}`);
     }
-    if (limits.accepted > 0 || limits.pnl > 0) {
-        parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`);
+    if (limits.count > 0 || limits.accepted > 0 || limits.pnl > 0) {
+        const countText = limits.count > 0 ? `min cnt ${formatCount(limits.count)}` : null;
+        const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null;
+        parts.push([countText, mixText].filter(Boolean).join(' '));
     }
     const resolvedPenalty = Math.max(Number(penalty || 0), 0);
     if (resolvedPenalty > 0)
         parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
-    const overLimit = (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
+    const overLimit = (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
+        || (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
     return {
         summary: parts.join(' | ') || '-',
@@ -1849,61 +1867,70 @@ function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraints
 function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
     const parse = (raw) => {
         if (!raw)
-            return { acceptedShare: null, absPnlShare: null };
+            return { count: null, acceptedShare: null, absPnlShare: null };
         try {
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return { acceptedShare: null, absPnlShare: null };
+                return { count: null, acceptedShare: null, absPnlShare: null };
             const concentration = parsed.entry_price_band_concentration;
             if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
-                return { acceptedShare: null, absPnlShare: null };
+                return { count: null, acceptedShare: null, absPnlShare: null };
             }
             const payload = concentration;
             return {
+                count: Number(payload.entry_price_band_count || 0),
                 acceptedShare: Number(payload.top_accepted_share || 0),
                 absPnlShare: Number(payload.top_abs_pnl_share || 0)
             };
         }
         catch {
-            return { acceptedShare: null, absPnlShare: null };
+            return { count: null, acceptedShare: null, absPnlShare: null };
         }
     };
     const best = parse(bestRaw);
     const current = parse(currentRaw);
     const limits = (() => {
         if (!constraintsRaw)
-            return { accepted: 0, pnl: 0 };
+            return { count: 0, accepted: 0, pnl: 0 };
         try {
             const parsed = JSON.parse(constraintsRaw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return { accepted: 0, pnl: 0 };
+                return { count: 0, accepted: 0, pnl: 0 };
             return {
+                count: Number(parsed.min_entry_price_band_count || 0),
                 accepted: Number(parsed.max_top_entry_price_band_accepted_share || 0),
                 pnl: Number(parsed.max_top_entry_price_band_abs_pnl_share || 0)
             };
         }
         catch {
-            return { accepted: 0, pnl: 0 };
+            return { count: 0, accepted: 0, pnl: 0 };
         }
     })();
-    const hasActiveGuard = limits.accepted > 0 || limits.pnl > 0;
-    if (best.acceptedShare == null && current.acceptedShare == null && !hasActiveGuard) {
+    const hasActiveGuard = limits.count > 0 || limits.accepted > 0 || limits.pnl > 0;
+    if (best.acceptedShare == null && current.acceptedShare == null && best.count == null && current.count == null && !hasActiveGuard) {
         return { summary: '-', hasActiveGuard: false, overLimit: false };
     }
     const parts = [];
-    if (best.acceptedShare != null || best.absPnlShare != null) {
-        parts.push(`best n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}`);
+    if (best.count != null || best.acceptedShare != null || best.absPnlShare != null) {
+        const countText = best.count != null ? `cnt ${formatCount(best.count)}` : null;
+        const mixText = best.acceptedShare != null || best.absPnlShare != null ? `n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}` : null;
+        parts.push(`best ${[countText, mixText].filter(Boolean).join(' ')}`);
     }
-    if (current.acceptedShare != null || current.absPnlShare != null) {
-        parts.push(`cur n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}`);
+    if (current.count != null || current.acceptedShare != null || current.absPnlShare != null) {
+        const countText = current.count != null ? `cnt ${formatCount(current.count)}` : null;
+        const mixText = current.acceptedShare != null || current.absPnlShare != null ? `n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}` : null;
+        parts.push(`cur ${[countText, mixText].filter(Boolean).join(' ')}`);
     }
-    if (limits.accepted > 0 || limits.pnl > 0) {
-        parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`);
+    if (limits.count > 0 || limits.accepted > 0 || limits.pnl > 0) {
+        const countText = limits.count > 0 ? `min cnt ${formatCount(limits.count)}` : null;
+        const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null;
+        parts.push([countText, mixText].filter(Boolean).join(' '));
     }
     const resolvedPenalty = Math.max(Number(penalty || 0), 0);
     if (resolvedPenalty > 0)
         parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
-    const overLimit = (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
+    const overLimit = (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
+        || (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
     return {
         summary: parts.join(' | ') || '-',
@@ -1914,61 +1941,70 @@ function replaySearchEntryPriceBandConcentrationSummary(bestRaw, currentRaw, con
 function replaySearchTimeToCloseBandConcentrationSummary(bestRaw, currentRaw, constraintsRaw, penalty) {
     const parse = (raw) => {
         if (!raw)
-            return { acceptedShare: null, absPnlShare: null };
+            return { count: null, acceptedShare: null, absPnlShare: null };
         try {
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return { acceptedShare: null, absPnlShare: null };
+                return { count: null, acceptedShare: null, absPnlShare: null };
             const concentration = parsed.time_to_close_band_concentration;
             if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
-                return { acceptedShare: null, absPnlShare: null };
+                return { count: null, acceptedShare: null, absPnlShare: null };
             }
             const payload = concentration;
             return {
+                count: Number(payload.time_to_close_band_count || 0),
                 acceptedShare: Number(payload.top_accepted_share || 0),
                 absPnlShare: Number(payload.top_abs_pnl_share || 0)
             };
         }
         catch {
-            return { acceptedShare: null, absPnlShare: null };
+            return { count: null, acceptedShare: null, absPnlShare: null };
         }
     };
     const best = parse(bestRaw);
     const current = parse(currentRaw);
     const limits = (() => {
         if (!constraintsRaw)
-            return { accepted: 0, pnl: 0 };
+            return { count: 0, accepted: 0, pnl: 0 };
         try {
             const parsed = JSON.parse(constraintsRaw);
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-                return { accepted: 0, pnl: 0 };
+                return { count: 0, accepted: 0, pnl: 0 };
             return {
+                count: Number(parsed.min_time_to_close_band_count || 0),
                 accepted: Number(parsed.max_top_time_to_close_band_accepted_share || 0),
                 pnl: Number(parsed.max_top_time_to_close_band_abs_pnl_share || 0)
             };
         }
         catch {
-            return { accepted: 0, pnl: 0 };
+            return { count: 0, accepted: 0, pnl: 0 };
         }
     })();
-    const hasActiveGuard = limits.accepted > 0 || limits.pnl > 0;
-    if (best.acceptedShare == null && current.acceptedShare == null && !hasActiveGuard) {
+    const hasActiveGuard = limits.count > 0 || limits.accepted > 0 || limits.pnl > 0;
+    if (best.acceptedShare == null && current.acceptedShare == null && best.count == null && current.count == null && !hasActiveGuard) {
         return { summary: '-', hasActiveGuard: false, overLimit: false };
     }
     const parts = [];
-    if (best.acceptedShare != null || best.absPnlShare != null) {
-        parts.push(`best n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}`);
+    if (best.count != null || best.acceptedShare != null || best.absPnlShare != null) {
+        const countText = best.count != null ? `cnt ${formatCount(best.count)}` : null;
+        const mixText = best.acceptedShare != null || best.absPnlShare != null ? `n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}` : null;
+        parts.push(`best ${[countText, mixText].filter(Boolean).join(' ')}`);
     }
-    if (current.acceptedShare != null || current.absPnlShare != null) {
-        parts.push(`cur n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}`);
+    if (current.count != null || current.acceptedShare != null || current.absPnlShare != null) {
+        const countText = current.count != null ? `cnt ${formatCount(current.count)}` : null;
+        const mixText = current.acceptedShare != null || current.absPnlShare != null ? `n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}` : null;
+        parts.push(`cur ${[countText, mixText].filter(Boolean).join(' ')}`);
     }
-    if (limits.accepted > 0 || limits.pnl > 0) {
-        parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`);
+    if (limits.count > 0 || limits.accepted > 0 || limits.pnl > 0) {
+        const countText = limits.count > 0 ? `min cnt ${formatCount(limits.count)}` : null;
+        const mixText = limits.accepted > 0 || limits.pnl > 0 ? `max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}` : null;
+        parts.push([countText, mixText].filter(Boolean).join(' '));
     }
     const resolvedPenalty = Math.max(Number(penalty || 0), 0);
     if (resolvedPenalty > 0)
         parts.push(`pen ${resolvedPenalty.toFixed(2)}x`);
-    const overLimit = (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
+    const overLimit = (limits.count > 0 && ((best.count ?? 0) < limits.count || (current.count ?? 0) < limits.count))
+        || (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
         || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl));
     return {
         summary: parts.join(' | ') || '-',
@@ -2151,6 +2187,14 @@ function replaySearchFailureSummary(raw, feasible) {
                     return 'positive windows';
                 case 'pause_guard_reject_share':
                     return 'pause share';
+                case 'trader_count':
+                    return 'wallet count';
+                case 'market_count':
+                    return 'market count';
+                case 'entry_price_band_count':
+                    return 'entry count';
+                case 'time_to_close_band_count':
+                    return 'horizon count';
                 case 'top_trader_accepted_share':
                     return 'wallet n share';
                 case 'top_trader_abs_pnl_share':
@@ -2269,6 +2313,10 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const minTotalPnlUsd = Number(constraints.min_total_pnl_usd ?? -1000000000);
         const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0);
         const maxPauseGuardRejectShare = Number(constraints.max_pause_guard_reject_share || 0);
+        const minTraderCount = Number(constraints.min_trader_count || 0);
+        const minMarketCount = Number(constraints.min_market_count || 0);
+        const minEntryPriceBandCount = Number(constraints.min_entry_price_band_count || 0);
+        const minTimeToCloseBandCount = Number(constraints.min_time_to_close_band_count || 0);
         const maxTopTraderAcceptedShare = Number(constraints.max_top_trader_accepted_share || 0);
         const maxTopTraderAbsPnlShare = Number(constraints.max_top_trader_abs_pnl_share || 0);
         const maxTopMarketAcceptedShare = Number(constraints.max_top_market_accepted_share || 0);
@@ -2283,12 +2331,16 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const maxWorstWindowDrawdownPct = Number(constraints.max_worst_window_drawdown_pct || 0);
         const topTraderAcceptedShare = Number(traderConcentration.top_accepted_share || 0);
         const topTraderAbsPnlShare = Number(traderConcentration.top_abs_pnl_share || 0);
+        const traderCount = Number(traderConcentration.trader_count || 0);
         const topMarketAcceptedShare = Number(marketConcentration.top_accepted_share || 0);
         const topMarketAbsPnlShare = Number(marketConcentration.top_abs_pnl_share || 0);
+        const marketCount = Number(marketConcentration.market_count || 0);
         const topEntryPriceBandAcceptedShare = Number(entryPriceBandConcentration.top_accepted_share || 0);
         const topEntryPriceBandAbsPnlShare = Number(entryPriceBandConcentration.top_abs_pnl_share || 0);
+        const entryPriceBandCount = Number(entryPriceBandConcentration.entry_price_band_count || 0);
         const topTimeToCloseBandAcceptedShare = Number(timeToCloseBandConcentration.top_accepted_share || 0);
         const topTimeToCloseBandAbsPnlShare = Number(timeToCloseBandConcentration.top_abs_pnl_share || 0);
+        const timeToCloseBandCount = Number(timeToCloseBandConcentration.time_to_close_band_count || 0);
         if (minAccepted > 0)
             pushHeadroom('global', 'acc', globalAccepted, minAccepted, replayHeadroomCount, 'min');
         if (minResolved > 0)
@@ -2303,6 +2355,14 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max');
         if (maxPauseGuardRejectShare > 0)
             pushHeadroom('global', 'pause', pauseGuardRejectShare, maxPauseGuardRejectShare, replayHeadroomPctPoints, 'max');
+        if (minTraderCount > 0)
+            pushHeadroom('global', 'wallet cnt', traderCount, minTraderCount, replayHeadroomCount, 'min');
+        if (minMarketCount > 0)
+            pushHeadroom('global', 'market cnt', marketCount, minMarketCount, replayHeadroomCount, 'min');
+        if (minEntryPriceBandCount > 0)
+            pushHeadroom('global', 'entry cnt', entryPriceBandCount, minEntryPriceBandCount, replayHeadroomCount, 'min');
+        if (minTimeToCloseBandCount > 0)
+            pushHeadroom('global', 'horizon cnt', timeToCloseBandCount, minTimeToCloseBandCount, replayHeadroomCount, 'min');
         if (maxTopTraderAcceptedShare > 0)
             pushHeadroom('global', 'wallet n', topTraderAcceptedShare, maxTopTraderAcceptedShare, replayHeadroomPctPoints, 'max');
         if (maxTopTraderAbsPnlShare > 0)

@@ -2046,7 +2046,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
         const globalMaxDrawdown = Number(resultParsed.max_drawdown_pct || 0);
         const globalPositiveWindows = Number(resultParsed.positive_window_count || 0);
         const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0);
-        const globalWorstWindowResolvedShare = Number(resultParsed.worst_window_resolved_share ?? globalResolvedShare);
+        const globalWorstWindowResolvedShare = Number(resultParsed.worst_active_window_resolved_share ?? resultParsed.worst_window_resolved_share ?? globalResolvedShare);
         const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0);
         const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
             ? resultParsed.reject_reason_summary

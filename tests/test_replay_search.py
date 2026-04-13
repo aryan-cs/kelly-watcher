@@ -1948,6 +1948,143 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
         self.assertIn("min_confidence=0.65", stderr.getvalue())
 
+    def test_main_ignores_zero_activity_windows_for_global_worst_window_resolved_share(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if start_ts == 1:
+                accepted_count = 10
+                resolved_count = 10
+            elif min_conf >= 0.65:
+                accepted_count = 0
+                resolved_count = 0
+            else:
+                accepted_count = 10
+                resolved_count = 4
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 12.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": accepted_count,
+                "resolved_count": resolved_count,
+                "rejected_count": 0,
+                "unresolved_count": max(accepted_count - resolved_count, 0),
+                "trade_count": accepted_count,
+                "win_rate": 0.6 if resolved_count > 0 else None,
+                "signal_mode_summary": (
+                    {
+                        "heuristic": {
+                            "accepted_count": accepted_count,
+                            "resolved_count": resolved_count,
+                            "trade_count": accepted_count,
+                            "total_pnl_usd": 12.0,
+                            "win_count": 2,
+                        },
+                    }
+                    if accepted_count > 0 else {}
+                ),
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--min-worst-window-resolved-share",
+            "0.75",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        best = payload["best_feasible"]["result"]
+        self.assertEqual(best["worst_window_resolved_share"], 0.0)
+        self.assertEqual(best["worst_active_window_resolved_share"], 1.0)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["worst_window_resolved_share"])
+        self.assertEqual(rejected["result"]["worst_active_window_resolved_share"], 0.4)
+
+    def test_main_ignores_zero_activity_windows_for_global_worst_window_resolved_share_penalty(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if start_ts == 1:
+                accepted_count = 10
+                resolved_count = 10
+            elif min_conf >= 0.65:
+                accepted_count = 0
+                resolved_count = 0
+            else:
+                accepted_count = 10
+                resolved_count = 4
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 12.0 if min_conf >= 0.65 else 14.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": accepted_count,
+                "resolved_count": resolved_count,
+                "rejected_count": 0,
+                "unresolved_count": max(accepted_count - resolved_count, 0),
+                "trade_count": accepted_count,
+                "win_rate": 0.6 if resolved_count > 0 else None,
+                "signal_mode_summary": (
+                    {
+                        "heuristic": {
+                            "accepted_count": accepted_count,
+                            "resolved_count": resolved_count,
+                            "trade_count": accepted_count,
+                            "total_pnl_usd": 12.0 if min_conf >= 0.65 else 14.0,
+                            "win_count": 2,
+                        },
+                    }
+                    if accepted_count > 0 else {}
+                ),
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--worst-window-resolved-share-penalty",
+            "0.1",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertEqual(best_breakdown["worst_window_resolved_share_penalty_usd"], 0.0)
+        self.assertGreater(rejected_breakdown["worst_window_resolved_share_penalty_usd"], 0.0)
+
     def test_main_can_require_mode_specific_worst_window_pnl_floors(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])

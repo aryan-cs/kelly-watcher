@@ -86,7 +86,7 @@ def _score_breakdown(
     pause_guard_reject_share = _pause_guard_reject_share(result)
     accepted_count = int(result.get("accepted_count") or 0)
     resolved_count = int(result.get("resolved_count") or 0)
-    worst_window_resolved_share = float(result.get("worst_window_resolved_share") or 0.0)
+    worst_window_resolved_share = _global_worst_active_window_resolved_share(result)
     unresolved_share = (
         float(max(accepted_count - resolved_count, 0)) / float(accepted_count)
         if accepted_count > 0 else 0.0
@@ -436,6 +436,13 @@ def _worst_active_window_resolved_share(signal_mode_summary: dict[str, dict[str,
     return _worst_window_resolved_share(signal_mode_summary, mode)
 
 
+def _global_worst_active_window_resolved_share(result: dict[str, Any]) -> float:
+    raw_value = result.get("worst_active_window_resolved_share")
+    if raw_value is not None:
+        return float(raw_value)
+    return float(result.get("worst_window_resolved_share") or 0.0)
+
+
 def _resolved_share_from_counts(accepted_count: Any, resolved_count: Any) -> float:
     accepted = int(accepted_count or 0)
     if accepted <= 0:
@@ -445,11 +452,26 @@ def _resolved_share_from_counts(accepted_count: Any, resolved_count: Any) -> flo
 
 def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
     if "worst_window_resolved_share" in result:
-        return result
+        if "worst_active_window_resolved_share" in result:
+            return result
+        enriched = dict(result)
+        accepted_count = int(enriched.get("accepted_count") or 0)
+        enriched["worst_active_window_resolved_share"] = (
+            round(_resolved_share_from_counts(accepted_count, enriched.get("resolved_count")), 6)
+            if accepted_count > 0
+            else None
+        )
+        return enriched
     enriched = dict(result)
     enriched["worst_window_resolved_share"] = round(
         _resolved_share_from_counts(enriched.get("accepted_count"), enriched.get("resolved_count")),
         6,
+    )
+    accepted_count = int(enriched.get("accepted_count") or 0)
+    enriched["worst_active_window_resolved_share"] = (
+        round(_resolved_share_from_counts(accepted_count, enriched.get("resolved_count")), 6)
+        if accepted_count > 0
+        else None
     )
     return enriched
 
@@ -546,7 +568,7 @@ def _constraint_failures(
     total_pnl_usd = float(result.get("total_pnl_usd") or 0.0)
     drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
     worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
-    worst_window_resolved_share = float(result.get("worst_window_resolved_share") or 0.0)
+    worst_window_resolved_share = _global_worst_active_window_resolved_share(result)
     worst_window_drawdown_pct = float(result.get("worst_window_drawdown_pct") or 0.0)
 
     if accepted_count < max(min_accepted_count, 0):
@@ -791,6 +813,14 @@ def _aggregate_window_results(
         ),
         default=0.0,
     )
+    worst_active_window_resolved_share = min(
+        (
+            _resolved_share_from_counts(row.get("accepted_count"), row.get("resolved_count"))
+            for row in window_results
+            if int(row.get("accepted_count") or 0) > 0
+        ),
+        default=None,
+    )
     window_avg_pnl_usd = sum(pnl_values) / len(pnl_values) if pnl_values else 0.0
     window_pnl_stddev_usd = (
         math.sqrt(sum((value - window_avg_pnl_usd) ** 2 for value in pnl_values) / len(pnl_values))
@@ -926,6 +956,11 @@ def _aggregate_window_results(
         "window_pnl_stddev_usd": round(window_pnl_stddev_usd, 6),
         "worst_window_pnl_usd": round(min(pnl_values, default=0.0), 6),
         "worst_window_resolved_share": round(worst_window_resolved_share, 6),
+        "worst_active_window_resolved_share": (
+            round(float(worst_active_window_resolved_share), 6)
+            if worst_active_window_resolved_share is not None
+            else None
+        ),
         "best_window_pnl_usd": round(max(pnl_values, default=0.0), 6),
         "worst_window_drawdown_pct": round(max(drawdown_values, default=0.0), 6),
         "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},

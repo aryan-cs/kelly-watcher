@@ -50,17 +50,17 @@ function hasShadowRestartCompleted(nextState) {
     }
     return false;
 }
-export function beginShadowRestartBotState() {
-    shadowRestartPending = true;
-    shadowRestartRequestedAtMs = Date.now();
-    shadowRestartPreviousSessionId = String(botStateCache.session_id || '').trim() || null;
-    shadowRestartPreviousStartedAt = Number(botStateCache.started_at || 0) || null;
-    botStateCache = {
-        ...botStateCache,
+function shadowRestartPlaceholderState(state) {
+    return {
+        ...state,
         api_base_url: apiBaseUrl,
         api_error: shadowRestartPendingMessage(),
         started_at: 0,
         startup_detail: 'Restarting shadow bot',
+        startup_failed: false,
+        startup_failure_message: '',
+        startup_validation_failed: false,
+        startup_validation_message: '',
         mode: 'shadow',
         n_wallets: 0,
         loop_in_progress: false,
@@ -77,6 +77,43 @@ export function beginShadowRestartBotState() {
         last_retrain_min_samples: 0,
         last_retrain_trigger: '',
         last_retrain_deployed: false,
+        last_replay_search_started_at: 0,
+        last_replay_search_finished_at: 0,
+        last_replay_search_status: '',
+        last_replay_search_message: '',
+        last_replay_search_trigger: '',
+        last_replay_search_run_id: 0,
+        last_replay_search_candidate_count: 0,
+        last_replay_search_feasible_count: 0,
+        last_replay_search_best_score: null,
+        last_replay_search_best_pnl_usd: null,
+        last_replay_search_scope: 'shadow_only',
+        last_replay_promotion_id: 0,
+        last_replay_promotion_at: 0,
+        last_replay_promotion_status: '',
+        last_replay_promotion_message: '',
+        last_replay_promotion_scope: 'shadow_only',
+        last_replay_promotion_run_id: 0,
+        last_replay_promotion_candidate_id: 0,
+        last_replay_promotion_score_delta: null,
+        last_replay_promotion_pnl_delta_usd: null,
+        last_applied_replay_promotion_id: 0,
+        last_applied_replay_promotion_at: 0,
+        last_applied_replay_promotion_status: '',
+        last_applied_replay_promotion_message: '',
+        last_applied_replay_promotion_scope: 'shadow_only',
+        last_applied_replay_promotion_run_id: 0,
+        last_applied_replay_promotion_candidate_id: 0,
+        last_applied_replay_promotion_score_delta: null,
+        last_applied_replay_promotion_pnl_delta_usd: null,
+        shadow_history_state_known: false,
+        resolved_shadow_trade_count: 0,
+        live_require_shadow_history_enabled: false,
+        live_min_shadow_resolved: 0,
+        live_shadow_history_total_ready: false,
+        resolved_shadow_since_last_promotion: 0,
+        live_min_shadow_resolved_since_last_promotion: 0,
+        live_shadow_history_ready: false,
         loaded_scorer: 'heuristic',
         loaded_model_backend: 'heuristic',
         model_artifact_exists: false,
@@ -92,6 +129,21 @@ export function beginShadowRestartBotState() {
         model_prediction_mode: '',
         model_loaded_at: 0
     };
+}
+function shadowRestartWaitingState(nextState) {
+    return {
+        ...nextState,
+        api_base_url: apiBaseUrl,
+        api_error: shadowRestartPendingMessage(),
+        startup_detail: String(nextState.startup_detail || '').trim() || 'Restarting shadow bot'
+    };
+}
+export function beginShadowRestartBotState() {
+    shadowRestartPending = true;
+    shadowRestartRequestedAtMs = Date.now();
+    shadowRestartPreviousSessionId = String(botStateCache.session_id || '').trim() || null;
+    shadowRestartPreviousStartedAt = Number(botStateCache.started_at || 0) || null;
+    botStateCache = shadowRestartPlaceholderState(botStateCache);
 }
 export function isShadowRestartPending() {
     return shadowRestartPending;
@@ -117,27 +169,18 @@ export function useBotState(intervalMs = 1000) {
             activeController = controller;
             try {
                 const response = await fetchApiJson('/api/bot-state', { signal: controller.signal });
-            const nextState = {
-                ...(response.state || {}),
-                api_base_url: apiBaseUrl,
-                api_error: ''
-            };
-            if (!hasShadowRestartCompleted(nextState)) {
-                const waitingState = {
-                    ...botStateCache,
+                const nextState = {
+                    ...(response.state || {}),
                     api_base_url: apiBaseUrl,
-                    api_error: shadowRestartPendingMessage()
+                    api_error: ''
                 };
-                botStateCache = waitingState;
+                const resolvedState = hasShadowRestartCompleted(nextState)
+                    ? nextState
+                    : shadowRestartWaitingState(nextState);
+                botStateCache = resolvedState;
                 if (!cancelled) {
-                    setState(waitingState);
+                    setState(resolvedState);
                 }
-                return;
-            }
-            botStateCache = nextState;
-            if (!cancelled) {
-                setState(nextState);
-            }
             }
             catch (error) {
                 if (cancelled || controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {

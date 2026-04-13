@@ -69,6 +69,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Search run', text: 'How recently the latest persisted replay search finished.' },
             { label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.' },
             { label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.' },
+            { label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window, and pause-guard penalties.' },
             { label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.' },
             { label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.' },
             { label: 'Cfg drift', text: 'How many editable config keys currently differ from the best feasible replay-search recommendation.' },
@@ -86,6 +87,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.' },
             { label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.' },
             { label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.' },
+            { label: 'Cur score', text: 'Current/base score decomposition: replay P&L minus drawdown, instability, worst-window, and pause-guard penalties.' },
             { label: 'Cur regret', text: 'Best feasible minus current/base config, shown as replay P&L gap and score gap.' },
             { label: 'Best wallet', text: 'Wallet with the strongest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
             { label: 'Worst wallet', text: 'Wallet with the weakest replay P&L on the latest run, subject to the minimum resolved sample filter.' },
@@ -1373,6 +1375,39 @@ function replaySearchPauseGuardSummary(bestRaw, currentRaw, constraintsRaw, paus
         overLimit: (bestShare != null && bestShare > maxShare && maxShare > 0) || (currentShare != null && currentShare > maxShare && maxShare > 0)
     };
 }
+function replaySearchScoreBreakdownSummary(raw) {
+    if (!raw)
+        return '-';
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+            return '-';
+        const rawBreakdown = parsed.score_breakdown;
+        if (!rawBreakdown || typeof rawBreakdown !== 'object' || Array.isArray(rawBreakdown))
+            return '-';
+        const breakdown = rawBreakdown;
+        const scoreUsd = Number(breakdown.score_usd || 0);
+        const pnlUsd = Number(breakdown.pnl_usd || 0);
+        const drawdownPenaltyUsd = Number(breakdown.drawdown_penalty_usd || 0);
+        const windowStddevPenaltyUsd = Number(breakdown.window_stddev_penalty_usd || 0);
+        const worstWindowPenaltyUsd = Number(breakdown.worst_window_penalty_usd || 0);
+        const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0);
+        const parts = [
+            `${formatNumber(scoreUsd, 2)} = ${formatDollar(pnlUsd)}`,
+            `dd ${formatDollar(-drawdownPenaltyUsd)}`
+        ];
+        if (Math.abs(windowStddevPenaltyUsd) > 1e-9)
+            parts.push(`std ${formatDollar(-windowStddevPenaltyUsd)}`);
+        if (Math.abs(worstWindowPenaltyUsd) > 1e-9)
+            parts.push(`worst ${formatDollar(-worstWindowPenaltyUsd)}`);
+        if (Math.abs(pauseGuardPenaltyUsd) > 1e-9)
+            parts.push(`pause ${formatDollar(-pauseGuardPenaltyUsd)}`);
+        return parts.join(' | ');
+    }
+    catch {
+        return '-';
+    }
+}
 function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw) {
     if (!currentRaw || !constraintsRaw)
         return { summary: '-', breachCount: 0, hasActiveGuard: false };
@@ -2220,6 +2255,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             color: latestReplaySearch ? theme.white : theme.dim
         },
         {
+            label: 'Best score',
+            value: replaySearchScoreBreakdownSummary(latestReplaySearch?.result_json),
+            color: latestReplaySearch?.result_json ? theme.white : theme.dim
+        },
+        {
             label: 'Search robust',
             value: latestReplaySearch
                 ? `${formatDollar(latestReplaySearch.total_pnl_usd)} / ${formatPct(latestReplaySearch.max_drawdown_pct, 1)}`
@@ -2369,6 +2409,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                 : Number(latestReplaySearch.current_candidate_feasible || 0) > 0
                     ? theme.dim
                     : theme.yellow
+        },
+        {
+            label: 'Cur score',
+            value: replaySearchScoreBreakdownSummary(latestReplaySearch?.current_candidate_result_json),
+            color: latestReplaySearch?.current_candidate_result_json ? theme.white : theme.dim
         },
         {
             label: 'Cur regret',

@@ -59,6 +59,36 @@ def _iter_policy_overrides(grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _score_breakdown(
+    result: dict[str, Any],
+    *,
+    initial_bankroll_usd: float,
+    drawdown_penalty: float,
+    window_stddev_penalty: float,
+    worst_window_penalty: float,
+    pause_guard_penalty: float,
+) -> dict[str, float]:
+    pnl = float(result.get("total_pnl_usd") or 0.0)
+    max_drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
+    window_pnl_stddev_usd = float(result.get("window_pnl_stddev_usd") or 0.0)
+    worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
+    worst_window_loss_usd = max(-worst_window_pnl_usd, 0.0)
+    pause_guard_reject_share = _pause_guard_reject_share(result)
+    drawdown_penalty_usd = initial_bankroll_usd * drawdown_penalty * max_drawdown_pct
+    window_stddev_penalty_usd = window_stddev_penalty * window_pnl_stddev_usd
+    worst_window_penalty_usd = worst_window_penalty * worst_window_loss_usd
+    pause_guard_penalty_usd = initial_bankroll_usd * pause_guard_penalty * pause_guard_reject_share
+    score_usd = pnl - drawdown_penalty_usd - window_stddev_penalty_usd - worst_window_penalty_usd - pause_guard_penalty_usd
+    return {
+        "pnl_usd": round(pnl, 6),
+        "drawdown_penalty_usd": round(drawdown_penalty_usd, 6),
+        "window_stddev_penalty_usd": round(window_stddev_penalty_usd, 6),
+        "worst_window_penalty_usd": round(worst_window_penalty_usd, 6),
+        "pause_guard_penalty_usd": round(pause_guard_penalty_usd, 6),
+        "score_usd": round(score_usd, 6),
+    }
+
+
 def _score_result(
     result: dict[str, Any],
     *,
@@ -68,19 +98,37 @@ def _score_result(
     worst_window_penalty: float,
     pause_guard_penalty: float,
 ) -> float:
-    pnl = float(result.get("total_pnl_usd") or 0.0)
-    max_drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
-    window_pnl_stddev_usd = float(result.get("window_pnl_stddev_usd") or 0.0)
-    worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
-    worst_window_loss_usd = max(-worst_window_pnl_usd, 0.0)
-    pause_guard_reject_share = _pause_guard_reject_share(result)
-    return (
-        pnl
-        - (initial_bankroll_usd * drawdown_penalty * max_drawdown_pct)
-        - (window_stddev_penalty * window_pnl_stddev_usd)
-        - (worst_window_penalty * worst_window_loss_usd)
-        - (initial_bankroll_usd * pause_guard_penalty * pause_guard_reject_share)
+    return float(
+        _score_breakdown(
+            result,
+            initial_bankroll_usd=initial_bankroll_usd,
+            drawdown_penalty=drawdown_penalty,
+            window_stddev_penalty=window_stddev_penalty,
+            worst_window_penalty=worst_window_penalty,
+            pause_guard_penalty=pause_guard_penalty,
+        )["score_usd"]
     )
+
+
+def _with_score_breakdown(
+    result: dict[str, Any],
+    *,
+    initial_bankroll_usd: float,
+    drawdown_penalty: float,
+    window_stddev_penalty: float,
+    worst_window_penalty: float,
+    pause_guard_penalty: float,
+) -> dict[str, Any]:
+    payload = dict(result)
+    payload["score_breakdown"] = _score_breakdown(
+        payload,
+        initial_bankroll_usd=initial_bankroll_usd,
+        drawdown_penalty=drawdown_penalty,
+        window_stddev_penalty=window_stddev_penalty,
+        worst_window_penalty=worst_window_penalty,
+        pause_guard_penalty=pause_guard_penalty,
+    )
+    return payload
 
 
 def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -872,6 +920,14 @@ def main() -> None:
         notes=args.notes,
         windows=windows,
     )
+    current_result = _with_score_breakdown(
+        current_result,
+        initial_bankroll_usd=base_policy.initial_bankroll_usd,
+        drawdown_penalty=max(args.drawdown_penalty, 0.0),
+        window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
+        worst_window_penalty=max(args.worst_window_penalty, 0.0),
+        pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
+    )
     current_constraint_failures = _constraint_failures(
         current_result,
         min_accepted_count=args.min_accepted_count,
@@ -934,6 +990,15 @@ def main() -> None:
             notes=args.notes,
             windows=windows,
         )
+        if "score_breakdown" not in result:
+            result = _with_score_breakdown(
+                result,
+                initial_bankroll_usd=policy.initial_bankroll_usd,
+                drawdown_penalty=max(args.drawdown_penalty, 0.0),
+                window_stddev_penalty=max(args.window_stddev_penalty, 0.0),
+                worst_window_penalty=max(args.worst_window_penalty, 0.0),
+                pause_guard_penalty=max(args.pause_guard_penalty, 0.0),
+            )
         score = _score_result(
             result,
             initial_bankroll_usd=policy.initial_bankroll_usd,

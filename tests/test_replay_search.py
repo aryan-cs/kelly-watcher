@@ -617,6 +617,11 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertLess(payload["ranked"][0]["score"], 68.0)
         rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
         self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertEqual(best_breakdown["score_usd"], payload["ranked"][0]["score"])
+        self.assertGreater(best_breakdown["pause_guard_penalty_usd"], 0.0)
+        self.assertGreater(rejected_breakdown["pause_guard_penalty_usd"], best_breakdown["pause_guard_penalty_usd"])
         self.assertIn("pause 10%", stderr.getvalue())
 
     def test_main_can_require_mode_specific_resolved_counts_and_win_rates(self) -> None:
@@ -1101,7 +1106,9 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(run_row[9], 1)
             self.assertEqual(run_row[10], 60.0)
             self.assertEqual(json.loads(run_row[11]), [])
-            self.assertEqual(json.loads(run_row[12])["signal_mode_summary"]["heuristic"]["accepted_count"], 12)
+            current_result_json = json.loads(run_row[12])
+            self.assertEqual(current_result_json["signal_mode_summary"]["heuristic"]["accepted_count"], 12)
+            self.assertEqual(current_result_json["score_breakdown"]["score_usd"], -110.0)
             self.assertEqual(
                 json.loads(run_row[13]),
                 {
@@ -1139,16 +1146,19 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(json.loads(candidate_rows[0][4]), {})
             self.assertEqual(json.loads(candidate_rows[0][5])["MIN_CONFIDENCE"], 0.55)
             self.assertEqual(json.loads(candidate_rows[0][6])["total_pnl_usd"], 40.0)
+            self.assertEqual(json.loads(candidate_rows[0][6])["score_breakdown"]["score_usd"], -110.0)
             self.assertEqual(candidate_rows[1][0:3], (1, 1, 0))
             self.assertEqual(json.loads(candidate_rows[1][3]), [])
             self.assertEqual(json.loads(candidate_rows[1][4]), {"min_confidence": 0.6})
             self.assertEqual(json.loads(candidate_rows[1][5])["MIN_CONFIDENCE"], 0.6)
             self.assertEqual(json.loads(candidate_rows[1][6])["total_pnl_usd"], 60.0)
+            self.assertEqual(json.loads(candidate_rows[1][6])["score_breakdown"]["score_usd"], -90.0)
             self.assertEqual(candidate_rows[2][0:3], (2, 0, 0))
             self.assertEqual(json.loads(candidate_rows[2][3]), ["accepted_count", "max_drawdown_pct"])
             self.assertEqual(json.loads(candidate_rows[2][4]), {"min_confidence": 0.65})
             self.assertEqual(json.loads(candidate_rows[2][5])["MIN_CONFIDENCE"], 0.65)
             self.assertEqual(json.loads(candidate_rows[2][6])["max_drawdown_pct"], 0.18)
+            self.assertEqual(json.loads(candidate_rows[2][6])["score_breakdown"]["score_usd"], -460.0)
 
     def test_main_backfills_existing_search_tables_before_insert(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):

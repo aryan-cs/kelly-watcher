@@ -1146,6 +1146,61 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("keep_active", snapshot["shadow_restart_message"])
         self.assertEqual(snapshot["session_id"], "abc123")
 
+    def test_dashboard_bot_state_snapshot_clears_stale_persisted_shadow_restart_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "shadow_reset_request.json"
+            bot_state_file.write_text(
+                json.dumps(
+                    {
+                        "session_id": "abc123",
+                        "started_at": 100,
+                        "last_activity_at": int(time.time()) - 999,
+                        "poll_interval": 1,
+                        "shadow_restart_pending": True,
+                        "shadow_restart_message": "Shadow restart requested (keep_all). Waiting for backend to restart.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "SHADOW_RESET_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+                persisted = json.loads(bot_state_file.read_text(encoding="utf-8"))
+
+        self.assertFalse(snapshot["shadow_restart_pending"])
+        self.assertEqual(snapshot["shadow_restart_message"], "")
+        self.assertFalse(persisted["shadow_restart_pending"])
+        self.assertEqual(persisted["shadow_restart_message"], "")
+
+    def test_dashboard_bot_state_snapshot_keeps_fresh_persisted_shadow_restart_state_without_request_file(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "shadow_reset_request.json"
+            bot_state_file.write_text(
+                json.dumps(
+                    {
+                        "session_id": "abc123",
+                        "started_at": 100,
+                        "last_activity_at": int(time.time()),
+                        "poll_interval": 5,
+                        "shadow_restart_pending": True,
+                        "shadow_restart_message": "Shadow restart requested (keep_all). Waiting for backend to restart.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "SHADOW_RESET_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertTrue(snapshot["shadow_restart_pending"])
+        self.assertIn("keep_all", snapshot["shadow_restart_message"])
+
     def test_dashboard_bot_state_snapshot_overlays_recent_manual_retrain_request(self) -> None:
         with TemporaryDirectory() as tmpdir:
             bot_state_file = Path(tmpdir) / "bot_state.json"

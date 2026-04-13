@@ -346,6 +346,15 @@ def _persist_shadow_restart_pending_state(request_payload: dict[str, Any]) -> No
     _write_atomic_json(BOT_STATE_FILE, bot_state)
 
 
+def _persist_shadow_restart_cleared_state(bot_state: dict[str, Any]) -> None:
+    updated_state = dict(bot_state)
+    updated_state.update(
+        shadow_restart_pending=False,
+        shadow_restart_message="",
+    )
+    _write_atomic_json(BOT_STATE_FILE, updated_state)
+
+
 def _bot_state_snapshot() -> dict[str, Any]:
     bot_state = _read_json_dict(BOT_STATE_FILE)
     bot_state.update(
@@ -371,6 +380,21 @@ def _bot_state_snapshot() -> dict[str, Any]:
             shadow_restart_pending=True,
             shadow_restart_message=_shadow_restart_pending_message(str(request_payload.get("wallet_mode") or "")),
         )
+    elif bool(bot_state.get("shadow_restart_pending")):
+        started_at = int(bot_state.get("started_at") or 0)
+        last_activity_at = int(bot_state.get("last_activity_at") or 0)
+        heartbeat_window = _heartbeat_window_seconds(bot_state)
+        shadow_restart_state_stale = (
+            started_at <= 0
+            or last_activity_at <= 0
+            or (int(time.time()) - last_activity_at) > heartbeat_window
+        )
+        if shadow_restart_state_stale:
+            bot_state.update(
+                shadow_restart_pending=False,
+                shadow_restart_message="",
+            )
+            _persist_shadow_restart_cleared_state(bot_state)
     request_payload = _request_payload_if_fresh(MANUAL_TRADE_REQUEST_FILE, 900)
     if request_payload is not None:
         bot_state.update(

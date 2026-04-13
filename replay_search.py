@@ -1197,7 +1197,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if raw_max_non_accepting_active_window_streak is not None
             else 0
             if resolved_active_window_count <= 0
-            else resolved_active_window_count
+            else 0
             if resolved_accepted_window_count <= 0
             else max(resolved_active_window_count - resolved_accepted_window_count, 0)
         )
@@ -1999,23 +1999,19 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             enriched["accepted_window_count"] = 0
     if "max_non_accepting_active_window_streak" not in enriched:
         if window_count == 1:
-            enriched["max_non_accepting_active_window_streak"] = (
-                1
-                if _window_has_participation(enriched) and not (accepted_count > 0 or accepted_size_usd > 0)
-                else 0
-            )
+            enriched["max_non_accepting_active_window_streak"] = 0
         else:
-            enriched["max_non_accepting_active_window_streak"] = max(
-                int(enriched.get("active_window_count") or 0) - int(enriched.get("accepted_window_count") or 0),
-                0,
+            enriched["max_non_accepting_active_window_streak"] = (
+                max(
+                    int(enriched.get("active_window_count") or 0) - int(enriched.get("accepted_window_count") or 0),
+                    0,
+                )
+                if int(enriched.get("accepted_window_count") or 0) > 0
+                else 0
             )
     if "non_accepting_active_window_episode_count" not in enriched:
         if window_count == 1:
-            enriched["non_accepting_active_window_episode_count"] = (
-                1
-                if _window_has_participation(enriched) and not (accepted_count > 0 or accepted_size_usd > 0)
-                else 0
-            )
+            enriched["non_accepting_active_window_episode_count"] = 0
         else:
             enriched["non_accepting_active_window_episode_count"] = (
                 1
@@ -2108,7 +2104,7 @@ def _max_non_accepting_active_window_streak(result: dict[str, Any]) -> int:
     if active_window_count <= 0:
         return 0
     if accepted_window_count <= 0:
-        return active_window_count
+        return 0
     return max(active_window_count - accepted_window_count, 0)
 
 
@@ -2252,7 +2248,7 @@ def _mode_max_non_accepting_active_window_streak(
     if active_window_count <= 0:
         return 0
     if accepted_window_count <= 0:
-        return active_window_count
+        return 0
     return max(active_window_count - accepted_window_count, 0)
 
 
@@ -3397,11 +3393,15 @@ def _aggregate_window_results(
     max_non_accepting_active_window_streak = 0
     non_accepting_active_window_episode_count = 0
     current_non_accepting_active_window_streak = 0
+    seen_accepting_window = False
     for row in window_results:
         if not _window_has_participation(row):
             continue
         if int(row.get("accepted_count") or 0) > 0 or float(row.get("accepted_size_usd") or 0.0) > 0:
+            seen_accepting_window = True
             current_non_accepting_active_window_streak = 0
+            continue
+        if not seen_accepting_window:
             continue
         if current_non_accepting_active_window_streak <= 0:
             non_accepting_active_window_episode_count += 1
@@ -3634,6 +3634,7 @@ def _aggregate_window_results(
                 "max_non_accepting_active_window_streak": 0.0,
                 "non_accepting_active_window_episode_count": 0.0,
                 "current_non_accepting_active_window_streak": 0.0,
+                "seen_accepting_window": False,
                 "resolved_count": 0.0,
                 "resolved_size_usd": 0.0,
                     "total_pnl_usd": 0.0,
@@ -3676,8 +3677,9 @@ def _aggregate_window_results(
             bucket["negative_window_count"] += 1 if window_pnl_usd < 0 else 0
             bucket["inactive_window_count"] += 1 if is_inactive_window else 0
             if is_accepting_window:
+                bucket["seen_accepting_window"] = True
                 bucket["current_non_accepting_active_window_streak"] = 0.0
-            elif not is_inactive_window:
+            elif not is_inactive_window and bool(bucket.get("seen_accepting_window")):
                 if float(bucket["current_non_accepting_active_window_streak"]) <= 0:
                     bucket["non_accepting_active_window_episode_count"] += 1.0
                 bucket["current_non_accepting_active_window_streak"] += 1.0
@@ -4654,7 +4656,7 @@ def main() -> None:
     parser.add_argument("--mode-accepted-window-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse fresh accepting-window breadth for the worst enabled scorer across stitched scorer-active replay windows.")
     parser.add_argument("--mode-accepted-window-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer shortfall in fresh accepting-window participation share across stitched scorer-active replay windows.")
     parser.add_argument("--mode-non-accepting-active-window-streak-penalty", type=float, default=0.0, help="Penalty multiplier applied to the worst enabled scorer stitched fresh-accept drought across scorer-active replay windows.")
-    parser.add_argument("--mode-non-accepting-active-window-episode-penalty", type=float, default=0.0, help="Penalty multiplier applied to repeated stitched fresh-entry drought episodes for the worst enabled scorer across scorer-active replay windows.")
+    parser.add_argument("--mode-non-accepting-active-window-episode-penalty", type=float, default=0.0, help="Penalty multiplier applied to repeated post-start stitched fresh-entry drought episodes for the worst enabled scorer across scorer-active replay windows.")
     parser.add_argument("--mode-accepting-window-accepted-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to concentration of accepted replay trades into a single stitched accepting window for the worst enabled scorer.")
     parser.add_argument("--mode-accepting-window-accepted-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to concentration of accepted replay deployed dollars into a single stitched accepting window for the worst enabled scorer.")
     parser.add_argument("--mode-top-two-accepting-window-accepted-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to concentration of accepted replay trades into the top two stitched accepting windows for the worst enabled scorer.")
@@ -4665,7 +4667,7 @@ def main() -> None:
     parser.add_argument("--accepted-window-count-penalty", type=float, default=0.0, help="Penalty multiplier applied to inverse stitched fresh accepting-window breadth when ranking candidates.")
     parser.add_argument("--accepted-window-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of stitched active replay windows that fail to produce fresh accepted entries.")
     parser.add_argument("--non-accepting-active-window-streak-penalty", type=float, default=0.0, help="Penalty multiplier applied to clustered stitched active-window accepting droughts beyond a one-window miss when ranking candidates.")
-    parser.add_argument("--non-accepting-active-window-episode-penalty", type=float, default=0.0, help="Penalty multiplier applied to repeated stitched active-window fresh-entry drought episodes beyond a single run when ranking candidates.")
+    parser.add_argument("--non-accepting-active-window-episode-penalty", type=float, default=0.0, help="Penalty multiplier applied to repeated post-start stitched active-window fresh-entry drought episodes beyond a single run when ranking candidates.")
     parser.add_argument("--accepting-window-accepted-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to concentration of accepted replay trades into a single stitched accepting window.")
     parser.add_argument("--accepting-window-accepted-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to concentration of accepted replay deployed dollars into a single stitched accepting window.")
     parser.add_argument("--top-two-accepting-window-accepted-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to concentration of accepted replay trades into the top two stitched accepting windows.")
@@ -4692,8 +4694,8 @@ def main() -> None:
     parser.add_argument("--max-inactive-windows", type=int, default=-1, help="Maximum count of inactive replay windows allowed before a candidate is rejected.")
     parser.add_argument("--min-accepted-windows", type=int, default=0, help="Minimum count of stitched replay windows that must still produce fresh accepted entries.")
     parser.add_argument("--min-accepted-window-share", type=float, default=0.0, help="Minimum share of stitched active replay windows that must produce fresh accepted entries.")
-    parser.add_argument("--max-non-accepting-active-window-streak", type=int, default=-1, help="Maximum stitched run of active replay windows allowed to participate without producing a fresh accepted entry.")
-    parser.add_argument("--max-non-accepting-active-window-episodes", type=int, default=-1, help="Maximum count of stitched active-window fresh-entry drought episodes allowed across the replay horizon.")
+    parser.add_argument("--max-non-accepting-active-window-streak", type=int, default=-1, help="Maximum post-start stitched run of active replay windows allowed to participate without producing a fresh accepted entry.")
+    parser.add_argument("--max-non-accepting-active-window-episodes", type=int, default=-1, help="Maximum count of post-start stitched active-window fresh-entry drought episodes allowed across the replay horizon.")
     parser.add_argument("--max-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of accepted replay trades allowed to fall into a single stitched accepting window.")
     parser.add_argument("--max-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of accepted replay deployed dollars allowed to fall into a single stitched accepting window.")
     parser.add_argument("--max-top-two-accepting-window-accepted-share", type=float, default=0.0, help="Maximum combined share of accepted replay trades allowed to fall into the top two stitched accepting windows.")
@@ -4746,10 +4748,10 @@ def main() -> None:
     parser.add_argument("--min-xgboost-accepted-windows", type=int, default=0, help="Minimum count of stitched replay windows that must still produce fresh xgboost accepts.")
     parser.add_argument("--min-heuristic-accepted-window-share", type=float, default=0.0, help="Minimum share of heuristic stitched active windows that must still produce fresh heuristic accepts.")
     parser.add_argument("--min-xgboost-accepted-window-share", type=float, default=0.0, help="Minimum share of xgboost stitched active windows that must still produce fresh xgboost accepts.")
-    parser.add_argument("--max-heuristic-non-accepting-active-window-streak", type=int, default=-1, help="Maximum stitched run of heuristic-active windows allowed without a fresh heuristic accept.")
-    parser.add_argument("--max-xgboost-non-accepting-active-window-streak", type=int, default=-1, help="Maximum stitched run of xgboost-active windows allowed without a fresh xgboost accept.")
-    parser.add_argument("--max-heuristic-non-accepting-active-window-episodes", type=int, default=-1, help="Maximum count of heuristic stitched fresh-entry drought episodes allowed across heuristic-active windows.")
-    parser.add_argument("--max-xgboost-non-accepting-active-window-episodes", type=int, default=-1, help="Maximum count of xgboost stitched fresh-entry drought episodes allowed across xgboost-active windows.")
+    parser.add_argument("--max-heuristic-non-accepting-active-window-streak", type=int, default=-1, help="Maximum post-start stitched run of heuristic-active windows allowed without a fresh heuristic accept.")
+    parser.add_argument("--max-xgboost-non-accepting-active-window-streak", type=int, default=-1, help="Maximum post-start stitched run of xgboost-active windows allowed without a fresh xgboost accept.")
+    parser.add_argument("--max-heuristic-non-accepting-active-window-episodes", type=int, default=-1, help="Maximum count of post-start heuristic stitched fresh-entry drought episodes allowed across heuristic-active windows.")
+    parser.add_argument("--max-xgboost-non-accepting-active-window-episodes", type=int, default=-1, help="Maximum count of post-start xgboost stitched fresh-entry drought episodes allowed across xgboost-active windows.")
     parser.add_argument("--max-heuristic-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of heuristic accepted replay trades allowed to fall into a single stitched heuristic accepting window.")
     parser.add_argument("--max-heuristic-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of heuristic accepted replay deployed dollars allowed to fall into a single stitched heuristic accepting window.")
     parser.add_argument("--max-xgboost-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of xgboost accepted replay trades allowed to fall into a single stitched xgboost accepting window.")

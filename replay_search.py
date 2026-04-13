@@ -1048,7 +1048,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         resolved_worst_window_pnl_usd = (
             float(raw_worst_window_pnl_usd)
             if raw_worst_window_pnl_usd is not None
-            else raw_total_pnl_usd
+            else _legacy_worst_window_pnl_fallback(raw_total_pnl_usd, result_window_count)
         )
         resolved_best_window_pnl_usd = (
             float(raw_best_window_pnl_usd)
@@ -1554,6 +1554,13 @@ def _legacy_worst_window_coverage_fallback(
     if has_activity:
         return 0.0
     return no_activity_value
+
+
+def _legacy_worst_window_pnl_fallback(total_pnl_usd: float, window_count: int) -> float:
+    normalized_window_count = max(int(window_count), 1)
+    if normalized_window_count <= 1:
+        return total_pnl_usd
+    return min(total_pnl_usd, 0.0)
 
 
 def _min_active_window_accepted_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:

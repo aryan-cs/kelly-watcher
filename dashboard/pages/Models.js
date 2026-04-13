@@ -2281,6 +2281,15 @@ function replaySearchAcceptedWindowShareFromPayload(payload) {
     return acceptedWindowCount / activeWindowCount;
   return acceptedWindowCount > 0 ? 1 : 0;
 }
+function replaySearchWorstWindowPnlFromPayload(payload) {
+  if (payload.worst_window_pnl_usd != null)
+    return Number(payload.worst_window_pnl_usd || 0);
+  const totalPnlUsd = Number(payload.total_pnl_usd || 0);
+  const windowCount = Number(payload.window_count || 0);
+  if (windowCount <= 1)
+    return totalPnlUsd;
+  return Math.min(totalPnlUsd, 0);
+}
 function replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload) {
   if (payload.max_non_accepting_active_window_streak != null)
     return Math.max(Number(payload.max_non_accepting_active_window_streak || 0), 0);
@@ -3164,8 +3173,7 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
             const rawWinRate = payload.win_rate;
             const winRate = rawWinRate == null ? null : Number(rawWinRate);
             const totalPnlUsd = Number(payload.total_pnl_usd || 0);
-            const rawWorstWindowPnlUsd = payload.worst_window_pnl_usd;
-            const worstWindowPnlUsd = rawWorstWindowPnlUsd == null ? totalPnlUsd : Number(rawWorstWindowPnlUsd);
+            const worstWindowPnlUsd = replaySearchWorstWindowPnlFromPayload(payload);
             const worstWindowResolvedShare = Number(payload.worst_active_window_resolved_share ?? payload.worst_window_resolved_share ?? resolvedShare);
             const worstActiveWindowAcceptedCount = payload.worst_accepting_window_accepted_count == null && payload.worst_active_window_accepted_count == null
                 ? null
@@ -3954,7 +3962,7 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             const winRate = payload.win_rate == null ? null : Number(payload.win_rate);
             const totalPnlUsd = Number(payload.total_pnl_usd || 0);
             const positiveWindowCount = Number(payload.positive_window_count || 0);
-            const worstWindowPnlUsd = Number(payload.worst_window_pnl_usd ?? totalPnlUsd);
+            const worstWindowPnlUsd = replaySearchWorstWindowPnlFromPayload(payload);
             const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0;
             const resolvedSizeShare = acceptedSizeUsd > 0 ? resolvedSizeUsd / acceptedSizeUsd : 0;
             const worstWindowResolvedShare = Number(payload.worst_active_window_resolved_share ?? payload.worst_window_resolved_share ?? resolvedShare);

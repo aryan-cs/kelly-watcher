@@ -1204,6 +1204,91 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(row["result"]["signal_mode_summary"]["xgboost"]["best_window_pnl_usd"], 5.0)
         self.assertIn("reject xgboost_worst_window_pnl_usd", stderr.getvalue())
 
+    def test_main_can_limit_mode_inactive_windows(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                if start_ts == 1:
+                    return {
+                        "run_id": 1,
+                        "window_start_ts": start_ts,
+                        "window_end_ts": end_ts,
+                        "total_pnl_usd": 14.0,
+                        "max_drawdown_pct": 0.03,
+                        "accepted_count": 7,
+                        "resolved_count": 7,
+                        "rejected_count": 0,
+                        "unresolved_count": 0,
+                        "trade_count": 7,
+                        "win_rate": 4 / 7,
+                        "signal_mode_summary": {
+                            "heuristic": {"accepted_count": 3, "resolved_count": 3, "trade_count": 3, "total_pnl_usd": 6.0, "win_count": 2},
+                            "xgboost": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 8.0, "win_count": 2},
+                        },
+                    }
+                return {
+                    "run_id": 2,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "total_pnl_usd": 9.0,
+                    "max_drawdown_pct": 0.02,
+                    "accepted_count": 5,
+                    "resolved_count": 5,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": 5,
+                    "win_rate": 3 / 5,
+                    "signal_mode_summary": {
+                        "heuristic": {"accepted_count": 5, "resolved_count": 5, "trade_count": 5, "total_pnl_usd": 9.0, "win_count": 3},
+                    },
+                }
+            return {
+                "run_id": 3,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 11.0 if start_ts == 1 else 10.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": 6,
+                "resolved_count": 6,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 6,
+                "win_rate": 4 / 6,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 2, "resolved_count": 2, "trade_count": 2, "total_pnl_usd": 3.0, "win_count": 1},
+                    "xgboost": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 8.0 if start_ts == 1 else 7.0, "win_count": 3},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--max-xgboost-inactive-windows",
+            "0",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        self.assertEqual(rejected["constraint_failures"], ["xgboost_inactive_window_count"])
+        self.assertEqual(payload["constraints"]["max_xgboost_inactive_windows"], 0)
+        self.assertIn("reject xgboost_inactive_window_count", stderr.getvalue())
+
     def test_main_can_require_mode_specific_positive_windows(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -1491,6 +1576,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "min_heuristic_win_rate": 0.0,
                     "min_heuristic_pnl_usd": 0.0,
                     "min_heuristic_positive_windows": 0,
+                    "max_heuristic_inactive_windows": -1,
                     "min_heuristic_worst_window_pnl_usd": -1000000000.0,
                     "min_positive_windows": 0,
                     "min_resolved_count": 0,
@@ -1503,6 +1589,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "min_xgboost_win_rate": 0.0,
                     "min_xgboost_pnl_usd": 0.0,
                     "min_xgboost_positive_windows": 0,
+                    "max_xgboost_inactive_windows": -1,
                     "min_xgboost_worst_window_pnl_usd": -1000000000.0,
                 },
             )

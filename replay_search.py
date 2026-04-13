@@ -192,6 +192,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "total_pnl_usd": 0.0,
                 "positive_window_count": 0,
                 "negative_window_count": 0,
+                "inactive_window_count": 0,
                 "worst_window_pnl_usd": None,
                 "best_window_pnl_usd": None,
                 "win_count": 0,
@@ -221,12 +222,18 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if raw_values.get("negative_window_count") is not None
             else 1 if raw_total_pnl_usd < 0 else 0
         )
+        resolved_inactive_window_count = (
+            int(raw_values.get("inactive_window_count") or 0)
+            if raw_values.get("inactive_window_count") is not None
+            else 0
+        )
         bucket["trade_count"] += int(raw_values.get("trade_count") or 0)
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
         bucket["resolved_count"] += int(raw_values.get("resolved_count") or 0)
         bucket["total_pnl_usd"] += raw_total_pnl_usd
         bucket["positive_window_count"] += resolved_positive_window_count
         bucket["negative_window_count"] += resolved_negative_window_count
+        bucket["inactive_window_count"] += resolved_inactive_window_count
         bucket["worst_window_pnl_usd"] = (
             resolved_worst_window_pnl_usd
             if bucket["worst_window_pnl_usd"] is None
@@ -350,6 +357,8 @@ def _constraint_failures(
     min_xgboost_worst_window_pnl_usd: float,
     min_heuristic_positive_window_count: int,
     min_xgboost_positive_window_count: int,
+    max_heuristic_inactive_window_count: int,
+    max_xgboost_inactive_window_count: int,
     max_heuristic_accepted_share: float,
     min_xgboost_accepted_share: float,
     max_pause_guard_reject_share: float,
@@ -412,6 +421,12 @@ def _constraint_failures(
         failures.append("heuristic_positive_window_count")
     if int(signal_mode_summary.get("xgboost", {}).get("positive_window_count") or 0) < max(min_xgboost_positive_window_count, 0):
         failures.append("xgboost_positive_window_count")
+    heuristic_inactive_window_count = int(signal_mode_summary.get("heuristic", {}).get("inactive_window_count") or 0)
+    xgboost_inactive_window_count = int(signal_mode_summary.get("xgboost", {}).get("inactive_window_count") or 0)
+    if max_heuristic_inactive_window_count >= 0 and heuristic_inactive_window_count > max_heuristic_inactive_window_count:
+        failures.append("heuristic_inactive_window_count")
+    if max_xgboost_inactive_window_count >= 0 and xgboost_inactive_window_count > max_xgboost_inactive_window_count:
+        failures.append("xgboost_inactive_window_count")
     heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
     xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
     if max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
@@ -1055,6 +1070,8 @@ def main() -> None:
     parser.add_argument("--min-xgboost-worst-window-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum allowed xgboost P&L in the worst replay window for that scorer path.")
     parser.add_argument("--min-heuristic-positive-windows", type=int, default=0, help="Minimum count of positive replay windows required from heuristic.")
     parser.add_argument("--min-xgboost-positive-windows", type=int, default=0, help="Minimum count of positive replay windows required from xgboost.")
+    parser.add_argument("--max-heuristic-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where heuristic may be inactive before a candidate is rejected.")
+    parser.add_argument("--max-xgboost-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where xgboost may be inactive before a candidate is rejected.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
     parser.add_argument("--max-pause-guard-reject-share", type=float, default=0.0, help="Maximum fraction of replay trades allowed to be rejected by daily-loss or live-drawdown pause guards.")
@@ -1117,6 +1134,8 @@ def main() -> None:
         min_xgboost_worst_window_pnl_usd=float(args.min_xgboost_worst_window_pnl_usd),
         min_heuristic_positive_window_count=max(args.min_heuristic_positive_windows, 0),
         min_xgboost_positive_window_count=max(args.min_xgboost_positive_windows, 0),
+        max_heuristic_inactive_window_count=int(args.max_heuristic_inactive_windows),
+        max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
@@ -1209,6 +1228,8 @@ def main() -> None:
             min_xgboost_worst_window_pnl_usd=float(args.min_xgboost_worst_window_pnl_usd),
             min_heuristic_positive_window_count=max(args.min_heuristic_positive_windows, 0),
             min_xgboost_positive_window_count=max(args.min_xgboost_positive_windows, 0),
+            max_heuristic_inactive_window_count=int(args.max_heuristic_inactive_windows),
+            max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
             max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
@@ -1268,6 +1289,8 @@ def main() -> None:
         "min_xgboost_worst_window_pnl_usd": float(args.min_xgboost_worst_window_pnl_usd),
         "min_heuristic_positive_windows": max(args.min_heuristic_positive_windows, 0),
         "min_xgboost_positive_windows": max(args.min_xgboost_positive_windows, 0),
+        "max_heuristic_inactive_windows": int(args.max_heuristic_inactive_windows),
+        "max_xgboost_inactive_windows": int(args.max_xgboost_inactive_windows),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
         "max_pause_guard_reject_share": _clamp_fraction(args.max_pause_guard_reject_share),

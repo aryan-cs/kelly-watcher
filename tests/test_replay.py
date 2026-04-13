@@ -614,9 +614,15 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(first_window["resolved_count"], 0)
                 self.assertEqual(first_window["unresolved_count"], 1)
                 self.assertGreater(first_window["window_end_open_exposure_usd"], 0.0)
+                self.assertEqual(first_window["window_end_signal_mode_exposure"]["heuristic"]["open_count"], 1)
+                carried_size_usd = float(first_window["continuity_state"]["open_positions"][0]["size_usd"])
+                self.assertAlmostEqual(
+                    first_window["window_end_signal_mode_exposure"]["heuristic"]["open_size_usd"],
+                    carried_size_usd,
+                    places=6,
+                )
                 self.assertEqual(len(first_window["continuity_state"]["open_positions"]), 1)
                 carried_pnl_usd = float(first_window["continuity_state"]["open_positions"][0]["pnl_usd"])
-                carried_size_usd = float(first_window["continuity_state"]["open_positions"][0]["size_usd"])
 
                 self.assertEqual(second_window["accepted_count"], 0)
                 self.assertEqual(second_window["resolved_count"], 1)
@@ -640,6 +646,7 @@ class ReplayTest(unittest.TestCase):
                     places=6,
                 )
                 self.assertEqual(second_window["window_end_open_exposure_usd"], 0.0)
+                self.assertEqual(second_window["window_end_signal_mode_exposure"], {})
                 self.assertEqual(second_window["continuity_state"]["open_positions"], [])
             finally:
                 db.DB_PATH = original_db_path

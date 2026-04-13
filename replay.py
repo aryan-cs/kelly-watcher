@@ -872,6 +872,25 @@ def _simulate(
     _insert_replay_trades(conn, run_id, replay_rows)
     segment_metric_rows = _build_segment_metric_rows(replay_rows + carry_resolved_rows)
     signal_mode_summary = _segment_summary(segment_metric_rows, segment_kind="signal_mode")
+    window_end_signal_mode_exposure: dict[str, dict[str, Any]] = {}
+    for position in open_positions:
+        mode = _canonical_signal_mode(position.get("signal_mode") or "heuristic")
+        bucket = window_end_signal_mode_exposure.setdefault(
+            mode,
+            {
+                "open_count": 0,
+                "open_size_usd": 0.0,
+            },
+        )
+        bucket["open_count"] += 1
+        bucket["open_size_usd"] += float(position.get("size_usd") or 0.0)
+    window_end_signal_mode_exposure = {
+        mode: {
+            "open_count": int(values["open_count"]),
+            "open_size_usd": round(float(values["open_size_usd"]), 6),
+        }
+        for mode, values in sorted(window_end_signal_mode_exposure.items())
+    }
     trader_concentration = _trader_concentration(segment_metric_rows)
     market_concentration = _market_concentration(segment_metric_rows)
     entry_price_band_concentration = _entry_price_band_concentration(segment_metric_rows)
@@ -908,6 +927,7 @@ def _simulate(
         "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
         "segment_leaders": _segment_leaders(segment_metric_rows),
         "signal_mode_summary": signal_mode_summary,
+        "window_end_signal_mode_exposure": window_end_signal_mode_exposure,
         "trader_concentration": trader_concentration,
         "market_concentration": market_concentration,
         "entry_price_band_concentration": entry_price_band_concentration,

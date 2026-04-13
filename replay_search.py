@@ -2371,9 +2371,23 @@ def _aggregate_window_results(
         window_mode_summary = _signal_mode_summary(window_result)
         normalized_window_mode_summaries.append(window_mode_summary)
         all_modes.update(window_mode_summary.keys())
-    for window_mode_summary in normalized_window_mode_summaries:
+        raw_window_end_signal_mode_exposure = window_result.get("window_end_signal_mode_exposure")
+        if isinstance(raw_window_end_signal_mode_exposure, dict):
+            all_modes.update(
+                _canonical_signal_mode(raw_mode)
+                for raw_mode in raw_window_end_signal_mode_exposure.keys()
+                if _canonical_signal_mode(raw_mode)
+            )
+    for window_result, window_mode_summary in zip(window_results, normalized_window_mode_summaries):
+        raw_window_end_signal_mode_exposure = window_result.get("window_end_signal_mode_exposure")
+        window_end_signal_mode_exposure = (
+            raw_window_end_signal_mode_exposure
+            if isinstance(raw_window_end_signal_mode_exposure, dict)
+            else {}
+        )
         for mode in all_modes:
             values = window_mode_summary.get(mode) or {}
+            exposure_values = window_end_signal_mode_exposure.get(mode) or {}
             bucket = signal_mode_totals.setdefault(
                 mode,
                 {
@@ -2402,7 +2416,13 @@ def _aggregate_window_results(
             mode_accepted_size_usd = float(values.get("accepted_size_usd") or 0.0)
             mode_resolved_count = int(values.get("resolved_count") or 0)
             mode_resolved_size_usd = float(values.get("resolved_size_usd") or 0.0)
-            is_inactive_window = not _mode_has_participation(values)
+            mode_open_count = int(exposure_values.get("open_count") or 0)
+            mode_open_size_usd = float(exposure_values.get("open_size_usd") or 0.0)
+            is_inactive_window = (
+                not _mode_has_participation(values)
+                and mode_open_count <= 0
+                and mode_open_size_usd <= 0
+            )
             bucket["trade_count"] += int(values.get("trade_count") or 0)
             bucket["accepted_count"] += mode_accepted_count
             bucket["accepted_size_usd"] += mode_accepted_size_usd

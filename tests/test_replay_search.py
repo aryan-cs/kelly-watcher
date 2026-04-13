@@ -267,6 +267,140 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(result["signal_mode_summary"]["heuristic"]["inactive_window_count"], 0)
         self.assertEqual(result["signal_mode_summary"]["heuristic"]["positive_window_count"], 1)
 
+    def test_main_does_not_count_carry_only_open_mode_window_as_inactive(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
+            if start_ts == 1:
+                return {
+                    "run_id": 1,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "initial_bankroll_usd": 1000.0,
+                    "final_equity_usd": 1000.0,
+                    "final_bankroll_usd": 900.0,
+                    "peak_equity_usd": 1000.0,
+                    "min_equity_usd": 1000.0,
+                    "total_pnl_usd": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "accepted_count": 1,
+                    "accepted_size_usd": 100.0,
+                    "resolved_count": 0,
+                    "resolved_size_usd": 0.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 1,
+                    "win_rate": None,
+                    "window_end_open_exposure_usd": 100.0,
+                    "window_end_open_exposure_share": 0.1,
+                    "signal_mode_summary": {
+                        "heuristic": {
+                            "accepted_count": 1,
+                            "accepted_size_usd": 100.0,
+                            "resolved_count": 0,
+                            "resolved_size_usd": 0.0,
+                            "trade_count": 1,
+                            "total_pnl_usd": 0.0,
+                            "win_count": 0,
+                        }
+                    },
+                    "window_end_signal_mode_exposure": {
+                        "heuristic": {
+                            "open_count": 1,
+                            "open_size_usd": 100.0,
+                        }
+                    },
+                    "continuity_state": {
+                        "realized_pnl_usd": 0.0,
+                        "open_positions": [
+                            {
+                                "close_ts": 250,
+                                "market_id": "market-a",
+                                "trader_address": "0xcarry",
+                                "size_usd": 100.0,
+                                "pnl_usd": 20.0,
+                            }
+                        ],
+                        "live_guard_triggered": False,
+                        "live_guard_start_equity": 1000.0,
+                        "daily_guard_day_key": "",
+                        "daily_guard_locked": False,
+                        "daily_guard_start_equity": 1000.0,
+                    },
+                }
+            return {
+                "run_id": 2,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "initial_bankroll_usd": 1000.0,
+                "final_equity_usd": 1000.0,
+                "final_bankroll_usd": 900.0,
+                "peak_equity_usd": 1000.0,
+                "min_equity_usd": 1000.0,
+                "total_pnl_usd": 0.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 0,
+                "accepted_size_usd": 0.0,
+                "resolved_count": 0,
+                "resolved_size_usd": 0.0,
+                "rejected_count": 0,
+                "unresolved_count": 1,
+                "trade_count": 0,
+                "win_rate": None,
+                "window_end_open_exposure_usd": 100.0,
+                "window_end_open_exposure_share": 0.1,
+                "signal_mode_summary": {},
+                "window_end_signal_mode_exposure": {
+                    "heuristic": {
+                        "open_count": 1,
+                        "open_size_usd": 100.0,
+                    }
+                },
+                "continuity_state": {
+                    "realized_pnl_usd": 0.0,
+                    "open_positions": [
+                        {
+                            "close_ts": 250,
+                            "market_id": "market-a",
+                            "trader_address": "0xcarry",
+                            "size_usd": 100.0,
+                            "pnl_usd": 20.0,
+                        }
+                    ],
+                    "live_guard_triggered": False,
+                    "live_guard_start_equity": 1000.0,
+                    "daily_guard_day_key": "",
+                    "daily_guard_locked": False,
+                    "daily_guard_start_equity": 1000.0,
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--max-heuristic-inactive-windows",
+            "0",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        ranked = payload["ranked"][0]
+        self.assertEqual(ranked["constraint_failures"], [])
+        self.assertEqual(ranked["result"]["signal_mode_summary"]["heuristic"]["inactive_window_count"], 0)
+        self.assertNotIn("reject heuristic_inactive_window_count", stderr.getvalue())
+
     def test_main_does_not_count_carry_only_mode_resolution_as_inactive(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             if start_ts == 1:

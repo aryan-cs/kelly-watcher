@@ -347,6 +347,14 @@ def _manual_trade_pending_message(payload: dict[str, Any]) -> str:
     return base
 
 
+def _request_has_pickup_failure(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if int(payload.get("pickup_failed_at") or 0) > 0:
+        return True
+    return bool(str(payload.get("pickup_error") or "").strip())
+
+
 def _persist_shadow_restart_pending_state(request_payload: dict[str, Any]) -> None:
     bot_state = _read_json_dict(BOT_STATE_FILE)
     bot_state.update(
@@ -486,7 +494,8 @@ def _manual_retrain_response() -> dict[str, Any]:
     if bool(bot_state.get("retrain_in_progress")):
         return {"ok": False, "message": "A retrain is already running."}
 
-    if _request_payload_if_fresh(MANUAL_RETRAIN_REQUEST_FILE, 900) is not None:
+    existing_request = _request_payload_if_fresh(MANUAL_RETRAIN_REQUEST_FILE, 900)
+    if existing_request is not None and not _request_has_pickup_failure(existing_request):
         return {
             "ok": True,
             "message": "Manual retrain already requested. Waiting for the bot to pick it up.",
@@ -557,7 +566,8 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "message": "Manual trade actions are unavailable while shadow restart is pending. Wait for the restart to finish first.",
         }
-    if _request_payload_if_fresh(MANUAL_TRADE_REQUEST_FILE, 900) is not None:
+    existing_request = _request_payload_if_fresh(MANUAL_TRADE_REQUEST_FILE, 900)
+    if existing_request is not None and not _request_has_pickup_failure(existing_request):
         return {
             "ok": True,
             "message": "A manual trade request is already pending. Waiting for the bot to pick it up.",

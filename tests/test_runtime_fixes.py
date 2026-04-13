@@ -1550,6 +1550,74 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("already requested", str(result["message"]).lower())
 
+    def test_dashboard_manual_retrain_response_replaces_pickup_failed_request_during_retry_backoff(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "requested_at": int(time.time()) - 10,
+                        "pickup_failed_at": int(time.time()) - 5,
+                        "pickup_error": "retrain start exploded",
+                        "next_retry_at": int(time.time()) + 30,
+                        "source": "dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+                "retrain_in_progress": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_retrain_response()
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"])
+        self.assertIn("requested", str(result["message"]).lower())
+        self.assertNotEqual(payload.get("pickup_error"), "retrain start exploded")
+        self.assertEqual(int(payload.get("next_retry_at") or 0), 0)
+
+    def test_dashboard_manual_retrain_response_replaces_pickup_failed_request_after_retry_backoff_expires(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "requested_at": int(time.time()) - 120,
+                        "pickup_failed_at": int(time.time()) - 10,
+                        "pickup_error": "retrain start exploded",
+                        "next_retry_at": int(time.time()) - 1,
+                        "source": "dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+                "retrain_in_progress": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_retrain_response()
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"])
+        self.assertIn("requested", str(result["message"]).lower())
+        self.assertNotEqual(payload.get("pickup_error"), "retrain start exploded")
+        self.assertEqual(int(payload.get("next_retry_at") or 0), 0)
+
     def test_dashboard_manual_retrain_response_replaces_stale_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             request_file = Path(tmpdir) / "manual_retrain_request.json"
@@ -1640,6 +1708,94 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertIn("already pending", str(result["message"]).lower())
+
+    def test_dashboard_manual_trade_response_replaces_pickup_failed_request_during_retry_backoff(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "token_id": "token-1",
+                        "side": "yes",
+                        "amount_usd": 5.0,
+                        "requested_at": int(time.time()) - 10,
+                        "pickup_failed_at": int(time.time()) - 5,
+                        "pickup_error": "manual trade start exploded",
+                        "next_retry_at": int(time.time()) + 30,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_trade_response(
+                    {
+                        "action": "buy_more",
+                        "marketId": "market-1",
+                        "tokenId": "token-1",
+                        "side": "yes",
+                        "amountUsd": 5.0,
+                    }
+                )
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"])
+        self.assertIn("queued", str(result["message"]).lower())
+        self.assertNotEqual(payload.get("pickup_error"), "manual trade start exploded")
+        self.assertEqual(int(payload.get("next_retry_at") or 0), 0)
+
+    def test_dashboard_manual_trade_response_replaces_pickup_failed_request_after_retry_backoff_expires(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "token_id": "token-1",
+                        "side": "yes",
+                        "amount_usd": 5.0,
+                        "requested_at": int(time.time()) - 120,
+                        "pickup_failed_at": int(time.time()) - 10,
+                        "pickup_error": "manual trade start exploded",
+                        "next_retry_at": int(time.time()) - 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_trade_response(
+                    {
+                        "action": "buy_more",
+                        "marketId": "market-1",
+                        "tokenId": "token-1",
+                        "side": "yes",
+                        "amountUsd": 5.0,
+                    }
+                )
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"])
+        self.assertIn("queued", str(result["message"]).lower())
+        self.assertNotEqual(payload.get("pickup_error"), "manual trade start exploded")
+        self.assertEqual(int(payload.get("next_retry_at") or 0), 0)
 
     def test_dashboard_manual_trade_response_replaces_stale_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:

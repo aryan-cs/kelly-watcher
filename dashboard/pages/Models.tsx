@@ -190,7 +190,14 @@ interface ReplaySearchSummaryRow {
   positive_window_count: number | null
   negative_window_count: number | null
   worst_window_pnl_usd: number | null
+  drawdown_penalty: number | null
+  window_stddev_penalty: number | null
+  worst_window_penalty: number | null
   pause_guard_penalty: number | null
+  mode_loss_penalty: number | null
+  mode_inactivity_penalty: number | null
+  wallet_concentration_penalty: number | null
+  market_concentration_penalty: number | null
   constraints_json: string | null
   overrides_json: string | null
   policy_json: string | null
@@ -282,6 +289,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search run', text: 'How recently the latest persisted replay search finished.'},
       {label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.'},
       {label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.'},
+      {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window, pause-guard, scorer-loss, scorer-inactivity, and concentration terms.'},
       {label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window, pause-guard, scorer-loss, scorer-inactivity, and concentration penalties.'},
       {label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.'},
       {label: 'Search windows', text: 'Positive versus negative windows and the worst window P&L for the latest best feasible search candidate.'},
@@ -615,7 +623,14 @@ WITH latest_search AS (
     best_vs_current_pnl_usd,
     best_vs_current_score,
     best_feasible_score,
-    pause_guard_penalty
+    drawdown_penalty,
+    window_stddev_penalty,
+    worst_window_penalty,
+    pause_guard_penalty,
+    mode_loss_penalty,
+    mode_inactivity_penalty,
+    wallet_concentration_penalty,
+    market_concentration_penalty
   FROM replay_search_runs
   ORDER BY finished_at DESC, id DESC
   LIMIT 1
@@ -656,7 +671,14 @@ SELECT
   latest_search.best_vs_current_pnl_usd,
   latest_search.best_vs_current_score,
   latest_search.best_feasible_score,
+  latest_search.drawdown_penalty,
+  latest_search.window_stddev_penalty,
+  latest_search.worst_window_penalty,
   latest_search.pause_guard_penalty,
+  latest_search.mode_loss_penalty,
+  latest_search.mode_inactivity_penalty,
+  latest_search.wallet_concentration_penalty,
+  latest_search.market_concentration_penalty,
   best_candidate.candidate_index,
   best_candidate.score,
   best_candidate.total_pnl_usd,
@@ -1528,6 +1550,24 @@ interface ReplaySearchPauseGuardSummary {
   currentShare: number | null
   bestShare: number | null
   overLimit: boolean
+}
+
+function replaySearchScoreWeightSummary(row: ReplaySearchSummaryRow | undefined): string {
+  if (!row) return '-'
+  const parts: string[] = []
+  const pushIfActive = (label: string, value: number | null | undefined) => {
+    const numeric = Number(value || 0)
+    if (Math.abs(numeric) > 1e-9) parts.push(`${label} ${formatNumber(numeric, 2)}x`)
+  }
+  pushIfActive('dd', row.drawdown_penalty)
+  pushIfActive('std', row.window_stddev_penalty)
+  pushIfActive('worst', row.worst_window_penalty)
+  pushIfActive('pause', row.pause_guard_penalty)
+  pushIfActive('mode', row.mode_loss_penalty)
+  pushIfActive('idle', row.mode_inactivity_penalty)
+  pushIfActive('wallet', row.wallet_concentration_penalty)
+  pushIfActive('market', row.market_concentration_penalty)
+  return parts.length ? parts.join(' | ') : 'none'
 }
 
 function replaySearchScoreBreakdownSummary(raw: string | null | undefined): string {
@@ -2972,6 +3012,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         label: 'Best score',
         value: replaySearchScoreBreakdownSummary(latestReplaySearch?.result_json),
         color: latestReplaySearch?.result_json ? theme.white : theme.dim
+      },
+      {
+        label: 'Score weights',
+        value: replaySearchScoreWeightSummary(latestReplaySearch),
+        color: latestReplaySearch ? theme.white : theme.dim
       },
       {
         label: 'Search robust',

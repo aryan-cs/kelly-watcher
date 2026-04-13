@@ -37,9 +37,11 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("resolved_share_penalty", columns)
         self.assertIn("resolved_size_share_penalty", columns)
         self.assertIn("worst_window_resolved_share_penalty", columns)
+        self.assertIn("worst_window_resolved_size_share_penalty", columns)
         self.assertIn("mode_resolved_share_penalty", columns)
         self.assertIn("mode_resolved_size_share_penalty", columns)
         self.assertIn("mode_worst_window_resolved_share_penalty", columns)
+        self.assertIn("mode_worst_window_resolved_size_share_penalty", columns)
         self.assertIn("worst_active_window_accepted_penalty", columns)
         self.assertIn("mode_worst_active_window_accepted_penalty", columns)
         self.assertIn("mode_loss_penalty", columns)
@@ -599,6 +601,98 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["mode_resolved_size_share_penalty_usd"], 200.0)
         self.assertEqual(breakdown["score_usd"], -300.0)
 
+    def test_score_breakdown_penalizes_global_worst_window_size_weighted_coverage(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": 160.0,
+                "worst_window_resolved_size_share": 0.4,
+                "worst_active_window_resolved_size_share": 0.4,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.1,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["worst_window_resolved_size_share_penalty_usd"], 180.0)
+        self.assertEqual(breakdown["score_usd"], -160.0)
+
+    def test_score_breakdown_penalizes_mode_worst_window_size_weighted_coverage(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": 160.0,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_size_usd": 80.0,
+                        "resolved_size_usd": 80.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 8.0,
+                        "worst_window_resolved_size_share": 1.0,
+                        "worst_active_window_resolved_size_share": 1.0,
+                    },
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_size_usd": 120.0,
+                        "resolved_size_usd": 80.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                        "worst_window_resolved_size_share": 1.0 / 3.0,
+                        "worst_active_window_resolved_size_share": 1.0 / 3.0,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.1,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertAlmostEqual(breakdown["mode_worst_window_resolved_size_share_penalty_usd"], 200.0, places=3)
+        self.assertAlmostEqual(breakdown["score_usd"], -180.0, places=3)
+
     def test_score_breakdown_ignores_worst_window_resolved_share_penalty_without_accepted_trades(self) -> None:
         breakdown = replay_search._score_breakdown(
             {
@@ -772,6 +866,7 @@ class ReplaySearchTest(unittest.TestCase):
             max_drawdown_pct=0.0,
             min_worst_window_pnl_usd=-1_000_000_000.0,
             min_worst_window_resolved_share=0.0,
+            min_worst_window_resolved_size_share=0.0,
             max_worst_window_drawdown_pct=0.0,
             min_heuristic_accepted_count=1,
             min_xgboost_accepted_count=1,
@@ -789,6 +884,8 @@ class ReplaySearchTest(unittest.TestCase):
             min_xgboost_worst_window_pnl_usd=1.0,
             min_heuristic_worst_window_resolved_share=0.5,
             min_xgboost_worst_window_resolved_share=0.5,
+            min_heuristic_worst_window_resolved_size_share=0.0,
+            min_xgboost_worst_window_resolved_size_share=0.0,
             min_heuristic_positive_window_count=1,
             min_xgboost_positive_window_count=1,
             min_heuristic_worst_active_window_accepted_count=1,
@@ -3503,6 +3600,161 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(best_breakdown["worst_window_resolved_share_penalty_usd"], 0.0)
         self.assertGreater(rejected_breakdown["worst_window_resolved_share_penalty_usd"], 0.0)
 
+    def test_main_can_require_global_worst_window_resolved_size_share(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if start_ts == 1:
+                resolved_size_usd = 200.0
+            elif min_conf >= 0.65:
+                resolved_size_usd = 180.0
+            else:
+                resolved_size_usd = 80.0
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 12.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": resolved_size_usd,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_size_usd": 80.0,
+                        "resolved_size_usd": 80.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 4.0,
+                        "win_count": 2,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "resolved_count": 6,
+                        "accepted_size_usd": 120.0,
+                        "resolved_size_usd": max(resolved_size_usd - 80.0, 0.0),
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                        "win_count": 4,
+                    },
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--min-worst-window-resolved-size-share",
+            "0.75",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["worst_window_resolved_size_share"])
+        self.assertEqual(rejected["result"]["worst_window_resolved_size_share"], 0.4)
+        self.assertEqual(payload["constraints"]["min_worst_window_resolved_size_share"], 0.75)
+        self.assertIn("reject worst_window_resolved_size_share", stderr.getvalue())
+
+    def test_main_can_penalize_low_worst_window_resolved_size_share_in_ranking(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if start_ts == 1:
+                resolved_size_usd = 200.0
+            elif min_conf >= 0.65:
+                resolved_size_usd = 180.0
+            else:
+                resolved_size_usd = 80.0
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 12.0 if min_conf >= 0.65 else 14.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": resolved_size_usd,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_size_usd": 80.0,
+                        "resolved_size_usd": 80.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 4.0,
+                        "win_count": 2,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "resolved_count": 6,
+                        "accepted_size_usd": 120.0,
+                        "resolved_size_usd": max(resolved_size_usd - 80.0, 0.0),
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0 if min_conf >= 0.65 else 10.0,
+                        "win_count": 4,
+                    },
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--worst-window-resolved-size-share-penalty",
+            "0.1",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["worst_window_resolved_size_share_penalty"], 0.1)
+        self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.65)
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertGreater(rejected_breakdown["worst_window_resolved_size_share_penalty_usd"], 0.0)
+        self.assertGreater(
+            rejected_breakdown["worst_window_resolved_size_share_penalty_usd"],
+            best_breakdown["worst_window_resolved_size_share_penalty_usd"],
+        )
+        self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
+
     def test_main_can_require_mode_specific_worst_window_pnl_floors(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -3780,6 +4032,161 @@ class ReplaySearchTest(unittest.TestCase):
         )
         self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
         self.assertIn("min_confidence=0.65", stderr.getvalue())
+
+    def test_main_can_require_mode_specific_worst_window_resolved_size_shares(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if start_ts == 1:
+                xgboost_resolved_size_usd = 120.0
+            elif min_conf >= 0.65:
+                xgboost_resolved_size_usd = 100.0
+            else:
+                xgboost_resolved_size_usd = 40.0
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 12.0,
+                "max_drawdown_pct": 0.05,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": 80.0 + xgboost_resolved_size_usd,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_size_usd": 80.0,
+                        "resolved_size_usd": 80.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 4.0,
+                        "win_count": 2,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "resolved_count": 6,
+                        "accepted_size_usd": 120.0,
+                        "resolved_size_usd": xgboost_resolved_size_usd,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0,
+                        "win_count": 4,
+                    },
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--min-xgboost-worst-window-resolved-size-share",
+            "0.75",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["xgboost_worst_window_resolved_size_share"])
+        self.assertEqual(rejected["result"]["signal_mode_summary"]["xgboost"]["worst_window_resolved_size_share"], 0.333333)
+        self.assertEqual(payload["constraints"]["min_xgboost_worst_window_resolved_size_share"], 0.75)
+        self.assertIn("reject xgboost_worst_window_resolved_size_share", stderr.getvalue())
+
+    def test_main_can_penalize_low_mode_worst_window_resolved_size_share_in_ranking(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if start_ts == 1:
+                xgboost_resolved_size_usd = 120.0
+            elif min_conf >= 0.65:
+                xgboost_resolved_size_usd = 100.0
+            else:
+                xgboost_resolved_size_usd = 40.0
+            return {
+                "run_id": 1,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 12.0 if min_conf >= 0.65 else 14.0,
+                "max_drawdown_pct": 0.05,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "accepted_size_usd": 200.0,
+                "resolved_size_usd": 80.0 + xgboost_resolved_size_usd,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_size_usd": 80.0,
+                        "resolved_size_usd": 80.0,
+                        "trade_count": 4,
+                        "total_pnl_usd": 4.0,
+                        "win_count": 2,
+                    },
+                    "xgboost": {
+                        "accepted_count": 6,
+                        "resolved_count": 6,
+                        "accepted_size_usd": 120.0,
+                        "resolved_size_usd": xgboost_resolved_size_usd,
+                        "trade_count": 6,
+                        "total_pnl_usd": 8.0 if min_conf >= 0.65 else 10.0,
+                        "win_count": 4,
+                    },
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "2",
+            "--mode-worst-window-resolved-size-share-penalty",
+            "0.1",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["mode_worst_window_resolved_size_share_penalty"], 0.1)
+        self.assertEqual(payload["ranked"][0]["overrides"]["min_confidence"], 0.65)
+        best_breakdown = payload["ranked"][0]["result"]["score_breakdown"]
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        rejected_breakdown = rejected["result"]["score_breakdown"]
+        self.assertGreater(best_breakdown["mode_worst_window_resolved_size_share_penalty_usd"], 0.0)
+        self.assertGreater(
+            rejected_breakdown["mode_worst_window_resolved_size_share_penalty_usd"],
+            best_breakdown["mode_worst_window_resolved_size_share_penalty_usd"],
+        )
+        self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
 
     def test_main_counts_missing_mode_windows_as_zero_activity_for_worst_window(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -4526,6 +4933,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_heuristic_worst_active_window_accepted_count": 0,
                 "min_heuristic_worst_window_pnl_usd": -1000000000.0,
                 "min_heuristic_worst_window_resolved_share": 0.0,
+                "min_heuristic_worst_window_resolved_size_share": 0.0,
                 "min_market_count": 0,
                 "min_positive_windows": 0,
                 "min_resolved_count": 0,
@@ -4537,6 +4945,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_win_rate": 0.0,
                 "min_worst_window_pnl_usd": -1000000000.0,
                 "min_worst_window_resolved_share": 0.0,
+                "min_worst_window_resolved_size_share": 0.0,
                 "min_xgboost_accepted_share": 0.0,
                 "min_xgboost_accepted_count": 0,
                 "min_xgboost_resolved_count": 0,
@@ -4548,6 +4957,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_xgboost_worst_active_window_accepted_count": 0,
                 "min_xgboost_worst_window_pnl_usd": -1000000000.0,
                 "min_xgboost_worst_window_resolved_share": 0.0,
+                "min_xgboost_worst_window_resolved_size_share": 0.0,
             }
             self.assertEqual(
                 {key: constraints[key] for key in expected_constraints},
@@ -4661,9 +5071,11 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertIn("resolved_share_penalty", run_columns)
             self.assertIn("resolved_size_share_penalty", run_columns)
             self.assertIn("worst_window_resolved_share_penalty", run_columns)
+            self.assertIn("worst_window_resolved_size_share_penalty", run_columns)
             self.assertIn("mode_resolved_share_penalty", run_columns)
             self.assertIn("mode_resolved_size_share_penalty", run_columns)
             self.assertIn("mode_worst_window_resolved_share_penalty", run_columns)
+            self.assertIn("mode_worst_window_resolved_size_share_penalty", run_columns)
             self.assertIn("worst_active_window_accepted_penalty", run_columns)
             self.assertIn("mode_worst_active_window_accepted_penalty", run_columns)
             self.assertIn("mode_loss_penalty", run_columns)

@@ -426,6 +426,107 @@ class ReplayTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_run_replay_respects_window_end_for_resolution_and_pnl(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="resolved-in-window",
+                    market_id="market-window-a",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.70,
+                    price_at_signal=0.68,
+                    actual_entry_price=0.68,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=20.0,
+                    placed_at=1_700_000_000,
+                    resolved_at=1_700_000_050,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.85},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="carry-past-window",
+                    market_id="market-window-b",
+                    trader_address="0xbbb",
+                    signal_mode="heuristic",
+                    confidence=0.72,
+                    price_at_signal=0.69,
+                    actual_entry_price=0.69,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=30.0,
+                    placed_at=1_700_000_010,
+                    resolved_at=1_700_000_200,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.86},
+                        "min_confidence": 0.55,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                    label="window-boundary",
+                    start_ts=1_700_000_000,
+                    end_ts=1_700_000_100,
+                )
+
+                conn = sqlite3.connect(str(test_db_path))
+                conn.row_factory = sqlite3.Row
+                run_row = conn.execute("SELECT * FROM replay_runs").fetchone()
+                trade_rows = conn.execute(
+                    "SELECT trade_id, pnl_usd, metadata_json FROM replay_trades ORDER BY trade_log_id ASC"
+                ).fetchall()
+                conn.close()
+
+                realized_pnl = sum(float(row["pnl_usd"] or 0.0) for row in trade_rows if row["pnl_usd"] is not None)
+                carried_trade = next(row for row in trade_rows if row["trade_id"] == "carry-past-window")
+                carried_metadata = json.loads(carried_trade["metadata_json"])
+
+                self.assertEqual(result["accepted_count"], 2)
+                self.assertEqual(result["resolved_count"], 1)
+                self.assertEqual(result["unresolved_count"], 1)
+                self.assertAlmostEqual(result["total_pnl_usd"], realized_pnl)
+                self.assertAlmostEqual(float(run_row["total_pnl_usd"]), realized_pnl)
+                self.assertLess(result["final_bankroll_usd"], result["initial_bankroll_usd"])
+                self.assertGreater(result["final_equity_usd"], result["final_bankroll_usd"])
+                self.assertIsNone(carried_trade["pnl_usd"])
+                self.assertTrue(bool(carried_metadata["window_carried"]))
+                self.assertEqual(int(carried_metadata["eventual_close_ts"]), 1_700_000_200)
+                self.assertAlmostEqual(float(carried_metadata["eventual_return_pct"]), 0.3, places=6)
+                self.assertGreater(float(carried_metadata["eventual_pnl_usd"]), 0.0)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_run_replay_reports_trader_concentration(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

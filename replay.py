@@ -328,6 +328,7 @@ def _simulate(
     daily_guard_start_equity = max(policy.initial_bankroll_usd, 0.0)
     daily_guard_day_key = ""
     daily_guard_locked = False
+    simulation_end_ts = int(end_ts) if end_ts is not None else 10**12
 
     def account_equity() -> float:
         return max(policy.initial_bankroll_usd + realized_pnl, 0.0)
@@ -480,8 +481,6 @@ def _simulate(
             available_cash=free_cash(),
             base_metadata=base_metadata,
         )
-        if return_pct is not None:
-            metadata["return_pct"] = round(return_pct, 6)
         if not accepted or requested_size_usd <= 0:
             if return_pct is None:
                 unresolved_count += 1
@@ -677,11 +676,18 @@ def _simulate(
             continue
 
         pnl_usd = requested_size_usd * return_pct
+        resolves_within_window = close_ts <= simulation_end_ts
         if close_ts <= placed_at:
             realized_pnl += pnl_usd
             update_drawdown()
             update_open_exposure_metrics()
         else:
+            if not resolves_within_window:
+                unresolved_count += 1
+                metadata["window_carried"] = True
+                metadata["eventual_close_ts"] = int(close_ts)
+                metadata["eventual_return_pct"] = round(return_pct, 6)
+                metadata["eventual_pnl_usd"] = round(pnl_usd, 6)
             open_positions.append(
                 {
                     "close_ts": close_ts,
@@ -709,15 +715,15 @@ def _simulate(
                 time_to_close_band=time_to_close_band,
                 requested_size_usd=requested_size_usd,
                 simulated_size_usd=requested_size_usd,
-                return_pct=return_pct,
-                pnl_usd=pnl_usd,
+                return_pct=return_pct if resolves_within_window else None,
+                pnl_usd=pnl_usd if resolves_within_window else None,
                 bankroll_after_usd=free_cash(),
                 open_exposure_after_usd=open_exposure(),
                 metadata=metadata,
             )
         )
 
-    close_due_positions(10**12)
+    close_due_positions(simulation_end_ts)
 
     policy_json = json.dumps(policy.as_dict(), sort_keys=True, separators=(",", ":"))
     accepted_rows = [row for row in replay_rows if row["decision"] == "accept"]
@@ -726,6 +732,7 @@ def _simulate(
     wins = sum(1 for row in resolved_rows if float(row["pnl_usd"] or 0.0) > 0)
     final_equity = round(policy.initial_bankroll_usd + realized_pnl, 6)
     final_bankroll = round(final_equity - open_exposure(), 6)
+    total_pnl_usd = round(final_equity - policy.initial_bankroll_usd, 6)
     accepted_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in accepted_rows)
     resolved_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in resolved_rows)
     reject_reason_summary: dict[str, int] = {}
@@ -749,7 +756,7 @@ def _simulate(
             "window_end_ts": end_ts,
             "initial_bankroll_usd": round(policy.initial_bankroll_usd, 6),
             "final_bankroll_usd": final_bankroll,
-            "total_pnl_usd": round(final_bankroll - policy.initial_bankroll_usd, 6),
+            "total_pnl_usd": total_pnl_usd,
             "max_drawdown_pct": round(max_drawdown_pct, 6),
             "peak_open_exposure_usd": round(peak_open_exposure_usd, 6),
             "max_open_exposure_share": round(max_open_exposure_share, 6),
@@ -782,7 +789,7 @@ def _simulate(
         "peak_equity_usd": round(peak_equity, 6),
         "min_equity_usd": round(min_equity, 6),
         "peak_open_exposure_usd": round(peak_open_exposure_usd, 6),
-        "total_pnl_usd": round(final_bankroll - policy.initial_bankroll_usd, 6),
+        "total_pnl_usd": total_pnl_usd,
         "max_drawdown_pct": round(max_drawdown_pct, 6),
         "max_open_exposure_share": round(max_open_exposure_share, 6),
         "trade_count": len(replay_rows),

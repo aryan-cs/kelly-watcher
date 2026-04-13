@@ -2567,6 +2567,7 @@ class RuntimeFixesTest(unittest.TestCase):
         skipped_updates = main._replay_promotion_state_updates(
             {
                 "promotion_id": 9,
+                "event_at": 1_700_000_111,
                 "applied_at": 0,
                 "status": "skipped_score_delta",
                 "message": "score delta too small",
@@ -2593,6 +2594,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertEqual(skipped_updates["last_replay_promotion_status"], "skipped_score_delta")
         self.assertEqual(skipped_updates["last_replay_promotion_run_id"], 21)
+        self.assertEqual(skipped_updates["last_replay_promotion_at"], 1_700_000_111)
         self.assertNotIn("last_applied_replay_promotion_id", skipped_updates)
 
         self.assertEqual(applied_updates["last_replay_promotion_id"], 10)
@@ -2633,6 +2635,60 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(payload["last_applied_replay_promotion_id"], 17)
         self.assertEqual(payload["last_applied_replay_promotion_at"], 1_700_000_456)
         self.assertEqual(payload["last_applied_replay_promotion_run_id"], 31)
+
+    def test_latest_replay_promotion_prefers_latest_attempt_over_latest_applied(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                applied_id = main._insert_replay_promotion(
+                    {
+                        "requested_at": 1_700_000_100,
+                        "finished_at": 1_700_000_110,
+                        "applied_at": 1_700_000_110,
+                        "trigger": "scheduled_replay_search",
+                        "scope": "shadow_only",
+                        "source_mode": "shadow",
+                        "status": "applied",
+                        "reason": "auto-promoted best feasible replay candidate",
+                        "replay_search_run_id": None,
+                        "replay_search_candidate_id": None,
+                    }
+                )
+                skipped_id = main._insert_replay_promotion(
+                    {
+                        "requested_at": 1_700_000_200,
+                        "finished_at": 1_700_000_220,
+                        "applied_at": 0,
+                        "trigger": "scheduled_replay_search",
+                        "scope": "shadow_only",
+                        "source_mode": "shadow",
+                        "status": "skipped_score_delta",
+                        "reason": "score delta too small",
+                        "replay_search_run_id": None,
+                        "replay_search_candidate_id": None,
+                    }
+                )
+
+                latest_attempt = main._latest_replay_promotion()
+                latest_applied = main._latest_applied_replay_promotion()
+                latest_attempt_state = main._latest_replay_promotion_state_payload(latest_attempt)
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        self.assertIsNotNone(latest_attempt)
+        self.assertIsNotNone(latest_applied)
+        assert latest_attempt is not None
+        assert latest_applied is not None
+        self.assertEqual(int(latest_attempt["id"]), skipped_id)
+        self.assertEqual(int(latest_applied["id"]), applied_id)
+        self.assertEqual(latest_attempt_state["last_replay_promotion_id"], skipped_id)
+        self.assertEqual(latest_attempt_state["last_replay_promotion_status"], "skipped_score_delta")
+        self.assertEqual(latest_attempt_state["last_replay_promotion_at"], 1_700_000_220)
 
     def test_apply_env_config_payload_only_writes_promotable_replay_keys(self) -> None:
         with patch.object(main, "_write_env_value") as write_env_value:

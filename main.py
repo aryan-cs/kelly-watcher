@@ -2275,6 +2275,27 @@ def _replay_search_transient_status_state(
 PROMOTABLE_REPLAY_CONFIG_KEYS = frozenset(str(key).strip().upper() for key in REPLAY_POLICY_CONFIG_KEY_MAP.values())
 
 
+def _latest_replay_promotion() -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM replay_promotions
+            ORDER BY
+                CASE
+                    WHEN finished_at > 0 THEN finished_at
+                    ELSE requested_at
+                END DESC,
+                id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def _latest_applied_replay_promotion() -> dict[str, Any] | None:
     conn = get_conn()
     try:
@@ -2299,11 +2320,22 @@ def _resolved_shadow_trade_count_since_last_promotion() -> tuple[int, dict[str, 
     return _resolved_shadow_trade_count_since(since_ts), promotion
 
 
+def _replay_promotion_event_at(promotion: dict[str, Any] | None) -> int:
+    row = promotion or {}
+    applied_at = int(row.get("applied_at") or 0)
+    if applied_at > 0:
+        return applied_at
+    finished_at = int(row.get("finished_at") or 0)
+    if finished_at > 0:
+        return finished_at
+    return int(row.get("requested_at") or 0)
+
+
 def _replay_promotion_state_payload(
     *,
     prefix: str,
     promotion_id: Any = 0,
-    applied_at: Any = 0,
+    event_at: Any = 0,
     status: Any = "",
     message: Any = "",
     scope: Any = "shadow_only",
@@ -2314,7 +2346,7 @@ def _replay_promotion_state_payload(
 ) -> dict[str, object]:
     return {
         f"{prefix}_id": int(promotion_id or 0),
-        f"{prefix}_at": int(applied_at or 0),
+        f"{prefix}_at": int(event_at or 0),
         f"{prefix}_status": str(status or ""),
         f"{prefix}_message": str(message or ""),
         f"{prefix}_scope": str(scope or "shadow_only"),
@@ -2330,7 +2362,23 @@ def _applied_replay_promotion_state_payload(promotion: dict[str, Any] | None) ->
     return _replay_promotion_state_payload(
         prefix="last_applied_replay_promotion",
         promotion_id=row.get("id"),
-        applied_at=row.get("applied_at"),
+        event_at=row.get("applied_at"),
+        status=row.get("status"),
+        message=row.get("reason"),
+        scope=row.get("scope"),
+        run_id=row.get("replay_search_run_id"),
+        candidate_id=row.get("replay_search_candidate_id"),
+        score_delta=row.get("score_delta"),
+        pnl_delta_usd=row.get("pnl_delta_usd"),
+    )
+
+
+def _latest_replay_promotion_state_payload(promotion: dict[str, Any] | None) -> dict[str, object]:
+    row = promotion or {}
+    return _replay_promotion_state_payload(
+        prefix="last_replay_promotion",
+        promotion_id=row.get("id"),
+        event_at=_replay_promotion_event_at(row),
         status=row.get("status"),
         message=row.get("reason"),
         scope=row.get("scope"),
@@ -2345,7 +2393,7 @@ def _replay_promotion_state_updates(result: dict[str, Any]) -> dict[str, object]
     payload = _replay_promotion_state_payload(
         prefix="last_replay_promotion",
         promotion_id=result.get("promotion_id"),
-        applied_at=result.get("applied_at"),
+        event_at=result.get("event_at"),
         status=result.get("status"),
         message=result.get("message"),
         scope=result.get("scope"),
@@ -3794,21 +3842,10 @@ def main() -> None:
         "model_loaded_at": 0,
     }
     latest_promotion = _latest_applied_replay_promotion()
+    latest_promotion_attempt = _latest_replay_promotion()
+    if latest_promotion_attempt is not None:
+        bot_state_snapshot.update(_latest_replay_promotion_state_payload(latest_promotion_attempt))
     if latest_promotion is not None:
-        bot_state_snapshot.update(
-            _replay_promotion_state_payload(
-                prefix="last_replay_promotion",
-                promotion_id=latest_promotion.get("id"),
-                applied_at=latest_promotion.get("applied_at"),
-                status=latest_promotion.get("status"),
-                message=latest_promotion.get("reason"),
-                scope=latest_promotion.get("scope"),
-                run_id=latest_promotion.get("replay_search_run_id"),
-                candidate_id=latest_promotion.get("replay_search_candidate_id"),
-                score_delta=latest_promotion.get("score_delta"),
-                pnl_delta_usd=latest_promotion.get("pnl_delta_usd"),
-            )
-        )
         bot_state_snapshot.update(_applied_replay_promotion_state_payload(latest_promotion))
     last_activity_write_at = 0.0
     current_loop_started_at = 0
@@ -3887,12 +3924,14 @@ def main() -> None:
             for key in set(candidate_config) | set(previous_config)
             if _env_value_text(candidate_config.get(key)) != _env_value_text(previous_config.get(key))
         )
+        requested_at = int(time.time())
+        finished_at = int(time.time())
         total_resolved_shadow = _resolved_shadow_trade_count()
         resolved_since_previous, _ = _resolved_shadow_trade_count_since_last_promotion()
         promotion_id = _insert_replay_promotion(
             {
-                "requested_at": int(time.time()),
-                "finished_at": int(time.time()),
+                "requested_at": requested_at,
+                "finished_at": finished_at,
                 "applied_at": int(applied_at or 0),
                 "trigger": trigger,
                 "scope": "shadow_only",
@@ -3915,6 +3954,7 @@ def main() -> None:
         )
         return {
             "promotion_id": promotion_id,
+            "event_at": int(applied_at or 0) or finished_at or requested_at,
             "applied_at": int(applied_at or 0),
             "status": status,
             "message": reason,

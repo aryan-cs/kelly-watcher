@@ -2260,19 +2260,32 @@ def _latest_replay_search_run_id() -> int:
         conn.close()
 
 
-def _load_replay_search_run_after(after_id: int) -> dict[str, Any] | None:
+def _load_replay_search_run_after(after_id: int, *, request_token: str = "") -> dict[str, Any] | None:
     conn = get_conn()
     try:
-        row = conn.execute(
-            """
-            SELECT *
-            FROM replay_search_runs
-            WHERE id > ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (int(after_id),),
-        ).fetchone()
+        if request_token:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM replay_search_runs
+                WHERE id > ?
+                  AND request_token=?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (int(after_id), str(request_token)),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM replay_search_runs
+                WHERE id > ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (int(after_id),),
+            ).fetchone()
         return dict(row) if row is not None else None
     finally:
         conn.close()
@@ -2477,7 +2490,7 @@ def _replay_search_flag_value(value: Any) -> str:
     return str(value)
 
 
-def _build_replay_search_command() -> list[str]:
+def _build_replay_search_command(*, request_token: str = "") -> list[str]:
     command = [
         sys.executable,
         str(Path(__file__).resolve().parent / "replay_search.py"),
@@ -2494,6 +2507,8 @@ def _build_replay_search_command() -> list[str]:
         "--window-count",
         str(replay_search_window_count()),
     ]
+    if request_token:
+        command.extend(["--request-token", request_token])
     notes = replay_search_notes()
     if notes:
         command.extend(["--notes", notes])
@@ -3960,7 +3975,8 @@ def main() -> None:
         _heartbeat(force=True)
         try:
             previous_run_id = _latest_replay_search_run_id()
-            command = _build_replay_search_command()
+            request_token = f"replay-search-{started_at}-{uuid.uuid4().hex}"
+            command = _build_replay_search_command(request_token=request_token)
             logger.info("Running replay search (%s): %s", trigger, command)
             completed = subprocess.run(
                 command,
@@ -3970,7 +3986,7 @@ def main() -> None:
                 check=False,
             )
             finished_at = int(time.time())
-            run_row = _load_replay_search_run_after(previous_run_id)
+            run_row = _load_replay_search_run_after(previous_run_id, request_token=request_token)
             stderr_tail = " | ".join(
                 line.strip()
                 for line in str(completed.stderr or "").splitlines()[-3:]
@@ -3998,7 +4014,10 @@ def main() -> None:
                 return False
 
             if run_row is None:
-                message = "Replay search completed without persisting a replay_search_runs row"
+                message = (
+                    "Replay search completed without persisting a matching replay_search_runs row "
+                    f"for request_token={request_token}"
+                )
                 logger.error(message)
                 _persist_bot_state(
                     replay_search_in_progress=False,

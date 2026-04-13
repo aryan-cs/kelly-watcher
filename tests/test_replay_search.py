@@ -146,6 +146,7 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertIn("current_candidate_constraint_failures_json", columns)
         self.assertIn("current_candidate_result_json", columns)
+        self.assertIn("request_token", columns)
         self.assertIn("pause_guard_penalty", columns)
         self.assertIn("daily_guard_window_penalty", columns)
         self.assertIn("live_guard_window_penalty", columns)
@@ -9439,6 +9440,46 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
         self.assertEqual(payload["best_feasible"]["result"]["score_breakdown"]["worst_window_penalty_usd"], 0.0)
 
+    def test_main_persists_request_token_on_replay_search_run(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 12.0,
+                "max_drawdown_pct": 0.02,
+                "accepted_count": 4,
+                "resolved_count": 4,
+                "win_rate": 0.6,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "replay_search_request_token.db"
+            stdout = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--db",
+                str(db_path),
+                "--request-token",
+                "req-123",
+                "--grid-json",
+                json.dumps({"min_confidence": [0.60]}),
+            ]
+            with (
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+            ):
+                replay_search.main()
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                request_token = conn.execute(
+                    "SELECT request_token FROM replay_search_runs ORDER BY id DESC LIMIT 1"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+        self.assertEqual(request_token, "req-123")
+
     def test_main_merges_score_weights_file_and_json_payloads(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -9544,6 +9585,33 @@ class ReplaySearchTest(unittest.TestCase):
         with (
             patch("sys.argv", argv),
             self.assertRaisesRegex(ValueError, "Unknown replay-search score-weight key"),
+        ):
+            replay_search.main()
+
+    def test_main_rejects_invalid_score_weight_payload_values(self) -> None:
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60]}),
+            "--score-weights-json",
+            json.dumps({"drawdown_penalty": "abc"}),
+        ]
+        with (
+            patch("sys.argv", argv),
+            self.assertRaisesRegex(ValueError, "must be a finite non-negative number"),
+        ):
+            replay_search.main()
+
+        negative_argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60]}),
+            "--score-weights-json",
+            json.dumps({"drawdown_penalty": -1}),
+        ]
+        with (
+            patch("sys.argv", negative_argv),
+            self.assertRaisesRegex(ValueError, "must be a finite non-negative number"),
         ):
             replay_search.main()
 

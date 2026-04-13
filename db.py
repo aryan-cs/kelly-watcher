@@ -539,6 +539,7 @@ def init_db() -> None:
             id                           INTEGER PRIMARY KEY AUTOINCREMENT,
             started_at                   INTEGER NOT NULL,
             finished_at                  INTEGER NOT NULL,
+            request_token                TEXT NOT NULL DEFAULT '',
             label_prefix                 TEXT NOT NULL DEFAULT '',
             status                       TEXT NOT NULL DEFAULT '',
             base_policy_json             TEXT NOT NULL DEFAULT '{}',
@@ -834,6 +835,7 @@ def init_db() -> None:
         conn,
         "replay_search_runs",
         {
+            "request_token": "TEXT NOT NULL DEFAULT ''",
             "status": "TEXT NOT NULL DEFAULT ''",
             "base_policy_json": "TEXT NOT NULL DEFAULT '{}'",
             "grid_json": "TEXT NOT NULL DEFAULT '{}'",
@@ -969,6 +971,7 @@ def init_db() -> None:
             "shadow_resolved_since_previous": "INTEGER NOT NULL DEFAULT 0",
         },
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_replay_search_runs_request_token ON replay_search_runs(request_token)")
     _ensure_table_columns(
         conn,
         "trader_cache",

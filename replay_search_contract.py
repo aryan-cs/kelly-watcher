@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -81,4 +82,17 @@ def validate_replay_search_score_weight_payload(
     if unknown_keys:
         joined_unknown_keys = ", ".join(unknown_keys)
         raise error_cls(f"Unknown replay-search score-weight key(s): {joined_unknown_keys}")
-    return normalized_payload
+    validated_payload: dict[str, float] = {}
+    for key, raw_value in normalized_payload.items():
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise error_cls(
+                f"Replay-search score weight {key} must be a finite non-negative number"
+            ) from exc
+        if not math.isfinite(value) or value < 0.0:
+            raise error_cls(
+                f"Replay-search score weight {key} must be a finite non-negative number"
+            )
+        validated_payload[key] = value
+    return validated_payload

@@ -659,6 +659,86 @@ class RuntimeFixesTest(unittest.TestCase):
             },
         )
 
+    def test_build_replay_search_command_includes_request_token_override(self) -> None:
+        with (
+            patch.object(main, "replay_search_label_prefix", return_value="scheduled"),
+            patch.object(main, "replay_search_top", return_value=10),
+            patch.object(main, "replay_search_max_combos", return_value=256),
+            patch.object(main, "replay_search_window_days", return_value=14),
+            patch.object(main, "replay_search_window_count", return_value=6),
+            patch.object(main, "replay_search_notes", return_value="nightly"),
+            patch.object(main, "replay_search_base_policy_file", return_value=""),
+            patch.object(main, "replay_search_grid_file", return_value=""),
+            patch.object(main, "replay_search_constraints_file", return_value=""),
+            patch.object(main, "replay_search_score_weights_file", return_value=""),
+            patch.object(main, "replay_search_base_policy", return_value={}),
+            patch.object(main, "replay_search_grid", return_value={"min_confidence": [0.62]}),
+            patch.object(main, "replay_search_constraints", return_value={}),
+            patch.object(main, "replay_search_score_weights", return_value={}),
+        ):
+            command = main._build_replay_search_command(request_token="req-123")
+
+        self.assertIn("--request-token", command)
+        self.assertIn("req-123", command)
+
+    def test_load_replay_search_run_after_scopes_to_request_token(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    before_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_runs (
+                                started_at, finished_at, request_token, label_prefix, status,
+                                base_policy_json, grid_json, constraints_json
+                            ) VALUES (?,?,?,?,?,?,?,?)
+                            """,
+                            (100, 110, "before", "scheduled", "completed", "{}", "{}", "{}"),
+                        ).lastrowid
+                        or 0
+                    )
+                    wanted_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_runs (
+                                started_at, finished_at, request_token, label_prefix, status,
+                                base_policy_json, grid_json, constraints_json
+                            ) VALUES (?,?,?,?,?,?,?,?)
+                            """,
+                            (120, 130, "req-123", "scheduled", "completed", "{}", "{}", "{}"),
+                        ).lastrowid
+                        or 0
+                    )
+                    other_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_runs (
+                                started_at, finished_at, request_token, label_prefix, status,
+                                base_policy_json, grid_json, constraints_json
+                            ) VALUES (?,?,?,?,?,?,?,?)
+                            """,
+                            (140, 150, "other", "manual", "completed", "{}", "{}", "{}"),
+                        ).lastrowid
+                        or 0
+                    )
+                    conn.commit()
+                    row = main._load_replay_search_run_after(before_id, request_token="req-123")
+                finally:
+                    conn.close()
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        assert row is not None
+        self.assertEqual(int(row["id"]), wanted_id)
+        self.assertNotEqual(int(row["id"]), other_id)
+
     def test_dashboard_spawn_shadow_restart_process_writes_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"
@@ -2552,6 +2632,21 @@ class RuntimeFixesTest(unittest.TestCase):
             patch.object(config, "_get_env_file_json_object", return_value={"not_a_real_penalty": 1}),
         ):
             with self.assertRaisesRegex(config.ConfigError, "Unknown replay-search score-weight key"):
+                config.replay_search_score_weights()
+
+    def test_replay_search_score_weights_reject_invalid_values_before_subprocess(self) -> None:
+        with (
+            patch.object(config, "_load_json_object_file", return_value={}),
+            patch.object(config, "_get_env_file_json_object", return_value={"drawdown_penalty": "abc"}),
+        ):
+            with self.assertRaisesRegex(config.ConfigError, "must be a finite non-negative number"):
+                config.replay_search_score_weights()
+
+        with (
+            patch.object(config, "_load_json_object_file", return_value={}),
+            patch.object(config, "_get_env_file_json_object", return_value={"drawdown_penalty": -1}),
+        ):
+            with self.assertRaisesRegex(config.ConfigError, "must be a finite non-negative number"):
                 config.replay_search_score_weights()
 
     def test_replay_auto_promote_defaults_true_without_explicit_env(self) -> None:

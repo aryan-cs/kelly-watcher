@@ -79,6 +79,8 @@ class ReplaySearchTest(unittest.TestCase):
             "max_accepting_window_accepted_size_share": 0.0,
             "max_top_two_accepting_window_accepted_share": 0.0,
             "max_top_two_accepting_window_accepted_size_share": 0.0,
+            "max_accepting_window_accepted_concentration_index": 0.0,
+            "max_accepting_window_accepted_size_concentration_index": 0.0,
             "min_trader_count": 0,
             "min_market_count": 0,
             "min_entry_price_band_count": 0,
@@ -117,6 +119,10 @@ class ReplaySearchTest(unittest.TestCase):
             "max_heuristic_top_two_accepting_window_accepted_size_share": 0.0,
             "max_xgboost_top_two_accepting_window_accepted_share": 0.0,
             "max_xgboost_top_two_accepting_window_accepted_size_share": 0.0,
+            "max_heuristic_accepting_window_accepted_concentration_index": 0.0,
+            "max_heuristic_accepting_window_accepted_size_concentration_index": 0.0,
+            "max_xgboost_accepting_window_accepted_concentration_index": 0.0,
+            "max_xgboost_accepting_window_accepted_size_concentration_index": 0.0,
         }
         values.update(overrides)
         return values
@@ -1881,10 +1887,32 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertAlmostEqual(result["top_two_accepting_window_accepted_share"], 8.0 / 12.0, places=6)
         self.assertAlmostEqual(result["top_two_accepting_window_accepted_size_share"], 8.0 / 12.0, places=6)
+        self.assertAlmostEqual(result["accepting_window_accepted_concentration_index"], 11.0 / 36.0, places=6)
+        self.assertAlmostEqual(result["accepting_window_accepted_size_concentration_index"], 11.0 / 36.0, places=6)
         self.assertAlmostEqual(result["signal_mode_summary"]["heuristic"]["top_two_accepting_window_accepted_share"], 0.75, places=6)
         self.assertAlmostEqual(result["signal_mode_summary"]["heuristic"]["top_two_accepting_window_accepted_size_share"], 0.75, places=6)
+        self.assertAlmostEqual(
+            result["signal_mode_summary"]["heuristic"]["accepting_window_accepted_concentration_index"],
+            11.0 / 32.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            result["signal_mode_summary"]["heuristic"]["accepting_window_accepted_size_concentration_index"],
+            11.0 / 32.0,
+            places=6,
+        )
         self.assertAlmostEqual(result["signal_mode_summary"]["xgboost"]["top_two_accepting_window_accepted_share"], 0.75, places=6)
         self.assertAlmostEqual(result["signal_mode_summary"]["xgboost"]["top_two_accepting_window_accepted_size_share"], 0.75, places=6)
+        self.assertAlmostEqual(
+            result["signal_mode_summary"]["xgboost"]["accepting_window_accepted_concentration_index"],
+            0.375,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            result["signal_mode_summary"]["xgboost"]["accepting_window_accepted_size_concentration_index"],
+            0.375,
+            places=6,
+        )
 
     def test_aggregate_window_results_tracks_non_accepting_active_window_streak(self) -> None:
         result = replay_search._aggregate_window_results(
@@ -4209,6 +4237,112 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(failures, ["top_two_accepting_window_accepted_size_share"])
+
+    def test_constraint_failures_reject_high_accepting_window_trade_concentration_index(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 12,
+                "resolved_count": 12,
+                "trade_count": 12,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "accepted_window_count": 4,
+                "accepting_window_accepted_concentration_index": 0.32,
+            },
+            **self._constraint_defaults(
+                max_accepting_window_accepted_concentration_index=0.3,
+            ),
+        )
+
+        self.assertEqual(failures, ["accepting_window_accepted_concentration_index"])
+
+    def test_constraint_failures_reject_high_accepting_window_size_concentration_index(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 12,
+                "accepted_size_usd": 240.0,
+                "resolved_count": 12,
+                "resolved_size_usd": 240.0,
+                "trade_count": 12,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "accepted_window_count": 4,
+                "accepting_window_accepted_size_concentration_index": 0.34,
+            },
+            **self._constraint_defaults(
+                max_accepting_window_accepted_size_concentration_index=0.3,
+            ),
+        )
+
+        self.assertEqual(failures, ["accepting_window_accepted_size_concentration_index"])
+
+    def test_constraint_failures_reject_high_mode_accepting_window_trade_concentration_index(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_window_count": 3,
+                        "accepting_window_accepted_concentration_index": 0.4,
+                    },
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "accepted_window_count": 3,
+                        "accepting_window_accepted_concentration_index": 0.3,
+                    },
+                },
+            },
+            **self._constraint_defaults(
+                max_heuristic_accepting_window_accepted_concentration_index=0.35,
+            ),
+        )
+
+        self.assertEqual(failures, ["heuristic_accepting_window_accepted_concentration_index"])
+
+    def test_constraint_failures_reject_high_mode_accepting_window_size_concentration_index(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "accepted_size_usd": 160.0,
+                "resolved_count": 8,
+                "resolved_size_usd": 160.0,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 80.0,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 80.0,
+                        "accepted_window_count": 3,
+                        "accepting_window_accepted_size_concentration_index": 0.42,
+                    },
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "accepted_size_usd": 80.0,
+                        "resolved_count": 4,
+                        "resolved_size_usd": 80.0,
+                        "accepted_window_count": 3,
+                        "accepting_window_accepted_size_concentration_index": 0.3,
+                    },
+                },
+            },
+            **self._constraint_defaults(
+                max_heuristic_accepting_window_accepted_size_concentration_index=0.35,
+            ),
+        )
+
+        self.assertEqual(failures, ["heuristic_accepting_window_accepted_size_concentration_index"])
 
     def test_constraint_failures_reject_low_mode_accepted_window_share(self) -> None:
         failures = replay_search._constraint_failures(
@@ -10821,6 +10955,70 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertAlmostEqual(rejected["result"]["top_two_accepting_window_accepted_share"], 8.0 / 9.0, places=6)
         self.assertIn("top2-acc 89%", stderr.getvalue())
         self.assertIn("reject top_two_accepting_window_accepted_share", stderr.getvalue())
+
+    def test_main_rejects_high_accepting_window_trade_concentration_index(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                accepted_count = 4 if start_ts == 1 else 2 if start_ts == 2_592_001 else 2
+                return {
+                    "run_id": 1 if start_ts == 1 else 2 if start_ts == 2_592_001 else 3,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "total_pnl_usd": 7.0 if start_ts == 1 else 4.0 if start_ts == 2_592_001 else 3.0,
+                    "max_drawdown_pct": 0.03,
+                    "accepted_count": accepted_count,
+                    "resolved_count": accepted_count,
+                    "rejected_count": 0,
+                    "unresolved_count": 0,
+                    "trade_count": accepted_count,
+                    "win_rate": 0.625,
+                }
+            accepted_count = 3 if start_ts == 1 else 3 if start_ts == 2_592_001 else 2
+            return {
+                "run_id": 10 if start_ts == 1 else 11 if start_ts == 2_592_001 else 12,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "total_pnl_usd": 6.0 if start_ts == 1 else 5.0 if start_ts == 2_592_001 else 3.0,
+                "max_drawdown_pct": 0.03,
+                "accepted_count": accepted_count,
+                "resolved_count": accepted_count,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": accepted_count,
+                "win_rate": 0.625,
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--window-days",
+            "30",
+            "--window-count",
+            "3",
+            "--max-accepting-window-accepted-concentration-index",
+            "0.36",
+        ]
+        with (
+            patch.object(replay_search, "_latest_trade_ts", return_value=7_776_000),
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.6)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.65)
+        self.assertEqual(rejected["constraint_failures"], ["accepting_window_accepted_concentration_index"])
+        self.assertEqual(payload["constraints"]["max_accepting_window_accepted_concentration_index"], 0.36)
+        self.assertAlmostEqual(rejected["result"]["accepting_window_accepted_concentration_index"], 0.375, places=6)
+        self.assertIn("acc-ci 38%", stderr.getvalue())
+        self.assertIn("reject accepting_window_accepted_concentration_index", stderr.getvalue())
 
     def test_main_rejects_high_non_accepting_active_window_streak(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):

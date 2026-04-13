@@ -717,6 +717,7 @@ def _simulate(
     _insert_replay_trades(conn, run_id, replay_rows)
     segment_metric_rows = _build_segment_metric_rows(replay_rows)
     signal_mode_summary = _segment_summary(segment_metric_rows, segment_kind="signal_mode")
+    trader_concentration = _trader_concentration(segment_metric_rows)
     _insert_segment_metrics(conn, run_id, segment_metric_rows)
     conn.commit()
 
@@ -738,6 +739,7 @@ def _simulate(
         "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
         "segment_leaders": _segment_leaders(segment_metric_rows),
         "signal_mode_summary": signal_mode_summary,
+        "trader_concentration": trader_concentration,
     }
 
 
@@ -1158,6 +1160,60 @@ def _segment_summary(rows: list[dict[str, Any]], *, segment_kind: str) -> dict[s
             "avg_return_pct": round(float(row["avg_return_pct"]), 6) if row.get("avg_return_pct") is not None else None,
         }
     return summary
+
+
+def _trader_concentration(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    trader_rows = [
+        row
+        for row in rows
+        if str(row.get("segment_kind") or "") == "trader_address"
+        and str(row.get("segment_value") or "")
+        and int(row.get("accepted_count") or 0) > 0
+    ]
+    if not trader_rows:
+        return {
+            "trader_count": 0,
+            "top_accepted_trader_address": "",
+            "top_accepted_count": 0,
+            "top_accepted_share": 0.0,
+            "top_accepted_total_pnl_usd": 0.0,
+            "top_abs_pnl_trader_address": "",
+            "top_abs_pnl_usd": 0.0,
+            "top_abs_pnl_share": 0.0,
+        }
+
+    total_accepted = sum(int(row.get("accepted_count") or 0) for row in trader_rows)
+    top_accepted_row = max(
+        trader_rows,
+        key=lambda row: (
+            int(row.get("accepted_count") or 0),
+            float(row.get("total_pnl_usd") or 0.0),
+            str(row.get("segment_value") or ""),
+        ),
+    )
+    total_abs_pnl_usd = sum(abs(float(row.get("total_pnl_usd") or 0.0)) for row in trader_rows)
+    top_abs_pnl_row = max(
+        trader_rows,
+        key=lambda row: (
+            abs(float(row.get("total_pnl_usd") or 0.0)),
+            int(row.get("accepted_count") or 0),
+            str(row.get("segment_value") or ""),
+        ),
+    )
+    top_abs_pnl_usd = abs(float(top_abs_pnl_row.get("total_pnl_usd") or 0.0))
+    return {
+        "trader_count": len(trader_rows),
+        "top_accepted_trader_address": str(top_accepted_row.get("segment_value") or ""),
+        "top_accepted_count": int(top_accepted_row.get("accepted_count") or 0),
+        "top_accepted_share": round(
+            float(int(top_accepted_row.get("accepted_count") or 0)) / float(total_accepted),
+            6,
+        ) if total_accepted > 0 else 0.0,
+        "top_accepted_total_pnl_usd": round(float(top_accepted_row.get("total_pnl_usd") or 0.0), 6),
+        "top_abs_pnl_trader_address": str(top_abs_pnl_row.get("segment_value") or ""),
+        "top_abs_pnl_usd": round(top_abs_pnl_usd, 6),
+        "top_abs_pnl_share": round(top_abs_pnl_usd / total_abs_pnl_usd, 6) if total_abs_pnl_usd > 0 else 0.0,
+    }
 
 
 def _ensure_replay_schema(conn: sqlite3.Connection) -> None:

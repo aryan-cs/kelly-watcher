@@ -187,6 +187,12 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(result["signal_mode_summary"]["heuristic"]["accepted_count"], 1)
                 self.assertEqual(result["signal_mode_summary"]["heuristic"]["win_count"], 1)
                 self.assertEqual(result["signal_mode_summary"]["xgboost"]["accepted_count"], 0)
+                self.assertEqual(result["trader_concentration"]["trader_count"], 1)
+                self.assertEqual(result["trader_concentration"]["top_accepted_trader_address"], "0xaaa")
+                self.assertEqual(result["trader_concentration"]["top_accepted_count"], 1)
+                self.assertEqual(result["trader_concentration"]["top_accepted_share"], 1.0)
+                self.assertEqual(result["trader_concentration"]["top_abs_pnl_trader_address"], "0xaaa")
+                self.assertEqual(result["trader_concentration"]["top_abs_pnl_share"], 1.0)
 
                 conn = sqlite3.connect(str(test_db_path))
                 conn.row_factory = sqlite3.Row
@@ -282,6 +288,109 @@ class ReplayTest(unittest.TestCase):
 
                 self.assertEqual(result["accepted_count"], 1)
                 self.assertAlmostEqual(result["final_bankroll_usd"], 1015.075, places=3)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_reports_trader_concentration(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="trader-a-1",
+                    market_id="market-a-1",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.70,
+                    price_at_signal=0.68,
+                    actual_entry_price=0.68,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=10.0,
+                    placed_at=1_700_010_000,
+                    resolved_at=1_700_010_100,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.85},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="trader-a-2",
+                    market_id="market-a-2",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.72,
+                    price_at_signal=0.69,
+                    actual_entry_price=0.69,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=8.0,
+                    placed_at=1_700_010_200,
+                    resolved_at=1_700_010_300,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.86},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="trader-b-1",
+                    market_id="market-b-1",
+                    trader_address="0xbbb",
+                    signal_mode="heuristic",
+                    confidence=0.74,
+                    price_at_signal=0.70,
+                    actual_entry_price=0.70,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=-30.0,
+                    placed_at=1_700_010_400,
+                    resolved_at=1_700_010_500,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.88},
+                        "min_confidence": 0.55,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                    label="trader-concentration",
+                )
+
+                self.assertEqual(result["accepted_count"], 3)
+                self.assertEqual(result["trader_concentration"]["trader_count"], 2)
+                self.assertEqual(result["trader_concentration"]["top_accepted_trader_address"], "0xaaa")
+                self.assertEqual(result["trader_concentration"]["top_accepted_count"], 2)
+                self.assertAlmostEqual(result["trader_concentration"]["top_accepted_share"], 2 / 3, places=6)
+                self.assertGreater(result["trader_concentration"]["top_accepted_total_pnl_usd"], 0.0)
+                self.assertEqual(result["trader_concentration"]["top_abs_pnl_trader_address"], "0xbbb")
+                self.assertGreater(result["trader_concentration"]["top_abs_pnl_usd"], abs(result["trader_concentration"]["top_accepted_total_pnl_usd"]))
+                self.assertGreater(result["trader_concentration"]["top_abs_pnl_share"], 0.5)
             finally:
                 db.DB_PATH = original_db_path
 

@@ -290,6 +290,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.'},
       {label: 'Deploy gap', text: 'Recommendation pieces not currently present in the persisted editable-config payload for the latest best feasible candidate. Older search rows may need a rerun after config-surface changes.'},
       {label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and scorer-path gates on the latest best feasible replay-search candidate.'},
+      {label: 'Wallet conc', text: 'Best and current replay-search dependence on a single wallet, shown as top accepted-share and top absolute-P&L share plus any active caps.'},
       {label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap or ranking penalty.'},
       {label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.'},
@@ -1596,6 +1597,75 @@ function replaySearchScoreDriftSummary(
   return parts.join(' | ')
 }
 
+interface ReplaySearchTraderConcentrationSummary {
+  summary: string
+  hasActiveGuard: boolean
+  overLimit: boolean
+}
+
+function replaySearchTraderConcentrationSummary(
+  bestRaw: string | null | undefined,
+  currentRaw: string | null | undefined,
+  constraintsRaw: string | null | undefined
+): ReplaySearchTraderConcentrationSummary {
+  const parse = (raw: string | null | undefined): {acceptedShare: number | null; absPnlShare: number | null} => {
+    if (!raw) return {acceptedShare: null, absPnlShare: null}
+    try {
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {acceptedShare: null, absPnlShare: null}
+      const concentration = (parsed as Record<string, unknown>).trader_concentration
+      if (!concentration || typeof concentration !== 'object' || Array.isArray(concentration)) {
+        return {acceptedShare: null, absPnlShare: null}
+      }
+      const payload = concentration as Record<string, unknown>
+      return {
+        acceptedShare: Number(payload.top_accepted_share || 0),
+        absPnlShare: Number(payload.top_abs_pnl_share || 0)
+      }
+    } catch {
+      return {acceptedShare: null, absPnlShare: null}
+    }
+  }
+
+  const best = parse(bestRaw)
+  const current = parse(currentRaw)
+  const limits = (() => {
+    if (!constraintsRaw) return {accepted: 0, pnl: 0}
+    try {
+      const parsed = JSON.parse(constraintsRaw)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {accepted: 0, pnl: 0}
+      return {
+        accepted: Number((parsed as Record<string, unknown>).max_top_trader_accepted_share || 0),
+        pnl: Number((parsed as Record<string, unknown>).max_top_trader_abs_pnl_share || 0)
+      }
+    } catch {
+      return {accepted: 0, pnl: 0}
+    }
+  })()
+  const hasActiveGuard = limits.accepted > 0 || limits.pnl > 0
+  if (best.acceptedShare == null && current.acceptedShare == null && !hasActiveGuard) {
+    return {summary: '-', hasActiveGuard: false, overLimit: false}
+  }
+  const parts: string[] = []
+  if (best.acceptedShare != null || best.absPnlShare != null) {
+    parts.push(`best n ${formatPct(best.acceptedShare, 0)} pnl ${formatPct(best.absPnlShare, 0)}`)
+  }
+  if (current.acceptedShare != null || current.absPnlShare != null) {
+    parts.push(`cur n ${formatPct(current.acceptedShare, 0)} pnl ${formatPct(current.absPnlShare, 0)}`)
+  }
+  if (limits.accepted > 0 || limits.pnl > 0) {
+    parts.push(`max n ${formatPct(limits.accepted, 0)} pnl ${formatPct(limits.pnl, 0)}`)
+  }
+  const overLimit =
+    (limits.accepted > 0 && ((best.acceptedShare ?? 0) > limits.accepted || (current.acceptedShare ?? 0) > limits.accepted))
+    || (limits.pnl > 0 && ((best.absPnlShare ?? 0) > limits.pnl || (current.absPnlShare ?? 0) > limits.pnl))
+  return {
+    summary: parts.join(' | ') || '-',
+    hasActiveGuard,
+    overLimit
+  }
+}
+
 function replaySearchPauseGuardSummary(
   bestRaw: string | null | undefined,
   currentRaw: string | null | undefined,
@@ -1802,6 +1872,10 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'positive windows'
         case 'pause_guard_reject_share':
           return 'pause share'
+        case 'top_trader_accepted_share':
+          return 'wallet n share'
+        case 'top_trader_abs_pnl_share':
+          return 'wallet pnl share'
         default:
           return failure.replaceAll('_', ' ')
       }
@@ -1898,6 +1972,9 @@ function replaySearchHeadroomSummary(
     const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
       ? resultParsed.reject_reason_summary as Record<string, unknown>
       : {}
+    const traderConcentration = resultParsed.trader_concentration && typeof resultParsed.trader_concentration === 'object' && !Array.isArray(resultParsed.trader_concentration)
+      ? resultParsed.trader_concentration as Record<string, unknown>
+      : {}
     const pauseGuardRejectShare = globalAccepted + Number(resultParsed.rejected_count || 0) > 0
       ? (
         Number(rejectReasonSummary.daily_loss_guard || 0)
@@ -1909,15 +1986,21 @@ function replaySearchHeadroomSummary(
     const minWinRate = Number(constraints.min_win_rate || 0)
     const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0)
     const maxPauseGuardRejectShare = Number(constraints.max_pause_guard_reject_share || 0)
+    const maxTopTraderAcceptedShare = Number(constraints.max_top_trader_accepted_share || 0)
+    const maxTopTraderAbsPnlShare = Number(constraints.max_top_trader_abs_pnl_share || 0)
     const minPositiveWindows = Number(constraints.min_positive_windows || 0)
     const minWorstWindowPnlUsd = Number(constraints.min_worst_window_pnl_usd ?? -1_000_000_000)
     const maxWorstWindowDrawdownPct = Number(constraints.max_worst_window_drawdown_pct || 0)
+    const topTraderAcceptedShare = Number(traderConcentration.top_accepted_share || 0)
+    const topTraderAbsPnlShare = Number(traderConcentration.top_abs_pnl_share || 0)
 
     if (minAccepted > 0) pushHeadroom('global', 'acc', globalAccepted, minAccepted, replayHeadroomCount, 'min')
     if (minResolved > 0) pushHeadroom('global', 'res', globalResolved, minResolved, replayHeadroomCount, 'min')
     if (minWinRate > 0 && globalWinRate != null) pushHeadroom('global', 'win', globalWinRate, minWinRate, replayHeadroomPctPoints, 'min')
     if (maxDrawdownPct > 0) pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max')
     if (maxPauseGuardRejectShare > 0) pushHeadroom('global', 'pause', pauseGuardRejectShare, maxPauseGuardRejectShare, replayHeadroomPctPoints, 'max')
+    if (maxTopTraderAcceptedShare > 0) pushHeadroom('global', 'wallet n', topTraderAcceptedShare, maxTopTraderAcceptedShare, replayHeadroomPctPoints, 'max')
+    if (maxTopTraderAbsPnlShare > 0) pushHeadroom('global', 'wallet pnl', topTraderAbsPnlShare, maxTopTraderAbsPnlShare, replayHeadroomPctPoints, 'max')
     if (minPositiveWindows > 0) pushHeadroom('global', 'pos', globalPositiveWindows, minPositiveWindows, replayHeadroomCount, 'min')
     if (minWorstWindowPnlUsd > -999_999_999) pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min')
     if (maxWorstWindowDrawdownPct > 0) {
@@ -2681,6 +2764,18 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       latestReplaySearch?.result_json
     ]
   )
+  const replaySearchTraderConcentration = useMemo(
+    () => replaySearchTraderConcentrationSummary(
+      latestReplaySearch?.result_json,
+      latestReplaySearch?.current_candidate_result_json,
+      latestReplaySearch?.constraints_json
+    ),
+    [
+      latestReplaySearch?.constraints_json,
+      latestReplaySearch?.current_candidate_result_json,
+      latestReplaySearch?.result_json
+    ]
+  )
   const replayLabStats = useMemo<CompactStatItem[]>(
     () => [
       {
@@ -2804,6 +2899,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         label: 'Seg gates',
         value: replaySearchSegmentGateSummary(latestReplaySearch?.policy_json),
         color: latestReplaySearch?.policy_json ? theme.white : theme.dim
+      },
+      {
+        label: 'Wallet conc',
+        value: replaySearchTraderConcentration.summary,
+        color: !latestReplaySearch
+          ? theme.dim
+          : replaySearchTraderConcentration.overLimit
+            ? theme.red
+            : replaySearchTraderConcentration.hasActiveGuard
+              ? theme.green
+              : theme.white
       },
       {
         label: 'Pause guard',
@@ -2955,6 +3061,7 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       replaySearchDeployGap,
       replaySearchBestHeadroom,
       replaySearchCurrentModeRisk,
+      replaySearchTraderConcentration,
       replaySearchSuggestedConfig,
       replayBestBand,
       replayBestHorizon,

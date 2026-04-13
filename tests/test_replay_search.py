@@ -559,6 +559,75 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["max_pause_guard_reject_share"], 0.2)
         self.assertIn("pause 10%", stderr.getvalue())
 
+    def test_main_can_limit_top_trader_concentration(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 66.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 10,
+                    "resolved_count": 10,
+                    "win_rate": 0.6,
+                    "trader_concentration": {
+                        "trader_count": 4,
+                        "top_accepted_trader_address": "0xbbb",
+                        "top_accepted_count": 4,
+                        "top_accepted_share": 0.40,
+                        "top_accepted_total_pnl_usd": 18.0,
+                        "top_abs_pnl_trader_address": "0xccc",
+                        "top_abs_pnl_usd": 30.0,
+                        "top_abs_pnl_share": 0.45,
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 74.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "win_rate": 0.6,
+                "trader_concentration": {
+                    "trader_count": 2,
+                    "top_accepted_trader_address": "0xaaa",
+                    "top_accepted_count": 7,
+                    "top_accepted_share": 0.70,
+                    "top_accepted_total_pnl_usd": 52.0,
+                    "top_abs_pnl_trader_address": "0xaaa",
+                    "top_abs_pnl_usd": 56.0,
+                    "top_abs_pnl_share": 0.80,
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--max-top-trader-accepted-share",
+            "0.60",
+            "--max-top-trader-abs-pnl-share",
+            "0.60",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["top_trader_accepted_share", "top_trader_abs_pnl_share"])
+        self.assertEqual(payload["constraints"]["max_top_trader_accepted_share"], 0.6)
+        self.assertEqual(payload["constraints"]["max_top_trader_abs_pnl_share"], 0.6)
+        self.assertIn("wallet n 40%", stderr.getvalue())
+        self.assertIn("wallet pnl 45%", stderr.getvalue())
+
     def test_main_can_penalize_pause_guard_reject_share_in_ranking(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -1016,6 +1085,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "unresolved_count": 0,
                     "trade_count": 4,
                     "win_rate": 0.80,
+                    "trader_concentration": {"trader_count": 1, "top_accepted_share": 1.0, "top_abs_pnl_share": 1.0},
                     "signal_mode_summary": {"xgboost": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 80.0, "win_count": 3}},
                 }
             if min_conf >= 0.60:
@@ -1029,6 +1099,7 @@ class ReplaySearchTest(unittest.TestCase):
                     "unresolved_count": 0,
                     "trade_count": 12,
                     "win_rate": 0.62,
+                    "trader_concentration": {"trader_count": 3, "top_accepted_share": 0.5, "top_abs_pnl_share": 0.5},
                     "signal_mode_summary": {"heuristic": {"accepted_count": 6, "resolved_count": 12, "trade_count": 12, "total_pnl_usd": 60.0, "win_count": 7}, "xgboost": {"accepted_count": 6, "resolved_count": 0, "trade_count": 0, "total_pnl_usd": 0.0, "win_count": 0}},
                 }
             return {
@@ -1041,6 +1112,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "unresolved_count": 0,
                 "trade_count": 12,
                 "win_rate": 0.62,
+                "trader_concentration": {"trader_count": 2, "top_accepted_share": 0.75, "top_abs_pnl_share": 0.75},
                 "signal_mode_summary": {"heuristic": {"accepted_count": 12, "resolved_count": 12, "trade_count": 12, "total_pnl_usd": 40.0, "win_count": 7}},
             }
 
@@ -1108,6 +1180,7 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(json.loads(run_row[11]), [])
             current_result_json = json.loads(run_row[12])
             self.assertEqual(current_result_json["signal_mode_summary"]["heuristic"]["accepted_count"], 12)
+            self.assertEqual(current_result_json["trader_concentration"]["top_accepted_share"], 0.75)
             self.assertEqual(current_result_json["score_breakdown"]["score_usd"], -110.0)
             self.assertEqual(
                 json.loads(run_row[13]),
@@ -1115,6 +1188,8 @@ class ReplaySearchTest(unittest.TestCase):
                     "max_drawdown_pct": 0.1,
                     "max_heuristic_accepted_share": 0.0,
                     "max_pause_guard_reject_share": 0.0,
+                    "max_top_trader_accepted_share": 0.0,
+                    "max_top_trader_abs_pnl_share": 0.0,
                     "max_worst_window_drawdown_pct": 0.0,
                     "min_accepted_count": 5,
                     "min_heuristic_accepted_count": 0,

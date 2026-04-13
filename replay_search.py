@@ -131,11 +131,7 @@ def _score_breakdown(
     pnl = float(result.get("total_pnl_usd") or 0.0)
     max_drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
     max_open_exposure_share = float(result.get("max_open_exposure_share") or 0.0)
-    max_window_end_open_exposure_share = float(
-        result.get("max_window_end_open_exposure_share")
-        or result.get("window_end_open_exposure_share")
-        or 0.0
-    )
+    max_window_end_open_exposure_share = _max_window_end_open_exposure_share(result)
     avg_window_end_open_exposure_share = _avg_window_end_open_exposure_share(result)
     carry_window_share = _carry_window_share(result)
     carry_restart_window_share = _carry_restart_window_share(result)
@@ -2621,6 +2617,10 @@ def _carry_window_share(result: dict[str, Any]) -> float:
     raw_share = result.get("carry_window_share")
     if raw_share is not None:
         return _clamp_fraction(float(raw_share))
+    window_count = int(result.get("window_count") or 0)
+    if window_count <= 1:
+        enriched = _with_window_activity_fields(result)
+        return 1.0 if float(enriched.get("window_end_open_exposure_usd") or 0.0) > 0 else 0.0
     carry_window_count = int(result.get("carry_window_count") or 0)
     active_window_count = _active_window_count(result)
     if active_window_count > 0:
@@ -2665,6 +2665,9 @@ def _avg_window_end_open_exposure_share(result: dict[str, Any]) -> float:
     raw_share = result.get("avg_window_end_open_exposure_share")
     if raw_share is not None:
         return _clamp_fraction(float(raw_share))
+    if int(result.get("window_count") or 0) <= 1:
+        enriched = _with_window_activity_fields(result)
+        return _clamp_fraction(float(enriched.get("window_end_open_exposure_share") or 0.0))
     return _clamp_fraction(
         float(
             result.get("max_window_end_open_exposure_share")
@@ -2674,10 +2677,25 @@ def _avg_window_end_open_exposure_share(result: dict[str, Any]) -> float:
     )
 
 
+def _max_window_end_open_exposure_share(result: dict[str, Any]) -> float:
+    raw_share = result.get("max_window_end_open_exposure_share")
+    if raw_share is not None:
+        return _clamp_fraction(float(raw_share))
+    raw_window_share = result.get("window_end_open_exposure_share")
+    if raw_window_share is not None:
+        return _clamp_fraction(float(raw_window_share))
+    if int(result.get("window_count") or 0) <= 1:
+        enriched = _with_window_activity_fields(result)
+        return _clamp_fraction(float(enriched.get("window_end_open_exposure_share") or 0.0))
+    return 0.0
+
+
 def _live_guard_window_share(result: dict[str, Any]) -> float:
     raw_share = result.get("live_guard_window_share")
     if raw_share is not None:
         return _clamp_fraction(float(raw_share))
+    if int(result.get("window_count") or 0) <= 1:
+        return 1.0 if int(result.get("window_end_live_guard_triggered") or 0) > 0 else 0.0
     live_guard_window_count = int(result.get("live_guard_window_count") or 0)
     active_window_count = _active_window_count(result)
     if active_window_count > 0:
@@ -2689,6 +2707,8 @@ def _daily_guard_window_share(result: dict[str, Any]) -> float:
     raw_share = result.get("daily_guard_window_share")
     if raw_share is not None:
         return _clamp_fraction(float(raw_share))
+    if int(result.get("window_count") or 0) <= 1:
+        return 1.0 if int(result.get("window_end_daily_guard_triggered") or 0) > 0 else 0.0
     daily_guard_window_count = int(result.get("daily_guard_window_count") or 0)
     active_window_count = _active_window_count(result)
     if active_window_count > 0:
@@ -2861,11 +2881,7 @@ def _constraint_failures(
     total_pnl_usd = float(result.get("total_pnl_usd") or 0.0)
     drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
     open_exposure_share = float(result.get("max_open_exposure_share") or 0.0)
-    window_end_open_exposure_share = float(
-        result.get("max_window_end_open_exposure_share")
-        or result.get("window_end_open_exposure_share")
-        or 0.0
-    )
+    window_end_open_exposure_share = _max_window_end_open_exposure_share(result)
     avg_window_end_open_exposure_share = _avg_window_end_open_exposure_share(result)
     carry_window_share = _carry_window_share(result)
     carry_restart_window_share = _carry_restart_window_share(result)

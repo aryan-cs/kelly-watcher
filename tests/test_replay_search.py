@@ -1319,6 +1319,28 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(peak_equity, 105.0)
         self.assertEqual(min_equity, 100.0)
 
+    def test_single_window_share_helpers_use_exact_end_state_fallbacks(self) -> None:
+        result = {
+            "window_count": 1,
+            "initial_bankroll_usd": 100.0,
+            "total_pnl_usd": 5.0,
+            "final_bankroll_usd": 90.0,
+            "accepted_count": 2,
+            "resolved_count": 2,
+            "trade_count": 2,
+            "window_end_live_guard_triggered": 1,
+            "window_end_daily_guard_triggered": 1,
+        }
+
+        self.assertAlmostEqual(
+            replay_search._avg_window_end_open_exposure_share(result),
+            15.0 / 105.0,
+            places=6,
+        )
+        self.assertEqual(replay_search._carry_window_share(result), 1.0)
+        self.assertEqual(replay_search._live_guard_window_share(result), 1.0)
+        self.assertEqual(replay_search._daily_guard_window_share(result), 1.0)
+
     def test_aggregate_window_results_tracks_max_window_end_open_exposure_share(self) -> None:
         result = replay_search._aggregate_window_results(
             [
@@ -6619,6 +6641,105 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(failures, ["avg_window_end_open_exposure_share"])
+
+    def test_constraint_failures_use_single_window_end_state_share_fallbacks(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "window_count": 1,
+                "initial_bankroll_usd": 100.0,
+                "total_pnl_usd": 5.0,
+                "final_bankroll_usd": 90.0,
+                "accepted_count": 2,
+                "resolved_count": 2,
+                "trade_count": 2,
+                "rejected_count": 0,
+                "window_end_live_guard_triggered": 1,
+                "window_end_daily_guard_triggered": 1,
+            },
+            allow_heuristic=True,
+            allow_xgboost=True,
+            min_accepted_count=0,
+            min_resolved_count=0,
+            min_resolved_share=0.0,
+            min_resolved_size_share=0.0,
+            min_win_rate=0.0,
+            min_total_pnl_usd=-1_000_000_000.0,
+            max_drawdown_pct=0.0,
+            max_open_exposure_share=0.0,
+            min_worst_window_pnl_usd=-1_000_000_000.0,
+            min_worst_window_resolved_share=0.0,
+            min_worst_window_resolved_size_share=0.0,
+            max_worst_window_drawdown_pct=0.0,
+            min_heuristic_accepted_count=0,
+            min_xgboost_accepted_count=0,
+            min_heuristic_resolved_count=0,
+            min_xgboost_resolved_count=0,
+            min_heuristic_win_rate=0.0,
+            min_xgboost_win_rate=0.0,
+            min_heuristic_resolved_share=0.0,
+            min_xgboost_resolved_share=0.0,
+            min_heuristic_resolved_size_share=0.0,
+            min_xgboost_resolved_size_share=0.0,
+            min_heuristic_pnl_usd=0.0,
+            min_xgboost_pnl_usd=0.0,
+            min_heuristic_worst_window_pnl_usd=-1_000_000_000.0,
+            min_xgboost_worst_window_pnl_usd=-1_000_000_000.0,
+            min_heuristic_worst_window_resolved_share=0.0,
+            min_xgboost_worst_window_resolved_share=0.0,
+            min_heuristic_worst_window_resolved_size_share=0.0,
+            min_xgboost_worst_window_resolved_size_share=0.0,
+            min_heuristic_positive_window_count=0,
+            min_xgboost_positive_window_count=0,
+            min_heuristic_worst_active_window_accepted_count=0,
+            min_heuristic_worst_active_window_accepted_size_usd=0.0,
+            min_xgboost_worst_active_window_accepted_count=0,
+            min_xgboost_worst_active_window_accepted_size_usd=0.0,
+            max_heuristic_inactive_window_count=-1,
+            max_xgboost_inactive_window_count=-1,
+            max_heuristic_accepted_share=0.0,
+            max_heuristic_accepted_size_share=0.0,
+            max_heuristic_active_window_accepted_share=0.0,
+            max_heuristic_active_window_accepted_size_share=0.0,
+            min_xgboost_accepted_share=0.0,
+            min_xgboost_accepted_size_share=0.0,
+            min_xgboost_active_window_accepted_share=0.0,
+            min_xgboost_active_window_accepted_size_share=0.0,
+            max_pause_guard_reject_share=0.0,
+            max_daily_guard_window_share=0.5,
+            max_live_guard_window_share=0.5,
+            min_active_window_count=0,
+            max_inactive_window_count=-1,
+            min_trader_count=0,
+            min_market_count=0,
+            min_entry_price_band_count=0,
+            min_time_to_close_band_count=0,
+            max_top_trader_accepted_share=0.0,
+            max_top_trader_abs_pnl_share=0.0,
+            max_top_trader_size_share=0.0,
+            max_top_market_accepted_share=0.0,
+            max_top_market_abs_pnl_share=0.0,
+            max_top_market_size_share=0.0,
+            max_top_entry_price_band_accepted_share=0.0,
+            max_top_entry_price_band_abs_pnl_share=0.0,
+            max_top_entry_price_band_size_share=0.0,
+            max_top_time_to_close_band_accepted_share=0.0,
+            max_top_time_to_close_band_abs_pnl_share=0.0,
+            max_top_time_to_close_band_size_share=0.0,
+            max_window_end_open_exposure_share=0.1,
+            max_avg_window_end_open_exposure_share=0.1,
+            max_carry_window_share=0.5,
+        )
+
+        self.assertEqual(
+            failures,
+            [
+                "max_window_end_open_exposure_share",
+                "avg_window_end_open_exposure_share",
+                "carry_window_share",
+                "daily_guard_window_share",
+                "live_guard_window_share",
+            ],
+        )
 
     def test_constraint_failures_reject_carry_window_share(self) -> None:
         failures = replay_search._constraint_failures(

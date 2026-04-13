@@ -2597,12 +2597,14 @@ function replaySearchCarryRestartWindowShareFromPayload(payload) {
     return Number(payload.carry_restart_window_count || 0) / opportunityCount;
 }
 function replaySearchDailyGuardWindowShareFromPayload(payload) {
-    if (payload.daily_guard_window_share != null)
-        return Number(payload.daily_guard_window_share || 0);
-    const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload);
-    if (activeWindowCount <= 0)
-        return 0;
-    return Number(payload.daily_guard_window_count || 0) / activeWindowCount;
+  if (payload.daily_guard_window_share != null)
+    return Number(payload.daily_guard_window_share || 0);
+  if (Number(payload.window_count || 0) <= 1)
+    return Number(payload.window_end_daily_guard_triggered || 0) > 0 ? 1 : 0;
+  const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload);
+  if (activeWindowCount <= 0)
+    return 0;
+  return Number(payload.daily_guard_window_count || 0) / activeWindowCount;
 }
 function replaySearchDailyGuardRestartWindowShareFromPayload(payload) {
     if (payload.daily_guard_restart_window_share != null)
@@ -2630,6 +2632,8 @@ function replaySearchAvgWindowEndOpenExposureShareFromPayload(payload) {
 function replaySearchLiveGuardWindowShareFromPayload(payload) {
   if (payload.live_guard_window_share != null)
     return Number(payload.live_guard_window_share || 0);
+  if (Number(payload.window_count || 0) <= 1)
+    return Number(payload.window_end_live_guard_triggered || 0) > 0 ? 1 : 0;
   const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload);
   if (activeWindowCount <= 0)
     return 0;

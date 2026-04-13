@@ -2381,6 +2381,9 @@ function replaySearchCarryRestartWindowShareFromPayload(payload: Record<string, 
 
 function replaySearchDailyGuardWindowShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.daily_guard_window_share != null) return Number(payload.daily_guard_window_share || 0)
+  if (Number(payload.window_count || 0) <= 1) {
+    return Number(payload.window_end_daily_guard_triggered || 0) > 0 ? 1 : 0
+  }
   const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload)
   if (activeWindowCount <= 0) return 0
   return Number(payload.daily_guard_window_count || 0) / activeWindowCount
@@ -2407,6 +2410,9 @@ function replaySearchAvgWindowEndOpenExposureShareFromPayload(payload: Record<st
 
 function replaySearchLiveGuardWindowShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.live_guard_window_share != null) return Number(payload.live_guard_window_share || 0)
+  if (Number(payload.window_count || 0) <= 1) {
+    return Number(payload.window_end_live_guard_triggered || 0) > 0 ? 1 : 0
+  }
   const activeWindowCount = replaySearchActiveWindowCountFromPayload(payload)
   if (activeWindowCount <= 0) return 0
   return Number(payload.live_guard_window_count || 0) / activeWindowCount

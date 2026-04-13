@@ -1395,6 +1395,8 @@ function replaySearchScoreBreakdownSummary(raw) {
         const windowStddevPenaltyUsd = Number(breakdown.window_stddev_penalty_usd || 0);
         const worstWindowPenaltyUsd = Number(breakdown.worst_window_penalty_usd || 0);
         const pauseGuardPenaltyUsd = Number(breakdown.pause_guard_penalty_usd || 0);
+        const walletConcentrationPenaltyUsd = Number(breakdown.wallet_concentration_penalty_usd || 0);
+        const marketConcentrationPenaltyUsd = Number(breakdown.market_concentration_penalty_usd || 0);
         const parts = [
             `${formatNumber(scoreUsd, 2)} = ${formatDollar(pnlUsd)}`,
             `dd ${formatDollar(-drawdownPenaltyUsd)}`
@@ -1405,6 +1407,10 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`worst ${formatDollar(-worstWindowPenaltyUsd)}`);
         if (Math.abs(pauseGuardPenaltyUsd) > 1e-9)
             parts.push(`pause ${formatDollar(-pauseGuardPenaltyUsd)}`);
+        if (Math.abs(walletConcentrationPenaltyUsd) > 1e-9)
+            parts.push(`wallet ${formatDollar(-walletConcentrationPenaltyUsd)}`);
+        if (Math.abs(marketConcentrationPenaltyUsd) > 1e-9)
+            parts.push(`market ${formatDollar(-marketConcentrationPenaltyUsd)}`);
         return parts.join(' | ');
     }
     catch {
@@ -1429,7 +1435,9 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 drawdown_penalty_usd: Number(breakdown.drawdown_penalty_usd || 0),
                 window_stddev_penalty_usd: Number(breakdown.window_stddev_penalty_usd || 0),
                 worst_window_penalty_usd: Number(breakdown.worst_window_penalty_usd || 0),
-                pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0)
+                pause_guard_penalty_usd: Number(breakdown.pause_guard_penalty_usd || 0),
+                wallet_concentration_penalty_usd: Number(breakdown.wallet_concentration_penalty_usd || 0),
+                market_concentration_penalty_usd: Number(breakdown.market_concentration_penalty_usd || 0)
             };
         }
         catch {
@@ -1446,6 +1454,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const stddevDelta = current.window_stddev_penalty_usd - best.window_stddev_penalty_usd;
     const worstDelta = current.worst_window_penalty_usd - best.worst_window_penalty_usd;
     const pauseDelta = current.pause_guard_penalty_usd - best.pause_guard_penalty_usd;
+    const walletDelta = current.wallet_concentration_penalty_usd - best.wallet_concentration_penalty_usd;
+    const marketDelta = current.market_concentration_penalty_usd - best.market_concentration_penalty_usd;
     const parts = [
         `${formatDollar(scoreDelta)} = pnl ${formatDollar(pnlDelta)}`,
         `dd ${formatDollar(drawdownDelta)}`
@@ -1456,6 +1466,10 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`worst ${formatDollar(worstDelta)}`);
     if (Math.abs(pauseDelta) > 1e-9)
         parts.push(`pause ${formatDollar(pauseDelta)}`);
+    if (Math.abs(walletDelta) > 1e-9)
+        parts.push(`wallet ${formatDollar(walletDelta)}`);
+    if (Math.abs(marketDelta) > 1e-9)
+        parts.push(`market ${formatDollar(marketDelta)}`);
     return parts.join(' | ');
 }
 function replaySearchTraderConcentrationSummary(bestRaw, currentRaw, constraintsRaw) {

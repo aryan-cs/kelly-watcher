@@ -142,7 +142,11 @@ def _score_breakdown(
     live_guard_restart_window_share = _live_guard_restart_window_share(result)
     window_pnl_stddev_usd = float(result.get("window_pnl_stddev_usd") or 0.0)
     worst_window_pnl_usd = _global_worst_window_pnl(result)
-    worst_window_loss_usd = max(-worst_window_pnl_usd, 0.0)
+    worst_window_loss_usd = (
+        initial_bankroll_usd
+        if worst_window_penalty > 0 and not _has_proven_worst_window_pnl(result)
+        else max(-worst_window_pnl_usd, 0.0)
+    )
     pause_guard_reject_share = _pause_guard_reject_share(result)
     accepted_count = int(result.get("accepted_count") or 0)
     resolved_count = int(result.get("resolved_count") or 0)
@@ -1047,7 +1051,12 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if raw_worst_window_pnl_usd is not None
             else _legacy_worst_window_pnl_fallback(raw_total_pnl_usd, result_window_count)
         )
-        has_proven_worst_window_pnl = raw_worst_window_pnl_usd is not None or result_window_count <= 1
+        raw_has_proven_worst_window_pnl = raw_values.get("has_proven_worst_window_pnl")
+        has_proven_worst_window_pnl = (
+            bool(raw_has_proven_worst_window_pnl)
+            if raw_has_proven_worst_window_pnl is not None
+            else raw_worst_window_pnl_usd is not None or result_window_count <= 1
+        )
         resolved_best_window_pnl_usd = (
             float(raw_best_window_pnl_usd)
             if raw_best_window_pnl_usd is not None
@@ -3471,6 +3480,11 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             worst_accepting_window_accepted_count = _global_worst_active_window_accepted_count(row["result"])
             worst_accepting_window_accepted_size_usd = _global_worst_active_window_accepted_size_usd(row["result"])
             worst_window_pnl_usd = _global_worst_window_pnl(row["result"])
+            worst_window_summary = (
+                f"worst {worst_window_pnl_usd:+.2f}"
+                if _has_proven_worst_window_pnl(row["result"])
+                else "worst unproven"
+            )
             carry_summary = (
                 f"{carry_window_count}/{active_window_count}"
                 if active_window_count > 0
@@ -3498,7 +3512,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
                 f" carry-avg {avg_window_end_open_exposure_share * 100:.0f}%"
                 f" worst-acc {worst_accepting_window_accepted_count}"
                 f" worst-acc$ {worst_accepting_window_accepted_size_usd:.2f}"
-                f" | worst {worst_window_pnl_usd:+.2f}"
+                f" | {worst_window_summary}"
             )
         elif carry_window_count > 0 or avg_window_end_open_exposure_share > 0:
             carry_suffix = f" | carry yes carry-avg {avg_window_end_open_exposure_share * 100:.0f}%"

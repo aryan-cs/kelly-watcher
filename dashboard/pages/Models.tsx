@@ -2154,6 +2154,21 @@ function replaySearchWorstWindowPnlFromSummaryRow(row: ReplaySearchSummaryRow | 
   return Math.min(Number(row.total_pnl_usd || 0), 0)
 }
 
+function replaySearchHasProvenWorstWindowPnlFromSummaryRow(row: ReplaySearchSummaryRow | null | undefined): boolean {
+  if (!row) return false
+  if (row.result_json) {
+    try {
+      const parsed = JSON.parse(row.result_json)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return replaySearchHasProvenWorstWindowPnlFromPayload(parsed as Record<string, unknown>)
+      }
+    } catch {
+      // Fall through to the summary row value below.
+    }
+  }
+  return row.worst_window_pnl_usd != null
+}
+
 function replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload: Record<string, unknown>): number {
   if (payload.max_non_accepting_active_window_streak != null) {
     return Math.max(Number(payload.max_non_accepting_active_window_streak || 0), 0)
@@ -4469,7 +4484,9 @@ function replaySearchWindowSummary(latestSearch: ReplaySearchSummaryRow | null |
   if (!latestSearch) return '-'
   const positive = formatCount(latestSearch.positive_window_count)
   const negative = formatCount(latestSearch.negative_window_count)
-  const worst = formatDollar(replaySearchWorstWindowPnlFromSummaryRow(latestSearch))
+  const worst = replaySearchHasProvenWorstWindowPnlFromSummaryRow(latestSearch)
+    ? formatDollar(replaySearchWorstWindowPnlFromSummaryRow(latestSearch))
+    : 'worst unproven'
   if (!latestSearch.result_json) return `${positive}+ / ${negative}- | ${worst}`
   try {
     const parsed = JSON.parse(latestSearch.result_json)
@@ -5385,7 +5402,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       {
         label: 'Search windows',
         value: replaySearchWindowSummary(latestReplaySearch),
-        color: dollarColor(replaySearchWorstWindowPnlFromSummaryRow(latestReplaySearch))
+        color: replaySearchHasProvenWorstWindowPnlFromSummaryRow(latestReplaySearch)
+          ? dollarColor(replaySearchWorstWindowPnlFromSummaryRow(latestReplaySearch))
+          : undefined
       },
       {
         label: 'Cfg drift',

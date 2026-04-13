@@ -2395,6 +2395,19 @@ function replaySearchWorstWindowPnlFromSummaryRow(row) {
     return Number(row.worst_window_pnl_usd || 0);
   return Math.min(Number(row.total_pnl_usd || 0), 0);
 }
+function replaySearchHasProvenWorstWindowPnlFromSummaryRow(row) {
+  if (!row)
+    return false;
+  if (row.result_json) {
+    try {
+      const parsed = JSON.parse(row.result_json);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+        return replaySearchHasProvenWorstWindowPnlFromPayload(parsed);
+    } catch {
+    }
+  }
+  return row.worst_window_pnl_usd != null;
+}
 function replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload) {
   if (payload.max_non_accepting_active_window_streak != null)
     return Math.max(Number(payload.max_non_accepting_active_window_streak || 0), 0);
@@ -4292,7 +4305,9 @@ function replaySearchWindowSummary(latestSearch) {
         return '-';
     const positive = formatCount(latestSearch.positive_window_count);
     const negative = formatCount(latestSearch.negative_window_count);
-    const worst = formatDollar(replaySearchWorstWindowPnlFromSummaryRow(latestSearch));
+    const worst = replaySearchHasProvenWorstWindowPnlFromSummaryRow(latestSearch)
+        ? formatDollar(replaySearchWorstWindowPnlFromSummaryRow(latestSearch))
+        : 'worst unproven';
     if (!latestSearch.result_json)
         return `${positive}+ / ${negative}- | ${worst}`;
     try {
@@ -4955,7 +4970,9 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         {
             label: 'Search windows',
             value: replaySearchWindowSummary(latestReplaySearch),
-            color: dollarColor(replaySearchWorstWindowPnlFromSummaryRow(latestReplaySearch))
+            color: replaySearchHasProvenWorstWindowPnlFromSummaryRow(latestReplaySearch)
+                ? dollarColor(replaySearchWorstWindowPnlFromSummaryRow(latestReplaySearch))
+                : void 0
         },
         {
             label: 'Cfg drift',

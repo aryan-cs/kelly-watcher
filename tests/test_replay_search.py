@@ -2994,7 +2994,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["window_inactivity_penalty_usd"], 150.0)
         self.assertEqual(breakdown["score_usd"], -130.0)
 
-    def test_score_breakdown_fails_closed_on_legacy_multi_window_worst_window_penalty(self) -> None:
+    def test_score_breakdown_penalizes_unproven_legacy_multi_window_worst_window_risk(self) -> None:
         breakdown = replay_search._score_breakdown(
             {
                 "total_pnl_usd": 20.0,
@@ -3020,10 +3020,10 @@ class ReplaySearchTest(unittest.TestCase):
             market_concentration_penalty=0.0,
         )
 
-        self.assertEqual(breakdown["worst_window_penalty_usd"], 0.0)
-        self.assertEqual(breakdown["score_usd"], 20.0)
+        self.assertEqual(breakdown["worst_window_penalty_usd"], 6000.0)
+        self.assertEqual(breakdown["score_usd"], -5980.0)
 
-    def test_score_breakdown_fails_closed_on_legacy_multi_window_negative_worst_window_penalty(self) -> None:
+    def test_score_breakdown_penalizes_unproven_legacy_multi_window_negative_worst_window_risk(self) -> None:
         breakdown = replay_search._score_breakdown(
             {
                 "total_pnl_usd": -12.0,
@@ -3049,8 +3049,8 @@ class ReplaySearchTest(unittest.TestCase):
             market_concentration_penalty=0.0,
         )
 
-        self.assertEqual(breakdown["worst_window_penalty_usd"], 24.0)
-        self.assertEqual(breakdown["score_usd"], -36.0)
+        self.assertEqual(breakdown["worst_window_penalty_usd"], 6000.0)
+        self.assertEqual(breakdown["score_usd"], -6012.0)
 
     def test_score_breakdown_penalizes_low_accepted_window_share(self) -> None:
         breakdown = replay_search._score_breakdown(
@@ -5392,6 +5392,33 @@ class ReplaySearchTest(unittest.TestCase):
             },
             **self._constraint_defaults(
                 min_xgboost_pnl_usd=-10.0,
+                min_xgboost_worst_window_pnl_usd=-10.0,
+            ),
+        )
+
+        self.assertEqual(failures, ["xgboost_worst_window_pnl_usd"])
+
+    def test_constraint_failures_fail_closed_on_explicitly_unproven_mode_worst_window_pnl(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                        "worst_window_pnl_usd": 0.0,
+                        "has_proven_worst_window_pnl": False,
+                    },
+                },
+            },
+            **self._constraint_defaults(
                 min_xgboost_worst_window_pnl_usd=-10.0,
             ),
         )

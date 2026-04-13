@@ -162,6 +162,7 @@ logger = logging.getLogger(__name__)
 _emit_count = 0
 _event_lock = threading.Lock()
 WATCHED_WALLETS = watched_wallets()
+_MANUAL_REQUEST_RETRY_BACKOFF_SECONDS = 30
 _HEURISTIC_CONF_RE = re.compile(r"heuristic conf ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
 _MODEL_EDGE_RE = re.compile(r"model edge (-?[0-9.]+) < threshold ([0-9.]+)", re.IGNORECASE)
 _MAX_SIZE_RE = re.compile(r"max size \$([0-9.]+) < min \$([0-9.]+)", re.IGNORECASE)
@@ -608,6 +609,25 @@ def _write_bot_state(*, replace: bool = False, **extra) -> None:
     BOT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+def _write_atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _record_manual_request_pickup_failure(path: Path, payload: dict[str, Any], exc: Exception) -> None:
+    updated_payload = dict(payload)
+    updated_payload["pickup_failed_at"] = int(time.time())
+    updated_payload["pickup_error"] = str(exc).strip() or exc.__class__.__name__
+    updated_payload["pickup_failure_count"] = int(updated_payload.get("pickup_failure_count") or 0) + 1
+    updated_payload["next_retry_at"] = int(time.time()) + _MANUAL_REQUEST_RETRY_BACKOFF_SECONDS
+    try:
+        _write_atomic_json(path, updated_payload)
+    except OSError:
+        logger.warning("Failed to persist manual request pickup failure metadata for %s", path.name, exc_info=True)
+
+
 def _persist_startup_failure_state(
     *,
     detail: str,
@@ -1047,6 +1067,9 @@ def _consume_manual_retrain_request(run_retrain_job) -> bool:
     source = str(payload.get("source") or "unknown").strip().lower() or "unknown"
     request_id = str(payload.get("request_id") or "").strip()
     now_ts = int(time.time())
+    next_retry_at = int(payload.get("next_retry_at") or 0)
+    if next_retry_at > now_ts:
+        return False
     if requested_at > 0 and (now_ts - requested_at) > 900:
         logger.info(
             "Ignoring stale manual retrain request from %s (age=%ss, request_id=%s)",
@@ -1065,7 +1088,11 @@ def _consume_manual_retrain_request(run_retrain_job) -> bool:
         source,
         request_id or "-",
     )
-    run_retrain_job(f"manual_{source}")
+    try:
+        run_retrain_job(f"manual_{source}")
+    except Exception as exc:
+        _record_manual_request_pickup_failure(MANUAL_RETRAIN_REQUEST_FILE, payload, exc)
+        raise
     try:
         MANUAL_RETRAIN_REQUEST_FILE.unlink()
     except FileNotFoundError:
@@ -1089,6 +1116,9 @@ def _consume_manual_trade_request(handle_request) -> bool:
         return False
 
     now_ts = int(time.time())
+    next_retry_at = int(payload.get("next_retry_at") or 0)
+    if next_retry_at > now_ts:
+        return False
     if request.requested_at > 0 and (now_ts - request.requested_at) > 900:
         logger.info(
             "Ignoring stale manual trade request from %s (action=%s age=%ss request_id=%s)",
@@ -1110,12 +1140,32 @@ def _consume_manual_trade_request(handle_request) -> bool:
         request.market_id[:12],
         request.request_id or "-",
     )
-    handle_request(request)
+    try:
+        handle_request(request)
+    except Exception as exc:
+        _record_manual_request_pickup_failure(MANUAL_TRADE_REQUEST_FILE, payload, exc)
+        raise
     try:
         MANUAL_TRADE_REQUEST_FILE.unlink()
     except FileNotFoundError:
         pass
     return True
+
+
+def _service_manual_retrain_request(run_retrain_job) -> bool:
+    try:
+        return _consume_manual_retrain_request(run_retrain_job)
+    except Exception as exc:
+        logger.error("Manual retrain request pickup failed: %s", exc, exc_info=True)
+        return False
+
+
+def _service_manual_trade_request(handle_request) -> bool:
+    try:
+        return _consume_manual_trade_request(handle_request)
+    except Exception as exc:
+        logger.error("Manual trade request pickup failed: %s", exc, exc_info=True)
+        return False
 
 
 def _parse_shadow_reset_request_payload(payload: dict) -> ShadowResetRequest:
@@ -4747,8 +4797,8 @@ def main() -> None:
                 shadow_restart_message=f"Shadow restart in progress ({request.wallet_mode}). Waiting for backend to restart.",
             )
             raise ShadowResetRequested(request)
-        _consume_manual_retrain_request(_run_retrain_job)
-        _consume_manual_trade_request(
+        _service_manual_retrain_request(_run_retrain_job)
+        _service_manual_trade_request(
             lambda request: _process_manual_trade_request(
                 request,
                 tracker=tracker,

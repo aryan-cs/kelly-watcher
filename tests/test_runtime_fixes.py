@@ -1231,6 +1231,35 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["manual_retrain_message"], "requested by dashboard_api")
         self.assertEqual(snapshot["session_id"], "abc123")
 
+    def test_dashboard_bot_state_snapshot_surfaces_manual_retrain_pickup_failure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            requested_at = int(time.time())
+            bot_state_file.write_text(
+                json.dumps({"session_id": "abc123", "started_at": 100, "manual_retrain_pending": False}),
+                encoding="utf-8",
+            )
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "requested_at": requested_at,
+                        "source": "dashboard_api",
+                        "pickup_error": "retrain start exploded",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertIn("pickup failed", snapshot["manual_retrain_message"])
+        self.assertIn("retrain start exploded", snapshot["manual_retrain_message"])
+
     def test_dashboard_bot_state_snapshot_clears_stale_persisted_manual_retrain_state(self) -> None:
         with TemporaryDirectory() as tmpdir:
             bot_state_file = Path(tmpdir) / "bot_state.json"
@@ -1321,6 +1350,35 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["manual_trade_requested_at"], requested_at)
         self.assertEqual(snapshot["manual_trade_message"], "buy more market-1")
         self.assertEqual(snapshot["session_id"], "abc123")
+
+    def test_dashboard_bot_state_snapshot_surfaces_manual_trade_pickup_failure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            requested_at = int(time.time())
+            bot_state_file.write_text(
+                json.dumps({"session_id": "abc123", "started_at": 100, "manual_trade_pending": False}),
+                encoding="utf-8",
+            )
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "requested_at": requested_at,
+                        "pickup_error": "manual trade start exploded",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertIn("pickup failed", snapshot["manual_trade_message"])
+        self.assertIn("manual trade start exploded", snapshot["manual_trade_message"])
 
     def test_dashboard_bot_state_snapshot_clears_stale_persisted_manual_trade_state(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -1711,6 +1769,57 @@ class RuntimeFixesTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "retrain start exploded"):
                     main._consume_manual_retrain_request(run_retrain_job)
                 self.assertTrue(request_file.exists())
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["pickup_error"], "retrain start exploded")
+        self.assertEqual(payload["pickup_failure_count"], 1)
+        self.assertGreater(int(payload["next_retry_at"]), int(time.time()))
+
+    def test_consume_manual_retrain_request_respects_retry_backoff_after_failed_pickup(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "source": "dashboard_api",
+                        "request_id": "manual-retrain-1",
+                        "requested_at": int(time.time()),
+                        "next_retry_at": int(time.time()) + 30,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_retrain_job = Mock(return_value=True)
+            with patch.object(main, "MANUAL_RETRAIN_REQUEST_FILE", request_file):
+                consumed = main._consume_manual_retrain_request(run_retrain_job)
+                request_exists = request_file.exists()
+
+        self.assertFalse(consumed)
+        run_retrain_job.assert_not_called()
+        self.assertTrue(request_exists)
+
+    def test_service_manual_retrain_request_swallows_handler_failure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "manual_retrain",
+                        "source": "dashboard_api",
+                        "request_id": "manual-retrain-1",
+                        "requested_at": int(time.time()),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_retrain_job = Mock(side_effect=RuntimeError("retrain start exploded"))
+            with patch.object(main, "MANUAL_RETRAIN_REQUEST_FILE", request_file):
+                consumed = main._service_manual_retrain_request(run_retrain_job)
+                request_exists = request_file.exists()
+
+        self.assertFalse(consumed)
+        self.assertTrue(request_exists)
 
     def test_consume_manual_retrain_request_deletes_stale_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -1781,6 +1890,65 @@ class RuntimeFixesTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "manual trade start exploded"):
                     main._consume_manual_trade_request(handle_request)
                 self.assertTrue(request_file.exists())
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["pickup_error"], "manual trade start exploded")
+        self.assertEqual(payload["pickup_failure_count"], 1)
+        self.assertGreater(int(payload["next_retry_at"]), int(time.time()))
+
+    def test_consume_manual_trade_request_respects_retry_backoff_after_failed_pickup(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "token_id": "token-1",
+                        "side": "yes",
+                        "amount_usd": 12.5,
+                        "request_id": "manual-trade-1",
+                        "requested_at": int(time.time()),
+                        "source": "dashboard_api",
+                        "next_retry_at": int(time.time()) + 30,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            handle_request = Mock(return_value=None)
+            with patch.object(main, "MANUAL_TRADE_REQUEST_FILE", request_file):
+                consumed = main._consume_manual_trade_request(handle_request)
+                request_exists = request_file.exists()
+
+        self.assertFalse(consumed)
+        handle_request.assert_not_called()
+        self.assertTrue(request_exists)
+
+    def test_service_manual_trade_request_swallows_handler_failure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            request_file.write_text(
+                json.dumps(
+                    {
+                        "action": "buy_more",
+                        "market_id": "market-1",
+                        "token_id": "token-1",
+                        "side": "yes",
+                        "amount_usd": 12.5,
+                        "request_id": "manual-trade-1",
+                        "requested_at": int(time.time()),
+                        "source": "dashboard_api",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            handle_request = Mock(side_effect=RuntimeError("manual trade start exploded"))
+            with patch.object(main, "MANUAL_TRADE_REQUEST_FILE", request_file):
+                consumed = main._service_manual_trade_request(handle_request)
+                request_exists = request_file.exists()
+
+        self.assertFalse(consumed)
+        self.assertTrue(request_exists)
 
     def test_consume_manual_trade_request_deletes_stale_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:

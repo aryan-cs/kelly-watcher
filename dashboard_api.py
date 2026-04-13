@@ -328,13 +328,21 @@ def _shadow_restart_pending_message(wallet_mode: str = "") -> str:
 
 def _manual_retrain_pending_message(payload: dict[str, Any]) -> str:
     source = str(payload.get("source") or "unknown").strip().lower() or "unknown"
-    return f"requested by {source}"
+    base = f"requested by {source}"
+    pickup_error = str(payload.get("pickup_error") or "").strip()
+    if pickup_error:
+        return f"{base} | pickup failed: {pickup_error}"
+    return base
 
 
 def _manual_trade_pending_message(payload: dict[str, Any]) -> str:
     action = str(payload.get("action") or "").strip().lower().replace("_", " ") or "trade"
     target = str(payload.get("question") or payload.get("market_id") or "").strip()
-    return f"{action} {target}".strip()
+    base = f"{action} {target}".strip()
+    pickup_error = str(payload.get("pickup_error") or "").strip()
+    if pickup_error:
+        return f"{base} | pickup failed: {pickup_error}"
+    return base
 
 
 def _persist_shadow_restart_pending_state(request_payload: dict[str, Any]) -> None:

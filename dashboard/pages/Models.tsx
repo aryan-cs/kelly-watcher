@@ -1701,6 +1701,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'worst dd'
         case 'positive_window_count':
           return 'positive windows'
+        case 'pause_guard_reject_share':
+          return 'pause share'
         default:
           return failure.replaceAll('_', ' ')
       }
@@ -1794,10 +1796,20 @@ function replaySearchHeadroomSummary(
     const globalPositiveWindows = Number(resultParsed.positive_window_count || 0)
     const globalWorstWindowPnl = Number(resultParsed.worst_window_pnl_usd || 0)
     const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0)
+    const rejectReasonSummary = resultParsed.reject_reason_summary && typeof resultParsed.reject_reason_summary === 'object' && !Array.isArray(resultParsed.reject_reason_summary)
+      ? resultParsed.reject_reason_summary as Record<string, unknown>
+      : {}
+    const pauseGuardRejectShare = globalAccepted + Number(resultParsed.rejected_count || 0) > 0
+      ? (
+        Number(rejectReasonSummary.daily_loss_guard || 0)
+        + Number(rejectReasonSummary.live_drawdown_guard || 0)
+      ) / Math.max(Number(resultParsed.trade_count || 0), 1)
+      : 0
     const minAccepted = Number(constraints.min_accepted_count || 0)
     const minResolved = Number(constraints.min_resolved_count || 0)
     const minWinRate = Number(constraints.min_win_rate || 0)
     const maxDrawdownPct = Number(constraints.max_drawdown_pct || 0)
+    const maxPauseGuardRejectShare = Number(constraints.max_pause_guard_reject_share || 0)
     const minPositiveWindows = Number(constraints.min_positive_windows || 0)
     const minWorstWindowPnlUsd = Number(constraints.min_worst_window_pnl_usd ?? -1_000_000_000)
     const maxWorstWindowDrawdownPct = Number(constraints.max_worst_window_drawdown_pct || 0)
@@ -1806,6 +1818,7 @@ function replaySearchHeadroomSummary(
     if (minResolved > 0) pushHeadroom('global', 'res', globalResolved, minResolved, replayHeadroomCount, 'min')
     if (minWinRate > 0 && globalWinRate != null) pushHeadroom('global', 'win', globalWinRate, minWinRate, replayHeadroomPctPoints, 'min')
     if (maxDrawdownPct > 0) pushHeadroom('global', 'dd', globalMaxDrawdown, maxDrawdownPct, replayHeadroomPctPoints, 'max')
+    if (maxPauseGuardRejectShare > 0) pushHeadroom('global', 'pause', pauseGuardRejectShare, maxPauseGuardRejectShare, replayHeadroomPctPoints, 'max')
     if (minPositiveWindows > 0) pushHeadroom('global', 'pos', globalPositiveWindows, minPositiveWindows, replayHeadroomCount, 'min')
     if (minWorstWindowPnlUsd > -999_999_999) pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min')
     if (maxWorstWindowDrawdownPct > 0) {

@@ -2061,6 +2061,38 @@ function replaySearchWorstWindowPnlFromPayload(payload: Record<string, unknown>)
   return Math.min(totalPnlUsd, 0)
 }
 
+function replaySearchWorstActiveWindowResolvedShareFromPayload(payload: Record<string, unknown>): number {
+  if (payload.worst_active_window_resolved_share != null) {
+    return Number(payload.worst_active_window_resolved_share || 0)
+  }
+  if (payload.worst_window_resolved_share != null) {
+    return Number(payload.worst_window_resolved_share || 0)
+  }
+  const acceptedCount = Number(payload.accepted_count || 0)
+  if (acceptedCount <= 0) return 1
+  const resolvedCount = Number(payload.resolved_count || 0)
+  const windowCount = Number(payload.window_count || 0)
+  const exactShare = resolvedCount / acceptedCount
+  if (windowCount <= 1) return exactShare
+  return 0
+}
+
+function replaySearchWorstActiveWindowResolvedSizeShareFromPayload(payload: Record<string, unknown>): number {
+  if (payload.worst_active_window_resolved_size_share != null) {
+    return Number(payload.worst_active_window_resolved_size_share || 0)
+  }
+  if (payload.worst_window_resolved_size_share != null) {
+    return Number(payload.worst_window_resolved_size_share || 0)
+  }
+  const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
+  if (acceptedSizeUsd <= 0) return 1
+  const resolvedSizeUsd = Number(payload.resolved_size_usd || 0)
+  const windowCount = Number(payload.window_count || 0)
+  const exactShare = resolvedSizeUsd / acceptedSizeUsd
+  if (windowCount <= 1) return exactShare
+  return 0
+}
+
 function replaySearchWorstWindowPnlFromSummaryRow(row: ReplaySearchSummaryRow | null | undefined): number {
   if (!row) return 0
   if (row.result_json) {
@@ -3452,11 +3484,7 @@ function replaySearchCurrentModeRiskSummary(
       const winRate = rawWinRate == null ? null : Number(rawWinRate)
       const totalPnlUsd = Number(payload.total_pnl_usd || 0)
       const worstWindowPnlUsd = replaySearchWorstWindowPnlFromPayload(payload)
-      const worstWindowResolvedShare = Number(
-        payload.worst_active_window_resolved_share
-        ?? payload.worst_window_resolved_share
-        ?? resolvedShare
-      )
+      const worstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(payload)
       const worstActiveWindowAcceptedCount = payload.worst_accepting_window_accepted_count == null && payload.worst_active_window_accepted_count == null
         ? null
         : Number(payload.worst_accepting_window_accepted_count ?? payload.worst_active_window_accepted_count)
@@ -3502,11 +3530,7 @@ function replaySearchCurrentModeRiskSummary(
       const activeWindowSizeShareLimit = Number(constraints[mode === 'heuristic' ? 'max_heuristic_active_window_accepted_size_share' : 'min_xgboost_active_window_accepted_size_share'] || 0)
       const activeWindowShare = Number(payload[mode === 'heuristic' ? 'max_active_window_accepted_share' : 'min_active_window_accepted_share'] ?? acceptedShare)
       const activeWindowSizeShare = Number(payload[mode === 'heuristic' ? 'max_active_window_accepted_size_share' : 'min_active_window_accepted_size_share'] ?? acceptedSizeShare)
-      const worstWindowResolvedSizeShare = Number(
-        payload.worst_active_window_resolved_size_share
-        ?? payload.worst_window_resolved_size_share
-        ?? resolvedSizeShare
-      )
+      const worstWindowResolvedSizeShare = replaySearchWorstActiveWindowResolvedSizeShareFromPayload(payload)
 
       if (minAccepted > 0) {
         hasActiveGuard = true
@@ -3979,16 +4003,8 @@ function replaySearchHeadroomSummary(
     const globalWorstActiveWindowAcceptedCount = Number(resultParsed.worst_accepting_window_accepted_count ?? resultParsed.worst_active_window_accepted_count ?? 0)
     const globalWorstActiveWindowAcceptedSizeUsd = Number(resultParsed.worst_accepting_window_accepted_size_usd ?? resultParsed.worst_active_window_accepted_size_usd ?? 0)
     const globalWorstWindowPnl = replaySearchWorstWindowPnlFromPayload(resultParsed as Record<string, unknown>)
-    const globalWorstWindowResolvedShare = Number(
-      resultParsed.worst_active_window_resolved_share
-      ?? resultParsed.worst_window_resolved_share
-      ?? globalResolvedShare
-    )
-    const globalWorstWindowResolvedSizeShare = Number(
-      resultParsed.worst_active_window_resolved_size_share
-      ?? resultParsed.worst_window_resolved_size_share
-      ?? globalResolvedSizeShare
-    )
+    const globalWorstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(resultParsed as Record<string, unknown>)
+    const globalWorstWindowResolvedSizeShare = replaySearchWorstActiveWindowResolvedSizeShareFromPayload(resultParsed as Record<string, unknown>)
     const globalWorstWindowDrawdown = Number(resultParsed.worst_window_drawdown_pct || 0)
     const globalOpenExposureShare = Number(resultParsed.max_open_exposure_share || 0)
     const globalWindowEndOpenExposureShare = Number(
@@ -4168,11 +4184,7 @@ function replaySearchHeadroomSummary(
       const worstWindowPnlUsd = replaySearchWorstWindowPnlFromPayload(payload)
       const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0
       const resolvedSizeShare = acceptedSizeUsd > 0 ? resolvedSizeUsd / acceptedSizeUsd : 0
-      const worstWindowResolvedShare = Number(
-        payload.worst_active_window_resolved_share
-        ?? payload.worst_window_resolved_share
-        ?? resolvedShare
-      )
+      const worstWindowResolvedShare = replaySearchWorstActiveWindowResolvedShareFromPayload(payload)
       const worstActiveWindowAcceptedCount = payload.worst_accepting_window_accepted_count == null && payload.worst_active_window_accepted_count == null
         ? null
         : Number(payload.worst_accepting_window_accepted_count ?? payload.worst_active_window_accepted_count)
@@ -4217,11 +4229,7 @@ function replaySearchHeadroomSummary(
       const maxModeTopTwoAcceptingWindowAcceptedSizeShare = Number(constraints[`max_${mode}_top_two_accepting_window_accepted_size_share`] || 0)
       const maxModeAcceptingWindowAcceptedConcentrationIndex = Number(constraints[`max_${mode}_accepting_window_accepted_concentration_index`] || 0)
       const maxModeAcceptingWindowAcceptedSizeConcentrationIndex = Number(constraints[`max_${mode}_accepting_window_accepted_size_concentration_index`] || 0)
-      const worstWindowResolvedSizeShare = Number(
-        payload.worst_active_window_resolved_size_share
-        ?? payload.worst_window_resolved_size_share
-        ?? resolvedSizeShare
-      )
+      const worstWindowResolvedSizeShare = replaySearchWorstActiveWindowResolvedSizeShareFromPayload(payload)
 
       if (minModeAccepted > 0) pushHeadroom(mode, `${prefix} n`, acceptedCount, minModeAccepted, replayHeadroomCount, 'min')
       if (minModeResolved > 0) pushHeadroom(mode, `${prefix} r`, resolvedCount, minModeResolved, replayHeadroomCount, 'min')

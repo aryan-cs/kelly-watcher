@@ -98,7 +98,7 @@ class ReplaySearchTest(unittest.TestCase):
     def test_main_ranks_grid_candidates_and_keeps_json_on_stdout(self) -> None:
         calls: list[dict[str, object]] = []
 
-        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             payload = policy.as_dict()
             calls.append(payload)
             total_pnl = float(payload["min_confidence"]) * 100.0 - float(payload["max_bet_fraction"]) * 200.0
@@ -145,8 +145,104 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("Replay sweep top candidates:", stderr.getvalue())
         self.assertEqual(len(calls), 5)
 
+    def test_evaluate_candidate_threads_continuity_state_between_windows(self) -> None:
+        seen_initial_states: list[dict[str, object] | None] = []
+
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
+            seen_initial_states.append(initial_state)
+            if start_ts == 0:
+                return {
+                    "run_id": 1,
+                    "window_start_ts": start_ts,
+                    "window_end_ts": end_ts,
+                    "initial_bankroll_usd": 1000.0,
+                    "final_equity_usd": 1000.0,
+                    "final_bankroll_usd": 900.0,
+                    "peak_equity_usd": 1000.0,
+                    "min_equity_usd": 1000.0,
+                    "total_pnl_usd": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "accepted_count": 1,
+                    "accepted_size_usd": 100.0,
+                    "resolved_count": 0,
+                    "resolved_size_usd": 0.0,
+                    "rejected_count": 0,
+                    "unresolved_count": 1,
+                    "trade_count": 1,
+                    "win_rate": None,
+                    "window_end_open_exposure_usd": 100.0,
+                    "window_end_open_exposure_share": 0.1,
+                    "continuity_state": {
+                        "realized_pnl_usd": 0.0,
+                        "open_positions": [
+                            {
+                                "close_ts": 150,
+                                "market_id": "market-a",
+                                "trader_address": "0xcarry",
+                                "size_usd": 100.0,
+                                "pnl_usd": 20.0,
+                            }
+                        ],
+                        "live_guard_triggered": False,
+                        "live_guard_start_equity": 1000.0,
+                        "daily_guard_day_key": "",
+                        "daily_guard_locked": False,
+                        "daily_guard_start_equity": 1000.0,
+                    },
+                }
+            return {
+                "run_id": 2,
+                "window_start_ts": start_ts,
+                "window_end_ts": end_ts,
+                "initial_bankroll_usd": 1000.0,
+                "final_equity_usd": 1020.0,
+                "final_bankroll_usd": 1020.0,
+                "peak_equity_usd": 1020.0,
+                "min_equity_usd": 1000.0,
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 0,
+                "accepted_size_usd": 0.0,
+                "resolved_count": 0,
+                "resolved_size_usd": 0.0,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 0,
+                "win_rate": None,
+                "window_end_open_exposure_usd": 0.0,
+                "window_end_open_exposure_share": 0.0,
+                "continuity_state": {
+                    "realized_pnl_usd": 20.0,
+                    "open_positions": [],
+                    "live_guard_triggered": False,
+                    "live_guard_start_equity": 1000.0,
+                    "daily_guard_day_key": "",
+                    "daily_guard_locked": False,
+                    "daily_guard_start_equity": 1000.0,
+                },
+            }
+
+        with patch.object(replay_search, "run_replay", side_effect=fake_run_replay):
+            result = replay_search._evaluate_candidate(
+                policy=replay_search.ReplayPolicy.default(),
+                db_path=None,
+                label="continuity",
+                notes="",
+                windows=[(0, 100), (100, 200)],
+            )
+
+        self.assertIsNone(seen_initial_states[0])
+        self.assertIsNotNone(seen_initial_states[1])
+        self.assertEqual(
+            seen_initial_states[1]["open_positions"][0]["market_id"],
+            "market-a",
+        )
+        self.assertEqual(result["accepted_count"], 1)
+        self.assertEqual(result["unresolved_count"], 1)
+        self.assertAlmostEqual(result["total_pnl_usd"], 20.0)
+
     def test_main_single_window_materializes_window_activity_fields(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             return {
                 "run_id": 1,
@@ -1019,7 +1115,7 @@ class ReplaySearchTest(unittest.TestCase):
     def test_main_uses_stitched_max_drawdown_pct_for_multi_window_replay(self) -> None:
         calls: list[tuple[int | None, int | None]] = []
 
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             calls.append((start_ts, end_ts))
             if start_ts == 0:
                 return {
@@ -3324,7 +3420,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(failures, [])
 
     def test_main_filters_infeasible_candidates_from_best_feasible_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             payload = policy.as_dict()
             min_conf = float(payload["min_confidence"])
             if min_conf >= 0.65:
@@ -3398,7 +3494,7 @@ class ReplaySearchTest(unittest.TestCase):
             replay_search._load_grid(Args())
 
     def test_main_supports_list_valued_segment_filter_overrides(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             horizon_bands = tuple(policy.as_dict()["allowed_time_to_close_bands"])
             pnl = 70.0 if horizon_bands == ("2h-12h",) else 30.0
             return {
@@ -3440,7 +3536,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("allowed_time_to_close_bands=['2h-12h']", stderr.getvalue())
 
     def test_main_maps_global_entry_band_overrides_into_config_payload(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             entry_bands = tuple(policy.as_dict()["allowed_entry_price_bands"])
             pnl = 80.0 if entry_bands == (">=0.70",) else 25.0
             return {
@@ -3481,7 +3577,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("allowed_entry_price_bands=['>=0.70']", stderr.getvalue())
 
     def test_main_maps_scorer_toggle_overrides_into_config_payload(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             allow_heuristic = bool(policy.as_dict()["allow_heuristic"])
             pnl = 75.0 if not allow_heuristic else 20.0
             return {
@@ -3519,7 +3615,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("allow_heuristic=False", stderr.getvalue())
 
     def test_main_supports_mode_specific_horizon_overrides(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes=""):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", initial_state=None):
             min_horizon = int(policy.as_dict()["heuristic_min_time_to_close_seconds"])
             pnl = 90.0 if min_horizon == 3600 else 45.0
             return {
@@ -3559,7 +3655,7 @@ class ReplaySearchTest(unittest.TestCase):
     def test_main_can_aggregate_multiple_time_windows(self) -> None:
         calls: list[tuple[int | None, int | None]] = []
 
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             calls.append((start_ts, end_ts))
             pnl = 20.0 if start_ts == 1 else -5.0
             return {
@@ -3629,7 +3725,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(calls[3], (2_592_001, 5_184_001))
 
     def test_main_can_require_mode_specific_accepted_counts(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -3689,7 +3785,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("modes heur 5 (42%) sz 42% / xgb 7 (58%) sz 58%", stderr.getvalue())
 
     def test_main_can_require_mode_specific_accepted_shares(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -3749,7 +3845,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("modes heur 4 (40%) sz 40% / xgb 6 (60%) sz 60%", stderr.getvalue())
 
     def test_main_can_require_mode_specific_accepted_size_shares(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -3809,7 +3905,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("modes heur 4 (40%) sz 33% / xgb 6 (60%) sz 67%", stderr.getvalue())
 
     def test_main_can_require_mode_specific_active_window_accepted_shares(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 if start_ts == 1:
@@ -3878,7 +3974,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject heuristic_active_window_accepted_share,xgboost_active_window_accepted_share", stderr.getvalue())
 
     def test_main_can_require_mode_specific_active_window_accepted_size_shares(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 if start_ts == 1:
@@ -3949,7 +4045,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject heuristic_active_window_accepted_size_share,xgboost_active_window_accepted_size_share", stderr.getvalue())
 
     def test_main_can_limit_pause_guard_reject_share(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4008,7 +4104,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("pause 10%", stderr.getvalue())
 
     def test_main_can_limit_top_trader_concentration(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4077,7 +4173,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("wallet pnl 45%", stderr.getvalue())
 
     def test_main_can_limit_top_market_concentration(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4146,7 +4242,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("market pnl 45%", stderr.getvalue())
 
     def test_main_can_limit_top_entry_price_band_concentration(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4215,7 +4311,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("band pnl 45%", stderr.getvalue())
 
     def test_main_can_limit_top_time_to_close_band_concentration(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4284,7 +4380,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("hzn pnl 45%", stderr.getvalue())
 
     def test_main_can_limit_top_deployed_dollar_concentration(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4397,7 +4493,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("hzn sz 36%", stderr.getvalue())
 
     def test_main_can_require_minimum_distinct_concentration_counts(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4491,7 +4587,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_time_to_close_band_count"], 3)
 
     def test_main_can_require_global_active_windows(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 if start_ts == 1:
@@ -4569,7 +4665,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject active_window_count", stderr.getvalue())
 
     def test_main_can_require_minimum_worst_active_window_accepted_count(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4633,7 +4729,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject worst_active_window_accepted_count", stderr.getvalue())
 
     def test_main_can_penalize_worst_active_window_depth_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 accepted_count = 9 if start_ts == 1 else 2
@@ -4689,7 +4785,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("worst-act 2", stderr.getvalue())
 
     def test_main_uses_worst_active_window_counts_for_distinct_concentration_floors(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 if start_ts == 1:
@@ -4791,7 +4887,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject trader_count,market_count,entry_price_band_count,time_to_close_band_count", stderr.getvalue())
 
     def test_main_can_penalize_pause_guard_reject_share_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4856,7 +4952,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("pause 10%", stderr.getvalue())
 
     def test_main_can_penalize_wallet_and_market_concentration_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -4940,7 +5036,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["market_concentration_penalty_usd"], best_breakdown["market_concentration_penalty_usd"])
 
     def test_main_can_penalize_entry_band_and_horizon_concentration_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5024,7 +5120,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["time_to_close_band_concentration_penalty_usd"], best_breakdown["time_to_close_band_concentration_penalty_usd"])
 
     def test_main_can_penalize_low_breadth_counts_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5098,7 +5194,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["time_to_close_band_count_penalty_usd"], best_breakdown["time_to_close_band_count_penalty_usd"])
 
     def test_main_can_penalize_losing_scorer_paths_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5157,7 +5253,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["mode_loss_penalty_usd"], 0.0)
 
     def test_main_can_penalize_low_resolved_share_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5216,7 +5312,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["resolved_share_penalty_usd"], 0.0)
 
     def test_main_can_penalize_low_mode_resolved_share_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5275,7 +5371,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["mode_resolved_share_penalty_usd"], best_breakdown["mode_resolved_share_penalty_usd"])
 
     def test_main_mode_loss_penalty_ignores_disabled_scorer_paths(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             allow_heuristic = bool(policy.as_dict()["allow_heuristic"])
             return {
                 "run_id": 1 if allow_heuristic else 2,
@@ -5320,7 +5416,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("allow_heuristic=False", stderr.getvalue())
 
     def test_main_mode_specific_constraints_ignore_disabled_scorer_paths(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             allow_heuristic = bool(policy.as_dict()["allow_heuristic"])
             if allow_heuristic:
                 return {
@@ -5377,7 +5473,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("allow_heuristic=False", stderr.getvalue())
 
     def test_main_can_penalize_scorer_inactivity_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 if start_ts == 1:
@@ -5466,7 +5562,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("min_confidence=0.65", stderr.getvalue())
 
     def test_main_can_penalize_fully_absent_scorer_inactivity_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5535,7 +5631,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["result"]["signal_mode_summary"]["xgboost"]["inactive_window_count"], 2)
 
     def test_main_can_require_mode_specific_resolved_counts_and_win_rates(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5596,7 +5692,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_xgboost_win_rate"], 0.5)
 
     def test_main_can_require_mode_specific_resolved_shares(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5651,7 +5747,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_xgboost_resolved_share"], 0.75)
 
     def test_main_can_require_mode_specific_resolved_size_shares(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5710,7 +5806,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_xgboost_resolved_size_share"], 0.75)
 
     def test_main_can_require_mode_specific_pnl_floors(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5765,7 +5861,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_xgboost_pnl_usd"], 0.0)
 
     def test_main_can_require_global_total_pnl_floor(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -5821,7 +5917,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_total_pnl_usd"], 0.0)
 
     def test_main_can_require_global_resolved_share(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 resolved_count = 8
@@ -5876,7 +5972,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_resolved_share"], 0.75)
 
     def test_main_can_require_global_resolved_size_share(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             resolved_size_usd = 180.0 if min_conf >= 0.65 else 140.0
             return {
@@ -5934,7 +6030,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_resolved_size_share"], 0.75)
 
     def test_main_can_require_global_worst_window_resolved_share(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 resolved_count = 10
@@ -6003,7 +6099,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject worst_window_resolved_share", stderr.getvalue())
 
     def test_main_can_penalize_low_worst_window_resolved_share_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 resolved_count = 10
@@ -6078,7 +6174,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("min_confidence=0.65", stderr.getvalue())
 
     def test_main_ignores_zero_activity_windows_for_global_worst_window_resolved_share(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 accepted_count = 10
@@ -6147,7 +6243,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["result"]["worst_active_window_resolved_share"], 0.4)
 
     def test_main_ignores_zero_activity_windows_for_global_worst_window_resolved_share_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 accepted_count = 10
@@ -6215,7 +6311,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(rejected_breakdown["worst_window_resolved_share_penalty_usd"], 0.0)
 
     def test_main_can_require_global_worst_window_resolved_size_share(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 resolved_size_usd = 200.0
@@ -6290,7 +6386,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject worst_window_resolved_size_share", stderr.getvalue())
 
     def test_main_can_penalize_low_worst_window_resolved_size_share_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 resolved_size_usd = 200.0
@@ -6370,7 +6466,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
 
     def test_main_can_require_mode_specific_worst_window_pnl_floors(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 xgboost_window_pnl = 22.0 if start_ts == 1 else -18.0
@@ -6426,7 +6522,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_worst_window_pnl_usd", stderr.getvalue())
 
     def test_main_can_require_mode_specific_worst_window_resolved_shares(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 xgboost_resolved = 6
@@ -6495,7 +6591,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_worst_window_resolved_share", stderr.getvalue())
 
     def test_main_ignores_inactive_mode_windows_for_mode_specific_worst_window_resolved_share(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 if start_ts == 1:
@@ -6573,7 +6669,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["result"]["signal_mode_summary"]["xgboost"]["worst_active_window_resolved_share"], 0.333333)
 
     def test_main_can_penalize_low_mode_worst_window_resolved_share_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 xgboost_resolved = 6
@@ -6648,7 +6744,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("min_confidence=0.65", stderr.getvalue())
 
     def test_main_can_require_mode_specific_worst_window_resolved_size_shares(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 xgboost_resolved_size_usd = 120.0
@@ -6723,7 +6819,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_worst_window_resolved_size_share", stderr.getvalue())
 
     def test_main_can_penalize_low_mode_worst_window_resolved_size_share_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 xgboost_resolved_size_usd = 120.0
@@ -6803,7 +6899,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertGreater(payload["ranked"][0]["score"], rejected["score"])
 
     def test_main_counts_missing_mode_windows_as_zero_activity_for_worst_window(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             if start_ts == 1:
                 return {
                     "run_id": 1,
@@ -6872,7 +6968,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_worst_window_pnl_usd", stderr.getvalue())
 
     def test_main_can_limit_mode_inactive_windows(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 if start_ts == 1:
@@ -6957,7 +7053,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_inactive_window_count", stderr.getvalue())
 
     def test_main_can_require_mode_specific_worst_active_window_accepted_count(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 xgboost_accepted = 4 if start_ts == 1 else 1
@@ -7027,7 +7123,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_worst_active_window_accepted_count", stderr.getvalue())
 
     def test_main_treats_zero_accepted_mode_windows_as_inactive_not_shallow(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 if start_ts == 1:
@@ -7104,7 +7200,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_inactive_window_count", stderr.getvalue())
 
     def test_main_can_penalize_mode_worst_active_window_depth_in_ranking(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 xgboost_accepted = 6 if start_ts == 1 else 2
@@ -7169,7 +7265,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["result"]["signal_mode_summary"]["xgboost"]["worst_active_window_accepted_count"], 2)
 
     def test_main_counts_fully_absent_mode_windows_as_inactive(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -7240,7 +7336,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_inactive_window_count", stderr.getvalue())
 
     def test_main_can_require_mode_specific_positive_windows(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 xgboost_window_pnl = 24.0 if start_ts == 1 else -6.0
@@ -7296,7 +7392,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject xgboost_positive_window_count", stderr.getvalue())
 
     def test_main_can_penalize_window_instability(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 pnl = 100.0 if start_ts == 1 else -20.0
@@ -7343,7 +7439,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("windows 2/2+", stderr.getvalue())
 
     def test_main_reports_carry_against_active_windows_in_stderr(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             if start_ts == 0:
                 return {
                     "run_id": 1,
@@ -7417,7 +7513,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("carry-avg 5%", rendered)
 
     def test_main_reports_carry_restart_against_restart_opportunities_in_stderr(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             if start_ts == 0:
                 return {
                     "run_id": 1,
@@ -7490,7 +7586,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("carry-rst 1/1", rendered)
 
     def test_main_reports_guard_restarts_against_restart_opportunities_in_stderr(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             if start_ts == 0:
                 return {
                     "run_id": 1,
@@ -7564,7 +7660,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("p-rst 1/1", rendered)
 
     def test_main_reports_single_window_carry_in_stderr(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             return {
                 "run_id": 1,
                 "window_start_ts": start_ts,
@@ -7602,7 +7698,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertNotIn(" | windows ", rendered)
 
     def test_main_can_reject_bad_worst_window(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             pnl = -25.0 if min_conf >= 0.65 and start_ts != 1 else 20.0
             return {
@@ -7650,7 +7746,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertIn("reject worst_window_pnl_usd,worst_window_drawdown_pct", stderr.getvalue())
 
     def test_main_persists_search_runs_and_candidates(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.65:
                 return {
@@ -7868,7 +7964,7 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(json.loads(candidate_rows[2][6])["score_breakdown"]["score_usd"], -460.0)
 
     def test_main_persists_mode_active_window_mix_penalties(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.6:
                 heuristic_share = 0.9
@@ -7972,7 +8068,7 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(result_json["score_breakdown"]["mode_active_window_accepted_size_share_penalty_usd"], 510.0)
 
     def test_main_backfills_existing_search_tables_before_insert(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             return {
                 "run_id": 1,
                 "total_pnl_usd": 42.0,
@@ -8094,7 +8190,7 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(json.loads(candidate_row[4])["total_pnl_usd"], 42.0)
 
     def test_main_persists_nonzero_concentration_penalties(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -8225,7 +8321,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_count_penalties(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -8336,7 +8432,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_mode_loss_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -8421,7 +8517,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_mode_inactivity_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -8532,7 +8628,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_window_inactivity_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -8632,7 +8728,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_worst_active_window_accepted_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 accepted_count = 8 if start_ts == 1 else 8
@@ -8712,7 +8808,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_mode_worst_active_window_accepted_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 xgboost_accepted = 5
@@ -8796,7 +8892,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_resolved_share_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -8881,7 +8977,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_resolved_size_share_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -8970,7 +9066,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_worst_window_resolved_share_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 resolved_count = 8
@@ -9064,7 +9160,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_mode_resolved_share_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -9149,7 +9245,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_mode_resolved_size_share_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if min_conf >= 0.60:
                 return {
@@ -9238,7 +9334,7 @@ class ReplaySearchTest(unittest.TestCase):
             )
 
     def test_main_persists_nonzero_mode_worst_window_resolved_share_penalty(self) -> None:
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             min_conf = float(policy.as_dict()["min_confidence"])
             if start_ts == 1:
                 xgboost_resolved = 4
@@ -9334,7 +9430,7 @@ class ReplaySearchTest(unittest.TestCase):
     def test_main_dedupes_current_candidate_when_grid_matches_base_policy(self) -> None:
         calls: list[dict[str, object]] = []
 
-        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None, initial_state=None):
             payload = policy.as_dict()
             calls.append(payload)
             return {

@@ -241,6 +241,7 @@ def run_replay(
     notes: str = "",
     start_ts: int | None = None,
     end_ts: int | None = None,
+    initial_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     resolved_policy = policy if isinstance(policy, ReplayPolicy) else ReplayPolicy.from_payload(policy)
     path = Path(db_path or TRADING_DB_PATH)
@@ -259,6 +260,7 @@ def run_replay(
         started_at=now,
         start_ts=start_ts,
         end_ts=end_ts,
+        initial_state=initial_state,
     )
 
     conn.close()
@@ -274,6 +276,7 @@ def _simulate(
     started_at: int,
     start_ts: int | None,
     end_ts: int | None,
+    initial_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
     rows = conn.execute(
         """
@@ -313,10 +316,23 @@ def _simulate(
         ),
     ).fetchall()
 
+    continuity_seed = initial_state if isinstance(initial_state, dict) else {}
     open_positions: list[dict[str, Any]] = []
-    realized_pnl = 0.0
-    peak_equity = max(policy.initial_bankroll_usd, 0.0)
-    min_equity = max(policy.initial_bankroll_usd, 0.0)
+    for raw_position in continuity_seed.get("open_positions") or []:
+        if not isinstance(raw_position, dict):
+            continue
+        open_positions.append(
+            {
+                "close_ts": int(raw_position.get("close_ts") or 10**12 + 1),
+                "market_id": str(raw_position.get("market_id") or ""),
+                "trader_address": str(raw_position.get("trader_address") or "").lower(),
+                "size_usd": float(raw_position.get("size_usd") or 0.0),
+                "pnl_usd": float(raw_position.get("pnl_usd") or 0.0),
+            }
+        )
+    realized_pnl = float(continuity_seed.get("realized_pnl_usd") or 0.0)
+    peak_equity = 0.0
+    min_equity = 0.0
     max_drawdown_pct = 0.0
     peak_open_exposure_usd = 0.0
     max_open_exposure_share = 0.0
@@ -326,12 +342,19 @@ def _simulate(
     window_end_daily_guard_triggered = False
     replay_rows: list[dict[str, Any]] = []
     unresolved_count = 0
-    live_guard_triggered = False
-    live_guard_start_equity = max(policy.initial_bankroll_usd, 0.0)
+    live_guard_triggered = bool(continuity_seed.get("live_guard_triggered"))
+    live_guard_start_equity = max(
+        float(continuity_seed.get("live_guard_start_equity") or policy.initial_bankroll_usd),
+        0.0,
+    )
     live_guard_stop_equity = max(live_guard_start_equity * (1.0 - policy.max_live_drawdown_pct), 0.0)
-    daily_guard_start_equity = max(policy.initial_bankroll_usd, 0.0)
-    daily_guard_day_key = ""
-    daily_guard_locked = False
+    daily_guard_start_equity = max(
+        float(continuity_seed.get("daily_guard_start_equity") or policy.initial_bankroll_usd),
+        0.0,
+    )
+    daily_guard_day_key = str(continuity_seed.get("daily_guard_day_key") or "")
+    daily_guard_locked = bool(continuity_seed.get("daily_guard_locked"))
+    simulation_start_ts = int(start_ts) if start_ts is not None else 0
     simulation_end_ts = int(end_ts) if end_ts is not None else 10**12
 
     def account_equity() -> float:
@@ -401,7 +424,14 @@ def _simulate(
                 return "daily_loss_guard"
         return None
 
-    close_due_positions(0)
+    close_due_positions(simulation_start_ts)
+    if start_ts is not None:
+        sync_daily_guard(simulation_start_ts)
+    starting_equity = account_equity()
+    peak_equity = starting_equity
+    min_equity = starting_equity
+    update_open_exposure_metrics()
+
     for row in rows:
         placed_at = int(row["placed_at"] or 0)
         close_due_positions(placed_at)
@@ -734,7 +764,7 @@ def _simulate(
     rejected_rows = [row for row in replay_rows if row["decision"] == "reject"]
     resolved_rows = [row for row in accepted_rows if row["pnl_usd"] is not None]
     wins = sum(1 for row in resolved_rows if float(row["pnl_usd"] or 0.0) > 0)
-    final_equity = round(policy.initial_bankroll_usd + realized_pnl, 6)
+    final_equity = round(account_equity(), 6)
     window_end_open_exposure_usd = open_exposure()
     if final_equity > 0:
         window_end_open_exposure_share = window_end_open_exposure_usd / final_equity
@@ -756,7 +786,7 @@ def _simulate(
         and final_equity <= max(daily_guard_start_equity * (1.0 - policy.max_daily_loss_pct), 0.0) + 1e-9
     )
     final_bankroll = round(final_equity - window_end_open_exposure_usd, 6)
-    total_pnl_usd = round(final_equity - policy.initial_bankroll_usd, 6)
+    total_pnl_usd = round(final_equity - starting_equity, 6)
     accepted_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in accepted_rows)
     resolved_size_usd = sum(float(row.get("simulated_size_usd") or 0.0) for row in resolved_rows)
     reject_reason_summary: dict[str, int] = {}
@@ -778,7 +808,7 @@ def _simulate(
             "notes": notes.strip(),
             "window_start_ts": start_ts,
             "window_end_ts": end_ts,
-            "initial_bankroll_usd": round(policy.initial_bankroll_usd, 6),
+            "initial_bankroll_usd": round(starting_equity, 6),
             "final_bankroll_usd": final_bankroll,
             "total_pnl_usd": total_pnl_usd,
             "max_drawdown_pct": round(max_drawdown_pct, 6),
@@ -806,12 +836,12 @@ def _simulate(
     _insert_segment_metrics(conn, run_id, segment_metric_rows)
     conn.commit()
 
-    return {
+    result = {
         "run_id": run_id,
         "policy_version": policy.version(),
         "window_start_ts": start_ts,
         "window_end_ts": end_ts,
-        "initial_bankroll_usd": round(policy.initial_bankroll_usd, 6),
+        "initial_bankroll_usd": round(starting_equity, 6),
         "final_equity_usd": final_equity,
         "final_bankroll_usd": final_bankroll,
         "peak_equity_usd": round(peak_equity, 6),
@@ -840,6 +870,26 @@ def _simulate(
         "entry_price_band_concentration": entry_price_band_concentration,
         "time_to_close_band_concentration": time_to_close_band_concentration,
     }
+    if start_ts is not None or end_ts is not None or initial_state is not None:
+        result["continuity_state"] = {
+            "realized_pnl_usd": round(realized_pnl, 6),
+            "open_positions": [
+                {
+                    "close_ts": int(position["close_ts"]),
+                    "market_id": str(position["market_id"] or ""),
+                    "trader_address": str(position["trader_address"] or "").lower(),
+                    "size_usd": round(float(position["size_usd"] or 0.0), 6),
+                    "pnl_usd": round(float(position["pnl_usd"] or 0.0), 6),
+                }
+                for position in open_positions
+            ],
+            "live_guard_triggered": live_guard_triggered,
+            "live_guard_start_equity": round(live_guard_start_equity, 6),
+            "daily_guard_day_key": daily_guard_day_key,
+            "daily_guard_locked": daily_guard_locked,
+            "daily_guard_start_equity": round(daily_guard_start_equity, 6),
+        }
+    return result
 
 
 def _evaluate_trade(

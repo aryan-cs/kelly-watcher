@@ -546,6 +546,195 @@ class ReplayTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_run_replay_carries_unresolved_position_into_next_window(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="carry-forward",
+                    market_id="market-carry",
+                    trader_address="0xcarry",
+                    signal_mode="heuristic",
+                    confidence=0.72,
+                    price_at_signal=0.69,
+                    actual_entry_price=0.69,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=30.0,
+                    placed_at=1_700_000_010,
+                    resolved_at=1_700_000_250,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.86},
+                        "min_confidence": 0.55,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                policy = ReplayPolicy.from_payload(
+                    {
+                        "initial_bankroll_usd": 1000.0,
+                        "min_confidence": 0.55,
+                        "min_bet_usd": 1.0,
+                        "heuristic_min_entry_price": 0.65,
+                        "heuristic_max_entry_price": 0.75,
+                        "model_edge_mid_confidence": 0.55,
+                        "model_edge_high_confidence": 0.65,
+                        "model_edge_mid_threshold": 0.05,
+                        "model_edge_high_threshold": 0.05,
+                        "max_bet_fraction": 0.10,
+                        "max_total_open_exposure_fraction": 1.0,
+                        "max_market_exposure_fraction": 1.0,
+                        "max_trader_exposure_fraction": 1.0,
+                    }
+                )
+                first_window = run_replay(
+                    policy=policy,
+                    db_path=test_db_path,
+                    label="carry-w1",
+                    start_ts=1_700_000_000,
+                    end_ts=1_700_000_200,
+                )
+                second_window = run_replay(
+                    policy=policy,
+                    db_path=test_db_path,
+                    label="carry-w2",
+                    start_ts=1_700_000_200,
+                    end_ts=1_700_000_300,
+                    initial_state=first_window["continuity_state"],
+                )
+
+                self.assertEqual(first_window["accepted_count"], 1)
+                self.assertEqual(first_window["resolved_count"], 0)
+                self.assertEqual(first_window["unresolved_count"], 1)
+                self.assertGreater(first_window["window_end_open_exposure_usd"], 0.0)
+                self.assertEqual(len(first_window["continuity_state"]["open_positions"]), 1)
+                carried_pnl_usd = float(first_window["continuity_state"]["open_positions"][0]["pnl_usd"])
+
+                self.assertEqual(second_window["accepted_count"], 0)
+                self.assertEqual(second_window["resolved_count"], 0)
+                self.assertEqual(second_window["unresolved_count"], 0)
+                self.assertAlmostEqual(second_window["initial_bankroll_usd"], 1000.0, places=6)
+                self.assertAlmostEqual(second_window["total_pnl_usd"], carried_pnl_usd, places=6)
+                self.assertAlmostEqual(second_window["final_equity_usd"], 1000.0 + carried_pnl_usd, places=6)
+                self.assertAlmostEqual(second_window["final_bankroll_usd"], 1000.0 + carried_pnl_usd, places=6)
+                self.assertEqual(second_window["window_end_open_exposure_usd"], 0.0)
+                self.assertEqual(second_window["continuity_state"]["open_positions"], [])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_carry_state_can_block_next_window_entry(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="carry-blocker",
+                    market_id="market-blocker",
+                    trader_address="0xcarry",
+                    signal_mode="heuristic",
+                    confidence=0.72,
+                    price_at_signal=0.69,
+                    actual_entry_price=0.69,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=20.0,
+                    placed_at=1_700_000_010,
+                    resolved_at=1_700_000_400,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.86},
+                        "min_confidence": 0.55,
+                    },
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="blocked-by-carry",
+                    market_id="market-next",
+                    trader_address="0xnext",
+                    signal_mode="heuristic",
+                    confidence=0.72,
+                    price_at_signal=0.69,
+                    actual_entry_price=0.69,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=25.0,
+                    placed_at=1_700_000_220,
+                    resolved_at=1_700_000_320,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.86},
+                        "min_confidence": 0.55,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                policy = ReplayPolicy.from_payload(
+                    {
+                        "initial_bankroll_usd": 1000.0,
+                        "min_confidence": 0.55,
+                        "min_bet_usd": 1.0,
+                        "heuristic_min_entry_price": 0.65,
+                        "heuristic_max_entry_price": 0.75,
+                        "model_edge_mid_confidence": 0.55,
+                        "model_edge_high_confidence": 0.65,
+                        "model_edge_mid_threshold": 0.05,
+                        "model_edge_high_threshold": 0.05,
+                        "max_bet_fraction": 0.10,
+                        "max_total_open_exposure_fraction": 0.10,
+                        "max_market_exposure_fraction": 1.0,
+                        "max_trader_exposure_fraction": 1.0,
+                    }
+                )
+                first_window = run_replay(
+                    policy=policy,
+                    db_path=test_db_path,
+                    label="carry-cap-w1",
+                    start_ts=1_700_000_000,
+                    end_ts=1_700_000_200,
+                )
+                second_window = run_replay(
+                    policy=policy,
+                    db_path=test_db_path,
+                    label="carry-cap-w2",
+                    start_ts=1_700_000_200,
+                    end_ts=1_700_000_350,
+                    initial_state=first_window["continuity_state"],
+                )
+
+                conn = sqlite3.connect(str(test_db_path))
+                trade_rows = conn.execute(
+                    """
+                    SELECT trade_id, decision, reason
+                    FROM replay_trades
+                    WHERE replay_run_id=?
+                    ORDER BY trade_log_id ASC
+                    """,
+                    (second_window["run_id"],),
+                ).fetchall()
+                conn.close()
+
+                self.assertEqual(first_window["accepted_count"], 1)
+                self.assertGreater(first_window["window_end_open_exposure_usd"], 0.0)
+                self.assertEqual(second_window["accepted_count"], 0)
+                self.assertEqual(second_window["rejected_count"], 1)
+                self.assertEqual(
+                    trade_rows,
+                    [("blocked-by-carry", "reject", "total_exposure_cap")],
+                )
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_run_replay_reports_trader_concentration(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

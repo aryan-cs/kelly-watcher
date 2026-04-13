@@ -2058,18 +2058,22 @@ def _evaluate_candidate(
         )
 
     window_results: list[dict[str, Any]] = []
+    continuity_state: dict[str, Any] | None = None
     for window_index, (start_ts, end_ts) in enumerate(windows, start=1):
+        raw_result = run_replay(
+            policy=policy,
+            db_path=db_path,
+            label=f"{label}-w{window_index:02d}",
+            notes=notes,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            initial_state=continuity_state,
+        )
+        continuity_state = raw_result.pop("continuity_state", None)
         window_results.append(
             _with_window_activity_fields(
                 _with_worst_window_resolved_share(
-                    run_replay(
-                        policy=policy,
-                        db_path=db_path,
-                        label=f"{label}-w{window_index:02d}",
-                        notes=notes,
-                        start_ts=start_ts,
-                        end_ts=end_ts,
-                    )
+                    raw_result
                 )
             )
         )
@@ -3142,13 +3146,13 @@ def main() -> None:
     parser.add_argument("--pause-guard-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay pause-guard reject share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--daily-guard-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of active replay windows that end with the daily-loss guard effectively triggered.")
     parser.add_argument("--live-guard-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of active live-mode replay windows that end with the live drawdown guard effectively triggered.")
-    parser.add_argument("--daily-guard-restart-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of later active replay windows that restart immediately after the prior window ended with the daily-loss guard effectively triggered.")
-    parser.add_argument("--live-guard-restart-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of later active replay windows that restart immediately after the prior window ended with the live drawdown guard effectively triggered.")
+    parser.add_argument("--daily-guard-restart-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of daily-guard restart opportunities that eventually resume on a later active replay window.")
+    parser.add_argument("--live-guard-restart-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of live-guard restart opportunities that eventually resume on a later active replay window.")
     parser.add_argument("--open-exposure-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay peak open-exposure share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--window-end-open-exposure-penalty", type=float, default=0.0, help="Penalty multiplier applied to replay window-end carried open-exposure share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--avg-window-end-open-exposure-penalty", type=float, default=0.0, help="Penalty multiplier applied to average active-window carried open-exposure share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--carry-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of active replay windows that end with carried open exposure in bankroll-dollar terms when ranking candidates.")
-    parser.add_argument("--carry-restart-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of later active replay windows that restart immediately after the prior window ended with carried open exposure.")
+    parser.add_argument("--carry-restart-window-penalty", type=float, default=0.0, help="Penalty multiplier applied to the share of carry restart opportunities that eventually resume on a later active replay window.")
     parser.add_argument("--resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved accepted-share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--resolved-size-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved accepted deployed-dollar share in bankroll-dollar terms when ranking candidates.")
     parser.add_argument("--worst-window-resolved-share-penalty", type=float, default=0.0, help="Penalty multiplier applied to unresolved-share in the worst replay window in bankroll-dollar terms when ranking candidates.")
@@ -3237,10 +3241,10 @@ def main() -> None:
     parser.add_argument("--max-pause-guard-reject-share", type=float, default=0.0, help="Maximum fraction of replay trades allowed to be rejected by daily-loss or live-drawdown pause guards.")
     parser.add_argument("--max-daily-guard-window-share", type=float, default=0.0, help="Maximum share of active replay windows allowed to end with the daily-loss guard effectively triggered.")
     parser.add_argument("--max-live-guard-window-share", type=float, default=0.0, help="Maximum share of active live-mode replay windows allowed to end with the live drawdown guard effectively triggered.")
-    parser.add_argument("--max-daily-guard-restart-window-share", type=float, default=0.0, help="Maximum share of later active replay windows allowed to restart immediately after the prior window ended with the daily-loss guard effectively triggered.")
-    parser.add_argument("--max-live-guard-restart-window-share", type=float, default=0.0, help="Maximum share of later active replay windows allowed to restart immediately after the prior window ended with the live drawdown guard effectively triggered.")
+    parser.add_argument("--max-daily-guard-restart-window-share", type=float, default=0.0, help="Maximum share of daily-guard restart opportunities allowed to resume on a later active replay window.")
+    parser.add_argument("--max-live-guard-restart-window-share", type=float, default=0.0, help="Maximum share of live-guard restart opportunities allowed to resume on a later active replay window.")
     parser.add_argument("--max-avg-window-end-open-exposure-share", type=float, default=0.0, help="Maximum average share of equity left open at the end of active replay windows.")
-    parser.add_argument("--max-carry-restart-window-share", type=float, default=0.0, help="Maximum share of later active replay windows allowed to restart immediately after the prior window ended with carried open exposure.")
+    parser.add_argument("--max-carry-restart-window-share", type=float, default=0.0, help="Maximum share of carry restart opportunities allowed to resume on a later active replay window.")
     parser.add_argument("--min-trader-count", type=int, default=0, help="Minimum distinct trader count required for a candidate to be feasible.")
     parser.add_argument("--min-market-count", type=int, default=0, help="Minimum distinct market count required for a candidate to be feasible.")
     parser.add_argument("--min-entry-price-band-count", type=int, default=0, help="Minimum distinct entry-price-band count required for a candidate to be feasible.")

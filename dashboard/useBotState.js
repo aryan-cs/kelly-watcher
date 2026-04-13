@@ -54,7 +54,9 @@ function shadowRestartPlaceholderState(state) {
     return {
         ...state,
         api_base_url: apiBaseUrl,
-        api_error: shadowRestartPendingMessage(),
+        api_error: '',
+        shadow_restart_pending: true,
+        shadow_restart_message: shadowRestartPendingMessage(),
         started_at: 0,
         startup_detail: 'Restarting shadow bot',
         startup_failed: false,
@@ -134,7 +136,9 @@ function shadowRestartWaitingState(nextState) {
     return {
         ...nextState,
         api_base_url: apiBaseUrl,
-        api_error: shadowRestartPendingMessage(),
+        api_error: '',
+        shadow_restart_pending: true,
+        shadow_restart_message: shadowRestartPendingMessage(),
         startup_detail: String(nextState.startup_detail || '').trim() || 'Restarting shadow bot'
     };
 }
@@ -172,7 +176,9 @@ export function useBotState(intervalMs = 1000) {
                 const nextState = {
                     ...(response.state || {}),
                     api_base_url: apiBaseUrl,
-                    api_error: ''
+                    api_error: '',
+                    shadow_restart_pending: false,
+                    shadow_restart_message: ''
                 };
                 const resolvedState = hasShadowRestartCompleted(nextState)
                     ? nextState
@@ -191,11 +197,13 @@ export function useBotState(intervalMs = 1000) {
                     : error instanceof Error && String(error.message || '').trim()
                         ? String(error.message || '').trim()
                         : `Could not reach backend API at ${apiBaseUrl}.`;
-            const nextState = {
-                ...botStateCache,
-                api_base_url: apiBaseUrl,
-                api_error: shadowRestartPending ? shadowRestartPendingMessage() : message
-            };
+                const nextState = {
+                    ...botStateCache,
+                    api_base_url: apiBaseUrl,
+                    api_error: message,
+                    shadow_restart_pending: shadowRestartPending,
+                    shadow_restart_message: shadowRestartPending ? shadowRestartPendingMessage() : ''
+                };
             botStateCache = nextState;
             if (!cancelled) {
                 setState(nextState);

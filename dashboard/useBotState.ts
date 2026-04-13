@@ -83,6 +83,8 @@ export interface BotState {
   model_load_error?: string
   model_prediction_mode?: string
   model_loaded_at?: number
+  shadow_restart_pending?: boolean
+  shadow_restart_message?: string
   api_base_url?: string
   api_error?: string
 }
@@ -147,7 +149,9 @@ function shadowRestartPlaceholderState(state: BotState): BotState {
   return {
     ...state,
     api_base_url: apiBaseUrl,
-    api_error: shadowRestartPendingMessage(),
+    api_error: '',
+    shadow_restart_pending: true,
+    shadow_restart_message: shadowRestartPendingMessage(),
     started_at: 0,
     startup_detail: 'Restarting shadow bot',
     startup_failed: false,
@@ -228,7 +232,9 @@ function shadowRestartWaitingState(nextState: BotState): BotState {
   return {
     ...nextState,
     api_base_url: apiBaseUrl,
-    api_error: shadowRestartPendingMessage(),
+    api_error: '',
+    shadow_restart_pending: true,
+    shadow_restart_message: shadowRestartPendingMessage(),
     startup_detail: String(nextState.startup_detail || '').trim() || 'Restarting shadow bot'
   }
 }
@@ -273,7 +279,9 @@ export function useBotState(intervalMs = 1000): BotState {
         const nextState = {
           ...(response.state || {}),
           api_base_url: apiBaseUrl,
-          api_error: ''
+          api_error: '',
+          shadow_restart_pending: false,
+          shadow_restart_message: ''
         }
         const resolvedState = hasShadowRestartCompleted(nextState)
           ? nextState
@@ -295,7 +303,9 @@ export function useBotState(intervalMs = 1000): BotState {
         const nextState = {
           ...botStateCache,
           api_base_url: apiBaseUrl,
-          api_error: shadowRestartPending ? shadowRestartPendingMessage() : message
+          api_error: message,
+          shadow_restart_pending: shadowRestartPending,
+          shadow_restart_message: shadowRestartPending ? shadowRestartPendingMessage() : ''
         }
         botStateCache = nextState
         if (!cancelled) {

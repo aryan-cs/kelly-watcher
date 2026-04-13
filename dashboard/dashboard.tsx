@@ -328,11 +328,15 @@ function AppContent({
   const startupFailed = Boolean(botState.startup_failed || botState.startup_validation_failed)
   const startupFailureMessage = String(botState.startup_failure_message || botState.startup_validation_message || '').trim()
   const startupFailureText = startupDetail || startupFailureMessage || 'startup failed'
+  const shadowRestartPending = Boolean(botState.shadow_restart_pending)
+  const shadowRestartMessage = String(botState.shadow_restart_message || '').trim() || 'shadow restart in progress'
   const apiError = String(botState.api_error || '').trim()
   const apiIssueTag = /token|unauthorized/i.test(apiError) ? 'api auth error' : 'api offline'
   const startupInProgress = startedAt > 0 && lastPollAt <= 0
   const backendDotColor = startupFailed
     ? theme.red
+    : shadowRestartPending
+    ? theme.yellow
     : apiError
     ? theme.red
     : pollIsFresh
@@ -343,6 +347,8 @@ function AppContent({
   const backendStatusText =
     startupFailed
       ? startupFailureText
+      : shadowRestartPending
+      ? shadowRestartMessage
       : apiError
       ? apiIssueTag
       : startupInProgress && startupDetail
@@ -375,6 +381,8 @@ function AppContent({
       : null
   const footerStatusText = isRefreshing
     ? 'refreshing...'
+    : shadowRestartPending
+      ? shadowRestartMessage
     : apiError
       ? apiError
       : retrainInProgress
@@ -384,7 +392,9 @@ function AppContent({
           : recentRetrainText
             ? `${recentRetrainText} | ${lastPollText}`
             : lastPollText
-  const footerStatusColor = apiError
+  const footerStatusColor = shadowRestartPending
+    ? theme.yellow
+    : apiError
     ? theme.red
     : activeTransientNotice
       ? activeTransientNotice.tone === 'error'

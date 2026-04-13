@@ -351,6 +351,7 @@ WITH latest_search AS (
     feasible_count,
     rejected_count,
     constraints_json,
+    base_policy_json,
     current_candidate_score,
     current_candidate_feasible,
     current_candidate_total_pnl_usd,
@@ -399,6 +400,7 @@ SELECT
   latest_search.feasible_count,
   latest_search.rejected_count,
   latest_search.constraints_json,
+  latest_search.base_policy_json,
   latest_search.current_candidate_score,
   latest_search.current_candidate_feasible,
   latest_search.current_candidate_total_pnl_usd,
@@ -1252,7 +1254,25 @@ function replaySearchCurrentModeEvidenceSummary(raw) {
         return '-';
     }
 }
-function replaySearchModeFloorSummary(raw) {
+function replaySearchEnabledModes(policyRaw) {
+    if (!policyRaw)
+        return { heuristic: true, xgboost: true };
+    try {
+        const parsed = JSON.parse(policyRaw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return { heuristic: true, xgboost: true };
+        }
+        const payload = parsed;
+        return {
+            heuristic: payload.allow_heuristic == null ? true : Boolean(payload.allow_heuristic),
+            xgboost: payload.allow_xgboost == null ? true : Boolean(payload.allow_xgboost)
+        };
+    }
+    catch {
+        return { heuristic: true, xgboost: true };
+    }
+}
+function replaySearchModeFloorSummary(raw, policyRaw) {
     if (!raw)
         return 'none';
     try {
@@ -1261,6 +1281,7 @@ function replaySearchModeFloorSummary(raw) {
             return 'none';
         const payload = parsed;
         const parts = [];
+        const enabled = replaySearchEnabledModes(policyRaw);
         const minHeuristicAccepted = Number(payload.min_heuristic_accepted_count || 0);
         const minXgboostAccepted = Number(payload.min_xgboost_accepted_count || 0);
         const minHeuristicResolved = Number(payload.min_heuristic_resolved_count || 0);
@@ -1279,42 +1300,52 @@ function replaySearchModeFloorSummary(raw) {
         const maxXgboostInactiveWindows = Number(payload.max_xgboost_inactive_windows ?? -1);
         const maxHeuristicAcceptedShare = Number(payload.max_heuristic_accepted_share || 0);
         const minXgboostAcceptedShare = Number(payload.min_xgboost_accepted_share || 0);
-        if (minHeuristicAccepted > 0)
-            parts.push(`heur >=${formatCount(minHeuristicAccepted)}`);
-        if (minXgboostAccepted > 0)
-            parts.push(`model >=${formatCount(minXgboostAccepted)}`);
-        if (minHeuristicResolved > 0)
-            parts.push(`heur r>=${formatCount(minHeuristicResolved)}`);
-        if (minXgboostResolved > 0)
-            parts.push(`model r>=${formatCount(minXgboostResolved)}`);
-        if (minHeuristicResolvedShare > 0)
-            parts.push(`heur cov>=${formatPct(minHeuristicResolvedShare, 0)}`);
-        if (minXgboostResolvedShare > 0)
-            parts.push(`model cov>=${formatPct(minXgboostResolvedShare, 0)}`);
-        if (minHeuristicWinRate > 0)
-            parts.push(`heur wr>=${formatPct(minHeuristicWinRate, 0)}`);
-        if (minXgboostWinRate > 0)
-            parts.push(`model wr>=${formatPct(minXgboostWinRate, 0)}`);
-        if (minHeuristicPnlUsd !== 0)
-            parts.push(`heur pnl>=${formatDollar(minHeuristicPnlUsd)}`);
-        if (minXgboostPnlUsd !== 0)
-            parts.push(`model pnl>=${formatDollar(minXgboostPnlUsd)}`);
-        if (minHeuristicWorstWindowPnlUsd > -999999999)
-            parts.push(`heur worst>=${formatDollar(minHeuristicWorstWindowPnlUsd)}`);
-        if (minXgboostWorstWindowPnlUsd > -999999999)
-            parts.push(`model worst>=${formatDollar(minXgboostWorstWindowPnlUsd)}`);
-        if (minHeuristicPositiveWindows > 0)
-            parts.push(`heur pos>=${formatCount(minHeuristicPositiveWindows)}`);
-        if (minXgboostPositiveWindows > 0)
-            parts.push(`model pos>=${formatCount(minXgboostPositiveWindows)}`);
-        if (maxHeuristicInactiveWindows >= 0)
-            parts.push(`heur idle<=${formatCount(maxHeuristicInactiveWindows)}`);
-        if (maxXgboostInactiveWindows >= 0)
-            parts.push(`model idle<=${formatCount(maxXgboostInactiveWindows)}`);
-        if (maxHeuristicAcceptedShare > 0)
-            parts.push(`heur mix<=${formatPct(maxHeuristicAcceptedShare, 0)}`);
-        if (minXgboostAcceptedShare > 0)
-            parts.push(`model mix>=${formatPct(minXgboostAcceptedShare, 0)}`);
+        if (!enabled.heuristic) {
+            parts.push('heur off');
+        }
+        else {
+            if (minHeuristicAccepted > 0)
+                parts.push(`heur >=${formatCount(minHeuristicAccepted)}`);
+            if (minHeuristicResolved > 0)
+                parts.push(`heur r>=${formatCount(minHeuristicResolved)}`);
+            if (minHeuristicResolvedShare > 0)
+                parts.push(`heur cov>=${formatPct(minHeuristicResolvedShare, 0)}`);
+            if (minHeuristicWinRate > 0)
+                parts.push(`heur wr>=${formatPct(minHeuristicWinRate, 0)}`);
+            if (minHeuristicPnlUsd !== 0)
+                parts.push(`heur pnl>=${formatDollar(minHeuristicPnlUsd)}`);
+            if (minHeuristicWorstWindowPnlUsd > -999999999)
+                parts.push(`heur worst>=${formatDollar(minHeuristicWorstWindowPnlUsd)}`);
+            if (minHeuristicPositiveWindows > 0)
+                parts.push(`heur pos>=${formatCount(minHeuristicPositiveWindows)}`);
+            if (maxHeuristicInactiveWindows >= 0)
+                parts.push(`heur idle<=${formatCount(maxHeuristicInactiveWindows)}`);
+            if (maxHeuristicAcceptedShare > 0)
+                parts.push(`heur mix<=${formatPct(maxHeuristicAcceptedShare, 0)}`);
+        }
+        if (!enabled.xgboost) {
+            parts.push('model off');
+        }
+        else {
+            if (minXgboostAccepted > 0)
+                parts.push(`model >=${formatCount(minXgboostAccepted)}`);
+            if (minXgboostResolved > 0)
+                parts.push(`model r>=${formatCount(minXgboostResolved)}`);
+            if (minXgboostResolvedShare > 0)
+                parts.push(`model cov>=${formatPct(minXgboostResolvedShare, 0)}`);
+            if (minXgboostWinRate > 0)
+                parts.push(`model wr>=${formatPct(minXgboostWinRate, 0)}`);
+            if (minXgboostPnlUsd !== 0)
+                parts.push(`model pnl>=${formatDollar(minXgboostPnlUsd)}`);
+            if (minXgboostWorstWindowPnlUsd > -999999999)
+                parts.push(`model worst>=${formatDollar(minXgboostWorstWindowPnlUsd)}`);
+            if (minXgboostPositiveWindows > 0)
+                parts.push(`model pos>=${formatCount(minXgboostPositiveWindows)}`);
+            if (maxXgboostInactiveWindows >= 0)
+                parts.push(`model idle<=${formatCount(maxXgboostInactiveWindows)}`);
+            if (minXgboostAcceptedShare > 0)
+                parts.push(`model mix>=${formatPct(minXgboostAcceptedShare, 0)}`);
+        }
         return parts.length ? parts.join(', ') : 'none';
     }
     catch {
@@ -1657,12 +1688,13 @@ function replaySearchMarketConcentrationSummary(bestRaw, currentRaw, constraints
         overLimit
     };
 }
-function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw) {
+function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRaw) {
     if (!currentRaw || !constraintsRaw)
         return { summary: '-', breachCount: 0, hasActiveGuard: false };
     try {
         const currentParsed = JSON.parse(currentRaw);
         const constraintsParsed = JSON.parse(constraintsRaw);
+        const enabled = replaySearchEnabledModes(policyRaw);
         const rawSummary = currentParsed?.signal_mode_summary;
         if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) {
             return { summary: '-', breachCount: 0, hasActiveGuard: false };
@@ -1683,6 +1715,8 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw) {
             ['heuristic', 'heur', 'max_heuristic_accepted_share', 'max'],
             ['xgboost', 'model', 'min_xgboost_accepted_share', 'min']
         ]) {
+            if ((mode === 'heuristic' && !enabled.heuristic) || (mode === 'xgboost' && !enabled.xgboost))
+                continue;
             const rawValue = summary[mode];
             const payload = rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
                 ? rawValue
@@ -1850,12 +1884,13 @@ function replayHeadroomCount(value) {
     const sign = rounded > 0 ? '+' : '';
     return `${sign}${rounded}`;
 }
-function replaySearchHeadroomSummary(resultRaw, constraintsRaw) {
+function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
     if (!resultRaw || !constraintsRaw)
         return { summary: '-', hasActiveGuard: false, closestMarginRatio: null, hasFailure: false };
     try {
         const resultParsed = JSON.parse(resultRaw);
         const constraintsParsed = JSON.parse(constraintsRaw);
+        const enabled = replaySearchEnabledModes(policyRaw);
         const constraints = constraintsParsed && typeof constraintsParsed === 'object' && !Array.isArray(constraintsParsed)
             ? constraintsParsed
             : {};
@@ -1944,6 +1979,8 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw) {
         if (maxWorstWindowDrawdownPct > 0)
             pushHeadroom('global', 'worst dd', globalWorstWindowDrawdown, maxWorstWindowDrawdownPct, replayHeadroomPctPoints, 'max');
         for (const [mode, prefix] of [['heuristic', 'heur'], ['xgboost', 'model']]) {
+            if ((mode === 'heuristic' && !enabled.heuristic) || (mode === 'xgboost' && !enabled.xgboost))
+                continue;
             const rawMode = signalModeSummary[mode];
             const payload = rawMode && typeof rawMode === 'object' && !Array.isArray(rawMode)
                 ? rawMode
@@ -2494,9 +2531,9 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const replaySearchSuggestedConfig = useMemo(() => replaySearchConfigSuggestion(latestReplaySearch?.config_json, settingsValues, configFieldByKey), [configFieldByKey, latestReplaySearch?.config_json, settingsValues]);
     const replaySearchApplyScopeSummary = useMemo(() => replaySearchApplyScope(latestReplaySearch?.config_json, settingsValues, configFieldByKey), [configFieldByKey, latestReplaySearch?.config_json, settingsValues]);
     const replaySearchDeployGap = useMemo(() => replaySearchDeployGapSummary(latestReplaySearch?.policy_json, latestReplaySearch?.config_json), [latestReplaySearch?.config_json, latestReplaySearch?.policy_json]);
-    const replaySearchCurrentModeRisk = useMemo(() => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
-    const replaySearchBestHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.result_json]);
-    const replaySearchCurrentHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
+    const replaySearchCurrentModeRisk = useMemo(() => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.base_policy_json), [latestReplaySearch?.base_policy_json, latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
+    const replaySearchBestHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.policy_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.policy_json, latestReplaySearch?.result_json]);
+    const replaySearchCurrentHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.base_policy_json), [latestReplaySearch?.base_policy_json, latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
     const replaySearchPauseGuard = useMemo(() => replaySearchPauseGuardSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json, latestReplaySearch?.pause_guard_penalty), [
         latestReplaySearch?.constraints_json,
         latestReplaySearch?.current_candidate_result_json,
@@ -2688,7 +2725,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         },
         {
             label: 'Mode guard',
-            value: replaySearchModeFloorSummary(latestReplaySearch?.constraints_json),
+            value: replaySearchModeFloorSummary(latestReplaySearch?.constraints_json, latestReplaySearch?.policy_json),
             color: latestReplaySearch?.constraints_json ? theme.white : theme.dim
         },
         {

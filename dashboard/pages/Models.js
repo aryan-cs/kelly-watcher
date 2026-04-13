@@ -2375,51 +2375,44 @@ function replaySearchNonAcceptingActiveWindowEpisodeCountFromPayload(payload) {
     return Math.max(Number(payload.non_accepting_active_window_episode_count || 0), 0);
   return replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload) > 0 ? 1 : 0;
 }
+function replaySearchLegacyAcceptingWindowConcentrationFallback(hasAccepts) {
+  return hasAccepts ? 1 : 0;
+}
 function replaySearchMaxAcceptingWindowAcceptedShareFromPayload(payload) {
   if (payload.max_accepting_window_accepted_share != null)
     return Number(payload.max_accepting_window_accepted_share || 0);
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload);
   const acceptedCount = Number(payload.accepted_count || 0);
-  return acceptedWindowCount <= 1 && acceptedCount > 0 ? 1 : 0;
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0);
 }
 function replaySearchTopTwoAcceptingWindowAcceptedShareFromPayload(payload) {
   if (payload.top_two_accepting_window_accepted_share != null)
     return Number(payload.top_two_accepting_window_accepted_share || 0);
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload);
   const acceptedCount = Number(payload.accepted_count || 0);
-  if (acceptedWindowCount <= 2 && acceptedCount > 0)
-    return 1;
-  return replaySearchMaxAcceptingWindowAcceptedShareFromPayload(payload);
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0);
 }
 function replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(payload) {
   if (payload.max_accepting_window_accepted_size_share != null)
     return Number(payload.max_accepting_window_accepted_size_share || 0);
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload);
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
-  return acceptedWindowCount <= 1 && acceptedSizeUsd > 0 ? 1 : 0;
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0);
 }
 function replaySearchTopTwoAcceptingWindowAcceptedSizeShareFromPayload(payload) {
   if (payload.top_two_accepting_window_accepted_size_share != null)
     return Number(payload.top_two_accepting_window_accepted_size_share || 0);
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload);
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
-  if (acceptedWindowCount <= 2 && acceptedSizeUsd > 0)
-    return 1;
-  return replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(payload);
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0);
 }
 function replaySearchAcceptingWindowAcceptedConcentrationIndexFromPayload(payload) {
   if (payload.accepting_window_accepted_concentration_index != null)
     return Number(payload.accepting_window_accepted_concentration_index || 0);
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload);
   const acceptedCount = Number(payload.accepted_count || 0);
-  return acceptedWindowCount <= 1 && acceptedCount > 0 ? 1 : 0;
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0);
 }
 function replaySearchAcceptingWindowAcceptedSizeConcentrationIndexFromPayload(payload) {
   if (payload.accepting_window_accepted_size_concentration_index != null)
     return Number(payload.accepting_window_accepted_size_concentration_index || 0);
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload);
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
-  return acceptedWindowCount <= 1 && acceptedSizeUsd > 0 ? 1 : 0;
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0);
 }
 function replaySearchModeHasParticipation(payload) {
   if (Number(payload.accepted_count || 0) > 0)
@@ -2475,34 +2468,26 @@ function replaySearchModeNonAcceptingActiveWindowEpisodeCountFromPayload(payload
 function replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload, windowCount) {
   if (payload.max_accepting_window_accepted_share != null)
     return Number(payload.max_accepting_window_accepted_share || 0);
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
   const acceptedCount = Number(payload.accepted_count || 0);
-  return acceptedWindowCount <= 1 && acceptedCount > 0 ? 1 : 0;
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0);
 }
 function replaySearchModeTopTwoAcceptingWindowAcceptedShareFromPayload(payload, windowCount) {
   if (payload.top_two_accepting_window_accepted_share != null)
     return Number(payload.top_two_accepting_window_accepted_share || 0);
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
   const acceptedCount = Number(payload.accepted_count || 0);
-  if (acceptedWindowCount <= 2 && acceptedCount > 0)
-    return 1;
-  return replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload, windowCount);
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0);
 }
 function replaySearchModeMaxAcceptingWindowAcceptedSizeShareFromPayload(payload, windowCount) {
   if (payload.max_accepting_window_accepted_size_share != null)
     return Number(payload.max_accepting_window_accepted_size_share || 0);
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
-  return acceptedWindowCount <= 1 && acceptedSizeUsd > 0 ? 1 : 0;
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0);
 }
 function replaySearchModeTopTwoAcceptingWindowAcceptedSizeShareFromPayload(payload, windowCount) {
   if (payload.top_two_accepting_window_accepted_size_share != null)
     return Number(payload.top_two_accepting_window_accepted_size_share || 0);
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount);
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0);
-  if (acceptedWindowCount <= 2 && acceptedSizeUsd > 0)
-    return 1;
-  return replaySearchModeMaxAcceptingWindowAcceptedSizeShareFromPayload(payload, windowCount);
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0);
 }
 
 function replaySearchCarryWindowShareFromPayload(payload) {

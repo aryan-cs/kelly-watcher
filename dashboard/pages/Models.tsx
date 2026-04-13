@@ -2133,60 +2133,56 @@ function replaySearchNonAcceptingActiveWindowEpisodeCountFromPayload(payload: Re
   return replaySearchMaxNonAcceptingActiveWindowStreakFromPayload(payload) > 0 ? 1 : 0
 }
 
+function replaySearchLegacyAcceptingWindowConcentrationFallback(hasAccepts: boolean): number {
+  return hasAccepts ? 1 : 0
+}
+
 function replaySearchMaxAcceptingWindowAcceptedShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.max_accepting_window_accepted_share != null) {
     return Number(payload.max_accepting_window_accepted_share || 0)
   }
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload)
   const acceptedCount = Number(payload.accepted_count || 0)
-  return acceptedWindowCount <= 1 && acceptedCount > 0 ? 1 : 0
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0)
 }
 
 function replaySearchTopTwoAcceptingWindowAcceptedShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.top_two_accepting_window_accepted_share != null) {
     return Number(payload.top_two_accepting_window_accepted_share || 0)
   }
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload)
   const acceptedCount = Number(payload.accepted_count || 0)
-  if (acceptedWindowCount <= 2 && acceptedCount > 0) return 1
-  return replaySearchMaxAcceptingWindowAcceptedShareFromPayload(payload)
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0)
 }
 
 function replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.max_accepting_window_accepted_size_share != null) {
     return Number(payload.max_accepting_window_accepted_size_share || 0)
   }
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload)
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
-  return acceptedWindowCount <= 1 && acceptedSizeUsd > 0 ? 1 : 0
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0)
 }
 
 function replaySearchTopTwoAcceptingWindowAcceptedSizeShareFromPayload(payload: Record<string, unknown>): number {
   if (payload.top_two_accepting_window_accepted_size_share != null) {
     return Number(payload.top_two_accepting_window_accepted_size_share || 0)
   }
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload)
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
-  if (acceptedWindowCount <= 2 && acceptedSizeUsd > 0) return 1
-  return replaySearchMaxAcceptingWindowAcceptedSizeShareFromPayload(payload)
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0)
 }
 
 function replaySearchAcceptingWindowAcceptedConcentrationIndexFromPayload(payload: Record<string, unknown>): number {
   if (payload.accepting_window_accepted_concentration_index != null) {
     return Number(payload.accepting_window_accepted_concentration_index || 0)
   }
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload)
   const acceptedCount = Number(payload.accepted_count || 0)
-  return acceptedWindowCount <= 1 && acceptedCount > 0 ? 1 : 0
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0)
 }
 
 function replaySearchAcceptingWindowAcceptedSizeConcentrationIndexFromPayload(payload: Record<string, unknown>): number {
   if (payload.accepting_window_accepted_size_concentration_index != null) {
     return Number(payload.accepting_window_accepted_size_concentration_index || 0)
   }
-  const acceptedWindowCount = replaySearchAcceptedWindowCountFromPayload(payload)
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
-  return acceptedWindowCount <= 1 && acceptedSizeUsd > 0 ? 1 : 0
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0)
 }
 
 function replaySearchModeHasParticipation(payload: Record<string, unknown>): boolean {
@@ -2241,38 +2237,32 @@ function replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload: Rec
   if (payload.max_accepting_window_accepted_share != null) {
     return Number(payload.max_accepting_window_accepted_share || 0)
   }
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount)
   const acceptedCount = Number(payload.accepted_count || 0)
-  return acceptedWindowCount <= 1 && acceptedCount > 0 ? 1 : 0
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0)
 }
 
 function replaySearchModeTopTwoAcceptingWindowAcceptedShareFromPayload(payload: Record<string, unknown>, windowCount: number): number {
   if (payload.top_two_accepting_window_accepted_share != null) {
     return Number(payload.top_two_accepting_window_accepted_share || 0)
   }
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount)
   const acceptedCount = Number(payload.accepted_count || 0)
-  if (acceptedWindowCount <= 2 && acceptedCount > 0) return 1
-  return replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload, windowCount)
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedCount > 0)
 }
 
 function replaySearchModeMaxAcceptingWindowAcceptedSizeShareFromPayload(payload: Record<string, unknown>, windowCount: number): number {
   if (payload.max_accepting_window_accepted_size_share != null) {
     return Number(payload.max_accepting_window_accepted_size_share || 0)
   }
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount)
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
-  return acceptedWindowCount <= 1 && acceptedSizeUsd > 0 ? 1 : 0
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0)
 }
 
 function replaySearchModeTopTwoAcceptingWindowAcceptedSizeShareFromPayload(payload: Record<string, unknown>, windowCount: number): number {
   if (payload.top_two_accepting_window_accepted_size_share != null) {
     return Number(payload.top_two_accepting_window_accepted_size_share || 0)
   }
-  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount)
   const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
-  if (acceptedWindowCount <= 2 && acceptedSizeUsd > 0) return 1
-  return replaySearchModeMaxAcceptingWindowAcceptedSizeShareFromPayload(payload, windowCount)
+  return replaySearchLegacyAcceptingWindowConcentrationFallback(acceptedSizeUsd > 0)
 }
 
 function replaySearchCarryWindowShareFromPayload(payload: Record<string, unknown>): number {

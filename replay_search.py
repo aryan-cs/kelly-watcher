@@ -2014,7 +2014,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
         enriched["peak_open_exposure_usd"] = 0.0
     if "max_open_exposure_share" not in enriched:
         enriched["max_open_exposure_share"] = 0.0
-    if "window_end_open_exposure_usd" not in enriched:
+    if enriched.get("window_end_open_exposure_usd") is None:
         final_bankroll_raw = enriched.get("final_bankroll_usd")
         if final_bankroll_raw is None:
             enriched["window_end_open_exposure_usd"] = 0.0
@@ -2025,7 +2025,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
                 max(final_equity_usd - final_bankroll_usd, 0.0),
                 6,
             )
-    if "window_end_open_exposure_share" not in enriched:
+    if enriched.get("window_end_open_exposure_share") is None:
         final_equity_usd = max(float(enriched.get("final_equity_usd") or 0.0), 0.0)
         window_end_open_exposure_usd = float(enriched.get("window_end_open_exposure_usd") or 0.0)
         if final_equity_usd > 0:
@@ -2037,22 +2037,22 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             enriched["window_end_open_exposure_share"] = 1.0
         else:
             enriched["window_end_open_exposure_share"] = 0.0
-    if "max_window_end_open_exposure_usd" not in enriched:
+    if enriched.get("max_window_end_open_exposure_usd") is None:
         enriched["max_window_end_open_exposure_usd"] = round(
             float(enriched.get("window_end_open_exposure_usd") or 0.0),
             6,
         )
-    if "max_window_end_open_exposure_share" not in enriched:
+    if enriched.get("max_window_end_open_exposure_share") is None:
         enriched["max_window_end_open_exposure_share"] = round(
             float(enriched.get("window_end_open_exposure_share") or 0.0),
             6,
         )
-    if "avg_window_end_open_exposure_share" not in enriched:
+    if enriched.get("avg_window_end_open_exposure_share") is None:
         enriched["avg_window_end_open_exposure_share"] = round(
             float(enriched.get("window_end_open_exposure_share") or 0.0),
             6,
         )
-    if "carry_window_count" not in enriched:
+    if enriched.get("carry_window_count") is None:
         enriched["carry_window_count"] = 1 if float(enriched.get("window_end_open_exposure_usd") or 0.0) > 0 else 0
     if "live_guard_window_count" not in enriched:
         enriched["live_guard_window_count"] = 1 if int(enriched.get("window_end_live_guard_triggered") or 0) > 0 else 0
@@ -2080,7 +2080,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
             enriched["inactive_window_count"] = 0 if _window_has_participation(enriched) else 1
         elif "active_window_count" in enriched:
             enriched["inactive_window_count"] = max(window_count - int(enriched.get("active_window_count") or 0), 0)
-    if "carry_window_share" not in enriched:
+    if enriched.get("carry_window_share") is None:
         carry_window_count = int(enriched.get("carry_window_count") or 0)
         active_window_count = int(enriched.get("active_window_count") or 0)
         if window_count == 1:
@@ -2096,7 +2096,7 @@ def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
         enriched["carry_restart_window_count"] = 0
     if "carry_restart_window_opportunity_count" not in enriched:
         enriched["carry_restart_window_opportunity_count"] = 0
-    if "carry_restart_window_share" not in enriched:
+    if enriched.get("carry_restart_window_share") is None:
         carry_restart_window_count = int(enriched.get("carry_restart_window_count") or 0)
         carry_restart_window_opportunity_count = int(enriched.get("carry_restart_window_opportunity_count") or 0)
         if carry_restart_window_opportunity_count > 0:

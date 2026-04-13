@@ -1200,6 +1200,31 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(legacy_null_final_equity["carry_window_count"], 1)
         self.assertEqual(legacy_null_final_equity["carry_window_share"], 1.0)
 
+        legacy_null_carry_fields = replay_search._with_window_activity_fields(
+            {
+                "initial_bankroll_usd": 100.0,
+                "final_equity_usd": 105.0,
+                "final_bankroll_usd": 90.0,
+                "accepted_count": 2,
+                "resolved_count": 1,
+                "window_end_open_exposure_usd": None,
+                "window_end_open_exposure_share": None,
+                "max_window_end_open_exposure_usd": None,
+                "max_window_end_open_exposure_share": None,
+                "avg_window_end_open_exposure_share": None,
+                "carry_window_count": None,
+                "carry_window_share": None,
+            }
+        )
+
+        self.assertEqual(legacy_null_carry_fields["window_end_open_exposure_usd"], 15.0)
+        self.assertAlmostEqual(legacy_null_carry_fields["window_end_open_exposure_share"], 15.0 / 105.0, places=6)
+        self.assertEqual(legacy_null_carry_fields["max_window_end_open_exposure_usd"], 15.0)
+        self.assertAlmostEqual(legacy_null_carry_fields["max_window_end_open_exposure_share"], 15.0 / 105.0, places=6)
+        self.assertAlmostEqual(legacy_null_carry_fields["avg_window_end_open_exposure_share"], 15.0 / 105.0, places=6)
+        self.assertEqual(legacy_null_carry_fields["carry_window_count"], 1)
+        self.assertEqual(legacy_null_carry_fields["carry_window_share"], 1.0)
+
         live_guarded = replay_search._with_window_activity_fields(
             {
                 "initial_bankroll_usd": 100.0,
@@ -4777,6 +4802,36 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(failures, ["max_window_end_open_exposure_share"])
+
+    def test_constraint_failures_use_null_single_window_carry_fields_fallback(self) -> None:
+        failures = replay_search._constraint_failures(
+            replay_search._with_window_activity_fields(
+                {
+                    "window_count": 1,
+                    "initial_bankroll_usd": 100.0,
+                    "final_equity_usd": 105.0,
+                    "final_bankroll_usd": 90.0,
+                    "accepted_count": 2,
+                    "resolved_count": 1,
+                    "window_end_open_exposure_usd": None,
+                    "window_end_open_exposure_share": None,
+                    "max_window_end_open_exposure_usd": None,
+                    "max_window_end_open_exposure_share": None,
+                    "avg_window_end_open_exposure_share": None,
+                    "carry_window_count": None,
+                    "carry_window_share": None,
+                }
+            ),
+            **self._constraint_defaults(
+                max_window_end_open_exposure_share=0.1,
+                max_carry_window_share=0.5,
+            ),
+        )
+
+        self.assertEqual(
+            failures,
+            ["max_window_end_open_exposure_share", "carry_window_share"],
+        )
 
     def test_constraint_failures_reject_low_accepted_window_count(self) -> None:
         failures = replay_search._constraint_failures(

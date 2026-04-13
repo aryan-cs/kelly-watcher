@@ -840,6 +840,99 @@ class RuntimeFixesTest(unittest.TestCase):
         assert row is not None
         self.assertEqual(int(row["id"]), expected_id)
 
+    def test_latest_retrain_state_payload_loads_latest_persisted_run_for_restart(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO retrain_runs (
+                            started_at, finished_at, trigger, status, ok, deployed,
+                            sample_count, min_samples, message
+                        ) VALUES (?,?,?,?,?,?,?,?,?)
+                        """,
+                        (100, 110, "scheduled", "completed_not_deployed", 0, 0, 20, 25, "older retrain"),
+                    )
+                    latest_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO retrain_runs (
+                                started_at, finished_at, trigger, status, ok, deployed,
+                                sample_count, min_samples, message
+                            ) VALUES (?,?,?,?,?,?,?,?,?)
+                            """,
+                            (200, 240, "manual", "deployed", 1, 1, 42, 30, "latest retrain"),
+                        ).lastrowid
+                        or 0
+                    )
+                    conn.commit()
+                    row = main._latest_retrain_run()
+                    payload = main._latest_retrain_state_payload(row)
+                finally:
+                    conn.close()
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        assert row is not None
+        self.assertEqual(int(row["id"]), latest_id)
+        self.assertEqual(payload["last_retrain_started_at"], 200)
+        self.assertEqual(payload["last_retrain_finished_at"], 240)
+        self.assertEqual(payload["last_retrain_status"], "deployed")
+        self.assertEqual(payload["last_retrain_message"], "latest retrain")
+        self.assertEqual(payload["last_retrain_sample_count"], 42)
+        self.assertEqual(payload["last_retrain_min_samples"], 30)
+        self.assertEqual(payload["last_retrain_trigger"], "manual")
+        self.assertTrue(payload["last_retrain_deployed"])
+
+    def test_latest_retrain_run_uses_started_at_when_finished_at_missing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO retrain_runs (
+                            started_at, finished_at, trigger, status, ok, deployed,
+                            sample_count, min_samples, message
+                        ) VALUES (?,?,?,?,?,?,?,?,?)
+                        """,
+                        (100, 180, "scheduled", "deployed", 1, 1, 30, 20, "older retrain"),
+                    )
+                    expected_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO retrain_runs (
+                                started_at, finished_at, trigger, status, ok, deployed,
+                                sample_count, min_samples, message
+                            ) VALUES (?,?,?,?,?,?,?,?,?)
+                            """,
+                            (250, 0, "manual", "failed", 0, 0, 33, 20, "latest retrain"),
+                        ).lastrowid
+                        or 0
+                    )
+                    conn.commit()
+                    row = main._latest_retrain_run()
+                finally:
+                    conn.close()
+            finally:
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+        assert row is not None
+        self.assertEqual(int(row["id"]), expected_id)
+
     def test_dashboard_spawn_shadow_restart_process_writes_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "data"

@@ -2290,6 +2290,20 @@ def _replay_search_transient_status_state(
 PROMOTABLE_REPLAY_CONFIG_KEYS = frozenset(str(key).strip().upper() for key in REPLAY_POLICY_CONFIG_KEY_MAP.values())
 
 
+def _latest_retrain_state_payload(run_row: dict[str, Any] | None) -> dict[str, object]:
+    row = run_row or {}
+    return {
+        "last_retrain_started_at": int(row.get("started_at") or 0),
+        "last_retrain_finished_at": int(row.get("finished_at") or 0),
+        "last_retrain_status": str(row.get("status") or ""),
+        "last_retrain_message": str(row.get("message") or ""),
+        "last_retrain_sample_count": int(row.get("sample_count") or 0),
+        "last_retrain_min_samples": int(row.get("min_samples") or 0),
+        "last_retrain_trigger": str(row.get("trigger") or ""),
+        "last_retrain_deployed": bool(row.get("deployed")),
+    }
+
+
 def _latest_replay_search_state_payload(run_row: dict[str, Any] | None) -> dict[str, object]:
     row = run_row or {}
     run_id = int(row.get("id") or 0)
@@ -2496,6 +2510,27 @@ def _latest_replay_search_run_id() -> int:
     try:
         row = conn.execute("SELECT COALESCE(MAX(id), 0) AS id FROM replay_search_runs").fetchone()
         return int(row["id"] or 0)
+    finally:
+        conn.close()
+
+
+def _latest_retrain_run() -> dict[str, Any] | None:
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM retrain_runs
+            ORDER BY
+                CASE
+                    WHEN finished_at > 0 THEN finished_at
+                    ELSE started_at
+                END DESC,
+                id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
     finally:
         conn.close()
 
@@ -3908,9 +3943,12 @@ def main() -> None:
         "model_prediction_mode": "",
         "model_loaded_at": 0,
     }
+    latest_retrain = _latest_retrain_run()
     latest_replay_search = _latest_replay_search_run()
     latest_promotion = _latest_applied_replay_promotion()
     latest_promotion_attempt = _latest_replay_promotion()
+    if latest_retrain is not None:
+        bot_state_snapshot.update(_latest_retrain_state_payload(latest_retrain))
     if latest_replay_search is not None:
         bot_state_snapshot.update(_latest_replay_search_state_payload(latest_replay_search))
     if latest_promotion_attempt is not None:

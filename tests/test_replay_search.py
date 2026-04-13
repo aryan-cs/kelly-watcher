@@ -611,6 +611,134 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(breakdown["mode_worst_active_window_accepted_penalty_usd"], 0.0)
         self.assertEqual(breakdown["score_usd"], 20.0)
 
+    def test_score_breakdown_penalizes_mode_active_window_mix(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "accepted_size_usd": 100.0,
+                "resolved_size_usd": 100.0,
+                "window_count": 2,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 5,
+                        "resolved_count": 5,
+                        "accepted_size_usd": 50.0,
+                        "resolved_size_usd": 50.0,
+                        "trade_count": 5,
+                        "total_pnl_usd": 8.0,
+                        "max_active_window_accepted_share": 0.9,
+                        "max_active_window_accepted_size_share": 0.85,
+                    },
+                    "xgboost": {
+                        "accepted_count": 5,
+                        "resolved_count": 5,
+                        "accepted_size_usd": 50.0,
+                        "resolved_size_usd": 50.0,
+                        "trade_count": 5,
+                        "total_pnl_usd": 12.0,
+                        "min_active_window_accepted_share": 0.1,
+                        "min_active_window_accepted_size_share": 0.15,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            mode_active_window_accepted_share_penalty=0.1,
+            mode_active_window_accepted_size_share_penalty=0.2,
+            worst_active_window_accepted_penalty=0.0,
+            worst_active_window_accepted_size_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_size_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_active_window_accepted_share_penalty_usd"], 270.0)
+        self.assertEqual(breakdown["mode_active_window_accepted_size_share_penalty_usd"], 510.0)
+        self.assertEqual(breakdown["score_usd"], -760.0)
+
+    def test_score_breakdown_ignores_mode_active_window_mix_when_peer_scorer_disabled(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "accepted_count": 5,
+                "resolved_count": 5,
+                "accepted_size_usd": 50.0,
+                "resolved_size_usd": 50.0,
+                "window_count": 2,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 5,
+                        "resolved_count": 5,
+                        "accepted_size_usd": 50.0,
+                        "resolved_size_usd": 50.0,
+                        "trade_count": 5,
+                        "total_pnl_usd": 20.0,
+                        "max_active_window_accepted_share": 1.0,
+                        "max_active_window_accepted_size_share": 1.0,
+                    },
+                    "xgboost": {
+                        "accepted_count": 0,
+                        "resolved_count": 0,
+                        "accepted_size_usd": 0.0,
+                        "resolved_size_usd": 0.0,
+                        "trade_count": 0,
+                        "total_pnl_usd": 0.0,
+                        "min_active_window_accepted_share": 0.0,
+                        "min_active_window_accepted_size_share": 0.0,
+                    },
+                },
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            mode_active_window_accepted_share_penalty=0.1,
+            mode_active_window_accepted_size_share_penalty=0.2,
+            worst_active_window_accepted_penalty=0.0,
+            worst_active_window_accepted_size_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_size_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=False,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["mode_active_window_accepted_share_penalty_usd"], 0.0)
+        self.assertEqual(breakdown["mode_active_window_accepted_size_share_penalty_usd"], 0.0)
+        self.assertEqual(breakdown["score_usd"], 20.0)
+
     def test_score_breakdown_ignores_disabled_scorer_losses(self) -> None:
         breakdown = replay_search._score_breakdown(
             {
@@ -5426,6 +5554,110 @@ class ReplaySearchTest(unittest.TestCase):
             self.assertEqual(json.loads(candidate_rows[2][5])["MIN_CONFIDENCE"], 0.65)
             self.assertEqual(json.loads(candidate_rows[2][6])["max_drawdown_pct"], 0.18)
             self.assertEqual(json.loads(candidate_rows[2][6])["score_breakdown"]["score_usd"], -460.0)
+
+    def test_main_persists_mode_active_window_mix_penalties(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.6:
+                heuristic_share = 0.9
+                heuristic_size_share = 0.85
+                xgboost_share = 0.1
+                xgboost_size_share = 0.15
+                total_pnl = 48.0
+            else:
+                heuristic_share = 0.6
+                heuristic_size_share = 0.55
+                xgboost_share = 0.4
+                xgboost_size_share = 0.45
+                total_pnl = 42.0
+            return {
+                "run_id": 1,
+                "total_pnl_usd": total_pnl,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "resolved_count": 10,
+                "accepted_size_usd": 100.0,
+                "resolved_size_usd": 100.0,
+                "rejected_count": 0,
+                "unresolved_count": 0,
+                "trade_count": 10,
+                "win_rate": 0.6,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 5,
+                        "resolved_count": 5,
+                        "accepted_size_usd": 50.0,
+                        "resolved_size_usd": 50.0,
+                        "trade_count": 5,
+                        "total_pnl_usd": 14.0,
+                        "win_count": 3,
+                        "max_active_window_accepted_share": heuristic_share,
+                        "max_active_window_accepted_size_share": heuristic_size_share,
+                    },
+                    "xgboost": {
+                        "accepted_count": 5,
+                        "resolved_count": 5,
+                        "accepted_size_usd": 50.0,
+                        "resolved_size_usd": 50.0,
+                        "trade_count": 5,
+                        "total_pnl_usd": total_pnl - 14.0,
+                        "win_count": 3,
+                        "min_active_window_accepted_share": xgboost_share,
+                        "min_active_window_accepted_size_share": xgboost_size_share,
+                    },
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "replay_search_mix_penalties.db"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "replay_search.py",
+                "--db",
+                str(db_path),
+                "--label-prefix",
+                "mix-persist",
+                "--grid-json",
+                json.dumps({"min_confidence": [0.55, 0.60]}),
+                "--mode-active-window-accepted-share-penalty",
+                "0.1",
+                "--mode-active-window-accepted-size-share-penalty",
+                "0.2",
+            ]
+            with (
+                patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                replay_search.main()
+
+            payload = json.loads(stdout.getvalue())
+            conn = sqlite3.connect(str(db_path))
+            try:
+                run_row = conn.execute(
+                    """
+                    SELECT mode_active_window_accepted_share_penalty, mode_active_window_accepted_size_share_penalty
+                    FROM replay_search_runs
+                    """
+                ).fetchone()
+                candidate_row = conn.execute(
+                    """
+                    SELECT result_json
+                    FROM replay_search_candidates
+                    WHERE json_extract(overrides_json, '$.min_confidence') = 0.6
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertEqual(payload["mode_active_window_accepted_share_penalty"], 0.1)
+            self.assertEqual(payload["mode_active_window_accepted_size_share_penalty"], 0.2)
+            self.assertEqual(run_row, (0.1, 0.2))
+            result_json = json.loads(candidate_row[0])
+            self.assertEqual(result_json["score_breakdown"]["mode_active_window_accepted_share_penalty_usd"], 270.0)
+            self.assertEqual(result_json["score_breakdown"]["mode_active_window_accepted_size_share_penalty_usd"], 510.0)
 
     def test_main_backfills_existing_search_tables_before_insert(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):

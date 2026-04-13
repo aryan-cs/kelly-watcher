@@ -202,6 +202,8 @@ interface ReplaySearchSummaryRow {
   mode_resolved_size_share_penalty: number | null
   mode_worst_window_resolved_share_penalty: number | null
   mode_worst_window_resolved_size_share_penalty: number | null
+  mode_active_window_accepted_share_penalty: number | null
+  mode_active_window_accepted_size_share_penalty: number | null
   worst_active_window_accepted_penalty: number | null
   worst_active_window_accepted_size_penalty: number | null
   mode_worst_active_window_accepted_penalty: number | null
@@ -313,7 +315,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search run', text: 'How recently the latest persisted replay search finished.'},
       {label: 'Search fea/rej', text: 'Feasible versus rejected candidate count from the latest replay search run.'},
       {label: 'Best search', text: 'Score and candidate index for the latest best feasible replay-search result.'},
-      {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, count and deployed-dollar active-window depth, pause-guard, count-weighted and deployed-dollar coverage, global window inactivity, worst-window coverage, scorer coverage, scorer-window depth, scorer-loss, scorer-inactivity, and concentration terms.'},
+      {label: 'Score weights', text: 'Active replay-search score weights on the latest search run, including drawdown, instability, worst-window loss, count and deployed-dollar active-window depth, pause-guard, count-weighted and deployed-dollar coverage, global window inactivity, worst-window coverage, scorer coverage, scorer-window depth, scorer active-window mix, scorer-loss, scorer-inactivity, and concentration terms.'},
       {label: 'Best score', text: 'Best feasible score decomposition: replay P&L minus drawdown, instability, worst-window loss, active-window depth, pause-guard, count-weighted and deployed-dollar coverage, global window inactivity, worst-window coverage, scorer coverage, scorer-window depth, scorer-loss, scorer-inactivity, and concentration penalties.'},
       {label: 'Search robust', text: 'Best feasible search candidate P&L and drawdown.'},
       {label: 'Search windows', text: 'Positive versus negative windows, active versus idle participation, sparsest active-window trade depth and deployed dollars, and the worst window P&L for the latest best feasible search candidate.'},
@@ -330,7 +332,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Search modes', text: 'Accepted trade mix and deployed-dollar mix, plus count-weighted and deployed-dollar resolved coverage and replay P&L by scorer on the latest best feasible replay-search candidate.'},
       {label: 'Cur evidence', text: 'Current/base scorer accepted trade mix and deployed-dollar mix, plus count-weighted and deployed-dollar resolved evidence and replay P&L.'},
       {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, resolved-count, count-weighted and deployed-dollar resolved-share, win-rate, total P&L, worst-window P&L, worst-window count-weighted coverage, worst-window deployed-dollar coverage, and aggregate plus active-window count-share and deployed-dollar-share guardrails from the latest replay search, if any.'},
-      {label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer coverage, scorer deployed-dollar coverage, scorer worst-window count-weighted coverage, scorer worst-window deployed-dollar coverage, scorer active-window count and dollar depth, scorer-loss, and scorer-inactivity pressure.'},
+      {label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer coverage, scorer deployed-dollar coverage, scorer worst-window count-weighted coverage, scorer worst-window deployed-dollar coverage, scorer active-window count depth, scorer active-window deployed-dollar depth, scorer active-window mix, scorer-loss, and scorer-inactivity pressure.'},
       {label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.'},
       {label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.'},
       {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share and deployed-dollar-share percentage points.'},
@@ -663,6 +665,8 @@ WITH latest_search AS (
     mode_resolved_size_share_penalty,
     mode_worst_window_resolved_share_penalty,
     mode_worst_window_resolved_size_share_penalty,
+    mode_active_window_accepted_share_penalty,
+    mode_active_window_accepted_size_share_penalty,
     worst_active_window_accepted_penalty,
     worst_active_window_accepted_size_penalty,
     mode_worst_active_window_accepted_penalty,
@@ -735,6 +739,8 @@ SELECT
   latest_search.mode_resolved_size_share_penalty,
   latest_search.mode_worst_window_resolved_share_penalty,
   latest_search.mode_worst_window_resolved_size_share_penalty,
+  latest_search.mode_active_window_accepted_share_penalty,
+  latest_search.mode_active_window_accepted_size_share_penalty,
   latest_search.worst_active_window_accepted_penalty,
   latest_search.worst_active_window_accepted_size_penalty,
   latest_search.mode_worst_active_window_accepted_penalty,
@@ -1833,6 +1839,8 @@ function replaySearchScoreWeightSummary(row: ReplaySearchSummaryRow | undefined)
   pushIfActive('m-sz-cov', row.mode_resolved_size_share_penalty)
   pushIfActive('mw-cov', row.mode_worst_window_resolved_share_penalty)
   pushIfActive('mw-sz-cov', row.mode_worst_window_resolved_size_share_penalty)
+  pushIfActive('m-win-mix', row.mode_active_window_accepted_share_penalty)
+  pushIfActive('m-win-mix$', row.mode_active_window_accepted_size_share_penalty)
   pushIfActive('mw-act', row.mode_worst_active_window_accepted_penalty)
   pushIfActive('mw-act$', row.mode_worst_active_window_accepted_size_penalty)
   pushIfActive('mode', row.mode_loss_penalty)
@@ -1877,6 +1885,8 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     const modeResolvedSizeSharePenaltyUsd = Number(breakdown.mode_resolved_size_share_penalty_usd || 0)
     const modeWorstWindowResolvedSharePenaltyUsd = Number(breakdown.mode_worst_window_resolved_share_penalty_usd || 0)
     const modeWorstWindowResolvedSizeSharePenaltyUsd = Number(breakdown.mode_worst_window_resolved_size_share_penalty_usd || 0)
+    const modeActiveWindowAcceptedSharePenaltyUsd = Number(breakdown.mode_active_window_accepted_share_penalty_usd || 0)
+    const modeActiveWindowAcceptedSizeSharePenaltyUsd = Number(breakdown.mode_active_window_accepted_size_share_penalty_usd || 0)
     const modeWorstActiveWindowAcceptedPenaltyUsd = Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0)
     const modeWorstActiveWindowAcceptedSizePenaltyUsd = Number(breakdown.mode_worst_active_window_accepted_size_penalty_usd || 0)
     const modeLossPenaltyUsd = Number(breakdown.mode_loss_penalty_usd || 0)
@@ -1911,6 +1921,8 @@ function replaySearchScoreBreakdownSummary(raw: string | null | undefined): stri
     if (Math.abs(modeResolvedSizeSharePenaltyUsd) > 1e-9) parts.push(`m-sz-cov ${formatDollar(-modeResolvedSizeSharePenaltyUsd)}`)
     if (Math.abs(modeWorstWindowResolvedSharePenaltyUsd) > 1e-9) parts.push(`mw-cov ${formatDollar(-modeWorstWindowResolvedSharePenaltyUsd)}`)
     if (Math.abs(modeWorstWindowResolvedSizeSharePenaltyUsd) > 1e-9) parts.push(`mw-sz-cov ${formatDollar(-modeWorstWindowResolvedSizeSharePenaltyUsd)}`)
+    if (Math.abs(modeActiveWindowAcceptedSharePenaltyUsd) > 1e-9) parts.push(`m-win-mix ${formatDollar(-modeActiveWindowAcceptedSharePenaltyUsd)}`)
+    if (Math.abs(modeActiveWindowAcceptedSizeSharePenaltyUsd) > 1e-9) parts.push(`m-win-mix$ ${formatDollar(-modeActiveWindowAcceptedSizeSharePenaltyUsd)}`)
     if (Math.abs(modeWorstActiveWindowAcceptedPenaltyUsd) > 1e-9) parts.push(`mw-act ${formatDollar(-modeWorstActiveWindowAcceptedPenaltyUsd)}`)
     if (Math.abs(modeWorstActiveWindowAcceptedSizePenaltyUsd) > 1e-9) parts.push(`mw-act$ ${formatDollar(-modeWorstActiveWindowAcceptedSizePenaltyUsd)}`)
     if (Math.abs(modeLossPenaltyUsd) > 1e-9) parts.push(`mode ${formatDollar(-modeLossPenaltyUsd)}`)
@@ -1963,6 +1975,8 @@ function replaySearchScoreDriftSummary(
         mode_resolved_size_share_penalty_usd: Number(breakdown.mode_resolved_size_share_penalty_usd || 0),
         mode_worst_window_resolved_share_penalty_usd: Number(breakdown.mode_worst_window_resolved_share_penalty_usd || 0),
         mode_worst_window_resolved_size_share_penalty_usd: Number(breakdown.mode_worst_window_resolved_size_share_penalty_usd || 0),
+        mode_active_window_accepted_share_penalty_usd: Number(breakdown.mode_active_window_accepted_share_penalty_usd || 0),
+        mode_active_window_accepted_size_share_penalty_usd: Number(breakdown.mode_active_window_accepted_size_share_penalty_usd || 0),
         mode_worst_active_window_accepted_penalty_usd: Number(breakdown.mode_worst_active_window_accepted_penalty_usd || 0),
         mode_worst_active_window_accepted_size_penalty_usd: Number(breakdown.mode_worst_active_window_accepted_size_penalty_usd || 0),
         mode_loss_penalty_usd: Number(breakdown.mode_loss_penalty_usd || 0),
@@ -2006,6 +2020,8 @@ function replaySearchScoreDriftSummary(
   const modeSizeCoverageDelta = current.mode_resolved_size_share_penalty_usd - best.mode_resolved_size_share_penalty_usd
   const modeWorstCoverageDelta = current.mode_worst_window_resolved_share_penalty_usd - best.mode_worst_window_resolved_share_penalty_usd
   const modeWorstSizeCoverageDelta = current.mode_worst_window_resolved_size_share_penalty_usd - best.mode_worst_window_resolved_size_share_penalty_usd
+  const modeActiveWindowMixDelta = current.mode_active_window_accepted_share_penalty_usd - best.mode_active_window_accepted_share_penalty_usd
+  const modeActiveWindowSizeMixDelta = current.mode_active_window_accepted_size_share_penalty_usd - best.mode_active_window_accepted_size_share_penalty_usd
   const modeWorstActiveDepthDelta = current.mode_worst_active_window_accepted_penalty_usd - best.mode_worst_active_window_accepted_penalty_usd
   const modeWorstActiveSizeDepthDelta = current.mode_worst_active_window_accepted_size_penalty_usd - best.mode_worst_active_window_accepted_size_penalty_usd
   const modeDelta = current.mode_loss_penalty_usd - best.mode_loss_penalty_usd
@@ -2040,6 +2056,8 @@ function replaySearchScoreDriftSummary(
   if (Math.abs(modeSizeCoverageDelta) > 1e-9) parts.push(`m-sz-cov ${formatDollar(modeSizeCoverageDelta)}`)
   if (Math.abs(modeWorstCoverageDelta) > 1e-9) parts.push(`mw-cov ${formatDollar(modeWorstCoverageDelta)}`)
   if (Math.abs(modeWorstSizeCoverageDelta) > 1e-9) parts.push(`mw-sz-cov ${formatDollar(modeWorstSizeCoverageDelta)}`)
+  if (Math.abs(modeActiveWindowMixDelta) > 1e-9) parts.push(`m-win-mix ${formatDollar(modeActiveWindowMixDelta)}`)
+  if (Math.abs(modeActiveWindowSizeMixDelta) > 1e-9) parts.push(`m-win-mix$ ${formatDollar(modeActiveWindowSizeMixDelta)}`)
   if (Math.abs(modeWorstActiveDepthDelta) > 1e-9) parts.push(`mw-act ${formatDollar(modeWorstActiveDepthDelta)}`)
   if (Math.abs(modeWorstActiveSizeDepthDelta) > 1e-9) parts.push(`mw-act$ ${formatDollar(modeWorstActiveSizeDepthDelta)}`)
   if (Math.abs(modeDelta) > 1e-9) parts.push(`mode ${formatDollar(modeDelta)}`)
@@ -2512,6 +2530,8 @@ function replaySearchModePenaltySummary(row: ReplaySearchSummaryRow | undefined)
   const modeResolvedSizeSharePenalty = Math.max(Number(row.mode_resolved_size_share_penalty || 0), 0)
   const modeWorstWindowResolvedSharePenalty = Math.max(Number(row.mode_worst_window_resolved_share_penalty || 0), 0)
   const modeWorstWindowResolvedSizeSharePenalty = Math.max(Number(row.mode_worst_window_resolved_size_share_penalty || 0), 0)
+  const modeActiveWindowAcceptedSharePenalty = Math.max(Number(row.mode_active_window_accepted_share_penalty || 0), 0)
+  const modeActiveWindowAcceptedSizeSharePenalty = Math.max(Number(row.mode_active_window_accepted_size_share_penalty || 0), 0)
   const modeWorstActiveWindowAcceptedPenalty = Math.max(Number(row.mode_worst_active_window_accepted_penalty || 0), 0)
   const modeWorstActiveWindowAcceptedSizePenalty = Math.max(Number(row.mode_worst_active_window_accepted_size_penalty || 0), 0)
   const modeLossPenalty = Math.max(Number(row.mode_loss_penalty || 0), 0)
@@ -2520,6 +2540,8 @@ function replaySearchModePenaltySummary(row: ReplaySearchSummaryRow | undefined)
   if (modeResolvedSizeSharePenalty > 0) parts.push(`sz-cov ${modeResolvedSizeSharePenalty.toFixed(2)}x`)
   if (modeWorstWindowResolvedSharePenalty > 0) parts.push(`w-cov ${modeWorstWindowResolvedSharePenalty.toFixed(2)}x`)
   if (modeWorstWindowResolvedSizeSharePenalty > 0) parts.push(`w-sz-cov ${modeWorstWindowResolvedSizeSharePenalty.toFixed(2)}x`)
+  if (modeActiveWindowAcceptedSharePenalty > 0) parts.push(`win-mix ${modeActiveWindowAcceptedSharePenalty.toFixed(2)}x`)
+  if (modeActiveWindowAcceptedSizeSharePenalty > 0) parts.push(`win-mix$ ${modeActiveWindowAcceptedSizeSharePenalty.toFixed(2)}x`)
   if (modeWorstActiveWindowAcceptedPenalty > 0) parts.push(`w-act ${modeWorstActiveWindowAcceptedPenalty.toFixed(2)}x`)
   if (modeWorstActiveWindowAcceptedSizePenalty > 0) parts.push(`w-act$ ${modeWorstActiveWindowAcceptedSizePenalty.toFixed(2)}x`)
   if (modeLossPenalty > 0) parts.push(`loss ${modeLossPenalty.toFixed(2)}x`)
@@ -2814,6 +2836,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'heur worst act$'
         case 'heuristic_accepted_size_share':
           return 'heur mix$'
+        case 'heuristic_accepted_share':
+          return 'heur mix'
         case 'heuristic_active_window_accepted_share':
           return 'heur win-mix'
         case 'heuristic_active_window_accepted_size_share':
@@ -2830,6 +2854,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'model worst act$'
         case 'xgboost_accepted_size_share':
           return 'model mix$'
+        case 'xgboost_accepted_share':
+          return 'model mix'
         case 'xgboost_active_window_accepted_share':
           return 'model win-mix'
         case 'xgboost_active_window_accepted_size_share':

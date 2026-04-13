@@ -168,14 +168,14 @@ def _score_breakdown(
     signal_mode_summary = _signal_mode_summary(result)
     window_count = max(int(result.get("window_count") or 0), 0)
     inactive_window_count = int(result.get("inactive_window_count") or 0)
-    active_window_count = max(int(result.get("active_window_count") or 0), 0)
+    active_window_count = _active_window_count(result)
     accepted_window_count = _accepted_window_count(result)
     max_non_accepting_active_window_streak = _max_non_accepting_active_window_streak(result)
     non_accepting_active_window_episode_risk = _non_accepting_active_window_episode_risk(result)
     max_accepting_window_accepted_share = _max_accepting_window_accepted_share(result)
     max_accepting_window_accepted_size_share = _max_accepting_window_accepted_size_share(result)
-    worst_active_window_accepted_count = int(result.get("worst_active_window_accepted_count") or 0)
-    worst_active_window_accepted_size_usd = float(result.get("worst_active_window_accepted_size_usd") or 0.0)
+    worst_active_window_accepted_count = _global_worst_active_window_accepted_count(result)
+    worst_active_window_accepted_size_usd = _global_worst_active_window_accepted_size_usd(result)
     avg_active_window_accepted_size_usd = (
         accepted_size_usd / float(accepted_window_count)
         if accepted_window_count > 0
@@ -1724,6 +1724,32 @@ def _global_worst_active_window_resolved_size_share(result: dict[str, Any]) -> f
     )
 
 
+def _global_worst_active_window_accepted_count(result: dict[str, Any]) -> int:
+    raw_accepting_value = result.get("worst_accepting_window_accepted_count")
+    if raw_accepting_value is not None:
+        return int(raw_accepting_value or 0)
+    raw_active_value = result.get("worst_active_window_accepted_count")
+    if raw_active_value is not None:
+        return int(raw_active_value or 0)
+    if max(int(result.get("window_count") or 0), 0) <= 1:
+        accepted_count = int(result.get("accepted_count") or 0)
+        return accepted_count if accepted_count > 0 else 0
+    return 0
+
+
+def _global_worst_active_window_accepted_size_usd(result: dict[str, Any]) -> float:
+    raw_accepting_value = result.get("worst_accepting_window_accepted_size_usd")
+    if raw_accepting_value is not None:
+        return float(raw_accepting_value or 0.0)
+    raw_active_value = result.get("worst_active_window_accepted_size_usd")
+    if raw_active_value is not None:
+        return float(raw_active_value or 0.0)
+    if max(int(result.get("window_count") or 0), 0) <= 1:
+        accepted_size_usd = float(result.get("accepted_size_usd") or 0.0)
+        return round(accepted_size_usd, 6) if accepted_size_usd > 0 else 0.0
+    return 0.0
+
+
 def _resolved_share_from_counts(accepted_count: Any, resolved_count: Any) -> float:
     accepted = int(accepted_count or 0)
     if accepted <= 0:
@@ -2831,7 +2857,7 @@ def _constraint_failures(
     worst_window_resolved_share = _global_worst_active_window_resolved_share(result)
     worst_window_resolved_size_share = _global_worst_active_window_resolved_size_share(result)
     worst_window_drawdown_pct = _worst_window_drawdown_pct(result)
-    active_window_count = int(result.get("active_window_count") or 0)
+    active_window_count = _active_window_count(result)
     inactive_window_count = int(result.get("inactive_window_count") or 0)
     accepted_window_count = _accepted_window_count(result)
     accepted_window_share = _accepted_window_share(result)
@@ -2843,8 +2869,8 @@ def _constraint_failures(
     top_two_accepting_window_accepted_size_share_value = _top_two_accepting_window_accepted_size_share(result)
     accepting_window_accepted_concentration_index = _accepting_window_accepted_concentration_index(result)
     accepting_window_accepted_size_concentration_index = _accepting_window_accepted_size_concentration_index(result)
-    worst_active_window_accepted_count = int(result.get("worst_active_window_accepted_count") or 0)
-    worst_active_window_accepted_size_usd = float(result.get("worst_active_window_accepted_size_usd") or 0.0)
+    worst_active_window_accepted_count = _global_worst_active_window_accepted_count(result)
+    worst_active_window_accepted_size_usd = _global_worst_active_window_accepted_size_usd(result)
 
     if accepted_count < max(min_accepted_count, 0):
         failures.append("accepted_count")
@@ -3370,16 +3396,8 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             top_two_accepting_window_accepted_size_share = _top_two_accepting_window_accepted_size_share(row["result"])
             accepting_window_accepted_concentration_index = _accepting_window_accepted_concentration_index(row["result"])
             accepting_window_accepted_size_concentration_index = _accepting_window_accepted_size_concentration_index(row["result"])
-            worst_accepting_window_accepted_count = int(
-                row["result"].get("worst_accepting_window_accepted_count")
-                or row["result"].get("worst_active_window_accepted_count")
-                or 0
-            )
-            worst_accepting_window_accepted_size_usd = float(
-                row["result"].get("worst_accepting_window_accepted_size_usd")
-                or row["result"].get("worst_active_window_accepted_size_usd")
-                or 0.0
-            )
+            worst_accepting_window_accepted_count = _global_worst_active_window_accepted_count(row["result"])
+            worst_accepting_window_accepted_size_usd = _global_worst_active_window_accepted_size_usd(row["result"])
             worst_window_pnl_usd = _global_worst_window_pnl(row["result"])
             carry_summary = (
                 f"{carry_window_count}/{active_window_count}"

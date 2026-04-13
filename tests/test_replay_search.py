@@ -4670,6 +4670,27 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(failures, ["accepted_window_share"])
 
+    def test_constraint_failures_use_exact_single_window_worst_active_depth_fallback(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 5,
+                "resolved_count": 5,
+                "accepted_size_usd": 125.0,
+                "resolved_size_usd": 125.0,
+                "trade_count": 5,
+                "rejected_count": 0,
+                "window_count": 1,
+                "total_pnl_usd": 10.0,
+            },
+            **self._constraint_defaults(
+                min_active_window_count=1,
+                min_worst_active_window_accepted_count=5,
+                min_worst_active_window_accepted_size_usd=125.0,
+            ),
+        )
+
+        self.assertEqual(failures, [])
+
     def test_constraint_failures_reject_low_accepted_window_count(self) -> None:
         failures = replay_search._constraint_failures(
             {
@@ -7061,6 +7082,45 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(breakdown["worst_active_window_accepted_penalty_usd"], 150.0)
         self.assertEqual(breakdown["score_usd"], -130.0)
+
+    def test_score_breakdown_uses_exact_single_window_worst_active_window_depth_fallback(self) -> None:
+        breakdown = replay_search._score_breakdown(
+            {
+                "total_pnl_usd": 20.0,
+                "max_drawdown_pct": 0.0,
+                "window_count": 1,
+                "accepted_count": 5,
+                "resolved_count": 5,
+                "accepted_size_usd": 125.0,
+                "resolved_size_usd": 125.0,
+            },
+            initial_bankroll_usd=3000.0,
+            drawdown_penalty=0.0,
+            window_stddev_penalty=0.0,
+            worst_window_penalty=0.0,
+            pause_guard_penalty=0.0,
+            resolved_share_penalty=0.0,
+            resolved_size_share_penalty=0.0,
+            worst_window_resolved_share_penalty=0.0,
+            worst_window_resolved_size_share_penalty=0.0,
+            mode_resolved_share_penalty=0.0,
+            mode_resolved_size_share_penalty=0.0,
+            mode_worst_window_resolved_share_penalty=0.0,
+            mode_worst_window_resolved_size_share_penalty=0.0,
+            worst_active_window_accepted_penalty=0.1,
+            worst_active_window_accepted_size_penalty=0.0,
+            mode_worst_active_window_accepted_penalty=0.0,
+            mode_worst_active_window_accepted_size_penalty=0.0,
+            mode_loss_penalty=0.0,
+            mode_inactivity_penalty=0.0,
+            allow_heuristic=True,
+            allow_xgboost=True,
+            wallet_concentration_penalty=0.0,
+            market_concentration_penalty=0.0,
+        )
+
+        self.assertEqual(breakdown["worst_active_window_accepted_penalty_usd"], 60.0)
+        self.assertEqual(breakdown["score_usd"], -40.0)
 
     def test_score_breakdown_penalizes_global_worst_active_window_deployed_dollars(self) -> None:
         breakdown = replay_search._score_breakdown(

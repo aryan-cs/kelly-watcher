@@ -108,7 +108,7 @@ export function beginShadowRestartBotState() {
     botStateCache = shadowRestartPlaceholderState(botStateCache);
 }
 export function isShadowRestartPending() {
-    return shadowRestartPending;
+    return shadowRestartPending || Boolean(botStateCache.shadow_restart_pending);
 }
 export function useBotState(intervalMs = 1000) {
     const [state, setState] = useState(() => ({ ...botStateCache }));

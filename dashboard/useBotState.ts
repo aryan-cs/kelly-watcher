@@ -217,7 +217,7 @@ export function beginShadowRestartBotState(): void {
 }
 
 export function isShadowRestartPending(): boolean {
-  return shadowRestartPending
+  return shadowRestartPending || Boolean(botStateCache.shadow_restart_pending)
 }
 
 export function useBotState(intervalMs = 1000): BotState {

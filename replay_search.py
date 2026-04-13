@@ -1166,12 +1166,20 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         resolved_positive_window_count = (
             int(raw_values.get("positive_window_count") or 0)
             if raw_values.get("positive_window_count") is not None
-            else 1 if raw_total_pnl_usd > 0 else 0
+            else _legacy_window_sign_count_fallback(
+                raw_total_pnl_usd,
+                result_window_count,
+                positive=True,
+            )
         )
         resolved_negative_window_count = (
             int(raw_values.get("negative_window_count") or 0)
             if raw_values.get("negative_window_count") is not None
-            else 1 if raw_total_pnl_usd < 0 else 0
+            else _legacy_window_sign_count_fallback(
+                raw_total_pnl_usd,
+                result_window_count,
+                positive=False,
+            )
         )
         resolved_inactive_window_count = (
             int(raw_values.get("inactive_window_count") or 0)
@@ -1561,6 +1569,13 @@ def _legacy_worst_window_pnl_fallback(total_pnl_usd: float, window_count: int) -
     if normalized_window_count <= 1:
         return total_pnl_usd
     return min(total_pnl_usd, 0.0)
+
+
+def _legacy_window_sign_count_fallback(total_pnl_usd: float, window_count: int, *, positive: bool) -> int:
+    normalized_window_count = max(int(window_count), 1)
+    if normalized_window_count <= 1:
+        return 1 if (total_pnl_usd > 0 if positive else total_pnl_usd < 0) else 0
+    return 0
 
 
 def _min_active_window_accepted_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:

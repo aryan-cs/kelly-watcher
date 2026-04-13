@@ -842,6 +842,24 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(summary["xgboost"]["worst_window_pnl_usd"], 0.0)
         self.assertEqual(summary["xgboost"]["best_window_pnl_usd"], 9.0)
 
+    def test_signal_mode_summary_fails_closed_on_legacy_multi_window_mode_positive_windows(self) -> None:
+        summary = replay_search._signal_mode_summary(
+            {
+                "window_count": 4,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "trade_count": 4,
+                        "total_pnl_usd": 9.0,
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(summary["xgboost"]["positive_window_count"], 0)
+        self.assertEqual(summary["xgboost"]["negative_window_count"], 0)
+
     def test_signal_mode_summary_uses_exact_mode_mix_for_single_window_payload(self) -> None:
         summary = replay_search._signal_mode_summary(
             {
@@ -5017,6 +5035,31 @@ class ReplaySearchTest(unittest.TestCase):
         )
 
         self.assertEqual(failures, ["worst_window_pnl_usd"])
+
+    def test_constraint_failures_fail_closed_on_legacy_multi_window_mode_positive_windows(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "signal_mode_summary": {
+                    "xgboost": {
+                        "accepted_count": 8,
+                        "resolved_count": 8,
+                        "trade_count": 8,
+                        "total_pnl_usd": 20.0,
+                    }
+                },
+            },
+            **self._constraint_defaults(
+                min_xgboost_positive_window_count=1,
+            ),
+        )
+
+        self.assertEqual(failures, ["xgboost_positive_window_count"])
 
     def test_constraint_failures_reject_high_accepting_window_size_share(self) -> None:
         failures = replay_search._constraint_failures(

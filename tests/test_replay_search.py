@@ -5348,6 +5348,56 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(failures, ["worst_window_pnl_usd"])
 
+    def test_constraint_failures_fail_closed_on_legacy_multi_window_near_flat_negative_worst_window_pnl(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "total_pnl_usd": -1.0,
+            },
+            **self._constraint_defaults(
+                min_worst_window_pnl_usd=-10.0,
+            ),
+        )
+
+        self.assertEqual(failures, ["worst_window_pnl_usd"])
+
+    def test_constraint_failures_fail_closed_on_legacy_multi_window_mode_near_flat_negative_worst_window_pnl(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "trade_count": 8,
+                "rejected_count": 0,
+                "window_count": 4,
+                "active_window_count": 4,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "trade_count": 4,
+                        "total_pnl_usd": 12.0,
+                    },
+                    "xgboost": {
+                        "accepted_count": 4,
+                        "resolved_count": 4,
+                        "trade_count": 4,
+                        "total_pnl_usd": -1.0,
+                    },
+                },
+            },
+            **self._constraint_defaults(
+                min_xgboost_pnl_usd=-10.0,
+                min_xgboost_worst_window_pnl_usd=-10.0,
+            ),
+        )
+
+        self.assertEqual(failures, ["xgboost_worst_window_pnl_usd"])
+
     def test_constraint_failures_fail_closed_on_legacy_multi_window_worst_window_drawdown(self) -> None:
         failures = replay_search._constraint_failures(
             {

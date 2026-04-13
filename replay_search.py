@@ -1006,6 +1006,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "positive_window_count": 0,
                 "negative_window_count": 0,
                 "inactive_window_count": 0,
+                "has_proven_worst_window_pnl": False,
                 "worst_window_pnl_usd": None,
                 "best_window_pnl_usd": None,
                 "worst_window_resolved_share": None,
@@ -1046,6 +1047,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             if raw_worst_window_pnl_usd is not None
             else _legacy_worst_window_pnl_fallback(raw_total_pnl_usd, result_window_count)
         )
+        has_proven_worst_window_pnl = raw_worst_window_pnl_usd is not None or result_window_count <= 1
         resolved_best_window_pnl_usd = (
             float(raw_best_window_pnl_usd)
             if raw_best_window_pnl_usd is not None
@@ -1293,6 +1295,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         bucket["positive_window_count"] += resolved_positive_window_count
         bucket["negative_window_count"] += resolved_negative_window_count
         bucket["inactive_window_count"] += resolved_inactive_window_count
+        bucket["has_proven_worst_window_pnl"] = bool(bucket["has_proven_worst_window_pnl"]) or has_proven_worst_window_pnl
         bucket["worst_window_pnl_usd"] = (
             resolved_worst_window_pnl_usd
             if bucket["worst_window_pnl_usd"] is None
@@ -1577,6 +1580,12 @@ def _global_worst_window_pnl(result: dict[str, Any]) -> float:
     )
 
 
+def _has_proven_worst_window_pnl(result: dict[str, Any]) -> bool:
+    if result.get("worst_window_pnl_usd") is not None:
+        return True
+    return max(int(result.get("window_count") or 0), 1) <= 1
+
+
 def _worst_window_drawdown_pct(result: dict[str, Any]) -> float:
     raw_value = result.get("worst_window_drawdown_pct")
     if raw_value is not None:
@@ -1651,6 +1660,19 @@ def _worst_window_pnl(signal_mode_summary: dict[str, dict[str, Any]], mode: str)
     if raw_value is None:
         return 0.0
     return float(raw_value)
+
+
+def _mode_has_proven_worst_window_pnl(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> bool:
+    raw_value = signal_mode_summary.get(mode, {}).get("has_proven_worst_window_pnl")
+    if raw_value is not None:
+        return bool(raw_value)
+    if signal_mode_summary.get(mode, {}).get("worst_window_pnl_usd") is not None:
+        return True
+    return max(int(window_count), 1) <= 1
 
 
 def _worst_window_resolved_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
@@ -2946,7 +2968,9 @@ def _constraint_failures(
         failures.append("daily_guard_restart_window_share")
     if max_live_guard_restart_window_share > 0 and live_guard_restart_window_share > max_live_guard_restart_window_share:
         failures.append("live_guard_restart_window_share")
-    if worst_window_pnl_usd < min_worst_window_pnl_usd:
+    if min_worst_window_pnl_usd > -999_999_999 and not _has_proven_worst_window_pnl(result):
+        failures.append("worst_window_pnl_usd")
+    elif worst_window_pnl_usd < min_worst_window_pnl_usd:
         failures.append("worst_window_pnl_usd")
     if min_worst_window_resolved_share > 0 and worst_window_resolved_share < min_worst_window_resolved_share:
         failures.append("worst_window_resolved_share")
@@ -2988,9 +3012,22 @@ def _constraint_failures(
         failures.append("heuristic_total_pnl_usd")
     if allow_xgboost and float(signal_mode_summary.get("xgboost", {}).get("total_pnl_usd") or 0.0) < min_xgboost_pnl_usd:
         failures.append("xgboost_total_pnl_usd")
-    if allow_heuristic and _worst_window_pnl(signal_mode_summary, "heuristic") < min_heuristic_worst_window_pnl_usd:
+    mode_window_count = max(int(result.get("window_count") or 0), 0)
+    if (
+        allow_heuristic
+        and min_heuristic_worst_window_pnl_usd > -999_999_999
+        and not _mode_has_proven_worst_window_pnl(signal_mode_summary, "heuristic", mode_window_count)
+    ):
         failures.append("heuristic_worst_window_pnl_usd")
-    if allow_xgboost and _worst_window_pnl(signal_mode_summary, "xgboost") < min_xgboost_worst_window_pnl_usd:
+    elif allow_heuristic and _worst_window_pnl(signal_mode_summary, "heuristic") < min_heuristic_worst_window_pnl_usd:
+        failures.append("heuristic_worst_window_pnl_usd")
+    if (
+        allow_xgboost
+        and min_xgboost_worst_window_pnl_usd > -999_999_999
+        and not _mode_has_proven_worst_window_pnl(signal_mode_summary, "xgboost", mode_window_count)
+    ):
+        failures.append("xgboost_worst_window_pnl_usd")
+    elif allow_xgboost and _worst_window_pnl(signal_mode_summary, "xgboost") < min_xgboost_worst_window_pnl_usd:
         failures.append("xgboost_worst_window_pnl_usd")
     if allow_heuristic and min_heuristic_worst_window_resolved_share > 0 and _worst_active_window_resolved_share(signal_mode_summary, "heuristic") < min_heuristic_worst_window_resolved_share:
         failures.append("heuristic_worst_window_resolved_share")
@@ -3014,7 +3051,6 @@ def _constraint_failures(
         failures.append("xgboost_positive_window_count")
     heuristic_inactive_window_count = int(signal_mode_summary.get("heuristic", {}).get("inactive_window_count") or 0)
     xgboost_inactive_window_count = int(signal_mode_summary.get("xgboost", {}).get("inactive_window_count") or 0)
-    mode_window_count = max(int(result.get("window_count") or 0), 0)
     heuristic_active_window_count = _mode_active_window_count(signal_mode_summary, "heuristic", mode_window_count)
     xgboost_active_window_count = _mode_active_window_count(signal_mode_summary, "xgboost", mode_window_count)
     heuristic_accepted_window_count = _mode_accepted_window_count(signal_mode_summary, "heuristic", mode_window_count)

@@ -2337,6 +2337,14 @@ function replaySearchWorstWindowPnlFromPayload(payload) {
     return totalPnlUsd;
   return Math.min(totalPnlUsd, 0);
 }
+function replaySearchHasProvenWorstWindowPnlFromPayload(payload, windowCountOverride) {
+  if (payload.has_proven_worst_window_pnl != null)
+    return Boolean(payload.has_proven_worst_window_pnl);
+  if (payload.worst_window_pnl_usd != null)
+    return true;
+  const windowCount = windowCountOverride ?? Number(payload.window_count || 0);
+  return windowCount <= 1;
+}
 function replaySearchWorstWindowDrawdownPctFromPayload(payload) {
   if (payload.worst_window_drawdown_pct != null)
     return Number(payload.worst_window_drawdown_pct || 0);
@@ -3400,8 +3408,12 @@ function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw, policyRa
             }
             if (minWorstWindowPnlUsd > sentinelWorstWindow) {
                 hasActiveGuard = true;
-                if (worstWindowPnlUsd < minWorstWindowPnlUsd)
+                if (!replaySearchHasProvenWorstWindowPnlFromPayload(payload, windowCount)) {
+                    breaches.push(`${prefix} worst unproven`);
+                }
+                else if (worstWindowPnlUsd < minWorstWindowPnlUsd) {
                     breaches.push(`${prefix} worst ${formatDollar(worstWindowPnlUsd)}<${formatDollar(minWorstWindowPnlUsd)}`);
+                }
             }
             if (minWorstWindowResolvedShare > 0) {
                 hasActiveGuard = true;
@@ -3871,6 +3883,14 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
                 normalizedMargin: margin / denominator
             });
         };
+        const pushMissingMinProofHeadroom = (group, label) => {
+            headrooms.push({
+                group,
+                label: `${label} unproven`,
+                margin: -1,
+                normalizedMargin: -1
+            });
+        };
         const globalAccepted = Number(resultParsed.accepted_count || 0);
         const globalResolved = Number(resultParsed.resolved_count || 0);
         const globalResolvedShare = globalAccepted > 0 ? globalResolved / globalAccepted : 0;
@@ -4088,8 +4108,14 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
             pushHeadroom('global', 'worst acc n', globalWorstActiveWindowAcceptedCount, minWorstActiveWindowAcceptedCount, replayHeadroomCount, 'min');
         if (minWorstActiveWindowAcceptedSizeUsd > 0)
             pushHeadroom('global', 'worst acc$', globalWorstActiveWindowAcceptedSizeUsd, minWorstActiveWindowAcceptedSizeUsd, formatDollar, 'min');
-        if (minWorstWindowPnlUsd > -999999999)
-            pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min');
+        if (minWorstWindowPnlUsd > -999999999) {
+            if (!replaySearchHasProvenWorstWindowPnlFromPayload(resultParsed)) {
+                pushMissingMinProofHeadroom('global', 'worst');
+            }
+            else {
+                pushHeadroom('global', 'worst', globalWorstWindowPnl, minWorstWindowPnlUsd, formatDollar, 'min');
+            }
+        }
         if (minWorstWindowResolvedShare > 0)
             pushHeadroom('global', 'worst cov', globalWorstWindowResolvedShare, minWorstWindowResolvedShare, replayHeadroomPctPoints, 'min');
         if (minWorstWindowResolvedSizeShare > 0)
@@ -4168,8 +4194,14 @@ function replaySearchHeadroomSummary(resultRaw, constraintsRaw, policyRaw) {
                 pushHeadroom(mode, `${prefix} wr`, winRate, minModeWinRate, replayHeadroomPctPoints, 'min');
             if (minModePnlUsd !== 0)
                 pushHeadroom(mode, `${prefix} pnl`, totalPnlUsd, minModePnlUsd, formatDollar, 'min');
-            if (minModeWorstWindowPnlUsd > -999999999)
-                pushHeadroom(mode, `${prefix} worst`, worstWindowPnlUsd, minModeWorstWindowPnlUsd, formatDollar, 'min');
+            if (minModeWorstWindowPnlUsd > -999999999) {
+                if (!replaySearchHasProvenWorstWindowPnlFromPayload(payload, Number(resultParsed.window_count || 0))) {
+                    pushMissingMinProofHeadroom(mode, `${prefix} worst`);
+                }
+                else {
+                    pushHeadroom(mode, `${prefix} worst`, worstWindowPnlUsd, minModeWorstWindowPnlUsd, formatDollar, 'min');
+                }
+            }
             if (minModeWorstWindowResolvedShare > 0)
                 pushHeadroom(mode, `${prefix} worst cov`, worstWindowResolvedShare, minModeWorstWindowResolvedShare, replayHeadroomPctPoints, 'min');
             if (minModeWorstWindowResolvedSizeShare > 0)

@@ -76,6 +76,7 @@ export const MODEL_PANEL_DEFS = [
             { label: 'Apply scope', text: 'How many recommended config changes apply live on the next loop versus requiring a restart, plus any replay-only leftovers.' },
             { label: 'Deploy gap', text: 'Recommendation pieces not currently present in the persisted editable-config payload for the latest best feasible candidate. Older search rows may need a rerun after config-surface changes.' },
             { label: 'Seg gates', text: 'Entry-price-band, holding-horizon, and scorer-path gates on the latest best feasible replay-search candidate.' },
+            { label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap.' },
             { label: 'Search modes', text: 'Accepted trade mix, resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.' },
             { label: 'Cur evidence', text: 'Resolved evidence and replay P&L by scorer on the current/base replay-search candidate.' },
             { label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, resolved-count, win-rate, total P&L, worst-window P&L, and accepted-share guardrails from the latest replay search, if any.' },
@@ -1291,6 +1292,62 @@ function replaySearchModeFloorSummary(raw) {
         return 'none';
     }
 }
+function replaySearchPauseGuardSummary(bestRaw, currentRaw, constraintsRaw) {
+    const parseShare = (raw) => {
+        if (!raw)
+            return null;
+        try {
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                return null;
+            const payload = parsed;
+            const tradeCount = Number(payload.trade_count || 0);
+            if (tradeCount <= 0)
+                return 0;
+            const rawRejectSummary = payload.reject_reason_summary;
+            if (!rawRejectSummary || typeof rawRejectSummary !== 'object' || Array.isArray(rawRejectSummary))
+                return 0;
+            const rejectSummary = rawRejectSummary;
+            const pauseCount = Number(rejectSummary.daily_loss_guard || 0) + Number(rejectSummary.live_drawdown_guard || 0);
+            return pauseCount / tradeCount;
+        }
+        catch {
+            return null;
+        }
+    };
+    const bestShare = parseShare(bestRaw);
+    const currentShare = parseShare(currentRaw);
+    const maxShare = (() => {
+        if (!constraintsRaw)
+            return 0;
+        try {
+            const parsed = JSON.parse(constraintsRaw);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                return 0;
+            return Number(parsed.max_pause_guard_reject_share || 0);
+        }
+        catch {
+            return 0;
+        }
+    })();
+    if (bestShare == null && currentShare == null && maxShare <= 0) {
+        return { summary: '-', hasActiveGuard: false, currentShare: null, bestShare: null, overLimit: false };
+    }
+    const parts = [];
+    if (bestShare != null)
+        parts.push(`best ${formatPct(bestShare, 0)}`);
+    if (currentShare != null)
+        parts.push(`cur ${formatPct(currentShare, 0)}`);
+    if (maxShare > 0)
+        parts.push(`max ${formatPct(maxShare, 0)}`);
+    return {
+        summary: parts.length ? parts.join(' | ') : '-',
+        hasActiveGuard: maxShare > 0,
+        currentShare,
+        bestShare,
+        overLimit: (bestShare != null && bestShare > maxShare && maxShare > 0) || (currentShare != null && currentShare > maxShare && maxShare > 0)
+    };
+}
 function replaySearchCurrentModeRiskSummary(currentRaw, constraintsRaw) {
     if (!currentRaw || !constraintsRaw)
         return { summary: '-', breachCount: 0, hasActiveGuard: false };
@@ -2063,6 +2120,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const replaySearchCurrentModeRisk = useMemo(() => replaySearchCurrentModeRiskSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
     const replaySearchBestHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.result_json]);
     const replaySearchCurrentHeadroom = useMemo(() => replaySearchHeadroomSummary(latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json]);
+    const replaySearchPauseGuard = useMemo(() => replaySearchPauseGuardSummary(latestReplaySearch?.result_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.constraints_json), [latestReplaySearch?.constraints_json, latestReplaySearch?.current_candidate_result_json, latestReplaySearch?.result_json]);
     const replayLabStats = useMemo(() => [
         {
             label: 'Last replay',
@@ -2180,6 +2238,17 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             label: 'Seg gates',
             value: replaySearchSegmentGateSummary(latestReplaySearch?.policy_json),
             color: latestReplaySearch?.policy_json ? theme.white : theme.dim
+        },
+        {
+            label: 'Pause guard',
+            value: replaySearchPauseGuard.summary,
+            color: !latestReplaySearch
+                ? theme.dim
+                : replaySearchPauseGuard.overLimit
+                    ? theme.red
+                    : replaySearchPauseGuard.hasActiveGuard
+                        ? theme.green
+                        : theme.white
         },
         {
             label: 'Search modes',

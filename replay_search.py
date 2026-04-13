@@ -193,6 +193,28 @@ def _worst_window_pnl(signal_mode_summary: dict[str, dict[str, Any]], mode: str)
     return float(raw_value)
 
 
+def _reject_reason_summary(result: dict[str, Any]) -> dict[str, int]:
+    raw = result.get("reject_reason_summary")
+    if not isinstance(raw, dict):
+        return {}
+    summary: dict[str, int] = {}
+    for reason, count in raw.items():
+        normalized_reason = str(reason or "").strip()
+        if not normalized_reason:
+            continue
+        summary[normalized_reason] = summary.get(normalized_reason, 0) + int(count or 0)
+    return summary
+
+
+def _pause_guard_reject_share(result: dict[str, Any]) -> float:
+    trade_count = int(result.get("trade_count") or 0)
+    if trade_count <= 0:
+        return 0.0
+    reject_reason_summary = _reject_reason_summary(result)
+    pause_rejects = int(reject_reason_summary.get("daily_loss_guard") or 0) + int(reject_reason_summary.get("live_drawdown_guard") or 0)
+    return float(pause_rejects) / float(trade_count)
+
+
 def _clamp_fraction(raw: float) -> float:
     return min(max(float(raw), 0.0), 1.0)
 
@@ -222,6 +244,7 @@ def _constraint_failures(
     min_xgboost_positive_window_count: int,
     max_heuristic_accepted_share: float,
     min_xgboost_accepted_share: float,
+    max_pause_guard_reject_share: float,
 ) -> list[str]:
     failures: list[str] = []
     accepted_count = int(result.get("accepted_count") or 0)
@@ -281,6 +304,8 @@ def _constraint_failures(
         failures.append("heuristic_accepted_share")
     if min_xgboost_accepted_share > 0 and xgboost_accepted_share < min_xgboost_accepted_share:
         failures.append("xgboost_accepted_share")
+    if max_pause_guard_reject_share > 0 and _pause_guard_reject_share(result) > max_pause_guard_reject_share:
+        failures.append("pause_guard_reject_share")
     return failures
 
 
@@ -303,6 +328,8 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             if accepted_count > 0:
                 mode_parts.append(f"{label} {accepted_count} ({_accepted_share(signal_mode_summary, mode) * 100:.0f}%)")
         mode_suffix = f" | modes {' / '.join(mode_parts)}" if mode_parts else ""
+        pause_guard_share = _pause_guard_reject_share(row["result"])
+        pause_suffix = f" | pause {pause_guard_share * 100:.0f}%" if pause_guard_share > 0 else ""
         window_count = int(row["result"].get("window_count") or 0)
         window_suffix = ""
         if window_count > 1:
@@ -315,7 +342,7 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
             f"dd {float(row['result'].get('max_drawdown_pct') or 0.0) * 100:.1f}% | "
             f"acc {int(row['result'].get('accepted_count') or 0)} | "
             f"win {float(row['result'].get('win_rate') or 0.0) * 100:.1f}% | "
-            f"{_compact_override_summary(row['overrides'])}{mode_suffix}{window_suffix}{feasibility_suffix}",
+            f"{_compact_override_summary(row['overrides'])}{mode_suffix}{pause_suffix}{window_suffix}{feasibility_suffix}",
             file=sys.stderr,
         )
 
@@ -426,8 +453,11 @@ def _aggregate_window_results(
         if pnl_values
         else 0.0
     )
+    reject_reason_summary: dict[str, int] = {}
     signal_mode_totals: dict[str, dict[str, float]] = {}
     for window_result in window_results:
+        for reason, count in _reject_reason_summary(window_result).items():
+            reject_reason_summary[reason] = reject_reason_summary.get(reason, 0) + int(count or 0)
         for mode, values in _signal_mode_summary(window_result).items():
             bucket = signal_mode_totals.setdefault(
                 mode,
@@ -485,6 +515,7 @@ def _aggregate_window_results(
         "worst_window_pnl_usd": round(min(pnl_values, default=0.0), 6),
         "best_window_pnl_usd": round(max(pnl_values, default=0.0), 6),
         "worst_window_drawdown_pct": round(max(drawdown_values, default=0.0), 6),
+        "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
         "signal_mode_summary": signal_mode_summary,
     }
 
@@ -810,6 +841,7 @@ def main() -> None:
     parser.add_argument("--min-xgboost-positive-windows", type=int, default=0, help="Minimum count of positive replay windows required from xgboost.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
+    parser.add_argument("--max-pause-guard-reject-share", type=float, default=0.0, help="Maximum fraction of replay trades allowed to be rejected by daily-loss or live-drawdown pause guards.")
     args = parser.parse_args()
 
     base_policy = _load_base_policy(args)
@@ -856,6 +888,7 @@ def main() -> None:
         min_xgboost_positive_window_count=max(args.min_xgboost_positive_windows, 0),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
+        max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
     )
     if int(current_result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
         current_constraint_failures.append("positive_window_count")
@@ -923,6 +956,7 @@ def main() -> None:
             min_xgboost_positive_window_count=max(args.min_xgboost_positive_windows, 0),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
+            max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
         )
         if int(result.get("positive_window_count") or 0) < max(args.min_positive_windows, 0):
             constraint_failures.append("positive_window_count")
@@ -977,6 +1011,7 @@ def main() -> None:
         "min_xgboost_positive_windows": max(args.min_xgboost_positive_windows, 0),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
+        "max_pause_guard_reject_share": _clamp_fraction(args.max_pause_guard_reject_share),
     }
     finished_at = int(time.time())
     search_run_id = _persist_search_results(

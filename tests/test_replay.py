@@ -182,6 +182,8 @@ class ReplayTest(unittest.TestCase):
                 self.assertEqual(result["accepted_count"], 1)
                 self.assertEqual(result["rejected_count"], 2)
                 self.assertAlmostEqual(result["final_bankroll_usd"], 1011.548, places=3)
+                self.assertEqual(result["reject_reason_summary"]["heuristic_entry_band"], 1)
+                self.assertEqual(result["reject_reason_summary"]["model_edge_below_threshold"], 1)
                 self.assertEqual(result["signal_mode_summary"]["heuristic"]["accepted_count"], 1)
                 self.assertEqual(result["signal_mode_summary"]["heuristic"]["win_count"], 1)
                 self.assertEqual(result["signal_mode_summary"]["xgboost"]["accepted_count"], 0)
@@ -638,6 +640,7 @@ class ReplayTest(unittest.TestCase):
                         ("reset-next-day", "accept", "accepted"),
                     ],
                 )
+                self.assertEqual(result["reject_reason_summary"]["daily_loss_guard"], 1)
             finally:
                 db.DB_PATH = original_db_path
 
@@ -726,6 +729,7 @@ class ReplayTest(unittest.TestCase):
                         ("live-blocked", "reject", "live_drawdown_guard"),
                     ],
                 )
+                self.assertEqual(result["reject_reason_summary"]["live_drawdown_guard"], 1)
             finally:
                 db.DB_PATH = original_db_path
 

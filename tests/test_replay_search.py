@@ -499,6 +499,65 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(payload["constraints"]["min_xgboost_accepted_share"], 0.4)
         self.assertIn("modes heur 4 (40%) / xgb 6 (60%)", stderr.getvalue())
 
+    def test_main_can_limit_pause_guard_reject_share(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 62.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 8,
+                    "resolved_count": 8,
+                    "rejected_count": 1,
+                    "trade_count": 10,
+                    "win_rate": 0.625,
+                    "reject_reason_summary": {"daily_loss_guard": 1},
+                    "signal_mode_summary": {
+                        "heuristic": {"accepted_count": 3, "resolved_count": 3, "trade_count": 3, "total_pnl_usd": 14.0, "win_count": 2},
+                        "xgboost": {"accepted_count": 5, "resolved_count": 5, "trade_count": 5, "total_pnl_usd": 48.0, "win_count": 3},
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 70.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 7,
+                "resolved_count": 7,
+                "rejected_count": 3,
+                "trade_count": 10,
+                "win_rate": 4 / 7,
+                "reject_reason_summary": {"daily_loss_guard": 2, "live_drawdown_guard": 1},
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 24.0, "win_count": 3},
+                    "xgboost": {"accepted_count": 3, "resolved_count": 3, "trade_count": 3, "total_pnl_usd": 46.0, "win_count": 1},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--max-pause-guard-reject-share",
+            "0.20",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["pause_guard_reject_share"])
+        self.assertEqual(payload["constraints"]["max_pause_guard_reject_share"], 0.2)
+        self.assertIn("pause 10%", stderr.getvalue())
+
     def test_main_can_require_mode_specific_resolved_counts_and_win_rates(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
             min_conf = float(policy.as_dict()["min_confidence"])
@@ -985,6 +1044,7 @@ class ReplaySearchTest(unittest.TestCase):
                 {
                     "max_drawdown_pct": 0.1,
                     "max_heuristic_accepted_share": 0.0,
+                    "max_pause_guard_reject_share": 0.0,
                     "max_worst_window_drawdown_pct": 0.0,
                     "min_accepted_count": 5,
                     "min_heuristic_accepted_count": 0,

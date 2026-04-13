@@ -679,9 +679,16 @@ def _simulate(
 
     policy_json = json.dumps(policy.as_dict(), sort_keys=True, separators=(",", ":"))
     accepted_rows = [row for row in replay_rows if row["decision"] == "accept"]
+    rejected_rows = [row for row in replay_rows if row["decision"] == "reject"]
     resolved_rows = [row for row in accepted_rows if row["pnl_usd"] is not None]
     wins = sum(1 for row in resolved_rows if float(row["pnl_usd"] or 0.0) > 0)
     final_bankroll = round(policy.initial_bankroll_usd + realized_pnl - open_exposure(), 6)
+    reject_reason_summary: dict[str, int] = {}
+    for row in rejected_rows:
+        reason = str(row.get("reason") or "").strip()
+        if not reason:
+            continue
+        reject_reason_summary[reason] = reject_reason_summary.get(reason, 0) + 1
     run_id = _insert_replay_run(
         conn,
         {
@@ -728,6 +735,7 @@ def _simulate(
         "unresolved_count": unresolved_count,
         "resolved_count": len(resolved_rows),
         "win_rate": round(wins / len(resolved_rows), 6) if resolved_rows else None,
+        "reject_reason_summary": {reason: int(count) for reason, count in sorted(reject_reason_summary.items())},
         "segment_leaders": _segment_leaders(segment_metric_rows),
         "signal_mode_summary": signal_mode_summary,
     }

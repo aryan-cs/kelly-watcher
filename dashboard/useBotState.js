@@ -16,39 +16,40 @@ function shadowRestartPendingMessage() {
     }
     return 'Shadow restart in progress. Waiting for backend to come back.';
 }
-function hasShadowRestartCompleted(nextState) {
+function clearShadowRestartPending() {
+    shadowRestartPending = false;
+    shadowRestartRequestedAtMs = 0;
+    shadowRestartPreviousSessionId = null;
+    shadowRestartPreviousStartedAt = null;
+}
+function resolveShadowRestartState(nextState) {
     if (!shadowRestartPending) {
-        return true;
+        return nextState;
+    }
+    if (Boolean(nextState.shadow_restart_pending)) {
+        return nextState;
     }
     const nextSessionId = String(nextState.session_id || '').trim();
     if (nextSessionId) {
         if (shadowRestartPreviousSessionId == null || nextSessionId !== shadowRestartPreviousSessionId) {
-            shadowRestartPending = false;
-            shadowRestartRequestedAtMs = 0;
-            shadowRestartPreviousSessionId = null;
-            shadowRestartPreviousStartedAt = null;
-            return true;
+            clearShadowRestartPending();
+            return nextState;
         }
     }
     const nextStartedAt = Number(nextState.started_at || 0);
     if (nextStartedAt <= 0) {
-        return false;
+        return shadowRestartWaitingState(nextState);
     }
     if (shadowRestartPreviousSessionId == null && shadowRestartPreviousStartedAt == null) {
-        shadowRestartPending = false;
-        shadowRestartRequestedAtMs = 0;
-        shadowRestartPreviousSessionId = null;
-        shadowRestartPreviousStartedAt = null;
-        return true;
+        clearShadowRestartPending();
+        return nextState;
     }
     if (nextStartedAt !== shadowRestartPreviousStartedAt) {
-        shadowRestartPending = false;
-        shadowRestartRequestedAtMs = 0;
-        shadowRestartPreviousSessionId = null;
-        shadowRestartPreviousStartedAt = null;
-        return true;
+        clearShadowRestartPending();
+        return nextState;
     }
-    return false;
+    clearShadowRestartPending();
+    return nextState;
 }
 function shadowRestartPlaceholderState(state) {
     return {
@@ -138,7 +139,7 @@ function shadowRestartWaitingState(nextState) {
         api_base_url: apiBaseUrl,
         api_error: '',
         shadow_restart_pending: true,
-        shadow_restart_message: shadowRestartPendingMessage(),
+        shadow_restart_message: String(nextState.shadow_restart_message || '').trim() || shadowRestartPendingMessage(),
         startup_detail: String(nextState.startup_detail || '').trim() || 'Restarting shadow bot'
     };
 }
@@ -181,9 +182,7 @@ export function useBotState(intervalMs = 1000) {
                     shadow_restart_pending: Boolean(responseState.shadow_restart_pending),
                     shadow_restart_message: String(responseState.shadow_restart_message || '')
                 };
-                const resolvedState = hasShadowRestartCompleted(nextState)
-                    ? nextState
-                    : shadowRestartWaitingState(nextState);
+                const resolvedState = resolveShadowRestartState(nextState);
                 botStateCache = resolvedState;
                 if (!cancelled) {
                     setState(resolvedState);

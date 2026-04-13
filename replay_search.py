@@ -504,6 +504,29 @@ def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _with_window_activity_fields(result: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(result)
+    total_pnl_usd = float(enriched.get("total_pnl_usd") or 0.0)
+    accepted_count = int(enriched.get("accepted_count") or 0)
+    window_count = int(enriched.get("window_count") or 1)
+    enriched.setdefault("window_count", window_count)
+    if "positive_window_count" not in enriched and window_count == 1:
+        enriched["positive_window_count"] = 1 if total_pnl_usd > 0 else 0
+    if "negative_window_count" not in enriched and window_count == 1:
+        enriched["negative_window_count"] = 1 if total_pnl_usd < 0 else 0
+    if "active_window_count" not in enriched:
+        if window_count == 1:
+            enriched["active_window_count"] = 1 if accepted_count > 0 else 0
+        elif "inactive_window_count" in enriched:
+            enriched["active_window_count"] = max(window_count - int(enriched.get("inactive_window_count") or 0), 0)
+    if "inactive_window_count" not in enriched:
+        if window_count == 1:
+            enriched["inactive_window_count"] = 0 if accepted_count > 0 else 1
+        elif "active_window_count" in enriched:
+            enriched["inactive_window_count"] = max(window_count - int(enriched.get("active_window_count") or 0), 0)
+    return enriched
+
+
 def _reject_reason_summary(result: dict[str, Any]) -> dict[str, int]:
     raw = result.get("reject_reason_summary")
     if not isinstance(raw, dict):
@@ -593,6 +616,8 @@ def _constraint_failures(
     max_heuristic_accepted_share: float,
     min_xgboost_accepted_share: float,
     max_pause_guard_reject_share: float,
+    min_active_window_count: int,
+    max_inactive_window_count: int,
     min_trader_count: int,
     min_market_count: int,
     min_entry_price_band_count: int,
@@ -622,6 +647,8 @@ def _constraint_failures(
     worst_window_pnl_usd = float(result.get("worst_window_pnl_usd") or 0.0)
     worst_window_resolved_share = _global_worst_active_window_resolved_share(result)
     worst_window_drawdown_pct = float(result.get("worst_window_drawdown_pct") or 0.0)
+    active_window_count = int(result.get("active_window_count") or 0)
+    inactive_window_count = int(result.get("inactive_window_count") or 0)
 
     if accepted_count < max(min_accepted_count, 0):
         failures.append("accepted_count")
@@ -689,6 +716,10 @@ def _constraint_failures(
         failures.append("xgboost_accepted_share")
     if max_pause_guard_reject_share > 0 and _pause_guard_reject_share(result) > max_pause_guard_reject_share:
         failures.append("pause_guard_reject_share")
+    if active_window_count < max(min_active_window_count, 0):
+        failures.append("active_window_count")
+    if max_inactive_window_count >= 0 and inactive_window_count > max_inactive_window_count:
+        failures.append("inactive_window_count")
     if int(trader_concentration.get("trader_count") or 0) < max(min_trader_count, 0):
         failures.append("trader_count")
     if int(market_concentration.get("market_count") or 0) < max(min_market_count, 0):
@@ -771,8 +802,13 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         window_suffix = ""
         if window_count > 1:
             positive_window_count = int(row["result"].get("positive_window_count") or 0)
+            active_window_count = int(row["result"].get("active_window_count") or 0)
             worst_window_pnl_usd = float(row["result"].get("worst_window_pnl_usd") or 0.0)
-            window_suffix = f" | windows {positive_window_count}/{window_count}+ | worst {worst_window_pnl_usd:+.2f}"
+            window_suffix = (
+                f" | windows {positive_window_count}/{window_count}+"
+                f" active {active_window_count}/{window_count}"
+                f" | worst {worst_window_pnl_usd:+.2f}"
+            )
         print(
             "  "
             f"{index}. score {row['score']:+.2f} | pnl {row['result']['total_pnl_usd']:+.2f} | "
@@ -793,26 +829,30 @@ def _evaluate_candidate(
     windows: list[tuple[int | None, int | None]],
 ) -> dict[str, Any]:
     if len(windows) == 1 and windows[0] == (None, None):
-        return _with_worst_window_resolved_share(
-            run_replay(
-                policy=policy,
-                db_path=db_path,
-                label=label,
-                notes=notes,
+        return _with_window_activity_fields(
+            _with_worst_window_resolved_share(
+                run_replay(
+                    policy=policy,
+                    db_path=db_path,
+                    label=label,
+                    notes=notes,
+                )
             )
         )
 
     window_results: list[dict[str, Any]] = []
     for window_index, (start_ts, end_ts) in enumerate(windows, start=1):
         window_results.append(
-            _with_worst_window_resolved_share(
-                run_replay(
-                    policy=policy,
-                    db_path=db_path,
-                    label=f"{label}-w{window_index:02d}",
-                    notes=notes,
-                    start_ts=start_ts,
-                    end_ts=end_ts,
+            _with_window_activity_fields(
+                _with_worst_window_resolved_share(
+                    run_replay(
+                        policy=policy,
+                        db_path=db_path,
+                        label=f"{label}-w{window_index:02d}",
+                        notes=notes,
+                        start_ts=start_ts,
+                        end_ts=end_ts,
+                    )
                 )
             )
         )
@@ -888,6 +928,8 @@ def _aggregate_window_results(
     max_drawdown_pct = max(drawdown_values, default=0.0)
     positive_window_count = sum(1 for pnl in pnl_values if pnl > 0)
     negative_window_count = sum(1 for pnl in pnl_values if pnl < 0)
+    active_window_count = sum(1 for row in window_results if int(row.get("accepted_count") or 0) > 0)
+    inactive_window_count = max(len(window_results) - active_window_count, 0)
     worst_window_resolved_share = min(
         (
             _resolved_share_from_counts(row.get("accepted_count"), row.get("resolved_count"))
@@ -1110,6 +1152,8 @@ def _aggregate_window_results(
         "win_rate": round(weighted_wins / resolved_count, 6) if resolved_count else None,
         "positive_window_count": positive_window_count,
         "negative_window_count": negative_window_count,
+        "active_window_count": active_window_count,
+        "inactive_window_count": inactive_window_count,
         "window_avg_pnl_usd": round(window_avg_pnl_usd, 6),
         "window_pnl_stddev_usd": round(window_pnl_stddev_usd, 6),
         "worst_window_pnl_usd": round(min(pnl_values, default=0.0), 6),
@@ -1484,6 +1528,8 @@ def main() -> None:
     parser.add_argument("--window-days", type=int, default=0, help="Replay over rolling windows of this many days instead of the full history.")
     parser.add_argument("--window-count", type=int, default=1, help="How many most-recent rolling windows to evaluate when --window-days is set.")
     parser.add_argument("--min-positive-windows", type=int, default=0, help="Minimum count of positive-P&L windows required for feasibility.")
+    parser.add_argument("--min-active-windows", type=int, default=0, help="Minimum count of active replay windows required for a candidate to be feasible.")
+    parser.add_argument("--max-inactive-windows", type=int, default=-1, help="Maximum count of inactive replay windows allowed before a candidate is rejected.")
     parser.add_argument("--min-accepted-count", type=int, default=0, help="Minimum accepted trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-count", type=int, default=0, help="Minimum resolved trades required for a candidate to be feasible.")
     parser.add_argument("--min-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades that must be resolved.")
@@ -1602,6 +1648,8 @@ def main() -> None:
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
         max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
+        min_active_window_count=max(args.min_active_windows, 0),
+        max_inactive_window_count=int(args.max_inactive_windows),
         min_trader_count=max(args.min_trader_count, 0),
         min_market_count=max(args.min_market_count, 0),
         min_entry_price_band_count=max(args.min_entry_price_band_count, 0),
@@ -1738,6 +1786,8 @@ def main() -> None:
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
             max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
+            min_active_window_count=max(args.min_active_windows, 0),
+            max_inactive_window_count=int(args.max_inactive_windows),
             min_trader_count=max(args.min_trader_count, 0),
             min_market_count=max(args.min_market_count, 0),
             min_entry_price_band_count=max(args.min_entry_price_band_count, 0),
@@ -1788,6 +1838,8 @@ def main() -> None:
         "min_total_pnl_usd": float(args.min_total_pnl_usd),
         "max_drawdown_pct": max(args.max_drawdown_pct, 0.0),
         "min_positive_windows": max(args.min_positive_windows, 0),
+        "min_active_windows": max(args.min_active_windows, 0),
+        "max_inactive_windows": int(args.max_inactive_windows),
         "min_worst_window_pnl_usd": args.min_worst_window_pnl_usd,
         "min_worst_window_resolved_share": _clamp_fraction(args.min_worst_window_resolved_share),
         "max_worst_window_drawdown_pct": max(args.max_worst_window_drawdown_pct, 0.0),

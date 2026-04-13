@@ -400,6 +400,8 @@ WITH latest_search AS (
     mode_accepting_window_accepted_size_share_penalty,
     mode_top_two_accepting_window_accepted_share_penalty,
     mode_top_two_accepting_window_accepted_size_share_penalty,
+    mode_accepting_window_accepted_concentration_index_penalty,
+    mode_accepting_window_accepted_size_concentration_index_penalty,
     window_inactivity_penalty,
     accepted_window_count_penalty,
     accepted_window_share_penalty,
@@ -409,6 +411,8 @@ WITH latest_search AS (
     accepting_window_accepted_size_share_penalty,
     top_two_accepting_window_accepted_share_penalty,
     top_two_accepting_window_accepted_size_share_penalty,
+    accepting_window_accepted_concentration_index_penalty,
+    accepting_window_accepted_size_concentration_index_penalty,
     wallet_count_penalty,
     market_count_penalty,
     entry_price_band_count_penalty,
@@ -499,6 +503,8 @@ SELECT
   latest_search.mode_accepting_window_accepted_size_share_penalty,
   latest_search.mode_top_two_accepting_window_accepted_share_penalty,
   latest_search.mode_top_two_accepting_window_accepted_size_share_penalty,
+  latest_search.mode_accepting_window_accepted_concentration_index_penalty,
+  latest_search.mode_accepting_window_accepted_size_concentration_index_penalty,
   latest_search.window_inactivity_penalty,
   latest_search.accepted_window_count_penalty,
   latest_search.accepted_window_share_penalty,
@@ -508,6 +514,8 @@ SELECT
   latest_search.accepting_window_accepted_size_share_penalty,
   latest_search.top_two_accepting_window_accepted_share_penalty,
   latest_search.top_two_accepting_window_accepted_size_share_penalty,
+  latest_search.accepting_window_accepted_concentration_index_penalty,
+  latest_search.accepting_window_accepted_size_concentration_index_penalty,
   latest_search.wallet_count_penalty,
   latest_search.market_count_penalty,
   latest_search.entry_price_band_count_penalty,
@@ -2000,6 +2008,8 @@ function replaySearchScoreBreakdownSummary(raw) {
         const acceptingWindowAcceptedSizeSharePenaltyUsd = Number(breakdown.accepting_window_accepted_size_share_penalty_usd || 0);
         const topTwoAcceptingWindowAcceptedSharePenaltyUsd = Number(breakdown.top_two_accepting_window_accepted_share_penalty_usd || 0);
         const topTwoAcceptingWindowAcceptedSizeSharePenaltyUsd = Number(breakdown.top_two_accepting_window_accepted_size_share_penalty_usd || 0);
+        const acceptingWindowAcceptedConcentrationIndexPenaltyUsd = Number(breakdown.accepting_window_accepted_concentration_index_penalty_usd || 0);
+        const acceptingWindowAcceptedSizeConcentrationIndexPenaltyUsd = Number(breakdown.accepting_window_accepted_size_concentration_index_penalty_usd || 0);
         const worstWindowResolvedSharePenaltyUsd = Number(breakdown.worst_window_resolved_share_penalty_usd || 0);
         const worstWindowResolvedSizeSharePenaltyUsd = Number(breakdown.worst_window_resolved_size_share_penalty_usd || 0);
         const worstActiveWindowAcceptedPenaltyUsd = Number(breakdown.worst_active_window_accepted_penalty_usd || 0);
@@ -2022,6 +2032,8 @@ function replaySearchScoreBreakdownSummary(raw) {
         const modeAcceptingWindowAcceptedSizeSharePenaltyUsd = Number(breakdown.mode_accepting_window_accepted_size_share_penalty_usd || 0);
         const modeTopTwoAcceptingWindowAcceptedSharePenaltyUsd = Number(breakdown.mode_top_two_accepting_window_accepted_share_penalty_usd || 0);
         const modeTopTwoAcceptingWindowAcceptedSizeSharePenaltyUsd = Number(breakdown.mode_top_two_accepting_window_accepted_size_share_penalty_usd || 0);
+        const modeAcceptingWindowAcceptedConcentrationIndexPenaltyUsd = Number(breakdown.mode_accepting_window_accepted_concentration_index_penalty_usd || 0);
+        const modeAcceptingWindowAcceptedSizeConcentrationIndexPenaltyUsd = Number(breakdown.mode_accepting_window_accepted_size_concentration_index_penalty_usd || 0);
         const walletCountPenaltyUsd = Number(breakdown.wallet_count_penalty_usd || 0);
         const marketCountPenaltyUsd = Number(breakdown.market_count_penalty_usd || 0);
         const entryPriceBandCountPenaltyUsd = Number(breakdown.entry_price_band_count_penalty_usd || 0);
@@ -2084,6 +2096,10 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`top2-acc ${formatDollar(-topTwoAcceptingWindowAcceptedSharePenaltyUsd)}`);
         if (Math.abs(topTwoAcceptingWindowAcceptedSizeSharePenaltyUsd) > 1e-9)
             parts.push(`top2-acc$ ${formatDollar(-topTwoAcceptingWindowAcceptedSizeSharePenaltyUsd)}`);
+        if (Math.abs(acceptingWindowAcceptedConcentrationIndexPenaltyUsd) > 1e-9)
+            parts.push(`acc-ci ${formatDollar(-acceptingWindowAcceptedConcentrationIndexPenaltyUsd)}`);
+        if (Math.abs(acceptingWindowAcceptedSizeConcentrationIndexPenaltyUsd) > 1e-9)
+            parts.push(`acc-ci$ ${formatDollar(-acceptingWindowAcceptedSizeConcentrationIndexPenaltyUsd)}`);
         if (Math.abs(worstWindowResolvedSharePenaltyUsd) > 1e-9)
             parts.push(`w-cov ${formatDollar(-worstWindowResolvedSharePenaltyUsd)}`);
         if (Math.abs(worstWindowResolvedSizeSharePenaltyUsd) > 1e-9)
@@ -2128,6 +2144,10 @@ function replaySearchScoreBreakdownSummary(raw) {
             parts.push(`m-top2-acc ${formatDollar(-modeTopTwoAcceptingWindowAcceptedSharePenaltyUsd)}`);
         if (Math.abs(modeTopTwoAcceptingWindowAcceptedSizeSharePenaltyUsd) > 1e-9)
             parts.push(`m-top2-acc$ ${formatDollar(-modeTopTwoAcceptingWindowAcceptedSizeSharePenaltyUsd)}`);
+        if (Math.abs(modeAcceptingWindowAcceptedConcentrationIndexPenaltyUsd) > 1e-9)
+            parts.push(`m-acc-ci ${formatDollar(-modeAcceptingWindowAcceptedConcentrationIndexPenaltyUsd)}`);
+        if (Math.abs(modeAcceptingWindowAcceptedSizeConcentrationIndexPenaltyUsd) > 1e-9)
+            parts.push(`m-acc-ci$ ${formatDollar(-modeAcceptingWindowAcceptedSizeConcentrationIndexPenaltyUsd)}`);
         if (Math.abs(walletCountPenaltyUsd) > 1e-9)
             parts.push(`wallet# ${formatDollar(-walletCountPenaltyUsd)}`);
         if (Math.abs(marketCountPenaltyUsd) > 1e-9)
@@ -2191,6 +2211,8 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('top-acc$', row.accepting_window_accepted_size_share_penalty);
     pushIfActive('top2-acc', row.top_two_accepting_window_accepted_share_penalty);
     pushIfActive('top2-acc$', row.top_two_accepting_window_accepted_size_share_penalty);
+    pushIfActive('acc-ci', row.accepting_window_accepted_concentration_index_penalty);
+    pushIfActive('acc-ci$', row.accepting_window_accepted_size_concentration_index_penalty);
     pushIfActive('w-cov', row.worst_window_resolved_share_penalty);
     pushIfActive('w-sz-cov', row.worst_window_resolved_size_share_penalty);
     pushIfActive('w-act', row.worst_active_window_accepted_penalty);
@@ -2213,6 +2235,8 @@ function replaySearchScoreWeightSummary(row) {
     pushIfActive('m-top-acc$', row.mode_accepting_window_accepted_size_share_penalty);
     pushIfActive('m-top2-acc', row.mode_top_two_accepting_window_accepted_share_penalty);
     pushIfActive('m-top2-acc$', row.mode_top_two_accepting_window_accepted_size_share_penalty);
+    pushIfActive('m-acc-ci', row.mode_accepting_window_accepted_concentration_index_penalty);
+    pushIfActive('m-acc-ci$', row.mode_accepting_window_accepted_size_concentration_index_penalty);
     pushIfActive('wallet#', row.wallet_count_penalty);
     pushIfActive('market#', row.market_count_penalty);
     pushIfActive('band#', row.entry_price_band_count_penalty);
@@ -2497,6 +2521,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 accepting_window_accepted_size_share_penalty_usd: Number(breakdown.accepting_window_accepted_size_share_penalty_usd || 0),
                 top_two_accepting_window_accepted_share_penalty_usd: Number(breakdown.top_two_accepting_window_accepted_share_penalty_usd || 0),
                 top_two_accepting_window_accepted_size_share_penalty_usd: Number(breakdown.top_two_accepting_window_accepted_size_share_penalty_usd || 0),
+                accepting_window_accepted_concentration_index_penalty_usd: Number(breakdown.accepting_window_accepted_concentration_index_penalty_usd || 0),
+                accepting_window_accepted_size_concentration_index_penalty_usd: Number(breakdown.accepting_window_accepted_size_concentration_index_penalty_usd || 0),
                 worst_window_resolved_share_penalty_usd: Number(breakdown.worst_window_resolved_share_penalty_usd || 0),
                 worst_window_resolved_size_share_penalty_usd: Number(breakdown.worst_window_resolved_size_share_penalty_usd || 0),
                 worst_active_window_accepted_penalty_usd: Number(breakdown.worst_active_window_accepted_penalty_usd || 0),
@@ -2519,6 +2545,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
                 mode_accepting_window_accepted_size_share_penalty_usd: Number(breakdown.mode_accepting_window_accepted_size_share_penalty_usd || 0),
                 mode_top_two_accepting_window_accepted_share_penalty_usd: Number(breakdown.mode_top_two_accepting_window_accepted_share_penalty_usd || 0),
                 mode_top_two_accepting_window_accepted_size_share_penalty_usd: Number(breakdown.mode_top_two_accepting_window_accepted_size_share_penalty_usd || 0),
+                mode_accepting_window_accepted_concentration_index_penalty_usd: Number(breakdown.mode_accepting_window_accepted_concentration_index_penalty_usd || 0),
+                mode_accepting_window_accepted_size_concentration_index_penalty_usd: Number(breakdown.mode_accepting_window_accepted_size_concentration_index_penalty_usd || 0),
                 wallet_count_penalty_usd: Number(breakdown.wallet_count_penalty_usd || 0),
                 market_count_penalty_usd: Number(breakdown.market_count_penalty_usd || 0),
                 entry_price_band_count_penalty_usd: Number(breakdown.entry_price_band_count_penalty_usd || 0),
@@ -2567,6 +2595,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const acceptingWindowAcceptedSizeShareDelta = current.accepting_window_accepted_size_share_penalty_usd - best.accepting_window_accepted_size_share_penalty_usd;
     const topTwoAcceptingWindowAcceptedShareDelta = current.top_two_accepting_window_accepted_share_penalty_usd - best.top_two_accepting_window_accepted_share_penalty_usd;
     const topTwoAcceptingWindowAcceptedSizeShareDelta = current.top_two_accepting_window_accepted_size_share_penalty_usd - best.top_two_accepting_window_accepted_size_share_penalty_usd;
+    const acceptingWindowAcceptedConcentrationIndexDelta = current.accepting_window_accepted_concentration_index_penalty_usd - best.accepting_window_accepted_concentration_index_penalty_usd;
+    const acceptingWindowAcceptedSizeConcentrationIndexDelta = current.accepting_window_accepted_size_concentration_index_penalty_usd - best.accepting_window_accepted_size_concentration_index_penalty_usd;
     const worstCoverageDelta = current.worst_window_resolved_share_penalty_usd - best.worst_window_resolved_share_penalty_usd;
     const worstSizeCoverageDelta = current.worst_window_resolved_size_share_penalty_usd - best.worst_window_resolved_size_share_penalty_usd;
     const worstActiveDepthDelta = current.worst_active_window_accepted_penalty_usd - best.worst_active_window_accepted_penalty_usd;
@@ -2589,6 +2619,8 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
     const modeAcceptingWindowAcceptedSizeShareDelta = current.mode_accepting_window_accepted_size_share_penalty_usd - best.mode_accepting_window_accepted_size_share_penalty_usd;
     const modeTopTwoAcceptingWindowAcceptedShareDelta = current.mode_top_two_accepting_window_accepted_share_penalty_usd - best.mode_top_two_accepting_window_accepted_share_penalty_usd;
     const modeTopTwoAcceptingWindowAcceptedSizeShareDelta = current.mode_top_two_accepting_window_accepted_size_share_penalty_usd - best.mode_top_two_accepting_window_accepted_size_share_penalty_usd;
+    const modeAcceptingWindowAcceptedConcentrationIndexDelta = current.mode_accepting_window_accepted_concentration_index_penalty_usd - best.mode_accepting_window_accepted_concentration_index_penalty_usd;
+    const modeAcceptingWindowAcceptedSizeConcentrationIndexDelta = current.mode_accepting_window_accepted_size_concentration_index_penalty_usd - best.mode_accepting_window_accepted_size_concentration_index_penalty_usd;
     const walletCountDelta = current.wallet_count_penalty_usd - best.wallet_count_penalty_usd;
     const marketCountDelta = current.market_count_penalty_usd - best.market_count_penalty_usd;
     const entryBandCountDelta = current.entry_price_band_count_penalty_usd - best.entry_price_band_count_penalty_usd;
@@ -2651,6 +2683,10 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`top2-acc ${formatDollar(topTwoAcceptingWindowAcceptedShareDelta)}`);
     if (Math.abs(topTwoAcceptingWindowAcceptedSizeShareDelta) > 1e-9)
         parts.push(`top2-acc$ ${formatDollar(topTwoAcceptingWindowAcceptedSizeShareDelta)}`);
+    if (Math.abs(acceptingWindowAcceptedConcentrationIndexDelta) > 1e-9)
+        parts.push(`acc-ci ${formatDollar(acceptingWindowAcceptedConcentrationIndexDelta)}`);
+    if (Math.abs(acceptingWindowAcceptedSizeConcentrationIndexDelta) > 1e-9)
+        parts.push(`acc-ci$ ${formatDollar(acceptingWindowAcceptedSizeConcentrationIndexDelta)}`);
     if (Math.abs(worstCoverageDelta) > 1e-9)
         parts.push(`w-cov ${formatDollar(worstCoverageDelta)}`);
     if (Math.abs(worstSizeCoverageDelta) > 1e-9)
@@ -2695,6 +2731,10 @@ function replaySearchScoreDriftSummary(bestRaw, currentRaw) {
         parts.push(`m-top2-acc ${formatDollar(modeTopTwoAcceptingWindowAcceptedShareDelta)}`);
     if (Math.abs(modeTopTwoAcceptingWindowAcceptedSizeShareDelta) > 1e-9)
         parts.push(`m-top2-acc$ ${formatDollar(modeTopTwoAcceptingWindowAcceptedSizeShareDelta)}`);
+    if (Math.abs(modeAcceptingWindowAcceptedConcentrationIndexDelta) > 1e-9)
+        parts.push(`m-acc-ci ${formatDollar(modeAcceptingWindowAcceptedConcentrationIndexDelta)}`);
+    if (Math.abs(modeAcceptingWindowAcceptedSizeConcentrationIndexDelta) > 1e-9)
+        parts.push(`m-acc-ci$ ${formatDollar(modeAcceptingWindowAcceptedSizeConcentrationIndexDelta)}`);
     if (Math.abs(walletCountDelta) > 1e-9)
         parts.push(`wallet# ${formatDollar(walletCountDelta)}`);
     if (Math.abs(marketCountDelta) > 1e-9)
@@ -3366,6 +3406,8 @@ function replaySearchModePenaltySummary(row) {
     const modeAcceptingWindowAcceptedSizeSharePenalty = Math.max(Number(row.mode_accepting_window_accepted_size_share_penalty || 0), 0);
     const modeTopTwoAcceptingWindowAcceptedSharePenalty = Math.max(Number(row.mode_top_two_accepting_window_accepted_share_penalty || 0), 0);
     const modeTopTwoAcceptingWindowAcceptedSizeSharePenalty = Math.max(Number(row.mode_top_two_accepting_window_accepted_size_share_penalty || 0), 0);
+    const modeAcceptingWindowAcceptedConcentrationIndexPenalty = Math.max(Number(row.mode_accepting_window_accepted_concentration_index_penalty || 0), 0);
+    const modeAcceptingWindowAcceptedSizeConcentrationIndexPenalty = Math.max(Number(row.mode_accepting_window_accepted_size_concentration_index_penalty || 0), 0);
     if (modeResolvedSharePenalty > 0)
         parts.push(`cov ${modeResolvedSharePenalty.toFixed(2)}x`);
     if (modeResolvedSizeSharePenalty > 0)
@@ -3402,6 +3444,10 @@ function replaySearchModePenaltySummary(row) {
         parts.push(`top2-acc ${modeTopTwoAcceptingWindowAcceptedSharePenalty.toFixed(2)}x`);
     if (modeTopTwoAcceptingWindowAcceptedSizeSharePenalty > 0)
         parts.push(`top2-acc$ ${modeTopTwoAcceptingWindowAcceptedSizeSharePenalty.toFixed(2)}x`);
+    if (modeAcceptingWindowAcceptedConcentrationIndexPenalty > 0)
+        parts.push(`acc-ci ${modeAcceptingWindowAcceptedConcentrationIndexPenalty.toFixed(2)}x`);
+    if (modeAcceptingWindowAcceptedSizeConcentrationIndexPenalty > 0)
+        parts.push(`acc-ci$ ${modeAcceptingWindowAcceptedSizeConcentrationIndexPenalty.toFixed(2)}x`);
     return parts.length ? parts.join(' | ') : 'none';
 }
 function replaySearchFailureSummary(raw, feasible) {

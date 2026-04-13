@@ -3308,6 +3308,157 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 main.BOT_STATE_FILE = original_state_file
 
+    def test_persist_startup_validation_failure_clears_stale_prior_session_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                db.DB_PATH = Path(tmpdir) / "data" / "empty.db"
+                main.DB_PATH = db.DB_PATH
+                main.BOT_STATE_FILE.write_text(
+                    json.dumps(
+                        {
+                            "session_id": "old-session",
+                            "last_replay_search_status": "completed",
+                            "last_replay_promotion_status": "applied",
+                            "shadow_history_state_known": True,
+                            "resolved_shadow_trade_count": 99,
+                            "loaded_scorer": "xgboost",
+                            "model_artifact_exists": True,
+                            "model_artifact_path": "/tmp/old-model.joblib",
+                            "last_poll_at": 123,
+                            "loop_in_progress": True,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with (
+                    patch("main.use_real_money", return_value=False),
+                    patch("main.poll_interval", return_value=5.0),
+                    patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
+                ):
+                    main._persist_startup_validation_failure(
+                        ["MIN_CONFIDENCE must be numeric, got 'abc'"],
+                        [],
+                    )
+
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_failed"])
+                self.assertTrue(payload["startup_validation_failed"])
+                self.assertNotEqual(payload["session_id"], "old-session")
+                self.assertEqual(payload["last_poll_at"], 0)
+                self.assertFalse(payload["loop_in_progress"])
+                self.assertEqual(payload["last_replay_search_status"], "")
+                self.assertEqual(payload["last_replay_promotion_status"], "")
+                self.assertFalse(payload["shadow_history_state_known"])
+                self.assertEqual(payload["resolved_shadow_trade_count"], 0)
+                self.assertEqual(payload["loaded_scorer"], "heuristic")
+                self.assertFalse(payload["model_artifact_exists"])
+                self.assertEqual(payload["model_artifact_path"], "")
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
+    def test_persist_startup_failure_rehydrates_durable_persisted_history(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            original_db_path = db.DB_PATH
+            original_main_db_path = main.DB_PATH
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                main.DB_PATH = db.DB_PATH
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO retrain_runs (
+                            started_at, finished_at, trigger, status, ok, deployed,
+                            sample_count, min_samples, message
+                        ) VALUES (?,?,?,?,?,?,?,?,?)
+                        """,
+                        (100, 120, "manual", "deployed", 1, 1, 42, 30, "latest retrain"),
+                    )
+                    replay_search_run_id = int(
+                        conn.execute(
+                            """
+                            INSERT INTO replay_search_runs (
+                                started_at, finished_at, request_token, label_prefix, status,
+                                base_policy_json, grid_json, constraints_json,
+                                candidate_count, feasible_count, best_feasible_score, best_feasible_total_pnl_usd
+                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (200, 230, "req-1", "scheduled", "completed", "{}", "{}", "{}", 17, 6, 1.75, 42.5),
+                        ).lastrowid
+                        or 0
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                main._insert_replay_promotion(
+                    {
+                        "requested_at": 300,
+                        "finished_at": 310,
+                        "applied_at": 315,
+                        "trigger": "scheduled_replay_search",
+                        "scope": "shadow_only",
+                        "source_mode": "shadow",
+                        "status": "applied",
+                        "reason": "auto-promoted best feasible replay candidate",
+                        "replay_search_run_id": replay_search_run_id,
+                        "replay_search_candidate_id": None,
+                    }
+                )
+                main._insert_replay_promotion(
+                    {
+                        "requested_at": 320,
+                        "finished_at": 330,
+                        "applied_at": 0,
+                        "trigger": "scheduled_replay_search",
+                        "scope": "shadow_only",
+                        "source_mode": "shadow",
+                        "status": "skipped_score_delta",
+                        "reason": "score delta too small",
+                        "replay_search_run_id": replay_search_run_id,
+                        "replay_search_candidate_id": None,
+                    }
+                )
+
+                with (
+                    patch("main.use_real_money", return_value=False),
+                    patch("main.poll_interval", return_value=5.0),
+                    patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
+                ):
+                    main._persist_startup_failure_state(
+                        detail="startup failed: belief sync exploded",
+                        message="startup failed: belief sync exploded",
+                        validation_failed=False,
+                    )
+
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_failed"])
+                self.assertFalse(payload["shadow_history_state_known"])
+                self.assertEqual(payload["last_retrain_status"], "deployed")
+                self.assertEqual(payload["last_retrain_message"], "latest retrain")
+                self.assertEqual(payload["last_replay_search_status"], "completed")
+                self.assertEqual(payload["last_replay_search_run_id"], replay_search_run_id)
+                self.assertEqual(payload["last_replay_promotion_status"], "skipped_score_delta")
+                self.assertEqual(payload["last_replay_promotion_message"], "score delta too small")
+                self.assertEqual(payload["last_applied_replay_promotion_status"], "applied")
+                self.assertEqual(
+                    payload["last_applied_replay_promotion_message"],
+                    "auto-promoted best feasible replay candidate",
+                )
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+                db.DB_PATH = original_db_path
+                main.DB_PATH = original_main_db_path
+
     def test_validate_startup_persists_failure_state_before_raising(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_state_file = main.BOT_STATE_FILE

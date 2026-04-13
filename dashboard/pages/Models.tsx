@@ -302,9 +302,9 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Fallback', text: 'Why the runtime is using heuristics instead of the model, if it is degraded.'},
       {label: 'Startup', text: 'Current startup state. Red means startup failed before the runtime reached its first stable polling loop.'},
       {label: 'Replay search', text: 'Latest replay-search attempt and scope. This is the search job status, not the promotion result.'},
-      {label: 'Promotion', text: 'Latest replay-promotion attempt, including skipped or failed auto-promotion attempts after replay search.'},
+      {label: 'Promotion', text: 'Latest replay-promotion attempt, including skipped or failed auto-promotion attempts after replay search, with the persisted attempt reason.'},
       {label: 'Promote delta', text: 'Score and replay P&L delta attached to the latest replay-promotion attempt, when available.'},
-      {label: 'Promo base', text: 'Last applied replay-promotion baseline. This can be older than Promotion when the latest attempt was skipped or failed.'},
+      {label: 'Promo base', text: 'Last applied replay-promotion baseline, including the persisted applied reason. This can be older than Promotion when the latest attempt was skipped or failed.'},
       {label: 'Shadow gate', text: 'Combined live-history gate: total shadow-history baseline plus the post-promotion shadow-history requirement.'},
       {label: 'Trained', text: 'When the latest deployed model artifact was built.'},
       {label: 'Model age', text: 'How long that deployed model artifact has been sitting without a retrain.'},
@@ -1488,6 +1488,10 @@ function compactWalletLabel(value: string | null | undefined): string {
   if (!normalized) return '-'
   if (!normalized.startsWith('0x') || normalized.length <= 12) return normalized
   return `${normalized.slice(0, 6)}..${normalized.slice(-4)}`
+}
+
+function compactSingleLineText(value: string | null | undefined): string {
+  return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
 function replaySegmentLabel(kind: 'trader_address' | 'entry_price_band' | 'time_to_close_band', value: string | null | undefined): string {
@@ -6132,14 +6136,16 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const promotionStatusText = replayPromotionStatusLabel(botState.last_replay_promotion_status)
   const promotionScopeText = replaySearchScopeLabel(botState.last_replay_promotion_scope)
   const promotionAppliedAt = Math.max(0, Number(botState.last_replay_promotion_at || 0))
+  const promotionMessageText = compactSingleLineText(botState.last_replay_promotion_message)
   const promotionValue = useMemo(() => {
     if (promotionStatusText === '-' && promotionAppliedAt <= 0) return '-'
     const parts: string[] = []
     if (promotionStatusText !== '-') parts.push(promotionStatusText)
     if (promotionScopeText !== '-') parts.push(promotionScopeText)
+    if (promotionMessageText) parts.push(promotionMessageText)
     if (promotionAppliedAt > 0) parts.push(secondsAgo(promotionAppliedAt))
     return parts.length ? parts.join(' | ') : '-'
-  }, [promotionAppliedAt, promotionScopeText, promotionStatusText])
+  }, [promotionAppliedAt, promotionMessageText, promotionScopeText, promotionStatusText])
   const promotionValueColor = replayPromotionStatusColor(botState.last_replay_promotion_status)
   const promotionScoreDeltaRaw = botState.last_replay_promotion_score_delta
   const promotionScoreDelta = promotionScoreDeltaRaw == null ? null : Number(promotionScoreDeltaRaw)
@@ -6165,14 +6171,16 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const appliedPromotionStatusText = replayPromotionStatusLabel(botState.last_applied_replay_promotion_status)
   const appliedPromotionScopeText = replaySearchScopeLabel(botState.last_applied_replay_promotion_scope)
   const appliedPromotionAt = Math.max(0, Number(botState.last_applied_replay_promotion_at || 0))
+  const appliedPromotionMessageText = compactSingleLineText(botState.last_applied_replay_promotion_message)
   const appliedPromotionValue = useMemo(() => {
     if (appliedPromotionStatusText === '-' && appliedPromotionAt <= 0) return '-'
     const parts: string[] = []
     if (appliedPromotionStatusText !== '-') parts.push(appliedPromotionStatusText)
     if (appliedPromotionScopeText !== '-') parts.push(appliedPromotionScopeText)
+    if (appliedPromotionMessageText) parts.push(appliedPromotionMessageText)
     if (appliedPromotionAt > 0) parts.push(secondsAgo(appliedPromotionAt))
     return parts.length ? parts.join(' | ') : '-'
-  }, [appliedPromotionAt, appliedPromotionScopeText, appliedPromotionStatusText])
+  }, [appliedPromotionAt, appliedPromotionMessageText, appliedPromotionScopeText, appliedPromotionStatusText])
   const appliedPromotionValueColor = appliedPromotionAt > 0
     ? replayPromotionStatusColor(botState.last_applied_replay_promotion_status || 'applied')
     : theme.dim

@@ -477,9 +477,92 @@ def _repair_event_file_market_urls() -> None:
         EVENT_FILE.write_text("\n".join(repaired_lines) + "\n", encoding="utf-8")
 
 
-def _write_bot_state(**extra) -> None:
+def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, object]:
+    return {
+        "session_id": session_id,
+        "started_at": int(started_at),
+        "last_loop_started_at": 0,
+        "last_activity_at": int(started_at),
+        "loop_in_progress": False,
+        "startup_detail": "starting bot",
+        "startup_failed": False,
+        "startup_failure_message": "",
+        "startup_validation_failed": False,
+        "startup_validation_message": "",
+        "last_poll_at": 0,
+        "last_poll_duration_s": 0.0,
+        "bankroll_usd": None,
+        "last_event_count": 0,
+        "polled_wallet_count": 0,
+        "retrain_in_progress": False,
+        "retrain_started_at": 0,
+        "last_retrain_started_at": 0,
+        "last_retrain_finished_at": 0,
+        "last_retrain_status": "",
+        "last_retrain_message": "",
+        "last_retrain_sample_count": 0,
+        "last_retrain_min_samples": 0,
+        "last_retrain_trigger": "",
+        "last_retrain_deployed": False,
+        "replay_search_in_progress": False,
+        "replay_search_started_at": 0,
+        "last_replay_search_started_at": 0,
+        "last_replay_search_finished_at": 0,
+        "last_replay_search_status": "",
+        "last_replay_search_message": "",
+        "last_replay_search_trigger": "",
+        "last_replay_search_run_id": 0,
+        "last_replay_search_candidate_count": 0,
+        "last_replay_search_feasible_count": 0,
+        "last_replay_search_best_score": None,
+        "last_replay_search_best_pnl_usd": None,
+        "last_replay_search_scope": "shadow_only",
+        "last_replay_promotion_id": 0,
+        "last_replay_promotion_at": 0,
+        "last_replay_promotion_status": "",
+        "last_replay_promotion_message": "",
+        "last_replay_promotion_scope": "shadow_only",
+        "last_replay_promotion_run_id": 0,
+        "last_replay_promotion_candidate_id": 0,
+        "last_replay_promotion_score_delta": None,
+        "last_replay_promotion_pnl_delta_usd": None,
+        "last_applied_replay_promotion_id": 0,
+        "last_applied_replay_promotion_at": 0,
+        "last_applied_replay_promotion_status": "",
+        "last_applied_replay_promotion_message": "",
+        "last_applied_replay_promotion_scope": "shadow_only",
+        "last_applied_replay_promotion_run_id": 0,
+        "last_applied_replay_promotion_candidate_id": 0,
+        "last_applied_replay_promotion_score_delta": None,
+        "last_applied_replay_promotion_pnl_delta_usd": None,
+        "shadow_history_state_known": False,
+        "resolved_shadow_trade_count": 0,
+        "live_require_shadow_history_enabled": False,
+        "live_min_shadow_resolved": 0,
+        "live_shadow_history_total_ready": True,
+        "resolved_shadow_since_last_promotion": 0,
+        "live_min_shadow_resolved_since_last_promotion": 0,
+        "live_shadow_history_ready": True,
+        "loaded_scorer": "heuristic",
+        "loaded_model_backend": "heuristic",
+        "model_artifact_exists": False,
+        "model_artifact_path": "",
+        "model_artifact_backend": "",
+        "model_artifact_contract": None,
+        "runtime_contract": None,
+        "model_artifact_label_mode": "",
+        "runtime_label_mode": "",
+        "model_runtime_compatible": False,
+        "model_fallback_reason": "",
+        "model_load_error": "",
+        "model_prediction_mode": "",
+        "model_loaded_at": 0,
+    }
+
+
+def _write_bot_state(*, replace: bool = False, **extra) -> None:
     existing: dict[str, object] = {}
-    if BOT_STATE_FILE.exists():
+    if not replace and BOT_STATE_FILE.exists():
         try:
             payload = json.loads(BOT_STATE_FILE.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
@@ -524,23 +607,28 @@ def _persist_startup_failure_state(
     validation_failed: bool,
 ) -> None:
     failed_at = int(time.time())
-    _write_bot_state(
-        started_at=failed_at,
+    state = _base_bot_state_snapshot(session_id=uuid.uuid4().hex, started_at=failed_at)
+    state.update(
         last_activity_at=failed_at,
-        last_loop_started_at=0,
-        loop_in_progress=False,
-        last_poll_at=0,
-        last_poll_duration_s=0.0,
-        retrain_in_progress=False,
-        retrain_started_at=0,
-        replay_search_in_progress=False,
-        replay_search_started_at=0,
         startup_detail=str(detail or "").strip(),
         startup_failed=True,
         startup_failure_message=str(message or "").strip(),
         startup_validation_failed=bool(validation_failed),
         startup_validation_message=str(message or "").strip() if validation_failed else "",
     )
+    for loader, payload_builder in (
+        (_latest_retrain_run, _latest_retrain_state_payload),
+        (_latest_replay_search_run, _latest_replay_search_state_payload),
+        (_latest_replay_promotion, _latest_replay_promotion_state_payload),
+        (_latest_applied_replay_promotion, _applied_replay_promotion_state_payload),
+    ):
+        try:
+            row = loader()
+        except Exception:
+            row = None
+        if row is not None:
+            state.update(payload_builder(row))
+    _write_bot_state(replace=True, **state)
 
 
 def _persist_startup_validation_failure(errors: list[str], warnings: list[str] | None = None) -> None:
@@ -3863,86 +3951,7 @@ def main() -> None:
     start_ts = int(time.time())
     session_id = uuid.uuid4().hex
     watchlist = WatchlistManager(WATCHED_WALLETS)
-    bot_state_snapshot: dict[str, object] = {
-        "session_id": session_id,
-        "started_at": start_ts,
-        "last_loop_started_at": 0,
-        "last_activity_at": start_ts,
-        "loop_in_progress": False,
-        "startup_detail": "starting bot",
-        "startup_failed": False,
-        "startup_failure_message": "",
-        "startup_validation_failed": False,
-        "startup_validation_message": "",
-        "last_poll_at": 0,
-        "last_poll_duration_s": 0.0,
-        "bankroll_usd": None,
-        "last_event_count": 0,
-        "polled_wallet_count": 0,
-        "retrain_in_progress": False,
-        "retrain_started_at": 0,
-        "last_retrain_started_at": 0,
-        "last_retrain_finished_at": 0,
-        "last_retrain_status": "",
-        "last_retrain_message": "",
-        "last_retrain_sample_count": 0,
-        "last_retrain_min_samples": 0,
-        "last_retrain_trigger": "",
-        "last_retrain_deployed": False,
-        "replay_search_in_progress": False,
-        "replay_search_started_at": 0,
-        "last_replay_search_started_at": 0,
-        "last_replay_search_finished_at": 0,
-        "last_replay_search_status": "",
-        "last_replay_search_message": "",
-        "last_replay_search_trigger": "",
-        "last_replay_search_run_id": 0,
-        "last_replay_search_candidate_count": 0,
-        "last_replay_search_feasible_count": 0,
-        "last_replay_search_best_score": None,
-        "last_replay_search_best_pnl_usd": None,
-        "last_replay_search_scope": "shadow_only",
-        "last_replay_promotion_id": 0,
-        "last_replay_promotion_at": 0,
-        "last_replay_promotion_status": "",
-        "last_replay_promotion_message": "",
-        "last_replay_promotion_scope": "shadow_only",
-        "last_replay_promotion_run_id": 0,
-        "last_replay_promotion_candidate_id": 0,
-        "last_replay_promotion_score_delta": None,
-        "last_replay_promotion_pnl_delta_usd": None,
-        "last_applied_replay_promotion_id": 0,
-        "last_applied_replay_promotion_at": 0,
-        "last_applied_replay_promotion_status": "",
-        "last_applied_replay_promotion_message": "",
-        "last_applied_replay_promotion_scope": "shadow_only",
-        "last_applied_replay_promotion_run_id": 0,
-        "last_applied_replay_promotion_candidate_id": 0,
-        "last_applied_replay_promotion_score_delta": None,
-        "last_applied_replay_promotion_pnl_delta_usd": None,
-        "shadow_history_state_known": False,
-        "resolved_shadow_trade_count": 0,
-        "live_require_shadow_history_enabled": False,
-        "live_min_shadow_resolved": 0,
-        "live_shadow_history_total_ready": True,
-        "resolved_shadow_since_last_promotion": 0,
-        "live_min_shadow_resolved_since_last_promotion": 0,
-        "live_shadow_history_ready": True,
-        "loaded_scorer": "heuristic",
-        "loaded_model_backend": "heuristic",
-        "model_artifact_exists": False,
-        "model_artifact_path": "",
-        "model_artifact_backend": "",
-        "model_artifact_contract": None,
-        "runtime_contract": None,
-        "model_artifact_label_mode": "",
-        "runtime_label_mode": "",
-        "model_runtime_compatible": False,
-        "model_fallback_reason": "",
-        "model_load_error": "",
-        "model_prediction_mode": "",
-        "model_loaded_at": 0,
-    }
+    bot_state_snapshot: dict[str, object] = _base_bot_state_snapshot(session_id=session_id, started_at=start_ts)
     latest_retrain = _latest_retrain_run()
     latest_replay_search = _latest_replay_search_run()
     latest_promotion = _latest_applied_replay_promotion()

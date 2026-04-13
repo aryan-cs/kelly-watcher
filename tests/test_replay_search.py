@@ -1018,7 +1018,99 @@ class ReplaySearchTest(unittest.TestCase):
             max_heuristic_inactive_window_count=0,
             max_xgboost_inactive_window_count=-1,
             max_heuristic_accepted_share=0.5,
+            max_heuristic_accepted_size_share=0.0,
             min_xgboost_accepted_share=0.5,
+            min_xgboost_accepted_size_share=0.0,
+            max_pause_guard_reject_share=0.0,
+            min_active_window_count=0,
+            max_inactive_window_count=-1,
+            min_trader_count=0,
+            min_market_count=0,
+            min_entry_price_band_count=0,
+            min_time_to_close_band_count=0,
+            max_top_trader_accepted_share=0.0,
+            max_top_trader_abs_pnl_share=0.0,
+            max_top_trader_size_share=0.0,
+            max_top_market_accepted_share=0.0,
+            max_top_market_abs_pnl_share=0.0,
+            max_top_market_size_share=0.0,
+            max_top_entry_price_band_accepted_share=0.0,
+            max_top_entry_price_band_abs_pnl_share=0.0,
+            max_top_entry_price_band_size_share=0.0,
+            max_top_time_to_close_band_accepted_share=0.0,
+            max_top_time_to_close_band_abs_pnl_share=0.0,
+            max_top_time_to_close_band_size_share=0.0,
+        )
+
+        self.assertEqual(failures, [])
+
+    def test_constraint_failures_ignores_mix_guards_when_peer_scorer_disabled(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 8,
+                "resolved_count": 8,
+                "accepted_size_usd": 160.0,
+                "resolved_size_usd": 160.0,
+                "win_rate": 0.625,
+                "max_drawdown_pct": 0.04,
+                "worst_window_pnl_usd": 40.0,
+                "worst_window_drawdown_pct": 0.04,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 8,
+                        "resolved_count": 8,
+                        "accepted_size_usd": 160.0,
+                        "resolved_size_usd": 160.0,
+                        "trade_count": 8,
+                        "total_pnl_usd": 40.0,
+                        "win_count": 5,
+                        "positive_window_count": 1,
+                    }
+                },
+            },
+            allow_heuristic=True,
+            allow_xgboost=False,
+            min_accepted_count=0,
+            min_resolved_count=0,
+            min_resolved_share=0.0,
+            min_resolved_size_share=0.0,
+            min_win_rate=0.0,
+            min_total_pnl_usd=-1_000_000_000.0,
+            max_drawdown_pct=0.0,
+            min_worst_window_pnl_usd=-1_000_000_000.0,
+            min_worst_window_resolved_share=0.0,
+            min_worst_window_resolved_size_share=0.0,
+            max_worst_window_drawdown_pct=0.0,
+            min_heuristic_accepted_count=1,
+            min_xgboost_accepted_count=1,
+            min_heuristic_resolved_count=1,
+            min_xgboost_resolved_count=1,
+            min_heuristic_win_rate=0.5,
+            min_xgboost_win_rate=0.5,
+            min_heuristic_resolved_share=0.5,
+            min_xgboost_resolved_share=0.5,
+            min_heuristic_resolved_size_share=0.5,
+            min_xgboost_resolved_size_share=0.5,
+            min_heuristic_pnl_usd=1.0,
+            min_xgboost_pnl_usd=1.0,
+            min_heuristic_worst_window_pnl_usd=1.0,
+            min_xgboost_worst_window_pnl_usd=1.0,
+            min_heuristic_worst_window_resolved_share=0.5,
+            min_xgboost_worst_window_resolved_share=0.5,
+            min_heuristic_worst_window_resolved_size_share=0.5,
+            min_xgboost_worst_window_resolved_size_share=0.5,
+            min_heuristic_positive_window_count=1,
+            min_xgboost_positive_window_count=1,
+            min_heuristic_worst_active_window_accepted_count=1,
+            min_heuristic_worst_active_window_accepted_size_usd=1.0,
+            min_xgboost_worst_active_window_accepted_count=1,
+            min_xgboost_worst_active_window_accepted_size_usd=1.0,
+            max_heuristic_inactive_window_count=-1,
+            max_xgboost_inactive_window_count=0,
+            max_heuristic_accepted_share=0.5,
+            max_heuristic_accepted_size_share=0.5,
+            min_xgboost_accepted_share=0.5,
+            min_xgboost_accepted_size_share=0.5,
             max_pause_guard_reject_share=0.0,
             min_active_window_count=0,
             max_inactive_window_count=-1,
@@ -1356,11 +1448,13 @@ class ReplaySearchTest(unittest.TestCase):
                     "total_pnl_usd": 70.0,
                     "max_drawdown_pct": 0.05,
                     "accepted_count": 12,
+                    "accepted_size_usd": 120.0,
                     "resolved_count": 12,
+                    "resolved_size_usd": 120.0,
                     "win_rate": 0.7,
                     "signal_mode_summary": {
-                        "heuristic": {"accepted_count": 5, "resolved_count": 5, "trade_count": 5, "total_pnl_usd": 18.0, "win_count": 3},
-                        "xgboost": {"accepted_count": 7, "resolved_count": 7, "trade_count": 7, "total_pnl_usd": 52.0, "win_count": 5},
+                        "heuristic": {"accepted_count": 5, "accepted_size_usd": 50.0, "resolved_count": 5, "resolved_size_usd": 50.0, "trade_count": 5, "total_pnl_usd": 18.0, "win_count": 3},
+                        "xgboost": {"accepted_count": 7, "accepted_size_usd": 70.0, "resolved_count": 7, "resolved_size_usd": 70.0, "trade_count": 7, "total_pnl_usd": 52.0, "win_count": 5},
                     },
                 }
             return {
@@ -1368,11 +1462,13 @@ class ReplaySearchTest(unittest.TestCase):
                 "total_pnl_usd": 80.0,
                 "max_drawdown_pct": 0.04,
                 "accepted_count": 12,
+                "accepted_size_usd": 120.0,
                 "resolved_count": 12,
+                "resolved_size_usd": 120.0,
                 "win_rate": 0.68,
                 "signal_mode_summary": {
-                    "heuristic": {"accepted_count": 12, "resolved_count": 12, "trade_count": 12, "total_pnl_usd": 80.0, "win_count": 8},
-                    "xgboost": {"accepted_count": 0, "resolved_count": 0, "trade_count": 0, "total_pnl_usd": 0.0, "win_count": 0},
+                    "heuristic": {"accepted_count": 12, "accepted_size_usd": 120.0, "resolved_count": 12, "resolved_size_usd": 120.0, "trade_count": 12, "total_pnl_usd": 80.0, "win_count": 8},
+                    "xgboost": {"accepted_count": 0, "accepted_size_usd": 0.0, "resolved_count": 0, "resolved_size_usd": 0.0, "trade_count": 0, "total_pnl_usd": 0.0, "win_count": 0},
                 },
             }
 
@@ -1401,7 +1497,7 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["constraint_failures"], ["xgboost_accepted_count"])
         self.assertEqual(payload["constraints"]["min_heuristic_accepted_count"], 4)
         self.assertEqual(payload["constraints"]["min_xgboost_accepted_count"], 4)
-        self.assertIn("modes heur 5 (42%) / xgb 7 (58%)", stderr.getvalue())
+        self.assertIn("modes heur 5 (42%) sz 42% / xgb 7 (58%) sz 58%", stderr.getvalue())
 
     def test_main_can_require_mode_specific_accepted_shares(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -1412,11 +1508,13 @@ class ReplaySearchTest(unittest.TestCase):
                     "total_pnl_usd": 68.0,
                     "max_drawdown_pct": 0.05,
                     "accepted_count": 10,
+                    "accepted_size_usd": 100.0,
                     "resolved_count": 10,
+                    "resolved_size_usd": 100.0,
                     "win_rate": 0.7,
                     "signal_mode_summary": {
-                        "heuristic": {"accepted_count": 4, "resolved_count": 4, "trade_count": 4, "total_pnl_usd": 16.0, "win_count": 3},
-                        "xgboost": {"accepted_count": 6, "resolved_count": 6, "trade_count": 6, "total_pnl_usd": 52.0, "win_count": 4},
+                        "heuristic": {"accepted_count": 4, "accepted_size_usd": 40.0, "resolved_count": 4, "resolved_size_usd": 40.0, "trade_count": 4, "total_pnl_usd": 16.0, "win_count": 3},
+                        "xgboost": {"accepted_count": 6, "accepted_size_usd": 60.0, "resolved_count": 6, "resolved_size_usd": 60.0, "trade_count": 6, "total_pnl_usd": 52.0, "win_count": 4},
                     },
                 }
             return {
@@ -1424,11 +1522,13 @@ class ReplaySearchTest(unittest.TestCase):
                 "total_pnl_usd": 82.0,
                 "max_drawdown_pct": 0.04,
                 "accepted_count": 10,
+                "accepted_size_usd": 100.0,
                 "resolved_count": 10,
+                "resolved_size_usd": 100.0,
                 "win_rate": 0.68,
                 "signal_mode_summary": {
-                    "heuristic": {"accepted_count": 8, "resolved_count": 8, "trade_count": 8, "total_pnl_usd": 64.0, "win_count": 6},
-                    "xgboost": {"accepted_count": 2, "resolved_count": 2, "trade_count": 2, "total_pnl_usd": 18.0, "win_count": 1},
+                    "heuristic": {"accepted_count": 8, "accepted_size_usd": 80.0, "resolved_count": 8, "resolved_size_usd": 80.0, "trade_count": 8, "total_pnl_usd": 64.0, "win_count": 6},
+                    "xgboost": {"accepted_count": 2, "accepted_size_usd": 20.0, "resolved_count": 2, "resolved_size_usd": 20.0, "trade_count": 2, "total_pnl_usd": 18.0, "win_count": 1},
                 },
             }
 
@@ -1457,7 +1557,67 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["constraint_failures"], ["heuristic_accepted_share", "xgboost_accepted_share"])
         self.assertEqual(payload["constraints"]["max_heuristic_accepted_share"], 0.6)
         self.assertEqual(payload["constraints"]["min_xgboost_accepted_share"], 0.4)
-        self.assertIn("modes heur 4 (40%) / xgb 6 (60%)", stderr.getvalue())
+        self.assertIn("modes heur 4 (40%) sz 40% / xgb 6 (60%) sz 60%", stderr.getvalue())
+
+    def test_main_can_require_mode_specific_accepted_size_shares(self) -> None:
+        def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
+            min_conf = float(policy.as_dict()["min_confidence"])
+            if min_conf >= 0.65:
+                return {
+                    "run_id": 2,
+                    "total_pnl_usd": 68.0,
+                    "max_drawdown_pct": 0.05,
+                    "accepted_count": 10,
+                    "accepted_size_usd": 180.0,
+                    "resolved_count": 10,
+                    "resolved_size_usd": 180.0,
+                    "win_rate": 0.7,
+                    "signal_mode_summary": {
+                        "heuristic": {"accepted_count": 4, "accepted_size_usd": 60.0, "resolved_count": 4, "resolved_size_usd": 60.0, "trade_count": 4, "total_pnl_usd": 16.0, "win_count": 3},
+                        "xgboost": {"accepted_count": 6, "accepted_size_usd": 120.0, "resolved_count": 6, "resolved_size_usd": 120.0, "trade_count": 6, "total_pnl_usd": 52.0, "win_count": 4},
+                    },
+                }
+            return {
+                "run_id": 1,
+                "total_pnl_usd": 82.0,
+                "max_drawdown_pct": 0.04,
+                "accepted_count": 10,
+                "accepted_size_usd": 200.0,
+                "resolved_count": 10,
+                "resolved_size_usd": 200.0,
+                "win_rate": 0.68,
+                "signal_mode_summary": {
+                    "heuristic": {"accepted_count": 6, "accepted_size_usd": 170.0, "resolved_count": 6, "resolved_size_usd": 170.0, "trade_count": 6, "total_pnl_usd": 64.0, "win_count": 5},
+                    "xgboost": {"accepted_count": 4, "accepted_size_usd": 30.0, "resolved_count": 4, "resolved_size_usd": 30.0, "trade_count": 4, "total_pnl_usd": 18.0, "win_count": 2},
+                },
+            }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "replay_search.py",
+            "--grid-json",
+            json.dumps({"min_confidence": [0.60, 0.65]}),
+            "--max-heuristic-accepted-size-share",
+            "0.60",
+            "--min-xgboost-accepted-size-share",
+            "0.40",
+        ]
+        with (
+            patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
+            patch("sys.argv", argv),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            replay_search.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["best_feasible"]["overrides"]["min_confidence"], 0.65)
+        rejected = next(row for row in payload["ranked"] if row["overrides"]["min_confidence"] == 0.6)
+        self.assertEqual(rejected["constraint_failures"], ["heuristic_accepted_size_share", "xgboost_accepted_size_share"])
+        self.assertEqual(payload["constraints"]["max_heuristic_accepted_size_share"], 0.6)
+        self.assertEqual(payload["constraints"]["min_xgboost_accepted_size_share"], 0.4)
+        self.assertIn("modes heur 4 (40%) sz 33% / xgb 6 (60%) sz 67%", stderr.getvalue())
 
     def test_main_can_limit_pause_guard_reject_share(self) -> None:
         def fake_run_replay(*, policy, db_path=None, label="", notes="", start_ts=None, end_ts=None):
@@ -5027,6 +5187,7 @@ class ReplaySearchTest(unittest.TestCase):
             expected_constraints = {
                 "max_drawdown_pct": 0.1,
                 "max_heuristic_accepted_share": 0.0,
+                "max_heuristic_accepted_size_share": 0.0,
                 "max_heuristic_inactive_windows": -1,
                 "max_inactive_windows": -1,
                 "max_pause_guard_reject_share": 0.0,
@@ -5074,6 +5235,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_worst_window_resolved_share": 0.0,
                 "min_worst_window_resolved_size_share": 0.0,
                 "min_xgboost_accepted_share": 0.0,
+                "min_xgboost_accepted_size_share": 0.0,
                 "min_xgboost_accepted_count": 0,
                 "min_xgboost_resolved_count": 0,
                 "min_xgboost_resolved_share": 0.0,

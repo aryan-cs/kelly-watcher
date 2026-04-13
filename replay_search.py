@@ -747,6 +747,13 @@ def _accepted_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -
     return float(int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)) / float(total_accepted)
 
 
+def _accepted_size_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
+    total_accepted_size_usd = sum(float(values.get("accepted_size_usd") or 0.0) for values in signal_mode_summary.values())
+    if total_accepted_size_usd <= 0:
+        return 0.0
+    return float(signal_mode_summary.get(mode, {}).get("accepted_size_usd") or 0.0) / float(total_accepted_size_usd)
+
+
 def _resolved_share(signal_mode_summary: dict[str, dict[str, Any]], mode: str) -> float:
     accepted_count = int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)
     if accepted_count <= 0:
@@ -1023,7 +1030,9 @@ def _constraint_failures(
     max_heuristic_inactive_window_count: int,
     max_xgboost_inactive_window_count: int,
     max_heuristic_accepted_share: float,
+    max_heuristic_accepted_size_share: float,
     min_xgboost_accepted_share: float,
+    min_xgboost_accepted_size_share: float,
     max_pause_guard_reject_share: float,
     min_active_window_count: int,
     max_inactive_window_count: int,
@@ -1187,12 +1196,19 @@ def _constraint_failures(
         and float(xgboost_worst_active_window_accepted_size_usd or 0.0) < min_xgboost_worst_active_window_accepted_size_usd
     ):
         failures.append("xgboost_worst_active_window_accepted_size_usd")
+    mix_modes_enabled = allow_heuristic and allow_xgboost
     heuristic_accepted_share = _accepted_share(signal_mode_summary, "heuristic")
     xgboost_accepted_share = _accepted_share(signal_mode_summary, "xgboost")
-    if allow_heuristic and max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
+    heuristic_accepted_size_share = _accepted_size_share(signal_mode_summary, "heuristic")
+    xgboost_accepted_size_share = _accepted_size_share(signal_mode_summary, "xgboost")
+    if mix_modes_enabled and max_heuristic_accepted_share > 0 and heuristic_accepted_share > max_heuristic_accepted_share:
         failures.append("heuristic_accepted_share")
-    if allow_xgboost and min_xgboost_accepted_share > 0 and xgboost_accepted_share < min_xgboost_accepted_share:
+    if mix_modes_enabled and min_xgboost_accepted_share > 0 and xgboost_accepted_share < min_xgboost_accepted_share:
         failures.append("xgboost_accepted_share")
+    if mix_modes_enabled and max_heuristic_accepted_size_share > 0 and heuristic_accepted_size_share > max_heuristic_accepted_size_share:
+        failures.append("heuristic_accepted_size_share")
+    if mix_modes_enabled and min_xgboost_accepted_size_share > 0 and xgboost_accepted_size_share < min_xgboost_accepted_size_share:
+        failures.append("xgboost_accepted_size_share")
     if max_pause_guard_reject_share > 0 and _pause_guard_reject_share(result) > max_pause_guard_reject_share:
         failures.append("pause_guard_reject_share")
     if active_window_count < max(min_active_window_count, 0):
@@ -1255,7 +1271,10 @@ def _print_ranked_summary(results: list[dict[str, Any]], *, top: int, title: str
         for mode, label in (("heuristic", "heur"), ("xgboost", "xgb")):
             accepted_count = int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0)
             if accepted_count > 0:
-                mode_parts.append(f"{label} {accepted_count} ({_accepted_share(signal_mode_summary, mode) * 100:.0f}%)")
+                mode_parts.append(
+                    f"{label} {accepted_count} ({_accepted_share(signal_mode_summary, mode) * 100:.0f}%)"
+                    f" sz {_accepted_size_share(signal_mode_summary, mode) * 100:.0f}%"
+                )
         mode_suffix = f" | modes {' / '.join(mode_parts)}" if mode_parts else ""
         pause_guard_share = _pause_guard_reject_share(row["result"])
         pause_suffix = f" | pause {pause_guard_share * 100:.0f}%" if pause_guard_share > 0 else ""
@@ -2268,7 +2287,9 @@ def main() -> None:
     parser.add_argument("--max-heuristic-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where heuristic may be inactive before a candidate is rejected.")
     parser.add_argument("--max-xgboost-inactive-windows", type=int, default=-1, help="Maximum count of replay windows where xgboost may be inactive before a candidate is rejected.")
     parser.add_argument("--max-heuristic-accepted-share", type=float, default=0.0, help="Maximum fraction of accepted replay trades allowed to come from heuristic.")
+    parser.add_argument("--max-heuristic-accepted-size-share", type=float, default=0.0, help="Maximum fraction of accepted replay deployed dollars allowed to come from heuristic.")
     parser.add_argument("--min-xgboost-accepted-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades required to come from xgboost.")
+    parser.add_argument("--min-xgboost-accepted-size-share", type=float, default=0.0, help="Minimum fraction of accepted replay deployed dollars required to come from xgboost.")
     parser.add_argument("--max-pause-guard-reject-share", type=float, default=0.0, help="Maximum fraction of replay trades allowed to be rejected by daily-loss or live-drawdown pause guards.")
     parser.add_argument("--min-trader-count", type=int, default=0, help="Minimum distinct trader count required for a candidate to be feasible.")
     parser.add_argument("--min-market-count", type=int, default=0, help="Minimum distinct market count required for a candidate to be feasible.")
@@ -2387,7 +2408,9 @@ def main() -> None:
         max_heuristic_inactive_window_count=int(args.max_heuristic_inactive_windows),
         max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
+        max_heuristic_accepted_size_share=_clamp_fraction(args.max_heuristic_accepted_size_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
+        min_xgboost_accepted_size_share=_clamp_fraction(args.min_xgboost_accepted_size_share),
         max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
         min_active_window_count=max(args.min_active_windows, 0),
         max_inactive_window_count=int(args.max_inactive_windows),
@@ -2592,7 +2615,9 @@ def main() -> None:
             max_heuristic_inactive_window_count=int(args.max_heuristic_inactive_windows),
             max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
+            max_heuristic_accepted_size_share=_clamp_fraction(args.max_heuristic_accepted_size_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
+            min_xgboost_accepted_size_share=_clamp_fraction(args.min_xgboost_accepted_size_share),
             max_pause_guard_reject_share=_clamp_fraction(args.max_pause_guard_reject_share),
             min_active_window_count=max(args.min_active_windows, 0),
             max_inactive_window_count=int(args.max_inactive_windows),
@@ -2688,7 +2713,9 @@ def main() -> None:
         "max_heuristic_inactive_windows": int(args.max_heuristic_inactive_windows),
         "max_xgboost_inactive_windows": int(args.max_xgboost_inactive_windows),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
+        "max_heuristic_accepted_size_share": _clamp_fraction(args.max_heuristic_accepted_size_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),
+        "min_xgboost_accepted_size_share": _clamp_fraction(args.min_xgboost_accepted_size_share),
         "max_pause_guard_reject_share": _clamp_fraction(args.max_pause_guard_reject_share),
         "min_trader_count": max(args.min_trader_count, 0),
         "min_market_count": max(args.min_market_count, 0),

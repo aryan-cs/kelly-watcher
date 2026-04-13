@@ -327,13 +327,13 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Entry conc', text: 'Best and current replay-search dependence on entry-price bands, shown as distinct band count, top accepted-share, top deployed-dollar share, top absolute-P&L share, and any active floor, cap, or score penalty.'},
       {label: 'Horizon conc', text: 'Best and current replay-search dependence on time-to-close bands, shown as distinct band count, top accepted-share, top deployed-dollar share, top absolute-P&L share, and any active floor, cap, or score penalty.'},
       {label: 'Pause guard', text: 'Replay-search dependence on daily-loss or live-drawdown guard rejects, shown for best and current candidates plus any active cap or ranking penalty.'},
-      {label: 'Search modes', text: 'Accepted trade mix, count-weighted and deployed-dollar resolved coverage, and replay P&L by scorer on the latest best feasible replay-search candidate.'},
-      {label: 'Cur evidence', text: 'Count-weighted and deployed-dollar resolved evidence plus replay P&L by scorer on the current/base replay-search candidate.'},
-      {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, resolved-count, count-weighted and deployed-dollar resolved-share, win-rate, total P&L, worst-window P&L, worst-window count-weighted coverage, worst-window deployed-dollar coverage, and accepted-share guardrails from the latest replay search, if any.'},
+      {label: 'Search modes', text: 'Accepted trade mix and deployed-dollar mix, plus count-weighted and deployed-dollar resolved coverage and replay P&L by scorer on the latest best feasible replay-search candidate.'},
+      {label: 'Cur evidence', text: 'Current/base scorer accepted trade mix and deployed-dollar mix, plus count-weighted and deployed-dollar resolved evidence and replay P&L.'},
+      {label: 'Mode guard', text: 'Per-scorer accepted-count, positive-window count, inactive-window count, resolved-count, count-weighted and deployed-dollar resolved-share, win-rate, total P&L, worst-window P&L, worst-window count-weighted coverage, worst-window deployed-dollar coverage, and count-share plus deployed-dollar-share guardrails from the latest replay search, if any.'},
       {label: 'Mode pen', text: 'Soft scorer-path ranking weights from the latest replay search, for scorer coverage, scorer deployed-dollar coverage, scorer worst-window count-weighted coverage, scorer worst-window deployed-dollar coverage, scorer active-window count and dollar depth, scorer-loss, and scorer-inactivity pressure.'},
       {label: 'Best headroom', text: 'Closest active replay-search guard margins for the latest best feasible candidate, across global, heuristic, and model constraints.'},
       {label: 'Cur headroom', text: 'Closest active replay-search guard margins for the current/base candidate, across global, heuristic, and model constraints.'},
-      {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share percentage points.'},
+      {label: 'Mode drift', text: 'Best feasible scorer mix minus the current/base scorer mix, shown in accepted-share and deployed-dollar-share percentage points.'},
       {label: 'Cur mode risk', text: 'Current/base scorer-path breaches against the latest replay-search mode guardrails, or clear if none.'},
       {label: 'Cur fails', text: 'Exact replay-search feasibility failures for the current/base candidate, including non-scorer global failures.'},
       {label: 'Cur feasible', text: 'Whether the current/base config clears the replay-search feasibility gates, plus its replay P&L and drawdown.'},
@@ -1512,12 +1512,14 @@ function replaySearchModeMixSummary(
       return parts.length ? parts.join(' | ') : '-'
     }
     const totalAccepted = entries.reduce((sum, entry) => sum + entry.acceptedCount, 0)
+    const totalAcceptedSizeUsd = entries.reduce((sum, entry) => sum + entry.acceptedSizeUsd, 0)
     const parts = entries
       .map((entry) => {
         const share = totalAccepted > 0 ? `${Math.round((entry.acceptedCount / totalAccepted) * 100)}%` : '0%'
+        const sizeShare = totalAcceptedSizeUsd > 0 ? `${Math.round((entry.acceptedSizeUsd / totalAcceptedSizeUsd) * 100)}%` : '0%'
         const resolvedShare = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%'
         const resolvedSizeShare = entry.acceptedSizeUsd > 0 ? formatPct(entry.resolvedSizeUsd / entry.acceptedSizeUsd, 0) : '0%'
-        return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} cov ${resolvedShare} sz-cov ${resolvedSizeShare} ${formatDollar(entry.totalPnlUsd)}`
+        return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} sz-mix ${sizeShare} cov ${resolvedShare} sz-cov ${resolvedSizeShare} ${formatDollar(entry.totalPnlUsd)}`
       })
     if (!enabled.heuristic) parts.push('Heuristic off')
     if (!enabled.xgboost) parts.push('XGBoost off')
@@ -1530,39 +1532,42 @@ function replaySearchModeMixSummary(
 function replaySearchModeShares(
   raw: string | null | undefined,
   policyRaw: string | null | undefined
-): Map<string, number> {
-  const shares = new Map<string, number>()
-  if (!raw) return shares
+): {countShares: Map<string, number>; sizeShares: Map<string, number>} {
+  const countShares = new Map<string, number>()
+  const sizeShares = new Map<string, number>()
+  if (!raw) return {countShares, sizeShares}
   try {
     const parsed = JSON.parse(raw)
     const enabled = replaySearchEnabledModes(policyRaw)
     const rawSummary = parsed?.signal_mode_summary
-    if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return shares
+    if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return {countShares, sizeShares}
     const entries = Object.entries(rawSummary as Record<string, unknown>)
       .map(([mode, value]) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return null
         const payload = value as Record<string, unknown>
         return {
           mode: String(mode || '').trim(),
-          acceptedCount: Number(payload.accepted_count || 0)
+          acceptedCount: Number(payload.accepted_count || 0),
+          acceptedSizeUsd: Number(payload.accepted_size_usd || 0)
         }
       })
-      .filter((entry): entry is {mode: string; acceptedCount: number} => Boolean(entry))
+      .filter((entry): entry is {mode: string; acceptedCount: number; acceptedSizeUsd: number} => Boolean(entry))
       .filter((entry) => {
         if (entry.mode === 'heuristic') return enabled.heuristic
         if (entry.mode === 'xgboost') return enabled.xgboost
         return true
       })
-      .filter((entry) => entry.acceptedCount > 0)
+      .filter((entry) => entry.acceptedCount > 0 || entry.acceptedSizeUsd > 0)
     const totalAccepted = entries.reduce((sum, entry) => sum + entry.acceptedCount, 0)
-    if (totalAccepted <= 0) return shares
+    const totalAcceptedSizeUsd = entries.reduce((sum, entry) => sum + entry.acceptedSizeUsd, 0)
     for (const entry of entries) {
-      shares.set(entry.mode, entry.acceptedCount / totalAccepted)
+      if (totalAccepted > 0 && entry.acceptedCount > 0) countShares.set(entry.mode, entry.acceptedCount / totalAccepted)
+      if (totalAcceptedSizeUsd > 0 && entry.acceptedSizeUsd > 0) sizeShares.set(entry.mode, entry.acceptedSizeUsd / totalAcceptedSizeUsd)
     }
   } catch {
-    return shares
+    return {countShares, sizeShares}
   }
-  return shares
+  return {countShares, sizeShares}
 }
 
 function replaySearchModeDriftSummary(
@@ -1575,7 +1580,7 @@ function replaySearchModeDriftSummary(
   const currentShares = replaySearchModeShares(currentRaw, currentPolicyRaw)
   const bestEnabled = replaySearchEnabledModes(bestPolicyRaw)
   const currentEnabled = replaySearchEnabledModes(currentPolicyRaw)
-  if (!bestShares.size || !currentShares.size) return '-'
+  if ((!bestShares.countShares.size && !bestShares.sizeShares.size) || (!currentShares.countShares.size && !currentShares.sizeShares.size)) return '-'
   const parts: string[] = []
   for (const mode of ['heuristic', 'xgboost']) {
     const bestModeEnabled = mode === 'heuristic' ? bestEnabled.heuristic : bestEnabled.xgboost
@@ -1585,11 +1590,19 @@ function replaySearchModeDriftSummary(
       parts.push(`${modeLabel(mode)} ${bestModeEnabled ? 'on' : 'off'} vs ${currentModeEnabled ? 'on' : 'off'}`)
       continue
     }
-    if (!bestShares.has(mode) && !currentShares.has(mode)) continue
-    const driftPctPoints = ((bestShares.get(mode) || 0) - (currentShares.get(mode) || 0)) * 100
-    const rounded = Math.round(driftPctPoints)
-    const sign = rounded > 0 ? '+' : ''
-    parts.push(`${modeLabel(mode)} ${sign}${rounded}pt`)
+    const countDriftPctPoints = ((bestShares.countShares.get(mode) || 0) - (currentShares.countShares.get(mode) || 0)) * 100
+    const sizeDriftPctPoints = ((bestShares.sizeShares.get(mode) || 0) - (currentShares.sizeShares.get(mode) || 0)) * 100
+    if (
+      !bestShares.countShares.has(mode)
+      && !currentShares.countShares.has(mode)
+      && !bestShares.sizeShares.has(mode)
+      && !currentShares.sizeShares.has(mode)
+    ) continue
+    const countRounded = Math.round(countDriftPctPoints)
+    const sizeRounded = Math.round(sizeDriftPctPoints)
+    const countSign = countRounded > 0 ? '+' : ''
+    const sizeSign = sizeRounded > 0 ? '+' : ''
+    parts.push(`${modeLabel(mode)} ${countSign}${countRounded}pt sz ${sizeSign}${sizeRounded}pt`)
   }
   return parts.length ? parts.join(' | ') : '-'
 }
@@ -1660,12 +1673,16 @@ function replaySearchCurrentModeEvidenceSummary(
       if (!enabled.xgboost) parts.push('XGBoost off')
       return parts.length ? parts.join(' | ') : '-'
     }
+    const totalAccepted = entries.reduce((sum, entry) => sum + entry.acceptedCount, 0)
+    const totalAcceptedSizeUsd = entries.reduce((sum, entry) => sum + entry.acceptedSizeUsd, 0)
     const parts = entries
       .map((entry) => {
+        const share = totalAccepted > 0 ? formatPct(entry.acceptedCount / totalAccepted, 0) : '0%'
+        const sizeShare = totalAcceptedSizeUsd > 0 ? formatPct(entry.acceptedSizeUsd / totalAcceptedSizeUsd, 0) : '0%'
         const coverage = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%'
         const sizeCoverage = entry.acceptedSizeUsd > 0 ? formatPct(entry.resolvedSizeUsd / entry.acceptedSizeUsd, 0) : '0%'
         const rate = entry.winRate == null ? '-' : formatPct(entry.winRate, 0)
-        return `${modeLabel(entry.mode)} ${formatCount(entry.resolvedCount)}r/${formatCount(entry.acceptedCount)}a ${coverage} sz-cov ${sizeCoverage} ${rate} ${formatDollar(entry.totalPnlUsd)}`
+        return `${modeLabel(entry.mode)} ${formatCount(entry.resolvedCount)}r/${formatCount(entry.acceptedCount)}a mix ${share} sz-mix ${sizeShare} ${coverage} sz-cov ${sizeCoverage} ${rate} ${formatDollar(entry.totalPnlUsd)}`
       })
     if (!enabled.heuristic) parts.push('Heuristic off')
     if (!enabled.xgboost) parts.push('XGBoost off')
@@ -1703,6 +1720,7 @@ function replaySearchModeFloorSummary(
     const payload = parsed as Record<string, unknown>
     const parts: string[] = []
     const enabled = replaySearchEnabledModes(policyRaw)
+    const mixModesEnabled = enabled.heuristic && enabled.xgboost
     const minHeuristicAccepted = Number(payload.min_heuristic_accepted_count || 0)
     const minXgboostAccepted = Number(payload.min_xgboost_accepted_count || 0)
     const minHeuristicResolved = Number(payload.min_heuristic_resolved_count || 0)
@@ -1730,7 +1748,9 @@ function replaySearchModeFloorSummary(
     const maxHeuristicInactiveWindows = Number(payload.max_heuristic_inactive_windows ?? -1)
     const maxXgboostInactiveWindows = Number(payload.max_xgboost_inactive_windows ?? -1)
     const maxHeuristicAcceptedShare = Number(payload.max_heuristic_accepted_share || 0)
+    const maxHeuristicAcceptedSizeShare = Number(payload.max_heuristic_accepted_size_share || 0)
     const minXgboostAcceptedShare = Number(payload.min_xgboost_accepted_share || 0)
+    const minXgboostAcceptedSizeShare = Number(payload.min_xgboost_accepted_size_share || 0)
     if (!enabled.heuristic) {
       parts.push('heur off')
     } else {
@@ -1747,7 +1767,8 @@ function replaySearchModeFloorSummary(
       if (minHeuristicWorstActiveWindowAcceptedCount > 0) parts.push(`heur worst act>=${formatCount(minHeuristicWorstActiveWindowAcceptedCount)}`)
       if (minHeuristicWorstActiveWindowAcceptedSizeUsd > 0) parts.push(`heur worst act$>=${formatDollar(minHeuristicWorstActiveWindowAcceptedSizeUsd)}`)
       if (maxHeuristicInactiveWindows >= 0) parts.push(`heur idle<=${formatCount(maxHeuristicInactiveWindows)}`)
-      if (maxHeuristicAcceptedShare > 0) parts.push(`heur mix<=${formatPct(maxHeuristicAcceptedShare, 0)}`)
+      if (mixModesEnabled && maxHeuristicAcceptedShare > 0) parts.push(`heur mix<=${formatPct(maxHeuristicAcceptedShare, 0)}`)
+      if (mixModesEnabled && maxHeuristicAcceptedSizeShare > 0) parts.push(`heur mix$<=${formatPct(maxHeuristicAcceptedSizeShare, 0)}`)
     }
     if (!enabled.xgboost) {
       parts.push('model off')
@@ -1765,7 +1786,8 @@ function replaySearchModeFloorSummary(
       if (minXgboostWorstActiveWindowAcceptedCount > 0) parts.push(`model worst act>=${formatCount(minXgboostWorstActiveWindowAcceptedCount)}`)
       if (minXgboostWorstActiveWindowAcceptedSizeUsd > 0) parts.push(`model worst act$>=${formatDollar(minXgboostWorstActiveWindowAcceptedSizeUsd)}`)
       if (maxXgboostInactiveWindows >= 0) parts.push(`model idle<=${formatCount(maxXgboostInactiveWindows)}`)
-      if (minXgboostAcceptedShare > 0) parts.push(`model mix>=${formatPct(minXgboostAcceptedShare, 0)}`)
+      if (mixModesEnabled && minXgboostAcceptedShare > 0) parts.push(`model mix>=${formatPct(minXgboostAcceptedShare, 0)}`)
+      if (mixModesEnabled && minXgboostAcceptedSizeShare > 0) parts.push(`model mix$>=${formatPct(minXgboostAcceptedSizeShare, 0)}`)
     }
     return parts.length ? parts.join(', ') : 'none'
   } catch {
@@ -2521,6 +2543,7 @@ function replaySearchCurrentModeRiskSummary(
       ? constraintsParsed as Record<string, unknown>
       : {}
     const summary = rawSummary as Record<string, unknown>
+    const mixModesEnabled = enabled.heuristic && enabled.xgboost
     const totalAccepted = Object.values(summary).reduce((sum: number, rawValue: unknown) => {
       if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) return sum
       return sum + Number((rawValue as Record<string, unknown>).accepted_count || 0)
@@ -2543,6 +2566,11 @@ function replaySearchCurrentModeRiskSummary(
       const acceptedSizeUsd = Number(payload.accepted_size_usd || 0)
       const resolvedSizeUsd = Number(payload.resolved_size_usd || 0)
       const acceptedShare = totalAccepted > 0 ? acceptedCount / totalAccepted : 0
+      const totalAcceptedSizeUsd = Object.values(summary).reduce((sum: number, rawMode: unknown) => {
+        if (!rawMode || typeof rawMode !== 'object' || Array.isArray(rawMode)) return sum
+        return sum + Number((rawMode as Record<string, unknown>).accepted_size_usd || 0)
+      }, 0)
+      const acceptedSizeShare = totalAcceptedSizeUsd > 0 ? acceptedSizeUsd / totalAcceptedSizeUsd : 0
       const resolvedShare = acceptedCount > 0 ? resolvedCount / acceptedCount : 0
       const resolvedSizeShare = acceptedSizeUsd > 0 ? resolvedSizeUsd / acceptedSizeUsd : 0
       const rawWinRate = payload.win_rate
@@ -2574,6 +2602,7 @@ function replaySearchCurrentModeRiskSummary(
       const minWorstActiveWindowAcceptedSizeUsd = Number(constraints[`min_${mode}_worst_active_window_accepted_size_usd`] || 0)
       const maxInactiveWindows = Number(constraints[`max_${mode}_inactive_windows`] ?? -1)
       const shareLimit = Number(constraints[shareKey] || 0)
+      const sizeShareLimit = Number(constraints[mode === 'heuristic' ? 'max_heuristic_accepted_size_share' : 'min_xgboost_accepted_size_share'] || 0)
       const worstWindowResolvedSizeShare = Number(
         payload.worst_active_window_resolved_size_share
         ?? payload.worst_window_resolved_size_share
@@ -2632,13 +2661,22 @@ function replaySearchCurrentModeRiskSummary(
         hasActiveGuard = true
         if (inactiveWindowCount > maxInactiveWindows) breaches.push(`${prefix} idle ${formatCount(inactiveWindowCount)}>${formatCount(maxInactiveWindows)}`)
       }
-      if (shareLimit > 0) {
+      if (mixModesEnabled && shareLimit > 0) {
         hasActiveGuard = true
         if (shareDirection === 'max' && acceptedShare > shareLimit) {
           breaches.push(`${prefix} mix ${formatPct(acceptedShare, 0)}>${formatPct(shareLimit, 0)}`)
         }
         if (shareDirection === 'min' && acceptedShare < shareLimit) {
           breaches.push(`${prefix} mix ${formatPct(acceptedShare, 0)}<${formatPct(shareLimit, 0)}`)
+        }
+      }
+      if (mixModesEnabled && sizeShareLimit > 0) {
+        hasActiveGuard = true
+        if (shareDirection === 'max' && acceptedSizeShare > sizeShareLimit) {
+          breaches.push(`${prefix} mix$ ${formatPct(acceptedSizeShare, 0)}>${formatPct(sizeShareLimit, 0)}`)
+        }
+        if (shareDirection === 'min' && acceptedSizeShare < sizeShareLimit) {
+          breaches.push(`${prefix} mix$ ${formatPct(acceptedSizeShare, 0)}<${formatPct(sizeShareLimit, 0)}`)
         }
       }
     }
@@ -2744,6 +2782,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'heur worst act'
         case 'heuristic_worst_active_window_accepted_size_usd':
           return 'heur worst act$'
+        case 'heuristic_accepted_size_share':
+          return 'heur mix$'
         case 'xgboost_inactive_window_count':
           return 'model idle'
         case 'xgboost_resolved_size_share':
@@ -2754,6 +2794,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'model worst act'
         case 'xgboost_worst_active_window_accepted_size_usd':
           return 'model worst act$'
+        case 'xgboost_accepted_size_share':
+          return 'model mix$'
         default:
           return failure.replaceAll('_', ' ')
       }
@@ -2821,6 +2863,11 @@ function replaySearchHeadroomSummary(
       if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) return sum
       return sum + Number((rawValue as Record<string, unknown>).accepted_count || 0)
     }, 0)
+    const acceptedSizeTotal = Object.values(signalModeSummary).reduce((sum: number, rawValue: unknown) => {
+      if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) return sum
+      return sum + Number((rawValue as Record<string, unknown>).accepted_size_usd || 0)
+    }, 0)
+    const mixModesEnabled = enabled.heuristic && enabled.xgboost
     const headrooms: ReplaySearchHeadroomCandidate[] = []
 
     const pushHeadroom = (
@@ -3002,6 +3049,7 @@ function replaySearchHeadroomSummary(
       const worstActiveWindowAcceptedSizeUsd = Number(payload.worst_active_window_accepted_size_usd || 0)
       const inactiveWindowCount = Number(payload.inactive_window_count || 0)
       const acceptedShare = acceptedTotal > 0 ? acceptedCount / acceptedTotal : 0
+      const acceptedSizeShare = acceptedSizeTotal > 0 ? acceptedSizeUsd / acceptedSizeTotal : 0
 
       const minModeAccepted = Number(constraints[`min_${mode}_accepted_count`] || 0)
       const minModeResolved = Number(constraints[`min_${mode}_resolved_count`] || 0)
@@ -3051,10 +3099,14 @@ function replaySearchHeadroomSummary(
       }
       if (mode === 'heuristic') {
         const maxShare = Number(constraints.max_heuristic_accepted_share || 0)
-        if (maxShare > 0) pushHeadroom(mode, `${prefix} mix`, acceptedShare, maxShare, replayHeadroomPctPoints, 'max')
+        if (mixModesEnabled && maxShare > 0) pushHeadroom(mode, `${prefix} mix`, acceptedShare, maxShare, replayHeadroomPctPoints, 'max')
+        const maxSizeShare = Number(constraints.max_heuristic_accepted_size_share || 0)
+        if (mixModesEnabled && maxSizeShare > 0) pushHeadroom(mode, `${prefix} mix$`, acceptedSizeShare, maxSizeShare, replayHeadroomPctPoints, 'max')
       } else {
         const minShare = Number(constraints.min_xgboost_accepted_share || 0)
-        if (minShare > 0) pushHeadroom(mode, `${prefix} mix`, acceptedShare, minShare, replayHeadroomPctPoints, 'min')
+        if (mixModesEnabled && minShare > 0) pushHeadroom(mode, `${prefix} mix`, acceptedShare, minShare, replayHeadroomPctPoints, 'min')
+        const minSizeShare = Number(constraints.min_xgboost_accepted_size_share || 0)
+        if (mixModesEnabled && minSizeShare > 0) pushHeadroom(mode, `${prefix} mix$`, acceptedSizeShare, minSizeShare, replayHeadroomPctPoints, 'min')
       }
     }
 

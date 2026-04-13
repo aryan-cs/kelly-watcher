@@ -1533,18 +1533,19 @@ function replaySearchModeMixSummary(
           activeWindowCount: replaySearchModeActiveWindowCountFromPayload(payload, windowCount),
           acceptedWindowCount: replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount),
           acceptedWindowShare: replaySearchModeAcceptedWindowShareFromPayload(payload, windowCount),
+          maxNonAcceptingActiveWindowStreak: replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, windowCount),
           maxAcceptingWindowAcceptedShare: replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload, windowCount),
           maxAcceptingWindowAcceptedSizeShare: replaySearchModeMaxAcceptingWindowAcceptedSizeShareFromPayload(payload, windowCount)
         }
       })
-      .filter((entry): entry is {mode: string; acceptedCount: number; resolvedCount: number; acceptedSizeUsd: number; resolvedSizeUsd: number; totalPnlUsd: number; activeWindowCount: number; acceptedWindowCount: number; acceptedWindowShare: number; maxAcceptingWindowAcceptedShare: number; maxAcceptingWindowAcceptedSizeShare: number} => Boolean(entry))
+      .filter((entry): entry is {mode: string; acceptedCount: number; resolvedCount: number; acceptedSizeUsd: number; resolvedSizeUsd: number; totalPnlUsd: number; activeWindowCount: number; acceptedWindowCount: number; acceptedWindowShare: number; maxNonAcceptingActiveWindowStreak: number; maxAcceptingWindowAcceptedShare: number; maxAcceptingWindowAcceptedSizeShare: number} => Boolean(entry))
       .filter((entry) => {
         if (entry.mode === 'heuristic') return enabled.heuristic
         if (entry.mode === 'xgboost') return enabled.xgboost
         return true
       })
     const entryByMode = new Map(parsedEntries.map((entry) => [entry.mode, entry]))
-    const entries: Array<{mode: string; acceptedCount: number; resolvedCount: number; acceptedSizeUsd: number; resolvedSizeUsd: number; totalPnlUsd: number; activeWindowCount: number; acceptedWindowCount: number; acceptedWindowShare: number; maxAcceptingWindowAcceptedShare: number; maxAcceptingWindowAcceptedSizeShare: number}> = []
+    const entries: Array<{mode: string; acceptedCount: number; resolvedCount: number; acceptedSizeUsd: number; resolvedSizeUsd: number; totalPnlUsd: number; activeWindowCount: number; acceptedWindowCount: number; acceptedWindowShare: number; maxNonAcceptingActiveWindowStreak: number; maxAcceptingWindowAcceptedShare: number; maxAcceptingWindowAcceptedSizeShare: number}> = []
     if (enabled.heuristic) {
       entries.push(entryByMode.get('heuristic') ?? {
         mode: 'heuristic',
@@ -1556,6 +1557,7 @@ function replaySearchModeMixSummary(
         activeWindowCount: 0,
         acceptedWindowCount: 0,
         acceptedWindowShare: 0,
+        maxNonAcceptingActiveWindowStreak: 0,
         maxAcceptingWindowAcceptedShare: 0,
         maxAcceptingWindowAcceptedSizeShare: 0
       })
@@ -1571,6 +1573,7 @@ function replaySearchModeMixSummary(
         activeWindowCount: 0,
         acceptedWindowCount: 0,
         acceptedWindowShare: 0,
+        maxNonAcceptingActiveWindowStreak: 0,
         maxAcceptingWindowAcceptedShare: 0,
         maxAcceptingWindowAcceptedSizeShare: 0
       })
@@ -1595,7 +1598,7 @@ function replaySearchModeMixSummary(
         const sizeShare = totalAcceptedSizeUsd > 0 ? `${Math.round((entry.acceptedSizeUsd / totalAcceptedSizeUsd) * 100)}%` : '0%'
         const resolvedShare = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%'
         const resolvedSizeShare = entry.acceptedSizeUsd > 0 ? formatPct(entry.resolvedSizeUsd / entry.acceptedSizeUsd, 0) : '0%'
-        return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} sz-mix ${sizeShare} acc-win ${formatCount(entry.acceptedWindowCount)}/${formatCount(entry.activeWindowCount)} acc-freq ${formatPct(entry.acceptedWindowShare, 0)} top-acc ${formatPct(entry.maxAcceptingWindowAcceptedShare, 0)} top-acc$ ${formatPct(entry.maxAcceptingWindowAcceptedSizeShare, 0)} cov ${resolvedShare} sz-cov ${resolvedSizeShare} ${formatDollar(entry.totalPnlUsd)}`
+        return `${modeLabel(entry.mode)} ${formatCount(entry.acceptedCount)} ${share} sz-mix ${sizeShare} acc-win ${formatCount(entry.acceptedWindowCount)}/${formatCount(entry.activeWindowCount)} acc-freq ${formatPct(entry.acceptedWindowShare, 0)} acc-gap ${formatCount(entry.maxNonAcceptingActiveWindowStreak)} top-acc ${formatPct(entry.maxAcceptingWindowAcceptedShare, 0)} top-acc$ ${formatPct(entry.maxAcceptingWindowAcceptedSizeShare, 0)} cov ${resolvedShare} sz-cov ${resolvedSizeShare} ${formatDollar(entry.totalPnlUsd)}`
       })
     if (!enabled.heuristic) parts.push('Heuristic off')
     if (!enabled.xgboost) parts.push('XGBoost off')
@@ -1710,18 +1713,19 @@ function replaySearchCurrentModeEvidenceSummary(
           activeWindowCount: replaySearchModeActiveWindowCountFromPayload(payload, windowCount),
           acceptedWindowCount: replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount),
           acceptedWindowShare: replaySearchModeAcceptedWindowShareFromPayload(payload, windowCount),
+          maxNonAcceptingActiveWindowStreak: replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, windowCount),
           maxAcceptingWindowAcceptedShare: replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload, windowCount),
           maxAcceptingWindowAcceptedSizeShare: replaySearchModeMaxAcceptingWindowAcceptedSizeShareFromPayload(payload, windowCount)
         }
       })
-      .filter((entry): entry is {mode: string; acceptedCount: number; resolvedCount: number; acceptedSizeUsd: number; resolvedSizeUsd: number; totalPnlUsd: number; winRate: number | null; activeWindowCount: number; acceptedWindowCount: number; acceptedWindowShare: number; maxAcceptingWindowAcceptedShare: number; maxAcceptingWindowAcceptedSizeShare: number} => Boolean(entry))
+      .filter((entry): entry is {mode: string; acceptedCount: number; resolvedCount: number; acceptedSizeUsd: number; resolvedSizeUsd: number; totalPnlUsd: number; winRate: number | null; activeWindowCount: number; acceptedWindowCount: number; acceptedWindowShare: number; maxNonAcceptingActiveWindowStreak: number; maxAcceptingWindowAcceptedShare: number; maxAcceptingWindowAcceptedSizeShare: number} => Boolean(entry))
       .filter((entry) => {
         if (entry.mode === 'heuristic') return enabled.heuristic
         if (entry.mode === 'xgboost') return enabled.xgboost
         return true
       })
     const entryByMode = new Map(parsedEntries.map((entry) => [entry.mode, entry]))
-    const entries: Array<{mode: string; acceptedCount: number; resolvedCount: number; acceptedSizeUsd: number; resolvedSizeUsd: number; totalPnlUsd: number; winRate: number | null; activeWindowCount: number; acceptedWindowCount: number; acceptedWindowShare: number; maxAcceptingWindowAcceptedShare: number; maxAcceptingWindowAcceptedSizeShare: number}> = []
+    const entries: Array<{mode: string; acceptedCount: number; resolvedCount: number; acceptedSizeUsd: number; resolvedSizeUsd: number; totalPnlUsd: number; winRate: number | null; activeWindowCount: number; acceptedWindowCount: number; acceptedWindowShare: number; maxNonAcceptingActiveWindowStreak: number; maxAcceptingWindowAcceptedShare: number; maxAcceptingWindowAcceptedSizeShare: number}> = []
     if (enabled.heuristic) {
       entries.push(entryByMode.get('heuristic') ?? {
         mode: 'heuristic',
@@ -1734,6 +1738,7 @@ function replaySearchCurrentModeEvidenceSummary(
         activeWindowCount: 0,
         acceptedWindowCount: 0,
         acceptedWindowShare: 0,
+        maxNonAcceptingActiveWindowStreak: 0,
         maxAcceptingWindowAcceptedShare: 0,
         maxAcceptingWindowAcceptedSizeShare: 0
       })
@@ -1750,6 +1755,7 @@ function replaySearchCurrentModeEvidenceSummary(
         activeWindowCount: 0,
         acceptedWindowCount: 0,
         acceptedWindowShare: 0,
+        maxNonAcceptingActiveWindowStreak: 0,
         maxAcceptingWindowAcceptedShare: 0,
         maxAcceptingWindowAcceptedSizeShare: 0
       })
@@ -1775,7 +1781,7 @@ function replaySearchCurrentModeEvidenceSummary(
         const coverage = entry.acceptedCount > 0 ? formatPct(entry.resolvedCount / entry.acceptedCount, 0) : '0%'
         const sizeCoverage = entry.acceptedSizeUsd > 0 ? formatPct(entry.resolvedSizeUsd / entry.acceptedSizeUsd, 0) : '0%'
         const rate = entry.winRate == null ? '-' : formatPct(entry.winRate, 0)
-        return `${modeLabel(entry.mode)} ${formatCount(entry.resolvedCount)}r/${formatCount(entry.acceptedCount)}a mix ${share} sz-mix ${sizeShare} acc-win ${formatCount(entry.acceptedWindowCount)}/${formatCount(entry.activeWindowCount)} acc-freq ${formatPct(entry.acceptedWindowShare, 0)} top-acc ${formatPct(entry.maxAcceptingWindowAcceptedShare, 0)} top-acc$ ${formatPct(entry.maxAcceptingWindowAcceptedSizeShare, 0)} ${coverage} sz-cov ${sizeCoverage} ${rate} ${formatDollar(entry.totalPnlUsd)}`
+        return `${modeLabel(entry.mode)} ${formatCount(entry.resolvedCount)}r/${formatCount(entry.acceptedCount)}a mix ${share} sz-mix ${sizeShare} acc-win ${formatCount(entry.acceptedWindowCount)}/${formatCount(entry.activeWindowCount)} acc-freq ${formatPct(entry.acceptedWindowShare, 0)} acc-gap ${formatCount(entry.maxNonAcceptingActiveWindowStreak)} top-acc ${formatPct(entry.maxAcceptingWindowAcceptedShare, 0)} top-acc$ ${formatPct(entry.maxAcceptingWindowAcceptedSizeShare, 0)} ${coverage} sz-cov ${sizeCoverage} ${rate} ${formatDollar(entry.totalPnlUsd)}`
       })
     if (!enabled.heuristic) parts.push('Heuristic off')
     if (!enabled.xgboost) parts.push('XGBoost off')
@@ -1846,6 +1852,7 @@ function replaySearchModeFloorSummary(
     const maxHeuristicActiveWindowAcceptedSizeShare = Number(payload.max_heuristic_active_window_accepted_size_share || 0)
     const minHeuristicAcceptedWindows = Number(payload.min_heuristic_accepted_windows || 0)
     const minHeuristicAcceptedWindowShare = Number(payload.min_heuristic_accepted_window_share || 0)
+    const maxHeuristicNonAcceptingActiveWindowStreak = Number(payload.max_heuristic_non_accepting_active_window_streak ?? -1)
     const maxHeuristicAcceptingWindowAcceptedShare = Number(payload.max_heuristic_accepting_window_accepted_share || 0)
     const maxHeuristicAcceptingWindowAcceptedSizeShare = Number(payload.max_heuristic_accepting_window_accepted_size_share || 0)
     const minXgboostAcceptedShare = Number(payload.min_xgboost_accepted_share || 0)
@@ -1854,6 +1861,7 @@ function replaySearchModeFloorSummary(
     const minXgboostActiveWindowAcceptedSizeShare = Number(payload.min_xgboost_active_window_accepted_size_share || 0)
     const minXgboostAcceptedWindows = Number(payload.min_xgboost_accepted_windows || 0)
     const minXgboostAcceptedWindowShare = Number(payload.min_xgboost_accepted_window_share || 0)
+    const maxXgboostNonAcceptingActiveWindowStreak = Number(payload.max_xgboost_non_accepting_active_window_streak ?? -1)
     const maxXgboostAcceptingWindowAcceptedShare = Number(payload.max_xgboost_accepting_window_accepted_share || 0)
     const maxXgboostAcceptingWindowAcceptedSizeShare = Number(payload.max_xgboost_accepting_window_accepted_size_share || 0)
     if (!enabled.heuristic) {
@@ -1874,6 +1882,7 @@ function replaySearchModeFloorSummary(
       if (maxHeuristicInactiveWindows >= 0) parts.push(`heur idle<=${formatCount(maxHeuristicInactiveWindows)}`)
       if (minHeuristicAcceptedWindows > 0) parts.push(`heur acc-win>=${formatCount(minHeuristicAcceptedWindows)}`)
       if (minHeuristicAcceptedWindowShare > 0) parts.push(`heur acc-freq>=${formatPct(minHeuristicAcceptedWindowShare, 0)}`)
+      if (maxHeuristicNonAcceptingActiveWindowStreak >= 0) parts.push(`heur acc-gap<=${formatCount(maxHeuristicNonAcceptingActiveWindowStreak)}`)
       if (maxHeuristicAcceptingWindowAcceptedShare > 0) parts.push(`heur top-acc<=${formatPct(maxHeuristicAcceptingWindowAcceptedShare, 0)}`)
       if (maxHeuristicAcceptingWindowAcceptedSizeShare > 0) parts.push(`heur top-acc$<=${formatPct(maxHeuristicAcceptingWindowAcceptedSizeShare, 0)}`)
       if (mixModesEnabled && maxHeuristicAcceptedShare > 0) parts.push(`heur mix<=${formatPct(maxHeuristicAcceptedShare, 0)}`)
@@ -1899,6 +1908,7 @@ function replaySearchModeFloorSummary(
       if (maxXgboostInactiveWindows >= 0) parts.push(`model idle<=${formatCount(maxXgboostInactiveWindows)}`)
       if (minXgboostAcceptedWindows > 0) parts.push(`model acc-win>=${formatCount(minXgboostAcceptedWindows)}`)
       if (minXgboostAcceptedWindowShare > 0) parts.push(`model acc-freq>=${formatPct(minXgboostAcceptedWindowShare, 0)}`)
+      if (maxXgboostNonAcceptingActiveWindowStreak >= 0) parts.push(`model acc-gap<=${formatCount(maxXgboostNonAcceptingActiveWindowStreak)}`)
       if (maxXgboostAcceptingWindowAcceptedShare > 0) parts.push(`model top-acc<=${formatPct(maxXgboostAcceptingWindowAcceptedShare, 0)}`)
       if (maxXgboostAcceptingWindowAcceptedSizeShare > 0) parts.push(`model top-acc$<=${formatPct(maxXgboostAcceptingWindowAcceptedSizeShare, 0)}`)
       if (mixModesEnabled && minXgboostAcceptedShare > 0) parts.push(`model mix>=${formatPct(minXgboostAcceptedShare, 0)}`)
@@ -2007,6 +2017,17 @@ function replaySearchModeAcceptedWindowShareFromPayload(payload: Record<string, 
   const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount)
   if (activeWindowCount > 0) return acceptedWindowCount / activeWindowCount
   return acceptedWindowCount > 0 ? 1 : 0
+}
+
+function replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload: Record<string, unknown>, windowCount: number): number {
+  if (payload.max_non_accepting_active_window_streak != null) {
+    return Math.max(Number(payload.max_non_accepting_active_window_streak || 0), 0)
+  }
+  const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount)
+  const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount)
+  if (activeWindowCount <= 0) return 0
+  if (acceptedWindowCount <= 0) return activeWindowCount
+  return Math.max(activeWindowCount - acceptedWindowCount, 0)
 }
 
 function replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload: Record<string, unknown>, windowCount: number): number {
@@ -3179,6 +3200,7 @@ function replaySearchCurrentModeRiskSummary(
       const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, windowCount)
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, windowCount)
       const acceptedWindowShare = replaySearchModeAcceptedWindowShareFromPayload(payload, windowCount)
+      const maxNonAcceptingActiveWindowStreakValue = replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, windowCount)
       const maxAcceptingWindowAcceptedShare = replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload, windowCount)
       const maxAcceptingWindowAcceptedSizeShare = replaySearchModeMaxAcceptingWindowAcceptedSizeShareFromPayload(payload, windowCount)
 
@@ -3196,6 +3218,7 @@ function replaySearchCurrentModeRiskSummary(
       const maxInactiveWindows = Number(constraints[`max_${mode}_inactive_windows`] ?? -1)
       const minAcceptedWindows = Number(constraints[`min_${mode}_accepted_windows`] || 0)
       const minAcceptedWindowShare = Number(constraints[`min_${mode}_accepted_window_share`] || 0)
+      const maxNonAcceptingActiveWindowStreak = Number(constraints[`max_${mode}_non_accepting_active_window_streak`] ?? -1)
       const maxAcceptingWindowShareLimit = Number(constraints[`max_${mode}_accepting_window_accepted_share`] || 0)
       const maxAcceptingWindowSizeShareLimit = Number(constraints[`max_${mode}_accepting_window_accepted_size_share`] || 0)
       const shareLimit = Number(constraints[shareKey] || 0)
@@ -3272,6 +3295,12 @@ function replaySearchCurrentModeRiskSummary(
         hasActiveGuard = true
         if (acceptedWindowShare < minAcceptedWindowShare) {
           breaches.push(`${prefix} acc-freq ${formatPct(acceptedWindowShare, 0)}<${formatPct(minAcceptedWindowShare, 0)}`)
+        }
+      }
+      if (maxNonAcceptingActiveWindowStreak >= 0) {
+        hasActiveGuard = true
+        if (maxNonAcceptingActiveWindowStreakValue > maxNonAcceptingActiveWindowStreak) {
+          breaches.push(`${prefix} acc-gap ${formatCount(maxNonAcceptingActiveWindowStreakValue)}>${formatCount(maxNonAcceptingActiveWindowStreak)}`)
         }
       }
       if (maxAcceptingWindowShareLimit > 0) {
@@ -3449,6 +3478,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'heur acc-win'
         case 'heuristic_accepted_window_share':
           return 'heur acc-freq'
+        case 'heuristic_max_non_accepting_active_window_streak':
+          return 'heur acc-gap'
         case 'heuristic_max_accepting_window_accepted_share':
           return 'heur top-acc'
         case 'heuristic_max_accepting_window_accepted_size_share':
@@ -3475,6 +3506,8 @@ function replaySearchFailureSummary(raw: string | null | undefined, feasible: nu
           return 'model acc-win'
         case 'xgboost_accepted_window_share':
           return 'model acc-freq'
+        case 'xgboost_max_non_accepting_active_window_streak':
+          return 'model acc-gap'
         case 'xgboost_max_accepting_window_accepted_share':
           return 'model top-acc'
         case 'xgboost_max_accepting_window_accepted_size_share':
@@ -3798,6 +3831,7 @@ function replaySearchHeadroomSummary(
       const activeWindowCount = replaySearchModeActiveWindowCountFromPayload(payload, Number(resultParsed.window_count || 0))
       const acceptedWindowCount = replaySearchModeAcceptedWindowCountFromPayload(payload, Number(resultParsed.window_count || 0))
       const acceptedWindowShare = replaySearchModeAcceptedWindowShareFromPayload(payload, Number(resultParsed.window_count || 0))
+      const maxNonAcceptingActiveWindowStreak = replaySearchModeMaxNonAcceptingActiveWindowStreakFromPayload(payload, Number(resultParsed.window_count || 0))
       const maxAcceptingWindowAcceptedShare = replaySearchModeMaxAcceptingWindowAcceptedShareFromPayload(payload, Number(resultParsed.window_count || 0))
       const maxAcceptingWindowAcceptedSizeShare = replaySearchModeMaxAcceptingWindowAcceptedSizeShareFromPayload(payload, Number(resultParsed.window_count || 0))
       const acceptedShare = acceptedTotal > 0 ? acceptedCount / acceptedTotal : 0
@@ -3820,6 +3854,7 @@ function replaySearchHeadroomSummary(
       const maxModeInactiveWindows = Number(constraints[`max_${mode}_inactive_windows`] ?? -1)
       const minModeAcceptedWindows = Number(constraints[`min_${mode}_accepted_windows`] || 0)
       const minModeAcceptedWindowShare = Number(constraints[`min_${mode}_accepted_window_share`] || 0)
+      const maxModeNonAcceptingActiveWindowStreak = Number(constraints[`max_${mode}_non_accepting_active_window_streak`] ?? -1)
       const maxModeAcceptingWindowAcceptedShare = Number(constraints[`max_${mode}_accepting_window_accepted_share`] || 0)
       const maxModeAcceptingWindowAcceptedSizeShare = Number(constraints[`max_${mode}_accepting_window_accepted_size_share`] || 0)
       const worstWindowResolvedSizeShare = Number(
@@ -3860,6 +3895,9 @@ function replaySearchHeadroomSummary(
       }
       if (minModeAcceptedWindowShare > 0 && activeWindowCount > 0) {
         pushHeadroom(mode, `${prefix} acc-freq`, acceptedWindowShare, minModeAcceptedWindowShare, replayHeadroomPctPoints, 'min')
+      }
+      if (maxModeNonAcceptingActiveWindowStreak >= 0) {
+        pushHeadroom(mode, `${prefix} acc-gap`, maxNonAcceptingActiveWindowStreak, maxModeNonAcceptingActiveWindowStreak, replayHeadroomCount, 'max')
       }
       if (maxModeAcceptingWindowAcceptedShare > 0) {
         pushHeadroom(mode, `${prefix} top-acc`, maxAcceptingWindowAcceptedShare, maxModeAcceptingWindowAcceptedShare, replayHeadroomPctPoints, 'max')

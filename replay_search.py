@@ -823,6 +823,7 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "accepted_count": 0,
                 "accepted_size_usd": 0.0,
                 "accepted_window_count": 0,
+                "max_non_accepting_active_window_streak": None,
                 "resolved_count": 0,
                 "resolved_size_usd": 0.0,
                 "total_pnl_usd": 0.0,
@@ -989,6 +990,21 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
             else 0
         )
+        resolved_active_window_count = (
+            1
+            if result_window_count <= 1 and _mode_has_participation(raw_values)
+            else max(result_window_count - resolved_inactive_window_count, 0)
+        )
+        raw_max_non_accepting_active_window_streak = raw_values.get("max_non_accepting_active_window_streak")
+        resolved_max_non_accepting_active_window_streak = (
+            max(int(raw_max_non_accepting_active_window_streak), 0)
+            if raw_max_non_accepting_active_window_streak is not None
+            else 0
+            if resolved_active_window_count <= 0
+            else resolved_active_window_count
+            if resolved_accepted_window_count <= 0
+            else max(resolved_active_window_count - resolved_accepted_window_count, 0)
+        )
         raw_max_accepting_window_accepted_share = raw_values.get("max_accepting_window_accepted_share")
         resolved_max_accepting_window_accepted_share = (
             _clamp_fraction(float(raw_max_accepting_window_accepted_share))
@@ -1009,6 +1025,11 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         bucket["accepted_count"] += int(raw_values.get("accepted_count") or 0)
         bucket["accepted_size_usd"] += float(raw_values.get("accepted_size_usd") or 0.0)
         bucket["accepted_window_count"] += resolved_accepted_window_count
+        bucket["max_non_accepting_active_window_streak"] = (
+            resolved_max_non_accepting_active_window_streak
+            if bucket["max_non_accepting_active_window_streak"] is None
+            else max(int(bucket["max_non_accepting_active_window_streak"]), resolved_max_non_accepting_active_window_streak)
+        )
         bucket["resolved_count"] += int(raw_values.get("resolved_count") or 0)
         bucket["resolved_size_usd"] += float(raw_values.get("resolved_size_usd") or 0.0)
         bucket["total_pnl_usd"] += raw_total_pnl_usd
@@ -1100,6 +1121,11 @@ def _signal_mode_summary(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         )
         values["accepted_size_usd"] = round(float(values["accepted_size_usd"]), 6)
         values["accepted_window_count"] = int(values["accepted_window_count"])
+        values["max_non_accepting_active_window_streak"] = (
+            int(values["max_non_accepting_active_window_streak"])
+            if values["max_non_accepting_active_window_streak"] is not None
+            else 0
+        )
         values["resolved_size_usd"] = round(float(values["resolved_size_usd"]), 6)
         values["worst_window_pnl_usd"] = (
             round(float(values["worst_window_pnl_usd"]), 6)
@@ -1822,6 +1848,24 @@ def _mode_accepted_window_share(
     return 1.0 if accepted_window_count > 0 else 0.0
 
 
+def _mode_max_non_accepting_active_window_streak(
+    signal_mode_summary: dict[str, dict[str, Any]],
+    mode: str,
+    window_count: int,
+) -> int:
+    payload = signal_mode_summary.get(mode, {})
+    raw_value = payload.get("max_non_accepting_active_window_streak")
+    if raw_value is not None:
+        return max(int(raw_value), 0)
+    active_window_count = _mode_active_window_count(signal_mode_summary, mode, window_count)
+    accepted_window_count = _mode_accepted_window_count(signal_mode_summary, mode, window_count)
+    if active_window_count <= 0:
+        return 0
+    if accepted_window_count <= 0:
+        return active_window_count
+    return max(active_window_count - accepted_window_count, 0)
+
+
 def _mode_max_accepting_window_accepted_share(
     signal_mode_summary: dict[str, dict[str, Any]],
     mode: str,
@@ -2057,6 +2101,8 @@ def _constraint_failures(
     min_xgboost_accepted_windows: int = 0,
     min_heuristic_accepted_window_share: float = 0.0,
     min_xgboost_accepted_window_share: float = 0.0,
+    max_heuristic_non_accepting_active_window_streak: int = -1,
+    max_xgboost_non_accepting_active_window_streak: int = -1,
     max_heuristic_accepting_window_accepted_share: float = 0.0,
     max_heuristic_accepting_window_accepted_size_share: float = 0.0,
     max_xgboost_accepting_window_accepted_share: float = 0.0,
@@ -2216,6 +2262,8 @@ def _constraint_failures(
     xgboost_accepted_window_count = _mode_accepted_window_count(signal_mode_summary, "xgboost", mode_window_count)
     heuristic_accepted_window_share = _mode_accepted_window_share(signal_mode_summary, "heuristic", mode_window_count)
     xgboost_accepted_window_share = _mode_accepted_window_share(signal_mode_summary, "xgboost", mode_window_count)
+    heuristic_max_non_accepting_active_window_streak = _mode_max_non_accepting_active_window_streak(signal_mode_summary, "heuristic", mode_window_count)
+    xgboost_max_non_accepting_active_window_streak = _mode_max_non_accepting_active_window_streak(signal_mode_summary, "xgboost", mode_window_count)
     heuristic_max_accepting_window_accepted_share = _mode_max_accepting_window_accepted_share(signal_mode_summary, "heuristic", mode_window_count)
     heuristic_max_accepting_window_accepted_size_share = _mode_max_accepting_window_accepted_size_share(signal_mode_summary, "heuristic", mode_window_count)
     xgboost_max_accepting_window_accepted_share = _mode_max_accepting_window_accepted_share(signal_mode_summary, "xgboost", mode_window_count)
@@ -2232,6 +2280,18 @@ def _constraint_failures(
         failures.append("heuristic_accepted_window_count")
     if allow_xgboost and xgboost_accepted_window_count < max(min_xgboost_accepted_windows, 0):
         failures.append("xgboost_accepted_window_count")
+    if (
+        allow_heuristic
+        and max_heuristic_non_accepting_active_window_streak >= 0
+        and heuristic_max_non_accepting_active_window_streak > max_heuristic_non_accepting_active_window_streak
+    ):
+        failures.append("heuristic_max_non_accepting_active_window_streak")
+    if (
+        allow_xgboost
+        and max_xgboost_non_accepting_active_window_streak >= 0
+        and xgboost_max_non_accepting_active_window_streak > max_xgboost_non_accepting_active_window_streak
+    ):
+        failures.append("xgboost_max_non_accepting_active_window_streak")
     if (
         allow_heuristic
         and min_heuristic_accepted_window_share > 0
@@ -2905,6 +2965,8 @@ def _aggregate_window_results(
                     "accepted_count": 0.0,
                     "accepted_size_usd": 0.0,
                     "accepted_window_count": 0.0,
+                    "max_non_accepting_active_window_streak": 0.0,
+                    "current_non_accepting_active_window_streak": 0.0,
                     "resolved_count": 0.0,
                     "resolved_size_usd": 0.0,
                     "total_pnl_usd": 0.0,
@@ -2937,7 +2999,8 @@ def _aggregate_window_results(
             bucket["trade_count"] += int(values.get("trade_count") or 0)
             bucket["accepted_count"] += mode_accepted_count
             bucket["accepted_size_usd"] += mode_accepted_size_usd
-            bucket["accepted_window_count"] += 1 if mode_accepted_count > 0 or mode_accepted_size_usd > 0 else 0
+            is_accepting_window = mode_accepted_count > 0 or mode_accepted_size_usd > 0
+            bucket["accepted_window_count"] += 1 if is_accepting_window else 0
             bucket["resolved_count"] += mode_resolved_count
             bucket["resolved_size_usd"] += mode_resolved_size_usd
             window_pnl_usd = float(values.get("total_pnl_usd") or 0.0)
@@ -2945,6 +3008,16 @@ def _aggregate_window_results(
             bucket["positive_window_count"] += 1 if window_pnl_usd > 0 else 0
             bucket["negative_window_count"] += 1 if window_pnl_usd < 0 else 0
             bucket["inactive_window_count"] += 1 if is_inactive_window else 0
+            if is_inactive_window:
+                bucket["current_non_accepting_active_window_streak"] = 0.0
+            elif is_accepting_window:
+                bucket["current_non_accepting_active_window_streak"] = 0.0
+            else:
+                bucket["current_non_accepting_active_window_streak"] += 1.0
+                bucket["max_non_accepting_active_window_streak"] = max(
+                    float(bucket["max_non_accepting_active_window_streak"]),
+                    float(bucket["current_non_accepting_active_window_streak"]),
+                )
             bucket["window_pnls"].append(window_pnl_usd)
             window_resolved_share = _resolved_share_from_counts(mode_accepted_count, mode_resolved_count)
             window_resolved_size_share = _resolved_share_from_sizes(mode_accepted_size_usd, mode_resolved_size_usd)
@@ -2971,6 +3044,7 @@ def _aggregate_window_results(
             "accepted_count": int(values["accepted_count"]),
             "accepted_size_usd": round(values["accepted_size_usd"], 6),
             "accepted_window_count": int(values["accepted_window_count"]),
+            "max_non_accepting_active_window_streak": int(values["max_non_accepting_active_window_streak"]),
             "resolved_count": int(values["resolved_count"]),
             "resolved_size_usd": round(values["resolved_size_usd"], 6),
             "total_pnl_usd": round(values["total_pnl_usd"], 6),
@@ -3871,6 +3945,8 @@ def main() -> None:
     parser.add_argument("--min-xgboost-accepted-windows", type=int, default=0, help="Minimum count of stitched replay windows that must still produce fresh xgboost accepts.")
     parser.add_argument("--min-heuristic-accepted-window-share", type=float, default=0.0, help="Minimum share of heuristic stitched active windows that must still produce fresh heuristic accepts.")
     parser.add_argument("--min-xgboost-accepted-window-share", type=float, default=0.0, help="Minimum share of xgboost stitched active windows that must still produce fresh xgboost accepts.")
+    parser.add_argument("--max-heuristic-non-accepting-active-window-streak", type=int, default=-1, help="Maximum stitched run of heuristic-active windows allowed without a fresh heuristic accept.")
+    parser.add_argument("--max-xgboost-non-accepting-active-window-streak", type=int, default=-1, help="Maximum stitched run of xgboost-active windows allowed without a fresh xgboost accept.")
     parser.add_argument("--max-heuristic-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of heuristic accepted replay trades allowed to fall into a single stitched heuristic accepting window.")
     parser.add_argument("--max-heuristic-accepting-window-accepted-size-share", type=float, default=0.0, help="Maximum share of heuristic accepted replay deployed dollars allowed to fall into a single stitched heuristic accepting window.")
     parser.add_argument("--max-xgboost-accepting-window-accepted-share", type=float, default=0.0, help="Maximum share of xgboost accepted replay trades allowed to fall into a single stitched xgboost accepting window.")
@@ -4034,6 +4110,7 @@ def main() -> None:
         max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
         min_heuristic_accepted_windows=max(args.min_heuristic_accepted_windows, 0),
         min_heuristic_accepted_window_share=_clamp_fraction(args.min_heuristic_accepted_window_share),
+        max_heuristic_non_accepting_active_window_streak=int(args.max_heuristic_non_accepting_active_window_streak),
         max_heuristic_accepting_window_accepted_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
         max_heuristic_accepting_window_accepted_size_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
         max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
@@ -4042,6 +4119,7 @@ def main() -> None:
         max_heuristic_active_window_accepted_size_share=_clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
         min_xgboost_accepted_windows=max(args.min_xgboost_accepted_windows, 0),
         min_xgboost_accepted_window_share=_clamp_fraction(args.min_xgboost_accepted_window_share),
+        max_xgboost_non_accepting_active_window_streak=int(args.max_xgboost_non_accepting_active_window_streak),
         max_xgboost_accepting_window_accepted_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
         max_xgboost_accepting_window_accepted_size_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
         min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
@@ -4326,6 +4404,7 @@ def main() -> None:
             max_xgboost_inactive_window_count=int(args.max_xgboost_inactive_windows),
             min_heuristic_accepted_windows=max(args.min_heuristic_accepted_windows, 0),
             min_heuristic_accepted_window_share=_clamp_fraction(args.min_heuristic_accepted_window_share),
+            max_heuristic_non_accepting_active_window_streak=int(args.max_heuristic_non_accepting_active_window_streak),
             max_heuristic_accepting_window_accepted_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
             max_heuristic_accepting_window_accepted_size_share=_clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
             max_heuristic_accepted_share=_clamp_fraction(args.max_heuristic_accepted_share),
@@ -4334,6 +4413,7 @@ def main() -> None:
             max_heuristic_active_window_accepted_size_share=_clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
             min_xgboost_accepted_windows=max(args.min_xgboost_accepted_windows, 0),
             min_xgboost_accepted_window_share=_clamp_fraction(args.min_xgboost_accepted_window_share),
+            max_xgboost_non_accepting_active_window_streak=int(args.max_xgboost_non_accepting_active_window_streak),
             max_xgboost_accepting_window_accepted_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
             max_xgboost_accepting_window_accepted_size_share=_clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
             min_xgboost_accepted_share=_clamp_fraction(args.min_xgboost_accepted_share),
@@ -4453,6 +4533,7 @@ def main() -> None:
         "max_xgboost_inactive_windows": int(args.max_xgboost_inactive_windows),
         "min_heuristic_accepted_windows": max(args.min_heuristic_accepted_windows, 0),
         "min_heuristic_accepted_window_share": _clamp_fraction(args.min_heuristic_accepted_window_share),
+        "max_heuristic_non_accepting_active_window_streak": int(args.max_heuristic_non_accepting_active_window_streak),
         "max_heuristic_accepting_window_accepted_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_share),
         "max_heuristic_accepting_window_accepted_size_share": _clamp_fraction(args.max_heuristic_accepting_window_accepted_size_share),
         "max_heuristic_accepted_share": _clamp_fraction(args.max_heuristic_accepted_share),
@@ -4461,6 +4542,7 @@ def main() -> None:
         "max_heuristic_active_window_accepted_size_share": _clamp_fraction(args.max_heuristic_active_window_accepted_size_share),
         "min_xgboost_accepted_windows": max(args.min_xgboost_accepted_windows, 0),
         "min_xgboost_accepted_window_share": _clamp_fraction(args.min_xgboost_accepted_window_share),
+        "max_xgboost_non_accepting_active_window_streak": int(args.max_xgboost_non_accepting_active_window_streak),
         "max_xgboost_accepting_window_accepted_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_share),
         "max_xgboost_accepting_window_accepted_size_share": _clamp_fraction(args.max_xgboost_accepting_window_accepted_size_share),
         "min_xgboost_accepted_share": _clamp_fraction(args.min_xgboost_accepted_share),

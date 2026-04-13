@@ -1399,7 +1399,7 @@ function replaySearchModeMixSummary(
     const enabled = replaySearchEnabledModes(policyRaw)
     const rawSummary = parsed?.signal_mode_summary
     if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return '-'
-    const entries = Object.entries(rawSummary as Record<string, unknown>)
+    const parsedEntries = Object.entries(rawSummary as Record<string, unknown>)
       .map(([mode, value]) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return null
         const payload = value as Record<string, unknown>
@@ -1416,12 +1416,29 @@ function replaySearchModeMixSummary(
         if (entry.mode === 'xgboost') return enabled.xgboost
         return true
       })
-      .filter((entry) => entry.acceptedCount > 0)
-      .sort((left, right) => {
-        const leftPriority = left.mode === 'heuristic' ? 0 : left.mode === 'xgboost' ? 1 : 2
-        const rightPriority = right.mode === 'heuristic' ? 0 : right.mode === 'xgboost' ? 1 : 2
-        if (leftPriority !== rightPriority) return leftPriority - rightPriority
-        return left.mode.localeCompare(right.mode)
+    const entryByMode = new Map(parsedEntries.map((entry) => [entry.mode, entry]))
+    const entries: Array<{mode: string; acceptedCount: number; resolvedCount: number; totalPnlUsd: number}> = []
+    if (enabled.heuristic) {
+      entries.push(entryByMode.get('heuristic') ?? {
+        mode: 'heuristic',
+        acceptedCount: 0,
+        resolvedCount: 0,
+        totalPnlUsd: 0
+      })
+    }
+    if (enabled.xgboost) {
+      entries.push(entryByMode.get('xgboost') ?? {
+        mode: 'xgboost',
+        acceptedCount: 0,
+        resolvedCount: 0,
+        totalPnlUsd: 0
+      })
+    }
+    parsedEntries
+      .filter((entry) => entry.mode !== 'heuristic' && entry.mode !== 'xgboost')
+      .sort((left, right) => left.mode.localeCompare(right.mode))
+      .forEach((entry) => {
+        if (entry.acceptedCount > 0) entries.push(entry)
       })
     if (!entries.length) {
       const parts: string[] = []
@@ -1521,7 +1538,7 @@ function replaySearchCurrentModeEvidenceSummary(
     const enabled = replaySearchEnabledModes(policyRaw)
     const rawSummary = parsed?.signal_mode_summary
     if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return '-'
-    const entries = Object.entries(rawSummary as Record<string, unknown>)
+    const parsedEntries = Object.entries(rawSummary as Record<string, unknown>)
       .map(([mode, value]) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return null
         const payload = value as Record<string, unknown>
@@ -1539,12 +1556,31 @@ function replaySearchCurrentModeEvidenceSummary(
         if (entry.mode === 'xgboost') return enabled.xgboost
         return true
       })
-      .filter((entry) => entry.acceptedCount > 0)
-      .sort((left, right) => {
-        const leftPriority = left.mode === 'heuristic' ? 0 : left.mode === 'xgboost' ? 1 : 2
-        const rightPriority = right.mode === 'heuristic' ? 0 : right.mode === 'xgboost' ? 1 : 2
-        if (leftPriority !== rightPriority) return leftPriority - rightPriority
-        return left.mode.localeCompare(right.mode)
+    const entryByMode = new Map(parsedEntries.map((entry) => [entry.mode, entry]))
+    const entries: Array<{mode: string; acceptedCount: number; resolvedCount: number; totalPnlUsd: number; winRate: number | null}> = []
+    if (enabled.heuristic) {
+      entries.push(entryByMode.get('heuristic') ?? {
+        mode: 'heuristic',
+        acceptedCount: 0,
+        resolvedCount: 0,
+        totalPnlUsd: 0,
+        winRate: null
+      })
+    }
+    if (enabled.xgboost) {
+      entries.push(entryByMode.get('xgboost') ?? {
+        mode: 'xgboost',
+        acceptedCount: 0,
+        resolvedCount: 0,
+        totalPnlUsd: 0,
+        winRate: null
+      })
+    }
+    parsedEntries
+      .filter((entry) => entry.mode !== 'heuristic' && entry.mode !== 'xgboost')
+      .sort((left, right) => left.mode.localeCompare(right.mode))
+      .forEach((entry) => {
+        if (entry.acceptedCount > 0) entries.push(entry)
       })
     if (!entries.length) {
       const parts: string[] = []

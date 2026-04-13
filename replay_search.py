@@ -433,6 +433,8 @@ def _worst_active_window_resolved_share(signal_mode_summary: dict[str, dict[str,
     raw_value = signal_mode_summary.get(mode, {}).get("worst_active_window_resolved_share")
     if raw_value is not None:
         return float(raw_value)
+    if int(signal_mode_summary.get(mode, {}).get("accepted_count") or 0) <= 0:
+        return 1.0
     return _worst_window_resolved_share(signal_mode_summary, mode)
 
 
@@ -440,6 +442,8 @@ def _global_worst_active_window_resolved_share(result: dict[str, Any]) -> float:
     raw_value = result.get("worst_active_window_resolved_share")
     if raw_value is not None:
         return float(raw_value)
+    if int(result.get("accepted_count") or 0) <= 0:
+        return 1.0
     return float(result.get("worst_window_resolved_share") or 0.0)
 
 
@@ -459,7 +463,7 @@ def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
         enriched["worst_active_window_resolved_share"] = (
             round(_resolved_share_from_counts(accepted_count, enriched.get("resolved_count")), 6)
             if accepted_count > 0
-            else None
+            else 1.0
         )
         return enriched
     enriched = dict(result)
@@ -471,7 +475,7 @@ def _with_worst_window_resolved_share(result: dict[str, Any]) -> dict[str, Any]:
     enriched["worst_active_window_resolved_share"] = (
         round(_resolved_share_from_counts(accepted_count, enriched.get("resolved_count")), 6)
         if accepted_count > 0
-        else None
+        else 1.0
     )
     return enriched
 
@@ -819,7 +823,7 @@ def _aggregate_window_results(
             for row in window_results
             if int(row.get("accepted_count") or 0) > 0
         ),
-        default=None,
+        default=1.0 if accepted_count <= 0 else None,
     )
     window_avg_pnl_usd = sum(pnl_values) / len(pnl_values) if pnl_values else 0.0
     window_pnl_stddev_usd = (
@@ -830,7 +834,7 @@ def _aggregate_window_results(
     reject_reason_summary: dict[str, int] = {}
     signal_mode_totals: dict[str, dict[str, float]] = {}
     normalized_window_mode_summaries: list[dict[str, dict[str, Any]]] = []
-    all_modes: set[str] = set()
+    all_modes: set[str] = {"heuristic", "xgboost"}
     for window_result in window_results:
         for reason, count in _reject_reason_summary(window_result).items():
             reject_reason_summary[reason] = reject_reason_summary.get(reason, 0) + int(count or 0)
@@ -885,7 +889,7 @@ def _aggregate_window_results(
             "worst_active_window_resolved_share": (
                 round(min(values["active_window_resolved_shares"]), 6)
                 if values["active_window_resolved_shares"]
-                else None
+                else 1.0
             ),
             "best_window_pnl_usd": round(max(values["window_pnls"]), 6) if values["window_pnls"] else None,
             "win_count": int(values["win_count"]),

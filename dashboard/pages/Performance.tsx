@@ -35,6 +35,7 @@ import {useBotState} from '../useBotState.js'
 import {useQuery} from '../useDb.js'
 import {useEventStream} from '../useEventStream.js'
 import {useTradeIdIndex} from '../useTradeIdIndex.js'
+import {buildPerformanceResolutionDisplay} from './performanceResolution.js'
 import {
   editablePositionStatuses,
   type PositionManualEditRow,
@@ -122,6 +123,10 @@ AND actual_entry_shares IS NOT NULL
 AND actual_entry_size_usd IS NOT NULL
 `
 
+const CHAMPION_TRADE_LOG_WHERE = `
+LOWER(COALESCE(tl.experiment_arm, 'champion')) = 'champion'
+`
+
 const REALIZED_CLOSE_TS_SQL = `COALESCE(exited_at, resolved_at, placed_at)`
 
 const OPEN_EXECUTED_ENTRY_WHERE = `
@@ -165,6 +170,7 @@ SELECT
 FROM trade_log tl
 WHERE tl.real_money = 0
   AND ${OPEN_EXECUTED_ENTRY_WHERE}
+  AND ${CHAMPION_TRADE_LOG_WHERE}
 ORDER BY tl.placed_at DESC, tl.id DESC
 `
 
@@ -178,6 +184,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -188,6 +195,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -199,6 +207,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -209,6 +218,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -221,6 +231,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -231,6 +242,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -327,6 +339,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -337,6 +350,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -349,6 +363,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -359,6 +374,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -370,6 +386,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
@@ -382,6 +399,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
@@ -396,6 +414,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
@@ -408,6 +427,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
@@ -454,6 +474,7 @@ SELECT
   ROUND(CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END, 3) AS pnl_usd
 FROM trade_log tl
 WHERE ${EXECUTED_ENTRY_WHERE}
+  AND ${CHAMPION_TRADE_LOG_WHERE}
   AND (CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END) IS NOT NULL
 ORDER BY COALESCE(NULLIF(tl.exited_at, 0), NULLIF(tl.resolved_at, 0), NULLIF(tl.market_close_ts, 0), tl.placed_at) DESC, tl.id DESC
 `
@@ -2458,7 +2479,7 @@ export function Performance({
   ]
   const summaryRightStats = [
     {
-      label: 'Current balance',
+      label: activeMode === 'live' ? 'Current balance' : 'Estimated shadow bankroll',
       value: activeBalance == null ? '-' : `$${activeBalance.toFixed(3)}`,
       color: activeBalance != null ? theme.white : theme.dim
     },
@@ -2726,8 +2747,16 @@ export function Performance({
             const entryColor = row.entry_price > 0 ? probabilityColor(row.entry_price) : theme.dim
             const confidenceColor =
               row.confidence != null ? probabilityColor(row.confidence) : theme.dim
-            const resolutionTs = row.resolution_ts || row.market_close_ts
-            const resolutionColor = row.status === 'waiting' || row.status === 'cashing_out' ? theme.red : theme.dim
+            const resolutionDisplay = buildPerformanceResolutionDisplay(row, nowTs, {
+              formatShortDateTime,
+              timeUntil
+            })
+            const resolutionColor =
+              resolutionDisplay.resolutionTone === 'red'
+                ? theme.red
+                : resolutionDisplay.resolutionTone === 'yellow'
+                  ? theme.yellow
+                  : theme.dim
             const shares = row.shares
             const toWin =
               row.status === 'exit'
@@ -2739,34 +2768,14 @@ export function Performance({
                     : null
             const profit = displayProfit(row)
             const cashOutNow = displayCashOutNow(row)
-            const statusText =
-              row.status === 'cashing_out'
-                ? 'cashing out'
-                : row.status === 'win'
-                ? 'win'
-                : row.status === 'lose'
-                  ? 'lose'
-                  : row.status === 'exit'
-                    ? profit != null && profit > 0
-                      ? 'exit up'
-                      : profit != null && profit < 0
-                        ? 'exit down'
-                        : 'exited'
-                    : 'waiting'
             const statusColor =
-              row.status === 'cashing_out'
-                ? theme.yellow
-                : row.status === 'win'
+              resolutionDisplay.statusTone === 'green'
                 ? theme.green
-                : row.status === 'lose'
+                : resolutionDisplay.statusTone === 'red'
                   ? theme.red
-                  : row.status === 'exit'
-                    ? profit != null && profit > 0
-                      ? theme.green
-                      : profit != null && profit < 0
-                        ? theme.red
-                        : theme.yellow
-                    : theme.yellow
+                  : resolutionDisplay.statusTone === 'yellow'
+                    ? theme.yellow
+                    : theme.dim
             const toWinColor =
               toWin != null ? positiveDollarColor(toWin, 100) : theme.dim
             const profitColor =
@@ -2872,14 +2881,14 @@ export function Performance({
                 </Text>
                 <Text backgroundColor={rowBackground}> </Text>
                 <Text color={resolutionColor} backgroundColor={rowBackground} bold={isSelected}>
-                  {fitRight(formatShortDateTime(resolutionTs), resolutionWidth)}
+                  {fitRight(resolutionDisplay.resolutionLabel, resolutionWidth)}
                 </Text>
                 {showTtr || showStatus ? (
                   <>
                     <Text backgroundColor={rowBackground}> </Text>
                     <Text color={showStatus ? statusColor : resolutionColor} backgroundColor={rowBackground} bold={isSelected}>
                       {fitRight(
-                        showStatus ? statusText : timeUntil(row.market_close_ts),
+                        showStatus ? resolutionDisplay.statusLabel : resolutionDisplay.ttrLabel,
                         trailingWidth
                       )}
                     </Text>

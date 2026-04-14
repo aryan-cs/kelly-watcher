@@ -32,6 +32,7 @@ from runtime_paths import (
     REPO_ROOT,
     SAVE_DIR,
 )
+from shadow_evidence import write_shadow_evidence_epoch
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
@@ -420,6 +421,11 @@ def reset_shadow_runtime() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     db.init_db()
+    write_shadow_evidence_epoch(
+        path=DATA_DIR / "shadow_evidence_epoch.json",
+        source="shadow_reset",
+        message="fresh shadow evidence epoch started after full shadow reset",
+    )
     try:
         from beliefs import invalidate_belief_cache
 

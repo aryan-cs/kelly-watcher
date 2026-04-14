@@ -30,6 +30,29 @@ class IdentityCalibrator:
 
 
 class ExpectedReturnModelTest(unittest.TestCase):
+    @staticmethod
+    def _trusted_model_artifact(
+        expected_return: float,
+        *,
+        edge_threshold: float = 0.01,
+        contract_version: int = DATA_CONTRACT_VERSION,
+    ) -> dict:
+        return {
+            "model": ConstantReturnModel(transform_return_target(expected_return)),
+            "probability_calibrator": IdentityCalibrator(),
+            "feature_cols": FEATURE_COLS[:3],
+            "model_backend": "hist_gradient_boosting",
+            "prediction_mode": "expected_return",
+            "data_contract_version": contract_version,
+            "label_mode": MODEL_LABEL_MODE,
+            "training_scope": "current_evidence_window",
+            "training_since_ts": 1_700_000_400,
+            "training_routed_only": True,
+            "training_provenance_trusted": True,
+            "training_provenance_block_reason": "",
+            "policy": {"edge_threshold": edge_threshold},
+        }
+
     def test_return_target_transform_round_trips(self) -> None:
         values = [-1.0, -0.25, 0.0, 0.4, 1.75]
         restored = [inverse_return_target(transform_return_target(value)) for value in values]
@@ -39,16 +62,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
     def test_signal_engine_scores_expected_return_artifact(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
-            artifact = {
-                "model": ConstantReturnModel(transform_return_target(0.35)),
-                "probability_calibrator": IdentityCalibrator(),
-                "feature_cols": FEATURE_COLS[:3],
-                "model_backend": "hist_gradient_boosting",
-                "prediction_mode": "expected_return",
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "label_mode": MODEL_LABEL_MODE,
-                "policy": {"edge_threshold": 0.01},
-            }
+            artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
             with patch("signal_engine.model_path", return_value=str(model_file)):
@@ -72,19 +86,44 @@ class ExpectedReturnModelTest(unittest.TestCase):
             self.assertTrue(result["passed"])
             self.assertAlmostEqual(result["edge_threshold"], 0.01, places=4)
 
+    def test_signal_engine_tags_segment_metadata_for_runtime_scoring(self) -> None:
+        with patch(
+            "signal_engine.model_path",
+            return_value="/tmp/kelly-watcher-missing-model.joblib",
+        ):
+            engine = signal_engine.SignalEngine()
+
+        market_features = SimpleNamespace(execution_price=0.42, mid=0.42, days_to_res=0.5)
+        adaptive_floor = SimpleNamespace(floor=0.1, as_dict=lambda: {"floor": 0.1})
+        belief = SimpleNamespace(
+            adjusted_confidence=0.83,
+            prior_confidence=0.72,
+            blend=0.5,
+            evidence=3,
+        )
+        with patch.object(engine.trader_scorer, "score", return_value={"score": 0.88}), patch.object(
+            engine.market_scorer,
+            "score",
+            return_value={"score": 0.79, "veto": None},
+        ), patch(
+            "signal_engine.adaptive_min_confidence_for_signal",
+            return_value=adaptive_floor,
+        ), patch(
+            "signal_engine.adjust_heuristic_confidence",
+            return_value=belief,
+        ):
+            result = engine.evaluate(SimpleNamespace(), market_features, 10.0, watch_tier="warm")
+
+        self.assertEqual(result["segment_id"], "warm_mid")
+        self.assertEqual(result["segment"]["watch_tier"], "warm")
+        self.assertEqual(result["segment"]["horizon_bucket"], "mid")
+        self.assertEqual(result["segment"]["segment_policy"]["segment_id"], "warm_mid")
+        self.assertEqual(result["segment"]["policy_bundle_version"], 1)
+
     def test_signal_engine_relaxes_edge_threshold_for_high_confidence_predictions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
-            artifact = {
-                "model": ConstantReturnModel(transform_return_target(0.35)),
-                "probability_calibrator": IdentityCalibrator(),
-                "feature_cols": FEATURE_COLS[:3],
-                "model_backend": "hist_gradient_boosting",
-                "prediction_mode": "expected_return",
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "label_mode": MODEL_LABEL_MODE,
-                "policy": {"edge_threshold": 0.02},
-            }
+            artifact = self._trusted_model_artifact(0.35, edge_threshold=0.02)
             joblib.dump(artifact, model_file)
 
             with patch("signal_engine.model_path", return_value=str(model_file)):
@@ -385,16 +424,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
     def test_signal_engine_blocks_model_entries_outside_global_horizon_allowlist(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
-            artifact = {
-                "model": ConstantReturnModel(transform_return_target(0.35)),
-                "probability_calibrator": IdentityCalibrator(),
-                "feature_cols": FEATURE_COLS[:3],
-                "model_backend": "hist_gradient_boosting",
-                "prediction_mode": "expected_return",
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "label_mode": MODEL_LABEL_MODE,
-                "policy": {"edge_threshold": 0.01},
-            }
+            artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
             with patch("signal_engine.model_path", return_value=str(model_file)):
@@ -453,8 +483,11 @@ class ExpectedReturnModelTest(unittest.TestCase):
             self.assertEqual(runtime["runtime_contract"], DATA_CONTRACT_VERSION)
             self.assertFalse(runtime["model_runtime_compatible"])
             self.assertEqual(runtime["model_fallback_reason"], "contract_mismatch")
+            self.assertEqual(runtime["model_training_scope"], "unknown")
+            self.assertFalse(runtime["model_training_provenance_trusted"])
+            self.assertIn("missing post-epoch routed training provenance", runtime["model_training_block_reason"])
 
-    def test_signal_engine_runtime_info_reports_loaded_model(self) -> None:
+    def test_signal_engine_runtime_info_reports_untrusted_training_provenance(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
             artifact = {
@@ -473,26 +506,93 @@ class ExpectedReturnModelTest(unittest.TestCase):
                 engine = signal_engine.SignalEngine()
 
             runtime = engine.runtime_info()
+            self.assertEqual(runtime["loaded_scorer"], "heuristic")
+            self.assertEqual(runtime["loaded_model_backend"], "heuristic")
+            self.assertTrue(runtime["model_artifact_exists"])
+            self.assertFalse(runtime["model_runtime_compatible"])
+            self.assertEqual(runtime["model_fallback_reason"], "training_provenance_untrusted")
+            self.assertEqual(int(runtime["model_loaded_at"] or 0), 0)
+            self.assertEqual(runtime["model_training_scope"], "unknown")
+            self.assertFalse(runtime["model_training_provenance_trusted"])
+            self.assertIn("missing post-epoch routed training provenance", runtime["model_training_block_reason"])
+
+    def test_signal_engine_runtime_info_reports_loaded_model(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = self._trusted_model_artifact(0.20)
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            runtime = engine.runtime_info()
             self.assertEqual(runtime["loaded_scorer"], "xgboost")
             self.assertEqual(runtime["loaded_model_backend"], "hist_gradient_boosting")
             self.assertTrue(runtime["model_artifact_exists"])
             self.assertTrue(runtime["model_runtime_compatible"])
             self.assertEqual(runtime["model_fallback_reason"], "")
             self.assertGreater(int(runtime["model_loaded_at"] or 0), 0)
+            self.assertEqual(runtime["model_training_scope"], "current_evidence_window")
+            self.assertTrue(runtime["model_training_provenance_trusted"])
+            self.assertEqual(runtime["model_training_block_reason"], "")
 
-    def test_signal_engine_blocks_model_entries_outside_allowlisted_band(self) -> None:
+    def test_signal_engine_runtime_info_rejects_model_that_predates_active_epoch(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = self._trusted_model_artifact(0.20)
+            artifact["training_since_ts"] = 1_700_000_100
+            joblib.dump(artifact, model_file)
+
+            with patch(
+                "signal_engine.read_shadow_evidence_epoch",
+                return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+            ), patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            runtime = engine.runtime_info()
+            self.assertEqual(runtime["loaded_scorer"], "heuristic")
+            self.assertEqual(runtime["loaded_model_backend"], "heuristic")
+            self.assertFalse(runtime["model_runtime_compatible"])
+            self.assertEqual(runtime["model_fallback_reason"], "training_provenance_untrusted")
+            self.assertFalse(runtime["model_training_provenance_trusted"])
+            self.assertIn("predates the active shadow evidence epoch", runtime["model_training_block_reason"])
+            self.assertIn("1700000100", runtime["model_training_block_reason"])
+            self.assertIn("1700000400", runtime["model_training_block_reason"])
+
+    def test_signal_engine_runtime_info_reports_trusted_training_provenance(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
             artifact = {
-                "model": ConstantReturnModel(transform_return_target(0.35)),
+                "model": ConstantReturnModel(transform_return_target(0.20)),
                 "probability_calibrator": IdentityCalibrator(),
                 "feature_cols": FEATURE_COLS[:3],
                 "model_backend": "hist_gradient_boosting",
                 "prediction_mode": "expected_return",
                 "data_contract_version": DATA_CONTRACT_VERSION,
                 "label_mode": MODEL_LABEL_MODE,
+                "training_scope": "current_evidence_window",
+                "training_since_ts": 1_700_000_400,
+                "training_routed_only": True,
+                "training_provenance_trusted": True,
+                "training_provenance_block_reason": "",
                 "policy": {"edge_threshold": 0.01},
             }
+            joblib.dump(artifact, model_file)
+
+            with patch("signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            runtime = engine.runtime_info()
+            self.assertEqual(runtime["model_training_scope"], "current_evidence_window")
+            self.assertEqual(int(runtime["model_training_since_ts"]), 1_700_000_400)
+            self.assertTrue(runtime["model_training_routed_only"])
+            self.assertTrue(runtime["model_training_provenance_trusted"])
+            self.assertEqual(runtime["model_training_block_reason"], "")
+
+    def test_signal_engine_blocks_model_entries_outside_allowlisted_band(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
             with patch("signal_engine.model_path", return_value=str(model_file)):
@@ -525,16 +625,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
     def test_signal_engine_blocks_model_entries_below_min_time_to_close(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
-            artifact = {
-                "model": ConstantReturnModel(transform_return_target(0.35)),
-                "probability_calibrator": IdentityCalibrator(),
-                "feature_cols": FEATURE_COLS[:3],
-                "model_backend": "hist_gradient_boosting",
-                "prediction_mode": "expected_return",
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "label_mode": MODEL_LABEL_MODE,
-                "policy": {"edge_threshold": 0.01},
-            }
+            artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
             with patch("signal_engine.model_path", return_value=str(model_file)):
@@ -566,16 +657,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
     def test_signal_engine_blocks_model_when_disabled(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
-            artifact = {
-                "model": ConstantReturnModel(transform_return_target(0.35)),
-                "probability_calibrator": IdentityCalibrator(),
-                "feature_cols": FEATURE_COLS[:3],
-                "model_backend": "hist_gradient_boosting",
-                "prediction_mode": "expected_return",
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "label_mode": MODEL_LABEL_MODE,
-                "policy": {"edge_threshold": 0.01},
-            }
+            artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
             with patch("signal_engine.model_path", return_value=str(model_file)):
@@ -595,16 +677,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
     def test_signal_engine_evaluate_falls_back_to_heuristic_when_model_disabled(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"
-            artifact = {
-                "model": ConstantReturnModel(transform_return_target(0.35)),
-                "probability_calibrator": IdentityCalibrator(),
-                "feature_cols": FEATURE_COLS[:3],
-                "model_backend": "hist_gradient_boosting",
-                "prediction_mode": "expected_return",
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "label_mode": MODEL_LABEL_MODE,
-                "policy": {"edge_threshold": 0.01},
-            }
+            artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
             with patch("signal_engine.model_path", return_value=str(model_file)):

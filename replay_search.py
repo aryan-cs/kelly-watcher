@@ -10,9 +10,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from db import database_integrity_state, get_conn_for_path
+from evaluator import SEGMENT_SHADOW_MIN_RESOLVED, compute_segment_shadow_report
+from performance_preview import compute_tracker_preview_summary
 from replay_search_contract import validate_replay_search_score_weight_payload
 from replay import ReplayPolicy, policy_to_config_payload, run_replay
 from runtime_paths import TRADING_DB_PATH
+from shadow_evidence import read_shadow_evidence_epoch
 
 
 def _load_payload(*, file_path: str, inline_json: str) -> dict[str, Any] | None:
@@ -3692,6 +3696,120 @@ def _resolve_db_path(raw_path: str) -> Path | None:
     return Path(raw_path) if raw_path else Path(TRADING_DB_PATH)
 
 
+def _normalized_db_path(path: Path | None) -> Path:
+    target = Path(path) if path is not None else Path(TRADING_DB_PATH)
+    try:
+        return target.expanduser().resolve(strict=False)
+    except Exception:
+        return Path(str(target.expanduser()))
+
+
+def _targets_runtime_db(db_path: Path | None) -> bool:
+    return _normalized_db_path(db_path) == _normalized_db_path(Path(TRADING_DB_PATH))
+
+
+def _runtime_replay_search_trust_block_reason(*, db_path: Path | None, mode: str) -> str:
+    if not _targets_runtime_db(db_path):
+        return ""
+
+    target_path = Path(db_path) if db_path is not None else Path(TRADING_DB_PATH)
+    integrity = database_integrity_state(target_path)
+    if integrity.get("db_integrity_known") and not integrity.get("db_integrity_ok"):
+        detail = str(integrity.get("db_integrity_message") or "").splitlines()[0].strip()
+        suffix = f" ({detail})" if detail else ""
+        return f"Replay search blocked: SQLite integrity check failed; shadow history is not trustworthy{suffix}"
+
+    if str(mode or "").strip().lower() != "shadow":
+        return ""
+
+    epoch_state = read_shadow_evidence_epoch()
+    epoch_started_at = max(int(epoch_state.get("shadow_evidence_epoch_started_at") or 0), 0)
+    if epoch_started_at <= 0:
+        return (
+            "Replay search blocked: current evidence window is not active yet; "
+            "shadow snapshot still reflects all history"
+        )
+    promotion_applied_at = _latest_applied_replay_promotion_at(target_path)
+    effective_since_ts = max(epoch_started_at, promotion_applied_at)
+
+    try:
+        preview = compute_tracker_preview_summary(
+            mode="shadow",
+            db_path=target_path,
+            use_bot_state_balance=False,
+            since_ts=effective_since_ts,
+            apply_shadow_evidence_epoch=False,
+        )
+    except Exception as exc:
+        return f"Replay search blocked: current shadow snapshot could not be evaluated ({exc})"
+
+    data_warning = str(getattr(preview, "data_warning", "") or "").strip()
+    if data_warning:
+        return f"Replay search blocked: {data_warning}"
+
+    resolved = max(int(getattr(preview, "resolved", 0) or 0), 0)
+    routed_resolved = max(int(getattr(preview, "routed_resolved", 0) or 0), 0)
+    legacy_resolved = max(int(getattr(preview, "routed_legacy_resolved", 0) or 0), 0)
+    if resolved <= 0:
+        return "Replay search blocked: current evidence window has no resolved shadow trades yet"
+    if routed_resolved <= 0 and legacy_resolved > 0:
+        return (
+            "Replay search blocked: need routed fixed-segment evidence; "
+            f"{legacy_resolved} legacy/unassigned resolved rows are not sufficient"
+        )
+
+    try:
+        report = compute_segment_shadow_report(
+            mode="shadow",
+            since_ts=effective_since_ts,
+            db_path=target_path,
+        )
+    except Exception as exc:
+        return f"Replay search blocked: champion segment shadow history could not be evaluated ({exc})"
+
+    routed_resolved = max(int(report.get("routed_resolved") or 0), 0)
+    legacy_resolved = max(int(report.get("legacy_unassigned_resolved") or 0), 0)
+    total_resolved = routed_resolved + legacy_resolved
+    if total_resolved <= 0:
+        return "Replay search blocked: no routed post-segmentation shadow evidence yet"
+    if routed_resolved <= 0 and legacy_resolved > 0:
+        return (
+            "Replay search blocked: all resolved shadow rows predate fixed segment routing; "
+            f"{routed_resolved} routed resolved, {legacy_resolved} legacy/unassigned resolved"
+        )
+
+    minimum_resolved = max(int(SEGMENT_SHADOW_MIN_RESOLVED or 0), 0)
+    if minimum_resolved > 0 and routed_resolved < minimum_resolved:
+        return (
+            f"Replay search blocked: need {routed_resolved}/{minimum_resolved} routed resolved shadow trades; "
+            f"{legacy_resolved} legacy/unassigned resolved remain excluded from fixed-segment evidence"
+        )
+    return ""
+
+
+def _latest_applied_replay_promotion_at(db_path: Path) -> int:
+    conn = get_conn_for_path(db_path, apply_runtime_pragmas=False)
+    try:
+        try:
+            row = conn.execute(
+                """
+                SELECT applied_at
+                FROM replay_promotions
+                WHERE status='applied'
+                  AND applied_at > 0
+                ORDER BY applied_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return max(int(row["applied_at"] or 0), 0) if row is not None else 0
+    finally:
+        conn.close()
+
+
 def _search_constraints_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "min_accepted_count": max(args.min_accepted_count, 0),
@@ -5406,6 +5524,12 @@ def main() -> None:
         raise ValueError(f"Grid expands to {len(overrides_list)} combinations, above --max-combos={args.max_combos}")
 
     db_path = _resolve_db_path(args.db)
+    blocked_message = _runtime_replay_search_trust_block_reason(
+        db_path=db_path,
+        mode=base_policy.mode,
+    )
+    if blocked_message:
+        raise SystemExit(blocked_message)
     windows = _build_time_windows(
         db_path=db_path,
         mode=base_policy.mode,

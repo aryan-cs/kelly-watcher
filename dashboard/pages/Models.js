@@ -46,17 +46,19 @@ export const MODEL_PANEL_DEFS = [
         title: 'Tracker Health',
         summary: [
             'This box measures what happened after the bot actually accepted signals.',
-            'It is the best quick read on how strict filters, edge, and sizing are working together.'
+            'Core tracker counters are all-time champion shadow history; snapshot scope shows whether the latest persisted summary is all-history or current-window only.'
         ],
         rows: [
-            { label: 'Signals logged', text: 'Candidate trades the bot observed before filtering.' },
-            { label: 'Bets taken', text: 'Signals that passed checks and became tracker bets.' },
+            { label: 'Signals logged', text: 'Candidate trades the bot observed before filtering across champion shadow history.' },
+            { label: 'Bets taken', text: 'Signals that passed checks and became tracker bets across champion shadow history.' },
             { label: 'Use rate', text: 'Accepted bets divided by total signals. Lower means stricter filtering.' },
             { label: 'Win rate', text: 'Resolved tracker bets that finished as wins.' },
             { label: 'Avg confidence', text: 'Average predicted win probability on accepted bets.' },
             { label: 'Avg edge', text: 'Confidence minus price. Positive means the bot saw value.' },
-            { label: 'Tracker P&L', text: 'Cumulative paper profit from accepted bets.' },
-            { label: 'Sharpe ratio', text: 'Return compared to volatility. Higher is smoother.' }
+            { label: 'Tracker P&L', text: 'Cumulative paper profit from accepted bets across champion shadow history.' },
+            { label: 'Sharpe ratio', text: 'Return compared to volatility. Higher is smoother.' },
+            { label: 'Snapshot scope', text: 'Whether the latest persisted shadow snapshot reflects all history or only the current evidence window.' },
+            { label: 'Legacy excluded', text: 'Resolved legacy/all-time shadow trades excluded from the latest current-window shadow snapshot.' }
         ],
         settingKeys: ['MIN_CONFIDENCE', 'MAX_BET_FRACTION', 'SHADOW_BANKROLL_USD']
     },
@@ -211,7 +213,7 @@ export const MODEL_PANEL_DEFS = [
                 label: 'Trigger progress',
                 text: 'Progress toward the next retrain trigger. With a deployed model this counts new eligible labels since that model went live; before the first model it falls back to total labeled samples versus the minimum sample gate.'
             },
-            { label: 'Manual run', text: 'Press t while this panel is selected to queue an in-process retrain through the running bot.' },
+            { label: 'Manual run', text: 'Manual retrain is only available while the runtime is healthy and not restarting. When available, press t on this panel to queue an in-process retrain.' },
             { label: 'Shared gate', text: 'Latest apples-to-apples challenger versus incumbent comparison on the same final holdout. This is the actual deployment guardrail.' }
         ],
         settingKeys: ['RETRAIN_BASE_CADENCE', 'RETRAIN_HOUR_LOCAL', 'RETRAIN_EARLY_CHECK_INTERVAL', 'RETRAIN_MIN_NEW_LABELS', 'RETRAIN_MIN_SAMPLES']
@@ -232,6 +234,9 @@ AND actual_entry_size_usd IS NOT NULL
 const RESOLVED_EXECUTED_ENTRY_WHERE = `
 ${EXECUTED_ENTRY_WHERE}
 AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
+`;
+const CHAMPION_TRADE_LOG_WHERE = `
+LOWER(COALESCE(experiment_arm, 'champion')) = 'champion'
 `;
 const PROFITABLE_TRADE_SQL = `CASE WHEN COALESCE(actual_pnl_usd, shadow_pnl_usd) > 0 THEN 1 ELSE 0 END`;
 const LOW_CONF_SKIP_WHERE = `
@@ -562,9 +567,48 @@ SELECT
 FROM trade_log
 WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
+  AND ${CHAMPION_TRADE_LOG_WHERE}
+`;
+const PERF_SQL_LEGACY = `
+SELECT
+  snapshot_at,
+  mode,
+  NULL AS scope,
+  NULL AS since_ts,
+  NULL AS epoch_started_at,
+  NULL AS epoch_source,
+  NULL AS legacy_resolved_excluded,
+  n_signals,
+  n_acted,
+  n_resolved,
+  win_rate,
+  total_pnl_usd,
+  avg_confidence,
+  sharpe
+FROM perf_snapshots
+WHERE id IN (
+  SELECT MAX(id)
+  FROM perf_snapshots
+  GROUP BY mode
+)
+ORDER BY CASE WHEN mode='shadow' THEN 0 ELSE 1 END, snapshot_at DESC
 `;
 const PERF_SQL = `
-SELECT snapshot_at, mode, n_signals, n_acted, n_resolved, win_rate, total_pnl_usd, avg_confidence, sharpe
+SELECT
+  snapshot_at,
+  mode,
+  scope,
+  since_ts,
+  epoch_started_at,
+  epoch_source,
+  legacy_resolved_excluded,
+  n_signals,
+  n_acted,
+  n_resolved,
+  win_rate,
+  total_pnl_usd,
+  avg_confidence,
+  sharpe
 FROM perf_snapshots
 WHERE id IN (
   SELECT MAX(id)
@@ -586,6 +630,7 @@ SELECT
 FROM trade_log
 WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
+  AND ${CHAMPION_TRADE_LOG_WHERE}
 GROUP BY COALESCE(NULLIF(signal_mode, ''), 'heuristic')
 ORDER BY taken DESC, signals DESC
 `;
@@ -595,6 +640,7 @@ WITH recent_window AS (
   FROM trade_log
   WHERE real_money=0
     AND COALESCE(source_action, 'buy')='buy'
+    AND ${CHAMPION_TRADE_LOG_WHERE}
 )
 SELECT
   COALESCE(NULLIF(signal_mode, ''), 'heuristic') AS mode,
@@ -602,6 +648,7 @@ SELECT
 FROM trade_log
 WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
+  AND ${CHAMPION_TRADE_LOG_WHERE}
   AND actual_entry_size_usd IS NOT NULL
   AND observed_at >= (SELECT cutoff_ts FROM recent_window)
 GROUP BY COALESCE(NULLIF(signal_mode, ''), 'heuristic')
@@ -617,6 +664,7 @@ FROM trade_log
 WHERE real_money=0
   AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
   AND confidence IS NOT NULL
+  AND ${CHAMPION_TRADE_LOG_WHERE}
 `;
 const CONFUSION_SQL = `
 SELECT
@@ -627,6 +675,7 @@ SELECT
 FROM trade_log
 WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
+  AND ${CHAMPION_TRADE_LOG_WHERE}
 `;
 const CALIBRATION_SQL = `
 WITH bucketed AS (
@@ -642,6 +691,7 @@ WITH bucketed AS (
   WHERE real_money=0
     AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
     AND confidence IS NOT NULL
+    AND ${CHAMPION_TRADE_LOG_WHERE}
 )
 SELECT
   bucket,
@@ -664,6 +714,7 @@ SELECT
 FROM trade_log
 WHERE COALESCE(source_action, 'buy')='buy'
   AND real_money=0
+  AND ${CHAMPION_TRADE_LOG_WHERE}
 `;
 const TRAINING_SUMMARY_SQL = `
 SELECT
@@ -695,6 +746,7 @@ SELECT
   ) AS new_labeled
 FROM trade_log
 WHERE ${RESOLVED_TRAINING_SAMPLE_WHERE}
+  AND ${CHAMPION_TRADE_LOG_WHERE}
 `;
 const EXIT_AUDIT_SUMMARY_SQL = `
 SELECT
@@ -738,6 +790,7 @@ WITH exited AS (
   FROM trade_log
   WHERE real_money=?
     AND COALESCE(source_action, 'buy')='buy'
+    AND ${CHAMPION_TRADE_LOG_WHERE}
     AND exited_at IS NOT NULL
     AND resolved_at IS NOT NULL
     AND actual_entry_size_usd IS NOT NULL
@@ -964,6 +1017,32 @@ function replaySearchScopeLabel(scope) {
         return 'shadow only';
     return normalized.replace(/_/g, ' ');
 }
+function performanceSnapshotScopeLabel(row) {
+    if (!row)
+        return '-';
+    if (String(row.mode || '').trim().toLowerCase() !== 'shadow')
+        return 'all history';
+    const scope = String(row.scope || '').trim().toLowerCase();
+    if (scope !== 'current_evidence_window')
+        return 'all history';
+    const sinceTs = Math.max(0, Number(row.since_ts || row.epoch_started_at || 0));
+    const source = String(row.epoch_source || '').trim();
+    if (sinceTs <= 0)
+        return 'current evidence window';
+    return `since ${formatShortDateTime(sinceTs)}${source ? ` (${source})` : ''}`;
+}
+function shadowSnapshotScopeLabel(scope, startedAt) {
+    const normalized = String(scope || '').trim().toLowerCase();
+    if (!normalized)
+        return '-';
+    if (normalized === 'all_history' || normalized === 'all-history' || normalized === 'legacy')
+        return 'all history';
+    if (!/current|window|snapshot|evidence/.test(normalized))
+        return normalized.replace(/_/g, ' ');
+    if (startedAt <= 0)
+        return 'current evidence window';
+    return `since ${formatShortDateTime(startedAt)}`;
+}
 function replaySearchStatusLabel(status) {
     const normalized = String(status || '').trim().toLowerCase();
     if (!normalized)
@@ -1129,9 +1208,18 @@ function progressStatColor(current, target) {
         return theme.green;
     return theme.yellow;
 }
-function manualRetrainLabel(startedAt, lastActivityAt, pollInterval, retrainInProgress, nowTs) {
+function manualRetrainLabel(startedAt, lastActivityAt, pollInterval, retrainInProgress, startupFailed, startupRecoveryOnly, shadowRestartPending, nowTs) {
     if (retrainInProgress) {
         return { label: 'Manual run', value: 'Running...', color: theme.yellow };
+    }
+    if (shadowRestartPending) {
+        return { label: 'Manual run', value: 'Restart pending', color: theme.yellow };
+    }
+    if (startupRecoveryOnly) {
+        return { label: 'Manual run', value: 'Recovery-only', color: theme.red };
+    }
+    if (startupFailed) {
+        return { label: 'Manual run', value: 'Startup blocked', color: theme.red };
     }
     const heartbeatWindow = Math.max(pollInterval * 3, 30);
     const online = startedAt > 0 && lastActivityAt > 0 && (nowTs - lastActivityAt) <= heartbeatWindow;
@@ -4813,7 +4901,12 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const replayBestHorizonRows = useQuery(REPLAY_SEGMENT_BEST_SQL, ['time_to_close_band', REPLAY_SEGMENT_MIN_RESOLVED]);
     const replayWorstHorizonRows = useQuery(REPLAY_SEGMENT_WORST_SQL, ['time_to_close_band', REPLAY_SEGMENT_MIN_RESOLVED]);
     const trackerRows = useQuery(TRACKER_SQL);
-    const perfRows = useQuery(PERF_SQL);
+    const perfSnapshotColumns = useQuery("PRAGMA table_info(perf_snapshots)");
+    const perfSql = useMemo(() => {
+        const columns = new Set(perfSnapshotColumns.map((row) => String(row.name || '').trim()));
+        return columns.has('scope') ? PERF_SQL : PERF_SQL_LEGACY;
+    }, [perfSnapshotColumns]);
+    const perfRows = useQuery(perfSql);
     const signalModes = useQuery(SIGNAL_MODE_SQL);
     const recentSignalModes = useQuery(RECENT_SIGNAL_MODE_SQL);
     const calibrationSummaryRows = useQuery(CALIBRATION_SUMMARY_SQL);
@@ -4846,6 +4939,8 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const latestSharedHoldoutRun = retrainRuns.find((row) => sharedHoldoutComparison(row) != null);
     const latestSharedHoldout = sharedHoldoutComparison(latestSharedHoldoutRun);
     const trackerSnapshot = perfRows.find((row) => row.mode === 'shadow') ?? perfRows[0];
+    const trackerSnapshotScope = useMemo(() => performanceSnapshotScopeLabel(trackerSnapshot), [trackerSnapshot]);
+    const trackerSnapshotLegacyExcluded = Math.max(0, Number(trackerSnapshot?.legacy_resolved_excluded || 0));
     const featureCount = useMemo(() => parseFeatureCount(latest?.feature_cols), [latest?.feature_cols]);
     const useRate = ratio(tracker?.taken, tracker?.signals);
     const trackerWinRate = ratio(tracker?.wins, tracker?.resolved);
@@ -4973,8 +5068,110 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         : Math.max(0, Number(trainingProgress?.total_labeled || 0));
     const triggerProgressTarget = hasDeployedModel ? earlyTriggerThreshold : minSamplesThreshold;
     const triggerProgressValue = `${formatCount(triggerProgressCurrent)} / ${formatCount(triggerProgressTarget)}${hasDeployedModel ? ' new' : ' total'}`;
-    const manualRunItem = manualRetrainLabel(Number(botState.started_at || 0), Number(botState.last_activity_at || 0), Number(botState.poll_interval || 1), Boolean(botState.retrain_in_progress), nowTs);
+    const manualRunItem = manualRetrainLabel(Number(botState.started_at || 0), Number(botState.last_activity_at || 0), Number(botState.poll_interval || 1), Boolean(botState.retrain_in_progress), Boolean(botState.startup_failed || botState.startup_validation_failed), Boolean(botState.startup_recovery_only || botState.startup_blocked || /startup blocked/i.test(String(botState.startup_detail || ''))), Boolean(botState.shadow_restart_pending), nowTs);
     const nextScheduledRetrainTs = useMemo(() => getNextScheduledRetrainTs(normalizeCadence(baseCadenceRaw), clampHour(retrainHourRaw), nowTs), [baseCadenceRaw, retrainHourRaw, nowTs]);
+    const shadowSnapshotStateKnown = Boolean(botState.shadow_snapshot_state_known)
+        || botState.shadow_snapshot_total_pnl_usd != null
+        || botState.shadow_snapshot_return_pct != null
+        || botState.shadow_snapshot_profit_factor != null
+        || botState.shadow_snapshot_expectancy_usd != null
+        || botState.shadow_snapshot_resolved != null
+        || botState.shadow_snapshot_routed_resolved != null
+        || botState.shadow_snapshot_legacy_resolved != null;
+    const shadowSnapshotScopeRaw = String(botState.shadow_snapshot_scope || '').trim();
+    const shadowSnapshotStartedAt = Math.max(0, Number(botState.shadow_snapshot_started_at || 0));
+    const shadowSnapshotStatusRaw = String(botState.shadow_snapshot_status || '').trim();
+    const shadowSnapshotResolved = Math.max(0, Number(botState.shadow_snapshot_resolved || 0));
+    const shadowSnapshotRoutedResolved = Math.max(0, Number(botState.shadow_snapshot_routed_resolved || 0));
+    const shadowSnapshotLegacyResolved = Math.max(0, Number(botState.shadow_snapshot_legacy_resolved || 0));
+    const shadowSnapshotCoveragePct = botState.shadow_snapshot_coverage_pct;
+    const shadowSnapshotReady = Boolean(botState.shadow_snapshot_ready);
+    const shadowSnapshotBlockReason = compactSingleLineText(botState.shadow_snapshot_block_reason);
+    const shadowSnapshotBlockStateRaw = compactSingleLineText(botState.shadow_snapshot_block_state);
+    const shadowSnapshotOptimizationBlockReason = compactSingleLineText(botState.shadow_snapshot_optimization_block_reason);
+    const shadowSnapshotTotalPnlUsd = botState.shadow_snapshot_total_pnl_usd;
+    const shadowSnapshotReturnPct = botState.shadow_snapshot_return_pct;
+    const shadowSnapshotProfitFactor = botState.shadow_snapshot_profit_factor;
+    const shadowSnapshotExpectancyUsd = botState.shadow_snapshot_expectancy_usd;
+    const shadowSnapshotScopeNormalized = shadowSnapshotScopeRaw.toLowerCase();
+    const shadowSnapshotCurrentWindowScope = /current|window|snapshot|evidence/.test(shadowSnapshotScopeNormalized)
+        && !/all[_\s-]?history|legacy|all[_\s-]?time/.test(shadowSnapshotScopeNormalized);
+    const shadowSnapshotIntegrityWarning = /integrity|corrupt|checksum|sqlite|disk image|malformed|row-order|page reference|invalid/i.test(shadowSnapshotStatusRaw)
+        || /integrity|corrupt|checksum|sqlite|disk image|malformed|row-order|page reference|invalid/i.test(shadowSnapshotBlockReason)
+        || /integrity|corrupt|checksum|sqlite|disk image|malformed|row-order|page reference|invalid/i.test(shadowSnapshotOptimizationBlockReason);
+    const shadowSnapshotBlockState = shadowSnapshotBlockStateRaw || (shadowSnapshotCurrentWindowScope ? 'ready' : 'blocked');
+    const shadowSnapshotOptimizationBlocked = Boolean(shadowSnapshotBlockStateRaw)
+        || !shadowSnapshotReady
+        || !shadowSnapshotCurrentWindowScope
+        || shadowSnapshotStartedAt <= 0
+        || shadowSnapshotRoutedResolved <= 0
+        || shadowSnapshotIntegrityWarning;
+    const shadowSnapshotStatus = !shadowSnapshotStateKnown
+        ? 'checking'
+        : shadowSnapshotStatusRaw || (shadowSnapshotReady ? 'ready' : shadowSnapshotResolved > 0 ? 'partial' : 'idle');
+    const shadowSnapshotScopeDisplay = !shadowSnapshotStateKnown
+        ? 'checking'
+        : shadowSnapshotScopeLabel(shadowSnapshotScopeRaw, shadowSnapshotStartedAt);
+    const shadowSnapshotEvidenceValue = !shadowSnapshotStateKnown
+        ? 'checking current-window shadow snapshot'
+        : shadowSnapshotBlockState === 'blocked_db_integrity' || shadowSnapshotIntegrityWarning
+            ? 'snapshot blocked by SQLite integrity failure'
+            : /blocked_error|error/i.test(shadowSnapshotBlockState)
+                ? compactSingleLineText(shadowSnapshotOptimizationBlockReason || shadowSnapshotBlockReason) || 'snapshot blocked by runtime error'
+                : shadowSnapshotResolved <= 0 && shadowSnapshotTotalPnlUsd == null && shadowSnapshotReturnPct == null && shadowSnapshotProfitFactor == null && shadowSnapshotExpectancyUsd == null
+                ? 'no current-window snapshot published yet'
+                : `${formatCount(shadowSnapshotResolved)} resolved | ${formatCount(shadowSnapshotRoutedResolved)} routed | ${formatCount(shadowSnapshotLegacyResolved)} legacy`;
+    const shadowSnapshotPerformanceValue = !shadowSnapshotStateKnown
+        ? 'checking'
+        : shadowSnapshotTotalPnlUsd == null && shadowSnapshotReturnPct == null && shadowSnapshotProfitFactor == null && shadowSnapshotExpectancyUsd == null
+            ? '-'
+            : [
+                shadowSnapshotTotalPnlUsd == null ? 'pnl -' : `pnl ${formatDollar(shadowSnapshotTotalPnlUsd)}`,
+                shadowSnapshotReturnPct == null ? 'return -' : `return ${formatPct(shadowSnapshotReturnPct, 1)}`,
+                shadowSnapshotProfitFactor == null ? 'pf -' : `pf ${formatNumber(shadowSnapshotProfitFactor, 2)}`,
+                shadowSnapshotExpectancyUsd == null ? 'exp -' : `exp ${formatDollar(shadowSnapshotExpectancyUsd)}`
+            ].join(' | ');
+    const shadowSnapshotReadyForOptimization = shadowSnapshotStateKnown
+        && shadowSnapshotReady
+        && shadowSnapshotCurrentWindowScope
+        && shadowSnapshotStartedAt > 0
+        && shadowSnapshotRoutedResolved > 0
+        && (shadowSnapshotCoveragePct == null || shadowSnapshotCoveragePct > 0)
+        && !shadowSnapshotIntegrityWarning
+        && !/legacy_only|insufficient|blocked|block|fail|error|corrupt|invalid/i.test(shadowSnapshotStatus)
+        && !shadowSnapshotOptimizationBlocked;
+    const shadowSnapshotStatusColor = !shadowSnapshotStateKnown
+        ? theme.dim
+        : /block|fail|error|corrupt|invalid/i.test(shadowSnapshotStatus) || shadowSnapshotIntegrityWarning
+            ? theme.red
+            : !shadowSnapshotCurrentWindowScope || /legacy|mixed|partial|insufficient/i.test(shadowSnapshotStatus)
+                ? theme.yellow
+                : shadowSnapshotReadyForOptimization
+                    ? theme.green
+                    : theme.yellow;
+    const shadowSnapshotPerformanceRows = useMemo(() => [
+        { label: 'Shadow snapshot', value: shadowSnapshotStatus, color: shadowSnapshotStatusColor },
+        { label: 'Snapshot scope', value: shadowSnapshotScopeDisplay, color: theme.dim },
+        { label: 'Current window', value: shadowSnapshotEvidenceValue, color: theme.white },
+        { label: 'Performance', value: shadowSnapshotPerformanceValue, color: shadowSnapshotReadyForOptimization ? theme.green : theme.yellow },
+        { label: 'Coverage', value: shadowSnapshotCoveragePct == null ? '-' : formatPct(shadowSnapshotCoveragePct, 1), color: shadowSnapshotCoveragePct == null ? theme.dim : theme.white },
+        { label: 'Optimization blocker', value: shadowSnapshotReadyForOptimization ? 'none' : (!shadowSnapshotReady ? 'snapshot not ready' : !shadowSnapshotCurrentWindowScope ? 'all-history scope' : shadowSnapshotStartedAt <= 0 ? 'no active epoch' : shadowSnapshotRoutedResolved <= 0 ? 'no routed evidence' : shadowSnapshotIntegrityWarning ? 'integrity warning' : shadowSnapshotBlockState || shadowSnapshotOptimizationBlockReason || shadowSnapshotBlockReason || 'blocked'), color: shadowSnapshotReadyForOptimization ? theme.green : theme.yellow },
+        { label: 'Block reason', value: shadowSnapshotBlockReason || '-', color: shadowSnapshotBlockReason ? theme.yellow : theme.dim },
+        { label: 'Gate', value: shadowSnapshotReadyForOptimization ? 'sufficient' : 'insufficient', color: shadowSnapshotReadyForOptimization ? theme.green : theme.yellow }
+    ], [
+        shadowSnapshotEvidenceValue,
+        shadowSnapshotPerformanceValue,
+        shadowSnapshotReadyForOptimization,
+        shadowSnapshotCoveragePct,
+        shadowSnapshotBlockStateRaw,
+        shadowSnapshotOptimizationBlockReason,
+        shadowSnapshotBlockReason,
+        shadowSnapshotCurrentWindowScope,
+        shadowSnapshotIntegrityWarning,
+        shadowSnapshotScopeDisplay,
+        shadowSnapshotStatus,
+        shadowSnapshotStatusColor
+    ]);
     const trackerHealthStats = useMemo(() => [
         { label: 'Signals logged', value: formatCount(tracker?.signals) },
         { label: 'Bets taken', value: formatCount(tracker?.taken) },
@@ -5012,8 +5209,19 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         {
             label: 'Snapshot age',
             value: trackerSnapshot ? secondsAgo(trackerSnapshot.snapshot_at) : '-'
+        },
+        {
+            label: 'Snapshot scope',
+            value: trackerSnapshotScope
+        },
+        {
+            label: 'Legacy excluded',
+            value: String(String(trackerSnapshot?.mode || '').trim().toLowerCase() === 'shadow'
+                ? formatNumber(trackerSnapshotLegacyExcluded)
+                : '-'),
+            color: trackerSnapshotLegacyExcluded > 0 ? theme.yellow : theme.dim
         }
-    ], [tracker, trackerSnapshot, trackerWinRate, useRate]);
+    ], [tracker, trackerSnapshot, trackerSnapshotLegacyExcluded, trackerSnapshotScope, trackerWinRate, useRate]);
     const trackerHealthColumns = useMemo(() => splitIntoColumns(trackerHealthStats, 2), [trackerHealthStats]);
     const replaySearchSuggestedConfig = useMemo(() => replaySearchConfigSuggestion(latestReplaySearch?.config_json, settingsValues, configFieldByKey), [configFieldByKey, latestReplaySearch?.config_json, settingsValues]);
     const replaySearchApplyScopeSummary = useMemo(() => replaySearchApplyScope(latestReplaySearch?.config_json, settingsValues, configFieldByKey), [configFieldByKey, latestReplaySearch?.config_json, settingsValues]);
@@ -5591,7 +5799,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         : '-';
     const deployedModelColor = !botState.model_artifact_exists
         ? theme.dim
-        : botState.model_runtime_compatible
+        : botState.model_runtime_compatible && Boolean(botState.model_training_provenance_trusted)
             ? theme.green
             : theme.yellow;
     const contractLabel = (botState.model_artifact_contract != null && botState.runtime_contract != null
@@ -5612,6 +5820,8 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             return 'Contract mismatch';
         if (reason === 'label_mode_mismatch')
             return 'Label mismatch';
+        if (reason === 'training_provenance_untrusted')
+            return 'Untrusted training';
         if (reason === 'legacy_artifact_type')
             return 'Legacy artifact';
         if (reason === 'load_failed')
@@ -5623,8 +5833,53 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         : fallbackLabel === 'No artifact'
             ? theme.yellow
             : theme.red;
+    const modelTrainingScopeRaw = String(botState.model_training_scope || '').trim().toLowerCase();
+    const modelTrainingTrusted = Boolean(botState.model_training_provenance_trusted);
+    const modelTrainingSinceTs = Math.max(0, Number(botState.model_training_since_ts || 0));
+    const modelTrainingScopeLabel = useMemo(() => {
+        if (!botState.model_artifact_exists)
+            return '-';
+        if (modelTrainingScopeRaw === 'current_evidence_window') {
+            return botState.model_training_routed_only ? 'Post-epoch routed' : 'Post-epoch mixed';
+        }
+        if (modelTrainingScopeRaw === 'since_ts')
+            return 'Since-ts mixed';
+        if (modelTrainingScopeRaw === 'routed_all_history')
+            return 'Routed all-history';
+        if (modelTrainingScopeRaw === 'all_history')
+            return 'All-history';
+        return 'Unknown';
+    }, [botState.model_artifact_exists, botState.model_training_routed_only, modelTrainingScopeRaw]);
+    const modelTrainingScopeColor = !botState.model_artifact_exists
+        ? theme.dim
+        : modelTrainingTrusted
+            ? theme.green
+            : theme.yellow;
+    const modelTrainingTrustLabel = useMemo(() => {
+        if (!botState.model_artifact_exists)
+            return '-';
+        if (modelTrainingTrusted)
+            return 'Trusted';
+        return compactSingleLineText(botState.model_training_block_reason) || 'Untrusted';
+    }, [botState.model_artifact_exists, botState.model_training_block_reason, modelTrainingTrusted]);
+    const modelTrainingTrustColor = !botState.model_artifact_exists
+        ? theme.dim
+        : modelTrainingTrusted
+            ? theme.green
+            : theme.yellow;
+    const modelTrainingSinceLabel = !botState.model_artifact_exists || modelTrainingSinceTs <= 0
+        ? '-'
+        : formatShortDateTime(modelTrainingSinceTs);
+    const modelTrainingSinceColor = !botState.model_artifact_exists
+        ? theme.dim
+        : modelTrainingSinceTs > 0
+            ? theme.white
+            : theme.yellow;
     const startupFailed = Boolean(botState.startup_failed || botState.startup_validation_failed);
     const startupDetail = String(botState.startup_detail || '').trim();
+    const startupBlocked = Boolean(botState.startup_blocked) || /startup blocked/i.test(startupDetail);
+    const startupRecoveryOnly = Boolean(botState.startup_recovery_only) || startupBlocked;
+    const startupBlockReason = compactSingleLineText(botState.startup_block_reason) || startupDetail;
     const startupFailureMessage = String(botState.startup_failure_message || botState.startup_validation_message || '').trim();
     const startupApiError = compactSingleLineText(botState.api_error);
     const shadowRestartPending = Boolean(botState.shadow_restart_pending);
@@ -5642,6 +5897,8 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             return startupApiError;
         if (shadowRestartPending)
             return shadowRestartMessage;
+        if (startupRecoveryOnly)
+            return startupBlockReason || 'recovery-only mode';
         if ((botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail)
             return startupDetail;
         return 'ready';
@@ -5649,6 +5906,8 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         botState.last_poll_at,
         botState.started_at,
         startupApiError,
+        startupBlockReason,
+        startupRecoveryOnly,
         shadowRestartMessage,
         shadowRestartPending,
         startupDetail,
@@ -5661,6 +5920,8 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             ? theme.red
         : shadowRestartPending
             ? theme.yellow
+        : startupRecoveryOnly
+            ? theme.red
         : (botState.started_at || 0) > 0 && (botState.last_poll_at || 0) <= 0 && startupDetail
             ? theme.yellow
             : theme.green;
@@ -5806,22 +6067,22 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const shadowHistoryReady = Boolean(botState.live_shadow_history_ready);
     const shadowValidationValue = useMemo(() => {
         if (!shadowHistoryStateKnown)
-            return 'checking shadow history';
+            return 'checking all-time shadow history';
         const parts = [];
         if (requireTotalShadowHistory && minShadowResolved > 0) {
-            parts.push(`base ${shadowHistoryTotalReady ? 'ready' : 'need'} ${formatCount(resolvedShadowTradeCount)}/${formatCount(minShadowResolved)}`);
+            parts.push(`all-time base ${shadowHistoryTotalReady ? 'ready' : 'need'} ${formatCount(resolvedShadowTradeCount)}/${formatCount(minShadowResolved)}`);
         }
         else {
-            parts.push('base off');
+            parts.push('all-time base off');
         }
         if (minShadowSincePromotion > 0) {
             const sinceLabel = appliedPromotionAt > 0 ? secondsAgo(appliedPromotionAt) : 'initial';
-            parts.push(`promo ${shadowHistoryReady ? 'ready' : 'need'} ${formatCount(resolvedShadowSincePromotion)}/${formatCount(minShadowSincePromotion)} since ${sinceLabel}`);
+            parts.push(`since-promotion ${shadowHistoryReady ? 'ready' : 'need'} ${formatCount(resolvedShadowSincePromotion)}/${formatCount(minShadowSincePromotion)} since ${sinceLabel}`);
         }
         else {
-            parts.push('promo off');
+            parts.push('since-promotion off');
         }
-        parts.push(`${formatCount(resolvedShadowTradeCount)} total`);
+        parts.push(`${formatCount(resolvedShadowTradeCount)} total all-time`);
         return parts.join(' | ');
     }, [
         appliedPromotionAt,
@@ -6003,6 +6264,21 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             color: promotionValueColor
         },
         {
+            label: 'Train scope',
+            value: modelTrainingScopeLabel,
+            color: modelTrainingScopeColor
+        },
+        {
+            label: 'Prov trust',
+            value: modelTrainingTrustLabel,
+            color: modelTrainingTrustColor
+        },
+        {
+            label: 'Train since',
+            value: modelTrainingSinceLabel,
+            color: modelTrainingSinceColor
+        },
+        {
             label: 'Promote delta',
             value: promotionDeltaValue,
             color: promotionDeltaColor
@@ -6012,11 +6288,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             value: appliedPromotionValue,
             color: appliedPromotionValueColor
         },
-        {
-            label: 'Shadow gate',
-            value: shadowValidationValue,
-            color: shadowValidationColor
-        },
+            {
+                label: 'All-time shadow gate',
+                value: shadowValidationValue,
+                color: shadowValidationColor
+            },
         { label: 'Trained', value: latest ? formatShortDateTime(latest.trained_at) : '-' },
         { label: 'Model age', value: latest ? secondsAgo(latest.trained_at) : '-' },
         { label: 'Samples', value: formatCount(latest?.n_samples) },
@@ -6040,6 +6316,12 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         fallbackLabel,
         featureCount,
         latest,
+        modelTrainingScopeColor,
+        modelTrainingScopeLabel,
+        modelTrainingSinceColor,
+        modelTrainingSinceLabel,
+        modelTrainingTrustColor,
+        modelTrainingTrustLabel,
         promotionDeltaColor,
         promotionDeltaValue,
         promotionValue,
@@ -6063,6 +6345,9 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
             trackerHealthStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 }))),
+            React.createElement(ModelsSpacer, null),
+            React.createElement(ModelsSubsectionTitle, { title: "Shadow Snapshot", width: modelsColumnWidths[0] }),
+            shadowSnapshotPerformanceRows.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Replay Lab", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
             replayLabStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 })))),

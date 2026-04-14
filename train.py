@@ -17,6 +17,8 @@ from economic_model import (
     transform_return_target,
 )
 from features import FEATURE_COLS, LABEL_COL, OUTCOME_COL, RETURN_COL, SAMPLE_WEIGHT_COL
+from segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
+from shadow_evidence import read_shadow_evidence_epoch
 from trade_contract import (
     DATA_CONTRACT_VERSION,
     MODEL_LABEL_MODE,
@@ -34,6 +36,8 @@ MIN_FINAL_CALIBRATION_SAMPLES = 15
 MIN_SEARCH_CALIBRATION_SAMPLES = 12
 MIN_SEARCH_EVAL_SAMPLES = 12
 MIN_SEARCH_TRAIN_SAMPLES = 60
+_ROUTED_TRAINING_SEGMENT_IDS: tuple[str, ...] = (*SEGMENT_IDS, SEGMENT_FALLBACK)
+_ROUTED_TRAINING_SEGMENT_SQL = ",".join("?" for _ in _ROUTED_TRAINING_SEGMENT_IDS)
 
 
 @dataclass(frozen=True)
@@ -56,18 +60,104 @@ def min_samples_required() -> int:
     return retrain_min_samples()
 
 
-def load_training_data():
+def _latest_applied_replay_promotion_at() -> int:
+    conn = get_conn()
+    try:
+        try:
+            row = conn.execute(
+                """
+                SELECT applied_at
+                FROM replay_promotions
+                WHERE status='applied'
+                  AND applied_at > 0
+                ORDER BY applied_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        except Exception as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return max(int(row["applied_at"] or 0), 0) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def _standalone_training_scope() -> tuple[int, bool]:
+    epoch_state = read_shadow_evidence_epoch()
+    epoch_started_at = max(int(epoch_state.get("shadow_evidence_epoch_started_at") or 0), 0)
+    if epoch_started_at <= 0:
+        return 0, False
+    return max(epoch_started_at, _latest_applied_replay_promotion_at()), True
+
+
+def _training_provenance_payload(
+    *,
+    since_ts: int | None,
+    routed_only: bool,
+) -> dict[str, Any]:
+    effective_since_ts = max(int(since_ts or 0), 0)
+    routed_only = bool(routed_only)
+    if effective_since_ts > 0 and routed_only:
+        scope = "current_evidence_window"
+        trusted = True
+        block_reason = ""
+    elif effective_since_ts > 0:
+        scope = "since_ts"
+        trusted = False
+        block_reason = "artifact training scope included non-routed shadow history"
+    elif routed_only:
+        scope = "routed_all_history"
+        trusted = False
+        block_reason = "artifact was trained on routed-only rows without an active evidence epoch"
+    else:
+        scope = "all_history"
+        trusted = False
+        block_reason = "artifact was not trained on post-epoch routed shadow history"
+    return {
+        "training_scope": scope,
+        "training_since_ts": effective_since_ts,
+        "training_routed_only": routed_only,
+        "training_provenance_trusted": trusted,
+        "training_provenance_block_reason": block_reason,
+    }
+
+
+def _with_training_provenance(metrics: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(metrics)
+    payload.update(provenance)
+    return payload
+
+
+def load_training_data(
+    *,
+    since_ts: int | None = None,
+    routed_only: bool = False,
+):
     import numpy as np
     import pandas as pd
 
     conn = get_conn()
+    label_ts_expr = "COALESCE(label_applied_at, resolved_at, placed_at)"
+    where_clauses = [f"({RESOLVED_TRAINING_SAMPLE_SQL})"]
+    params: list[object] = []
+    effective_since_ts = max(int(since_ts or 0), 0)
+    if effective_since_ts > 0:
+        where_clauses.append(f"{label_ts_expr} >= ?")
+        params.append(effective_since_ts)
+    if routed_only:
+        where_clauses.append(
+            f"COALESCE(NULLIF(TRIM(segment_id), ''), '') IN ({_ROUTED_TRAINING_SEGMENT_SQL})"
+        )
+        params.extend(_ROUTED_TRAINING_SEGMENT_IDS)
+
     df = pd.read_sql_query(
         f"""
         SELECT
             id,
             trade_id,
             placed_at,
-            COALESCE(label_applied_at, resolved_at, placed_at) AS label_ts,
+            {label_ts_expr} AS label_ts,
             source_action,
             skipped,
             skip_reason,
@@ -80,10 +170,11 @@ def load_training_data():
             {TRAINING_OUTCOME_SQL} AS {OUTCOME_COL},
             {", ".join(FEATURE_COLS)}
         FROM trade_log
-        WHERE {RESOLVED_TRAINING_SAMPLE_SQL}
+        WHERE {" AND ".join(where_clauses)}
         ORDER BY label_ts ASC, placed_at ASC, id ASC
         """,
         conn,
+        params=params,
     )
     conn.close()
 
@@ -104,33 +195,61 @@ def load_training_data():
     return df
 
 
-def train(df=None) -> dict:
+def train(
+    df=None,
+    *,
+    training_since_ts: int | None = None,
+    training_routed_only: bool = False,
+) -> dict:
     import joblib
 
+    provenance = _training_provenance_payload(
+        since_ts=training_since_ts,
+        routed_only=training_routed_only,
+    )
     if df is None:
-        df = load_training_data()
+        since_ts, epoch_ready = _standalone_training_scope()
+        if not epoch_ready:
+            return _with_training_provenance({
+                "skipped": True,
+                "n_samples": 0,
+                "reason": (
+                    "current evidence window is not active yet; "
+                    "train.py must wait for fresh post-reset routed shadow history"
+                ),
+            }, provenance)
+        training_since_ts = since_ts
+        training_routed_only = True
+        provenance = _training_provenance_payload(
+            since_ts=training_since_ts,
+            routed_only=training_routed_only,
+        )
+        df = load_training_data(since_ts=since_ts, routed_only=True)
 
     min_samples = min_samples_required()
     if len(df) < min_samples:
         logger.info("Training skipped: %s samples (need %s)", len(df), min_samples)
-        return {"skipped": True, "n_samples": len(df)}
+        return _with_training_provenance({"skipped": True, "n_samples": len(df)}, provenance)
 
     feature_cols = _select_feature_cols(df)
     df = df.dropna(subset=feature_cols + [LABEL_COL, OUTCOME_COL, RETURN_COL, SAMPLE_WEIGHT_COL, "effective_price"])
     df = df[(df["effective_price"] > 0.01) & (df["effective_price"] < 0.99)].copy()
     if len(df) < min_samples:
         logger.info("Training skipped after filtering: %s samples (need %s)", len(df), min_samples)
-        return {"skipped": True, "n_samples": len(df), "feature_cols": feature_cols}
+        return _with_training_provenance(
+            {"skipped": True, "n_samples": len(df), "feature_cols": feature_cols},
+            provenance,
+        )
 
     plan = _build_training_plan(len(df))
     if plan is None:
         logger.warning("Training skipped: not enough chronological history for search plus holdout")
-        return {
+        return _with_training_provenance({
             "skipped": True,
             "n_samples": len(df),
             "feature_cols": feature_cols,
             "reason": "insufficient samples for holdout search",
-        }
+        }, provenance)
 
     final_train_df = df.iloc[: plan.final_train_end].copy()
     final_cal_df = df.iloc[plan.final_train_end : plan.final_cal_end].copy()
@@ -144,12 +263,12 @@ def train(df=None) -> dict:
 
     if not candidate_reports:
         logger.warning("Training skipped: candidate search produced no valid model")
-        return {
+        return _with_training_provenance({
             "skipped": True,
             "n_samples": len(df),
             "feature_cols": feature_cols,
             "reason": "candidate search produced no valid model",
-        }
+        }, provenance)
 
     best_candidate = max(candidate_reports, key=_candidate_rank_key)
     logger.info(
@@ -169,12 +288,12 @@ def train(df=None) -> dict:
     )
     if final_fit is None:
         logger.warning("Training skipped: final fit could not satisfy class diversity requirements")
-        return {
+        return _with_training_provenance({
             "skipped": True,
             "n_samples": len(df),
             "feature_cols": feature_cols,
             "reason": "insufficient class diversity",
-        }
+        }, provenance)
 
     calibrated_holdout_report = _evaluate_window(
         probability_calibrator=final_fit["probability_calibrator"],
@@ -185,12 +304,12 @@ def train(df=None) -> dict:
     )
     if calibrated_holdout_report is None:
         logger.warning("Training skipped: holdout evaluation could not satisfy class diversity requirements")
-        return {
+        return _with_training_provenance({
             "skipped": True,
             "n_samples": len(df),
             "feature_cols": feature_cols,
             "reason": "insufficient class diversity",
-        }
+        }, provenance)
 
     raw_holdout_report = _evaluate_window(
         probability_calibrator=None,
@@ -201,12 +320,12 @@ def train(df=None) -> dict:
     )
     if raw_holdout_report is None:
         logger.warning("Training skipped: raw holdout evaluation could not satisfy class diversity requirements")
-        return {
+        return _with_training_provenance({
             "skipped": True,
             "n_samples": len(df),
             "feature_cols": feature_cols,
             "reason": "insufficient class diversity",
-        }
+        }, provenance)
 
     (
         holdout_report,
@@ -259,6 +378,7 @@ def train(df=None) -> dict:
         "data_contract_version": DATA_CONTRACT_VERSION,
         "fill_aware_only": False,
         "label_mode": MODEL_LABEL_MODE,
+        **provenance,
         "candidate_count": len(candidate_reports),
         "candidate_name": best_candidate["name"],
         "search_log_loss": round(best_candidate["search_log_loss"], 4),
@@ -332,6 +452,7 @@ def train(df=None) -> dict:
         "label_mode": MODEL_LABEL_MODE,
         "target_transform": "signed_log1p_return",
         "sample_weight_mode": "executed_1.0_skipped_0.25_capped_total_ratio_1.0",
+        **provenance,
         "policy": {
             "edge_threshold": float(holdout_report["edge_threshold"]),
             "selected_trades": int(holdout_report["selected_trades"]),
@@ -351,8 +472,11 @@ def train(df=None) -> dict:
     conn.execute(
         """
         INSERT INTO model_history
-        (trained_at, n_samples, brier_score, log_loss, feature_cols, model_path, deployed)
-        VALUES (?,?,?,?,?,?,?)
+        (
+            trained_at, n_samples, brier_score, log_loss, feature_cols, model_path, deployed,
+            training_scope, training_since_ts, training_routed_only, training_provenance_trusted
+        )
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             trained_at,
@@ -362,6 +486,10 @@ def train(df=None) -> dict:
             json.dumps(feature_cols),
             path,
             1,
+            str(provenance["training_scope"]),
+            int(provenance["training_since_ts"]),
+            1 if provenance["training_routed_only"] else 0,
+            1 if provenance["training_provenance_trusted"] else 0,
         ),
     )
     conn.commit()

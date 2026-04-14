@@ -37,6 +37,14 @@ export interface SavePositionManualEditInput {
   status: PositionManualEditStatus
 }
 
+interface SavePositionManualEditResult {
+  ok?: boolean
+  message?: string
+}
+
 export async function savePositionManualEdit(input: SavePositionManualEditInput): Promise<void> {
-  await postApiJson('/api/positions/manual-edit', input)
+  const response = await postApiJson<SavePositionManualEditResult>('/api/positions/manual-edit', input)
+  if (response && response.ok === false) {
+    throw new Error(String(response.message || 'Manual position edit failed.'))
+  }
 }

@@ -249,6 +249,10 @@ ${EXECUTED_ENTRY_WHERE}
 AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
 `
 
+const CHAMPION_TRADE_LOG_WHERE = `
+LOWER(COALESCE(experiment_arm, 'champion')) = 'champion'
+`
+
 const UNCOPYABLE_TIMING_WHERE = `
 (
   market_veto LIKE 'expires in <%'
@@ -311,6 +315,7 @@ SELECT
     END
   ) AS observed_wins
 FROM trade_log
+WHERE ${CHAMPION_TRADE_LOG_WHERE}
 GROUP BY trader_address
 `
 
@@ -388,6 +393,7 @@ SELECT
   ROUND(SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN shadow_pnl_usd ELSE 0 END), 3) AS pnl
 FROM trade_log
 WHERE real_money=0
+  AND ${CHAMPION_TRADE_LOG_WHERE}
 GROUP BY trader_address
 HAVING SUM(CASE WHEN ${RESOLVED_EXECUTED_ENTRY_WHERE} THEN 1 ELSE 0 END) > 0
 `
@@ -399,6 +405,7 @@ SELECT
 FROM trade_log
 WHERE trader_address=?
   AND COALESCE(source_action, 'buy')='buy'
+  AND ${CHAMPION_TRADE_LOG_WHERE}
   AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
 ORDER BY resolved_ts ASC, id ASC
 `

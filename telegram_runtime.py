@@ -162,6 +162,8 @@ def render_leaderboards_message() -> str:
 
 def _build_command_reply(command: str) -> str | None:
     if command == "/balance":
+        # Keep the command name for compatibility, but make the reply explicit
+        # that this is a shadow/paper preview rather than a live wallet balance.
         return render_tracker_preview_message()
     if command == "/train":
         return _request_manual_retrain(source="telegram")

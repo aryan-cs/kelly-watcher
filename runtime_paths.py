@@ -18,6 +18,8 @@ class RuntimeLayout:
     manual_retrain_request_file: Path
     manual_trade_request_file: Path
     shadow_reset_request_file: Path
+    shadow_evidence_epoch_file: Path
+    db_recovery_request_file: Path
     telegram_state_file: Path
     background_log_path: Path
     model_artifact_path: Path
@@ -41,6 +43,8 @@ def runtime_layout(repo_root: Path | None = None) -> RuntimeLayout:
         manual_retrain_request_file=data_dir / "manual_retrain_request.json",
         manual_trade_request_file=data_dir / "manual_trade_request.json",
         shadow_reset_request_file=data_dir / "shadow_reset_request.json",
+        shadow_evidence_epoch_file=data_dir / "shadow_evidence_epoch.json",
+        db_recovery_request_file=data_dir / "db_recovery_request.json",
         telegram_state_file=data_dir / "telegram_state.json",
         background_log_path=log_dir / "shadow_runtime.out",
         model_artifact_path=save_dir / "model.joblib",
@@ -100,6 +104,8 @@ IDENTITY_CACHE_PATH = _LAYOUT.identity_cache_path
 MANUAL_RETRAIN_REQUEST_FILE = _LAYOUT.manual_retrain_request_file
 MANUAL_TRADE_REQUEST_FILE = _LAYOUT.manual_trade_request_file
 SHADOW_RESET_REQUEST_FILE = _LAYOUT.shadow_reset_request_file
+SHADOW_EVIDENCE_EPOCH_FILE = _LAYOUT.shadow_evidence_epoch_file
+DB_RECOVERY_REQUEST_FILE = _LAYOUT.db_recovery_request_file
 TELEGRAM_STATE_FILE = _LAYOUT.telegram_state_file
 BACKGROUND_LOG_PATH = _LAYOUT.background_log_path
 MODEL_ARTIFACT_PATH = _LAYOUT.model_artifact_path

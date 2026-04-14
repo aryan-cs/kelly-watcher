@@ -1,7 +1,7 @@
 import {postApiJson} from './api.js'
-import {readEnvValues, writeEditableConfigValue} from './configEditor.js'
+import {readEnvValues} from './configEditor.js'
 
-export type DangerActionId = 'live_trading' | 'restart_shadow'
+export type DangerActionId = 'live_trading' | 'restart_shadow' | 'recover_db'
 export type RestartShadowWalletMode = 'keep_active' | 'keep_all' | 'clear_all'
 
 export interface DangerActionDefinition {
@@ -34,7 +34,7 @@ export const dangerActions: DangerActionDefinition[] = [
   {
     id: 'live_trading',
     label: 'Live Trading',
-    description: 'Toggle USE_REAL_MONEY in config. This does not switch the running bot immediately. Restart the bot after changing it.',
+    description: 'Enable or disable live mode through the guarded backend endpoint. Live mode stays blocked until DB integrity, shadow-history, and segment-shadow readiness are satisfied.',
     value: (envValues) => (isLiveTradingEnabled(envValues) ? 'ON' : 'OFF')
   },
   {
@@ -42,6 +42,12 @@ export const dangerActions: DangerActionDefinition[] = [
     label: 'Restart Shadow',
     description: 'Do a full shadow account reset by deleting the entire save directory and all shadow history, logs, models, and runtime state. Config settings stay in place. Confirmation lets you keep active wallets, keep all wallets, or clear all wallets.',
     value: (envValues) => `${watchedWalletCount(envValues)} wlts`
+  },
+  {
+    id: 'recover_db',
+    label: 'Recover DB',
+    description: 'Restore the shadow SQLite database from the latest verified backup and restart shadow mode. A verified backup may be integrity-only, not evidence-ready. Use this only when the current ledger is corrupt or untrustworthy.',
+    value: () => 'backup'
   }
 ]
 
@@ -58,11 +64,7 @@ export function watchedWalletCount(envValues: Record<string, string> = readEnvVa
 
 export async function setLiveTradingEnabled(enabled: boolean): Promise<DangerActionResult> {
   try {
-    await writeEditableConfigValue('USE_REAL_MONEY', enabled ? 'true' : 'false')
-    return {
-      ok: true,
-      message: `Live Trading saved as ${enabled ? 'ON' : 'OFF'}. Restart the bot to apply it safely.`
-    }
+    return await postApiJson<DangerActionResult>('/api/live-mode', {enabled})
   } catch (error) {
     return {
       ok: false,
@@ -78,6 +80,17 @@ export async function restartShadowAccount(walletMode: RestartShadowWalletMode):
     return {
       ok: false,
       message: `Shadow restart failed: ${error instanceof Error ? error.message : 'unknown error'}`
+    }
+  }
+}
+
+export async function recoverShadowDatabase(): Promise<DangerActionResult> {
+  try {
+    return await postApiJson<DangerActionResult>('/api/shadow/recover-db', {})
+  } catch (error) {
+    return {
+      ok: false,
+      message: `DB recovery failed: ${error instanceof Error ? error.message : 'unknown error'}`
     }
   }
 }

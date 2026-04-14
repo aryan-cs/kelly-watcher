@@ -14,13 +14,15 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from config import use_real_money
-from db import DB_PATH, get_conn
+from db import DB_PATH, db_recovery_state, get_conn
 from env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, repo_env_path_for_profile
+from trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 from runtime_paths import (
     BOT_STATE_FILE,
     DATA_DIR,
     EVENT_FILE,
     IDENTITY_CACHE_PATH,
+    DB_RECOVERY_REQUEST_FILE,
     MANUAL_RETRAIN_REQUEST_FILE,
     MANUAL_TRADE_REQUEST_FILE,
     REPO_ROOT,
@@ -151,6 +153,7 @@ RESOLVED_SHADOW_ENTRY_WHERE = """
 real_money=0
 AND skipped=0
 AND COALESCE(source_action, 'buy')='buy'
+AND LOWER(COALESCE(experiment_arm, 'champion')) = 'champion'
 AND actual_entry_price IS NOT NULL
 AND actual_entry_shares IS NOT NULL
 AND actual_entry_size_usd IS NOT NULL
@@ -328,6 +331,16 @@ def _shadow_restart_pending_message(wallet_mode: str = "") -> str:
     return "Shadow restart requested. Waiting for backend to restart."
 
 
+def _db_recovery_pending_message(candidate_path: str = "") -> str:
+    candidate_name = Path(str(candidate_path or "").strip()).name
+    if candidate_name:
+        return (
+            f"Shadow DB recovery requested ({candidate_name}). "
+            "Waiting for backend to restart."
+        )
+    return "Shadow DB recovery requested. Waiting for backend to restart."
+
+
 def _manual_retrain_pending_message(payload: dict[str, Any]) -> str:
     source = str(payload.get("source") or "unknown").strip().lower() or "unknown"
     base = f"requested by {source}"
@@ -359,7 +372,20 @@ def _persist_shadow_restart_pending_state(request_payload: dict[str, Any]) -> No
     bot_state = _read_json_dict(BOT_STATE_FILE)
     bot_state.update(
         shadow_restart_pending=True,
+        shadow_restart_kind="shadow_reset",
         shadow_restart_message=_shadow_restart_pending_message(str(request_payload.get("wallet_mode") or "")),
+    )
+    _write_atomic_json(BOT_STATE_FILE, bot_state)
+
+
+def _persist_db_recovery_pending_state(request_payload: dict[str, Any]) -> None:
+    bot_state = _read_json_dict(BOT_STATE_FILE)
+    bot_state.update(
+        shadow_restart_pending=True,
+        shadow_restart_kind="db_recovery",
+        shadow_restart_message=_db_recovery_pending_message(
+            str(request_payload.get("candidate_path") or request_payload.get("candidatePath") or "")
+        ),
     )
     _write_atomic_json(BOT_STATE_FILE, bot_state)
 
@@ -368,6 +394,7 @@ def _persist_shadow_restart_cleared_state(bot_state: dict[str, Any]) -> None:
     updated_state = dict(bot_state)
     updated_state.update(
         shadow_restart_pending=False,
+        shadow_restart_kind="",
         shadow_restart_message="",
     )
     _write_atomic_json(BOT_STATE_FILE, updated_state)
@@ -402,6 +429,7 @@ def _bot_state_snapshot() -> dict[str, Any]:
         manual_retrain_requested_at=int(bot_state.get("manual_retrain_requested_at") or 0),
         manual_retrain_message=str(bot_state.get("manual_retrain_message") or ""),
         shadow_restart_pending=bool(bot_state.get("shadow_restart_pending")),
+        shadow_restart_kind=str(bot_state.get("shadow_restart_kind") or "").strip().lower(),
         shadow_restart_message=str(bot_state.get("shadow_restart_message") or ""),
         manual_trade_pending=bool(bot_state.get("manual_trade_pending")),
         manual_trade_requested_at=int(bot_state.get("manual_trade_requested_at") or 0),
@@ -421,11 +449,27 @@ def _bot_state_snapshot() -> dict[str, Any]:
             manual_retrain_message="",
         )
         _persist_manual_request_cleared_state(bot_state, retrain=True)
-    request_payload = _request_payload_if_fresh(SHADOW_RESET_REQUEST_FILE, 900)
-    if request_payload is not None:
+    shadow_reset_request = _request_payload_if_fresh(SHADOW_RESET_REQUEST_FILE, 900)
+    db_recovery_request = _request_payload_if_fresh(DB_RECOVERY_REQUEST_FILE, 900)
+    if db_recovery_request is not None:
         bot_state.update(
             shadow_restart_pending=True,
-            shadow_restart_message=_shadow_restart_pending_message(str(request_payload.get("wallet_mode") or "")),
+            shadow_restart_kind="db_recovery",
+            shadow_restart_message=_db_recovery_pending_message(
+                str(
+                    db_recovery_request.get("candidate_path")
+                    or db_recovery_request.get("candidatePath")
+                    or ""
+                )
+            ),
+        )
+    elif shadow_reset_request is not None:
+        bot_state.update(
+            shadow_restart_pending=True,
+            shadow_restart_kind="shadow_reset",
+            shadow_restart_message=_shadow_restart_pending_message(
+                str(shadow_reset_request.get("wallet_mode") or "")
+            ),
         )
     elif bool(bot_state.get("shadow_restart_pending")):
         started_at = int(bot_state.get("started_at") or 0)
@@ -439,6 +483,7 @@ def _bot_state_snapshot() -> dict[str, Any]:
         if shadow_restart_state_stale:
             bot_state.update(
                 shadow_restart_pending=False,
+                shadow_restart_kind="",
                 shadow_restart_message="",
             )
             _persist_shadow_restart_cleared_state(bot_state)
@@ -467,6 +512,46 @@ def _heartbeat_window_seconds(bot_state: dict[str, Any]) -> int:
     return int(max(poll_interval * 3, 30))
 
 
+def _startup_block_reason(bot_state: dict[str, Any]) -> str:
+    startup_blocked = bool(bot_state.get("startup_blocked"))
+    startup_detail = str(bot_state.get("startup_detail") or "").strip()
+    startup_failure_message = str(
+        bot_state.get("startup_failure_message")
+        or bot_state.get("startup_validation_message")
+        or ""
+    ).strip()
+    if not startup_blocked and "startup blocked" not in startup_detail.lower():
+        return ""
+    detail = str(
+        bot_state.get("startup_block_reason")
+        or startup_detail
+        or startup_failure_message
+        or ""
+    ).strip()
+    if detail:
+        return detail if detail.endswith((".", "!", "?")) else f"{detail}."
+    return "backend startup is blocked."
+
+
+def _blocked_shadow_mutation_response(
+    action_label: str,
+    bot_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    snapshot = dict(bot_state or _bot_state_snapshot())
+    if bool(snapshot.get("shadow_restart_pending")):
+        return {
+            "ok": False,
+            "message": f"{action_label} is unavailable while shadow restart is pending. Wait for the restart to finish first.",
+        }
+    startup_block = _startup_block_reason(snapshot)
+    if startup_block:
+        return {
+            "ok": False,
+            "message": f"{action_label} is unavailable because {startup_block}",
+        }
+    return None
+
+
 def _manual_retrain_response() -> dict[str, Any]:
     bot_state = _bot_state_snapshot()
     now = int(time.time())
@@ -485,10 +570,15 @@ def _manual_retrain_response() -> dict[str, Any]:
             "message": "Manual retrain is unavailable because the bot state looks stale. Restart or refresh the bot first.",
         }
 
-    if bool(bot_state.get("shadow_restart_pending")):
+    blocked_response = _blocked_shadow_mutation_response("Manual retrain", bot_state)
+    if blocked_response is not None:
+        return blocked_response
+
+    snapshot_block_reason = _manual_retrain_shadow_snapshot_block_reason(bot_state)
+    if snapshot_block_reason:
         return {
             "ok": False,
-            "message": "Manual retrain is unavailable while shadow restart is pending. Wait for the restart to finish first.",
+            "message": f"Manual retrain is unavailable because {snapshot_block_reason}",
         }
 
     if bool(bot_state.get("retrain_in_progress")):
@@ -518,6 +608,20 @@ def _manual_retrain_response() -> dict[str, Any]:
         "ok": True,
         "message": "Manual retrain requested. The running bot should pick it up within about a second.",
     }
+
+
+def _manual_retrain_shadow_snapshot_block_reason(bot_state: dict[str, Any]) -> str:
+    if not bool(bot_state.get("shadow_snapshot_state_known")):
+        return "the current shadow snapshot is still being evaluated."
+    if bool(bot_state.get("shadow_snapshot_ready")):
+        return ""
+    detail = str(bot_state.get("shadow_snapshot_block_reason") or "").strip()
+    if detail:
+        return detail if detail.endswith((".", "!", "?")) else f"{detail}."
+    status = str(bot_state.get("shadow_snapshot_status") or "").strip().lower()
+    if status in {"", "checking"}:
+        return "the current shadow snapshot is still being evaluated."
+    return "the current shadow snapshot is not trustworthy yet."
 
 
 def _normalize_manual_trade_action(raw_action: Any) -> str | None:
@@ -561,11 +665,9 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "message": "Manual trade actions are unavailable because the bot state looks stale. Restart or refresh the bot first.",
         }
-    if bool(bot_state.get("shadow_restart_pending")):
-        return {
-            "ok": False,
-            "message": "Manual trade actions are unavailable while shadow restart is pending. Wait for the restart to finish first.",
-        }
+    blocked_response = _blocked_shadow_mutation_response("Manual trade actions", bot_state)
+    if blocked_response is not None:
+        return blocked_response
     existing_request = _request_payload_if_fresh(MANUAL_TRADE_REQUEST_FILE, 900)
     if existing_request is not None and not _request_has_pickup_failure(existing_request):
         return {
@@ -696,6 +798,7 @@ def _protected_best_wallets(conn: sqlite3.Connection) -> set[str]:
           LOWER(trader_address) AS trader_address,
           ROUND(SUM(CASE WHEN {RESOLVED_SHADOW_ENTRY_WHERE} THEN COALESCE(shadow_pnl_usd, 0) ELSE 0 END), 3) AS pnl
         FROM trade_log
+        WHERE {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
         GROUP BY LOWER(trader_address)
         HAVING SUM(CASE WHEN {RESOLVED_SHADOW_ENTRY_WHERE} THEN 1 ELSE 0 END) > 0
         ORDER BY pnl DESC, trader_address ASC
@@ -912,6 +1015,138 @@ def _current_bot_mode() -> str:
     return str(_bot_state_snapshot().get("mode") or "").strip().lower()
 
 
+def _parse_bool_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError("enabled must be a boolean value")
+
+
+def _live_mode_enabled_from_payload(payload: dict[str, Any] | None = None) -> bool:
+    if not isinstance(payload, dict):
+        raise ValueError("live mode payload must be an object")
+    if "enabled" in payload:
+        return _parse_bool_like(payload.get("enabled"))
+    if "value" in payload:
+        return _parse_bool_like(payload.get("value"))
+    raise ValueError("enabled must be provided")
+
+
+def _live_mode_enable_block_reasons(bot_state: dict[str, Any] | None = None) -> list[str]:
+    snapshot = dict(bot_state or _bot_state_snapshot())
+    reasons: list[str] = []
+    started_at = int(snapshot.get("started_at") or 0)
+    last_activity_at = int(snapshot.get("last_activity_at") or 0)
+    now_ts = int(time.time())
+    if started_at <= 0 or last_activity_at <= 0:
+        reasons.append("the shadow bot has not published fresh readiness state yet")
+        return reasons
+    if (now_ts - last_activity_at) > _heartbeat_window_seconds(snapshot):
+        reasons.append("the bot state is stale; restart or refresh the shadow bot first")
+        return reasons
+    if bool(snapshot.get("shadow_restart_pending")):
+        reasons.append("the bot is restarting; wait for the shadow runtime to settle first")
+        return reasons
+    startup_block = _startup_block_reason(snapshot)
+    if startup_block:
+        detail = startup_block.rstrip(".!?").strip()
+        reasons.append(f"backend startup is blocked: {detail or 'unknown reason'}")
+        return reasons
+
+    db_integrity_known = bool(snapshot.get("db_integrity_known"))
+    db_integrity_ok = bool(snapshot.get("db_integrity_ok"))
+    db_integrity_message = str(snapshot.get("db_integrity_message") or "").strip()
+    if not db_integrity_known:
+        reasons.append("DB integrity readiness is unknown")
+    elif not db_integrity_ok:
+        detail = db_integrity_message.splitlines()[0].strip() if db_integrity_message else "unknown integrity failure"
+        reasons.append(f"SQLite integrity check failed: {detail}")
+
+    shadow_history_state_known = bool(snapshot.get("shadow_history_state_known"))
+    if not shadow_history_state_known:
+        reasons.append("shadow-history readiness is unknown")
+    else:
+        require_total_history = bool(snapshot.get("live_require_shadow_history_enabled"))
+        total_resolved = max(int(snapshot.get("resolved_shadow_trade_count") or 0), 0)
+        total_required = max(int(snapshot.get("live_min_shadow_resolved") or 0), 0)
+        if require_total_history and total_required > 0 and not bool(snapshot.get("live_shadow_history_total_ready")):
+            reasons.append(
+                f"shadow history in the current evidence window is below the live gate ({total_resolved}/{total_required} resolved)"
+            )
+        since_required = max(int(snapshot.get("live_min_shadow_resolved_since_last_promotion") or 0), 0)
+        resolved_since = max(int(snapshot.get("resolved_shadow_since_last_promotion") or 0), 0)
+        if since_required > 0 and not bool(snapshot.get("live_shadow_history_ready")):
+            baseline = str(snapshot.get("shadow_history_current_baseline_label") or "").strip()
+            if not baseline:
+                applied_at = int(snapshot.get("last_applied_replay_promotion_at") or 0)
+                baseline = f"last promotion at {applied_at}" if applied_at > 0 else "the initial policy"
+            reasons.append(
+                f"post-promotion shadow history in the current evidence window is below the live gate ({resolved_since}/{since_required} since {baseline})"
+            )
+
+    segment_state_known = bool(snapshot.get("shadow_segment_state_known"))
+    segment_status = str(snapshot.get("shadow_segment_status") or "").strip().lower()
+    segment_total = max(int(snapshot.get("shadow_segment_total") or 0), 0)
+    segment_ready_count = max(int(snapshot.get("shadow_segment_ready_count") or 0), 0)
+    segment_blocked_count = max(int(snapshot.get("shadow_segment_blocked_count") or 0), 0)
+    segment_block_reason = str(snapshot.get("shadow_segment_block_reason") or "").strip()
+    if not segment_state_known:
+        reasons.append("segment shadow readiness is unknown")
+    elif (
+        segment_status != "ready"
+        or segment_total <= 0
+        or segment_ready_count < segment_total
+        or segment_blocked_count > 0
+    ):
+        if segment_block_reason:
+            reasons.append(f"segment shadow readiness is blocked: {segment_block_reason}")
+        elif segment_total <= 0:
+            reasons.append("segment shadow readiness has no champion segment data yet")
+        else:
+            reasons.append(
+                "segment shadow readiness is not ready "
+                f"({segment_ready_count}/{segment_total} ready, {segment_blocked_count} blocked)"
+            )
+    return reasons
+
+
+def _set_live_mode_response(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    enabled = _live_mode_enabled_from_payload(payload)
+    bot_state = _bot_state_snapshot()
+    blocked = _blocked_shadow_mutation_response("Live mode changes", bot_state)
+    if blocked:
+        startup_block = _startup_block_reason(bot_state)
+        if enabled and startup_block:
+            return {
+                "ok": False,
+                "message": f"Live trading remains blocked: backend startup is blocked: {startup_block}",
+            }
+        return blocked
+    if not enabled:
+        _write_env_value("USE_REAL_MONEY", "false")
+        return {
+            "ok": True,
+            "message": "Live Trading saved as OFF. Restart the bot to apply it safely.",
+        }
+
+    reasons = _live_mode_enable_block_reasons()
+    if reasons:
+        return {
+            "ok": False,
+            "message": "Live trading remains blocked: " + " | ".join(reasons),
+        }
+
+    _write_env_value("USE_REAL_MONEY", "true")
+    return {
+        "ok": True,
+        "message": "Live Trading saved as ON. Restart the bot to apply it safely.",
+    }
+
+
 def _normalize_shadow_restart_wallet_mode(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in SHADOW_RESTART_WALLET_MODES:
@@ -942,6 +1177,110 @@ def _spawn_shadow_restart_process(wallet_mode: str) -> dict[str, Any]:
         _persist_shadow_restart_pending_state(request_payload)
     logger.info("Queued shadow reset request %s", request_payload)
     return {"ok": True, "message": "Shadow reset queued."}
+
+
+def _db_recovery_candidate_snapshot(bot_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _normalize_candidate(snapshot: dict[str, Any]) -> dict[str, Any]:
+        candidate_ready = bool(snapshot.get("db_recovery_candidate_ready"))
+        candidate_path = str(snapshot.get("db_recovery_candidate_path") or "").strip()
+        source_path = str(snapshot.get("db_recovery_candidate_source_path") or "").strip()
+        candidate_message = str(snapshot.get("db_recovery_candidate_message") or "").strip()
+        candidate_mode = str(snapshot.get("db_recovery_candidate_mode") or "").strip().lower()
+        class_reason = str(snapshot.get("db_recovery_candidate_class_reason") or "").strip()
+        evidence_ready = bool(snapshot.get("db_recovery_candidate_evidence_ready"))
+
+        if candidate_ready and candidate_path:
+            if candidate_mode != "evidence_ready":
+                candidate_mode = "integrity_only"
+                evidence_ready = False
+            else:
+                evidence_ready = True
+            if not class_reason:
+                class_reason = (
+                    "verified backup restores the ledger, but its shadow evidence is not ready for readiness claims"
+                    if candidate_mode == "integrity_only"
+                    else "verified backup is recoverable and its shadow evaluation passes the current evidence gate"
+                )
+        else:
+            candidate_ready = False
+            candidate_mode = "unavailable"
+            evidence_ready = False
+            if not class_reason:
+                class_reason = candidate_message or "no verified backup candidate is ready"
+
+        return {
+            "db_recovery_candidate_ready": candidate_ready,
+            "db_recovery_candidate_path": candidate_path,
+            "db_recovery_candidate_source_path": source_path or str(DB_PATH),
+            "db_recovery_candidate_message": candidate_message,
+            "db_recovery_candidate_mode": candidate_mode,
+            "db_recovery_candidate_evidence_ready": evidence_ready,
+            "db_recovery_candidate_class_reason": class_reason,
+        }
+
+    snapshot = dict(bot_state or _bot_state_snapshot())
+    state_known = bool(snapshot.get("db_recovery_state_known"))
+    candidate_ready = bool(snapshot.get("db_recovery_candidate_ready"))
+    candidate_path = str(snapshot.get("db_recovery_candidate_path") or "").strip()
+    candidate_message = str(snapshot.get("db_recovery_candidate_message") or "").strip()
+    candidate_mode = str(snapshot.get("db_recovery_candidate_mode") or "").strip()
+    class_reason = str(snapshot.get("db_recovery_candidate_class_reason") or "").strip()
+    if state_known or candidate_ready or candidate_path or candidate_message or candidate_mode or class_reason:
+        return _normalize_candidate(snapshot)
+    fallback = db_recovery_state()
+    return _normalize_candidate(fallback)
+
+
+def _db_recovery_request_message(candidate_state: dict[str, Any] | None = None) -> str:
+    snapshot = dict(candidate_state or {})
+    base = "DB recovery requested. The bot will restore the latest verified backup and restart shadow mode."
+    candidate_mode = str(snapshot.get("db_recovery_candidate_mode") or "").strip().lower()
+    class_reason = str(snapshot.get("db_recovery_candidate_class_reason") or "").strip()
+    if candidate_mode == "evidence_ready":
+        detail = class_reason or "verified backup is recoverable and its shadow evaluation passes the current evidence gate"
+        return f"{base} Candidate class: evidence-ready. {detail}"
+    if candidate_mode == "integrity_only":
+        detail = class_reason or (
+            "verified backup restores the ledger, but its shadow evidence is not ready for readiness claims"
+        )
+        return f"{base} Candidate class: integrity-only. {detail}"
+    return base
+
+
+def _canonical_db_recovery_request_path(path_text: str) -> str:
+    raw_path = str(path_text or "").strip()
+    if not raw_path:
+        return ""
+    try:
+        return str(Path(raw_path).expanduser().resolve(strict=False))
+    except Exception:
+        return str(Path(raw_path).expanduser().absolute())
+
+
+def _spawn_db_recovery_process(
+    *,
+    candidate_path: str,
+    source_path: str,
+    request_id: str = "",
+    requested_at: int = 0,
+    source: str = "dashboard",
+) -> dict[str, Any]:
+    request_payload = {
+        "candidate_path": str(candidate_path or "").strip(),
+        "source_path": str(source_path or "").strip() or str(DB_PATH),
+        "requested_at": int(requested_at or time.time()),
+        "request_id": str(request_id or f"db-recovery-{int(time.time() * 1000)}-{os.getpid()}").strip(),
+        "source": str(source or "dashboard").strip() or "dashboard",
+    }
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with _request_lock:
+        DB_RECOVERY_REQUEST_FILE.write_text(
+            json.dumps(request_payload, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        _persist_db_recovery_pending_state(request_payload)
+    logger.info("Queued DB recovery request %s", request_payload)
+    return {"ok": True, "message": "DB recovery queued."}
 
 
 def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
@@ -978,6 +1317,144 @@ def _launch_shadow_restart(wallet_mode: str) -> dict[str, Any]:
     return {
         "ok": True,
         "message": "Shadow reset requested. The bot will wipe state and restart itself.",
+    }
+
+
+def _db_recovery_preflight(bot_state: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    use_runtime_snapshot = bot_state is None
+    snapshot = dict(bot_state or _bot_state_snapshot())
+    current_mode = str(snapshot.get("mode") or "").strip().lower()
+    if _live_trading_enabled_in_config() or current_mode == "live" or use_real_money():
+        return (
+            {
+                "ok": False,
+                "message": "DB recovery is blocked while live trading is enabled or the running bot is live.",
+            },
+            {},
+        )
+    if bool(snapshot.get("shadow_restart_pending")) or (
+        use_runtime_snapshot and _request_payload_if_fresh(DB_RECOVERY_REQUEST_FILE, 900) is not None
+    ):
+        return (
+            {
+                "ok": True,
+                "message": "DB recovery already requested. Waiting for the bot to restart.",
+            },
+            {},
+        )
+    candidate_state = _db_recovery_candidate_snapshot(snapshot)
+    candidate_ready = bool(candidate_state.get("db_recovery_candidate_ready"))
+    candidate_path = str(candidate_state.get("db_recovery_candidate_path") or "").strip()
+    candidate_message = str(candidate_state.get("db_recovery_candidate_message") or "").strip()
+    if not candidate_ready or not candidate_path:
+        message = "DB recovery is unavailable because no verified backup candidate is ready."
+        if candidate_message:
+            message = f"{message} {candidate_message}"
+        return ({"ok": False, "message": message}, {})
+    return (None, candidate_state)
+
+
+def _drop_wallet_response(wallet_address: str, reason: str = "manual dashboard drop") -> dict[str, Any]:
+    blocked_response = _blocked_shadow_mutation_response("Wallet drop")
+    if blocked_response is not None:
+        return blocked_response
+    return _drop_wallet(wallet_address, reason)
+
+
+def _reactivate_wallet_response(wallet_address: str) -> dict[str, Any]:
+    blocked_response = _blocked_shadow_mutation_response("Wallet reactivation")
+    if blocked_response is not None:
+        return blocked_response
+    return _reactivate_wallet(wallet_address)
+
+
+def _save_position_manual_edit_response(payload: dict[str, Any]) -> dict[str, Any]:
+    blocked_response = _blocked_shadow_mutation_response("Manual position edits")
+    if blocked_response is not None:
+        return blocked_response
+    return _save_position_manual_edit(payload)
+
+
+def _config_value_response(key: str, value: str) -> tuple[int, dict[str, Any]]:
+    normalized_key = str(key or "").strip()
+    normalized_value = str(value or "").strip()
+    if normalized_key == "USE_REAL_MONEY":
+        result = _set_live_mode_response({"enabled": normalized_value})
+        return (200 if result.get("ok") else 409, result)
+
+    blocked_response = _blocked_shadow_mutation_response("Config editing")
+    if blocked_response is not None:
+        return (409, blocked_response)
+
+    _write_env_value(normalized_key, normalized_value)
+    return (200, _config_snapshot())
+
+
+def _recover_db_response(_body: dict[str, Any] | None = None) -> dict[str, Any]:
+    result, candidate_state = _db_recovery_preflight()
+    if result is not None:
+        return result
+    return {
+        "ok": True,
+        "message": _db_recovery_request_message(candidate_state),
+    }
+
+
+def _launch_db_recovery(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    bot_state = _bot_state_snapshot()
+    result, candidate_state = _db_recovery_preflight(bot_state)
+    if result is not None:
+        return result
+
+    candidate_path = str(candidate_state.get("db_recovery_candidate_path") or "").strip()
+    source_path = str(candidate_state.get("db_recovery_candidate_source_path") or "").strip() or str(DB_PATH)
+    direct_candidate_path = str(
+        (payload or {}).get("candidate_path")
+        or (payload or {}).get("backup_path")
+        or (payload or {}).get("db_recovery_candidate_path")
+        or ""
+    ).strip()
+    if direct_candidate_path:
+        direct_source_path = str(
+            (payload or {}).get("candidate_source_path")
+            or (payload or {}).get("source_path")
+            or (payload or {}).get("db_recovery_candidate_source_path")
+            or DB_PATH
+        ).strip()
+        if _canonical_db_recovery_request_path(direct_candidate_path) != _canonical_db_recovery_request_path(
+            candidate_path
+        ):
+            return {
+                "ok": False,
+                "message": (
+                    "DB recovery is blocked because direct candidate_path overrides must match "
+                    "the current verified backup candidate."
+                ),
+            }
+        if _canonical_db_recovery_request_path(direct_source_path) != _canonical_db_recovery_request_path(
+            source_path
+        ):
+            return {
+                "ok": False,
+                "message": (
+                    "DB recovery is blocked because direct source_path overrides must match "
+                    "the current verified recovery source."
+                ),
+            }
+
+    result = _spawn_db_recovery_process(
+        candidate_path=candidate_path,
+        source_path=source_path,
+        request_id=str((payload or {}).get("request_id") or "").strip(),
+        requested_at=int((payload or {}).get("requested_at") or 0),
+        source=str((payload or {}).get("source") or "dashboard").strip() or "dashboard",
+    )
+    if not result.get("ok"):
+        logger.error("DB recovery queue failed: %s", result.get("message"))
+        return result
+    return {
+        "ok": True,
+        "message": _db_recovery_request_message(candidate_state),
     }
 
 
@@ -1096,8 +1573,13 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
             if path == "/api/config/value":
                 key = str(body.get("key") or "").strip()
                 value = str(body.get("value") or "").strip()
-                _write_env_value(key, value)
-                self._send_json(200, _config_snapshot())
+                status_code, payload = _config_value_response(key, value)
+                self._send_json(status_code, payload)
+                return
+
+            if path == "/api/live-mode":
+                result = _set_live_mode_response(body)
+                self._send_json(200 if result.get("ok") else 409, result)
                 return
 
             if path == "/api/manual-retrain":
@@ -1111,16 +1593,16 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
             if path == "/api/wallets/drop":
                 wallet_address = str(body.get("walletAddress") or body.get("wallet_address") or "").strip()
                 reason = str(body.get("reason") or "manual dashboard drop").strip()
-                self._send_json(200, _drop_wallet(wallet_address, reason))
+                self._send_json(200, _drop_wallet_response(wallet_address, reason))
                 return
 
             if path == "/api/wallets/reactivate":
                 wallet_address = str(body.get("walletAddress") or body.get("wallet_address") or "").strip()
-                self._send_json(200, _reactivate_wallet(wallet_address))
+                self._send_json(200, _reactivate_wallet_response(wallet_address))
                 return
 
             if path == "/api/positions/manual-edit":
-                self._send_json(200, _save_position_manual_edit(body))
+                self._send_json(200, _save_position_manual_edit_response(body))
                 return
 
             if path == "/api/shadow/restart":
@@ -1131,6 +1613,11 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
                 else:
                     wallet_mode = _normalize_shadow_restart_wallet_mode(raw_wallet_mode)
                 result = _launch_shadow_restart(wallet_mode)
+                self._send_json(202 if result.get("ok") else 500, result)
+                return
+
+            if path == "/api/shadow/recover-db":
+                result = _launch_db_recovery()
                 self._send_json(202 if result.get("ok") else 500, result)
                 return
         except ValueError as exc:

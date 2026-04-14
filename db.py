@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from runtime_paths import TRADING_DB_PATH
 
 DB_PATH = TRADING_DB_PATH
 REPAIR_BATCH_SIZE = 250
+VERIFIED_BACKUP_RETENTION = 5
+RECOVERY_QUARANTINE_RETENTION = 5
 logger = logging.getLogger(__name__)
 _SHARED_HOLDOUT_MESSAGE_RE = re.compile(
     r"shared holdout ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+).*?"
@@ -46,13 +49,429 @@ def _startup_heavy_maintenance_enabled(path: Path) -> bool:
     return not resolved.startswith("\\\\")
 
 
-def get_conn() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+def _connect_sqlite(path: Path, *, apply_runtime_pragmas: bool) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(DB_PATH)}")
-    conn.execute("PRAGMA foreign_keys=ON")
+    if apply_runtime_pragmas:
+        conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(path)}")
+        conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def get_conn() -> sqlite3.Connection:
+    return _connect_sqlite(DB_PATH, apply_runtime_pragmas=True)
+
+
+def get_conn_for_path(path: Path, *, apply_runtime_pragmas: bool = False) -> sqlite3.Connection:
+    return _connect_sqlite(Path(path), apply_runtime_pragmas=apply_runtime_pragmas)
+
+
+def current_promotion_epoch_id(conn: sqlite3.Connection | None = None) -> int:
+    owns_conn = conn is None
+    if owns_conn:
+        conn = get_conn()
+    assert conn is not None
+    try:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM replay_promotions
+            WHERE LOWER(COALESCE(status, ''))='applied'
+            ORDER BY applied_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return int((row or {})["id"] or 0) if row is not None else 0
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+def database_integrity_state(path: Path | None = None) -> dict[str, object]:
+    target = Path(path) if path is not None else DB_PATH
+    if not target.exists():
+        return {
+            "db_integrity_known": False,
+            "db_integrity_ok": True,
+            "db_integrity_message": "",
+        }
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect_sqlite(target, apply_runtime_pragmas=False)
+        row = conn.execute("PRAGMA quick_check").fetchone()
+        message = str(row[0] or "").strip() if row is not None else "unknown"
+        ok = message.lower() == "ok"
+        return {
+            "db_integrity_known": True,
+            "db_integrity_ok": ok,
+            "db_integrity_message": "" if ok else message,
+        }
+    except sqlite3.DatabaseError as exc:
+        return {
+            "db_integrity_known": True,
+            "db_integrity_ok": False,
+            "db_integrity_message": str(exc),
+        }
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _backup_root(path: Path) -> Path:
+    return path.parent / "db_backups"
+
+
+def _primary_backup_path(path: Path) -> Path:
+    return Path(f"{path}.bak")
+
+
+def _timestamped_backup_path(path: Path) -> Path:
+    backup_dir = _backup_root(path)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    candidate = backup_dir / f"{path.stem}.{timestamp}{path.suffix}"
+    if not candidate.exists():
+        return candidate
+    for attempt in range(1, 1000):
+        fallback = backup_dir / f"{path.stem}.{timestamp}_{attempt}{path.suffix}"
+        if not fallback.exists():
+            return fallback
+    return backup_dir / f"{path.stem}.{timestamp}_{time.time_ns()}{path.suffix}"
+
+
+def _verified_backup_history_paths(path: Path) -> list[Path]:
+    backup_dir = _backup_root(path)
+    if not backup_dir.exists():
+        return []
+    pattern = f"{path.stem}.*{path.suffix}"
+    return sorted(
+        (candidate for candidate in backup_dir.glob(pattern) if candidate.is_file()),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def _prune_verified_backup_history(path: Path, *, keep: int = VERIFIED_BACKUP_RETENTION) -> None:
+    for candidate in _verified_backup_history_paths(path)[max(int(keep or 0), 0):]:
+        try:
+            candidate.unlink()
+        except OSError:
+            logger.warning("Failed to prune old verified DB backup %s", candidate, exc_info=True)
+
+
+def create_verified_backup(path: Path | None = None) -> dict[str, object]:
+    source = Path(path) if path is not None else DB_PATH
+    if not source.exists():
+        return {
+            "ok": False,
+            "backup_path": "",
+            "message": f"database not found at {source}",
+            "created_at": 0,
+        }
+
+    integrity = database_integrity_state(source)
+    if integrity.get("db_integrity_known") and not integrity.get("db_integrity_ok"):
+        return {
+            "ok": False,
+            "backup_path": "",
+            "message": "database integrity check failed; skipping verified backup",
+            "created_at": 0,
+        }
+
+    primary_backup = _primary_backup_path(source)
+    tmp_backup = primary_backup.with_suffix(primary_backup.suffix + ".tmp")
+    if tmp_backup.exists():
+        try:
+            tmp_backup.unlink()
+        except OSError:
+            pass
+
+    src_conn: sqlite3.Connection | None = None
+    dst_conn: sqlite3.Connection | None = None
+    try:
+        src_conn = _connect_sqlite(source, apply_runtime_pragmas=False)
+        dst_conn = _connect_sqlite(tmp_backup, apply_runtime_pragmas=False)
+        src_conn.backup(dst_conn)
+    finally:
+        if dst_conn is not None:
+            dst_conn.close()
+        if src_conn is not None:
+            src_conn.close()
+
+    backup_integrity = database_integrity_state(tmp_backup)
+    if backup_integrity.get("db_integrity_known") and not backup_integrity.get("db_integrity_ok"):
+        try:
+            tmp_backup.unlink()
+        except OSError:
+            pass
+        return {
+            "ok": False,
+            "backup_path": "",
+            "message": "verified backup integrity check failed",
+            "created_at": 0,
+        }
+
+    if primary_backup.exists():
+        previous_integrity = database_integrity_state(primary_backup)
+        if previous_integrity.get("db_integrity_known") and previous_integrity.get("db_integrity_ok"):
+            archived_backup = _timestamped_backup_path(source)
+            primary_backup.replace(archived_backup)
+        else:
+            try:
+                primary_backup.unlink()
+            except OSError:
+                logger.warning("Failed to remove stale DB backup %s", primary_backup, exc_info=True)
+
+    tmp_backup.replace(primary_backup)
+    _prune_verified_backup_history(source)
+    return {
+        "ok": True,
+        "backup_path": str(primary_backup),
+        "message": "verified backup created",
+        "created_at": int(primary_backup.stat().st_mtime),
+    }
+
+
+def _backup_candidates(path: Path) -> list[Path]:
+    candidates: list[Path] = []
+    primary_backup = _primary_backup_path(path)
+    if primary_backup.exists():
+        candidates.append(primary_backup)
+    candidates.extend(
+        candidate
+        for candidate in _verified_backup_history_paths(path)
+        if candidate not in candidates
+    )
+    return candidates
+
+
+def db_recovery_state(path: Path | None = None) -> dict[str, object]:
+    target = Path(path) if path is not None else DB_PATH
+    candidates = _backup_candidates(target)
+    if not candidates:
+        return {
+            "db_recovery_state_known": False,
+            "db_recovery_candidate_ready": False,
+            "db_recovery_candidate_path": "",
+            "db_recovery_candidate_source_path": "",
+            "db_recovery_candidate_message": "",
+            "db_recovery_latest_verified_backup_path": "",
+            "db_recovery_latest_verified_backup_at": 0,
+        }
+
+    latest_valid_backup: Path | None = None
+    latest_valid_backup_at = 0
+    failure_message = ""
+    for candidate in candidates:
+        integrity = database_integrity_state(candidate)
+        if integrity.get("db_integrity_known") and integrity.get("db_integrity_ok"):
+            latest_valid_backup = candidate
+            latest_valid_backup_at = int(candidate.stat().st_mtime)
+            break
+        if not failure_message:
+            detail = str(integrity.get("db_integrity_message") or "").strip()
+            failure_message = "backup integrity check failed"
+            if detail:
+                failure_message += f": {detail.splitlines()[0].strip()}"
+
+    return {
+        "db_recovery_state_known": True,
+        "db_recovery_candidate_ready": latest_valid_backup is not None,
+        "db_recovery_candidate_path": str(latest_valid_backup) if latest_valid_backup is not None else "",
+        "db_recovery_candidate_source_path": str(target) if latest_valid_backup is not None else "",
+        "db_recovery_candidate_message": "" if latest_valid_backup is not None else failure_message,
+        "db_recovery_latest_verified_backup_path": str(latest_valid_backup) if latest_valid_backup is not None else "",
+        "db_recovery_latest_verified_backup_at": latest_valid_backup_at,
+    }
+
+
+def _recovery_quarantine_root(path: Path) -> Path:
+    return path.parent / "db_recovery_quarantine"
+
+
+def _timestamped_recovery_quarantine_path(path: Path) -> Path:
+    quarantine_dir = _recovery_quarantine_root(path)
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    candidate = quarantine_dir / f"{path.stem}.pre_recovery.{timestamp}{path.suffix}"
+    if not candidate.exists():
+        return candidate
+    for attempt in range(1, 1000):
+        fallback = quarantine_dir / f"{path.stem}.pre_recovery.{timestamp}_{attempt}{path.suffix}"
+        if not fallback.exists():
+            return fallback
+    return quarantine_dir / f"{path.stem}.pre_recovery.{timestamp}_{time.time_ns()}{path.suffix}"
+
+
+def _recovery_quarantine_db_paths(path: Path) -> list[Path]:
+    quarantine_dir = _recovery_quarantine_root(path)
+    if not quarantine_dir.exists():
+        return []
+    pattern = f"{path.stem}.pre_recovery.*{path.suffix}"
+    return sorted(
+        (candidate for candidate in quarantine_dir.glob(pattern) if candidate.is_file()),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def _prune_recovery_quarantine(path: Path, *, keep: int = RECOVERY_QUARANTINE_RETENTION) -> None:
+    for candidate in _recovery_quarantine_db_paths(path)[max(int(keep or 0), 0):]:
+        for cleanup_path in (
+            candidate,
+            Path(f"{candidate}-wal"),
+            Path(f"{candidate}-shm"),
+        ):
+            try:
+                cleanup_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning(
+                    "Failed to prune old DB recovery quarantine file %s",
+                    cleanup_path,
+                    exc_info=True,
+                )
+
+
+def recover_db_from_verified_backup(
+    path: Path | None = None,
+    *,
+    backup_path: Path | None = None,
+) -> dict[str, object]:
+    target = Path(path) if path is not None else DB_PATH
+    candidate = Path(backup_path) if backup_path is not None else None
+    if candidate is None:
+        recovery = db_recovery_state(target)
+        candidate_text = str(recovery.get("db_recovery_candidate_path") or "").strip()
+        candidate = Path(candidate_text) if candidate_text else None
+
+    if candidate is None or not candidate.exists():
+        return {
+            "ok": False,
+            "backup_path": "",
+            "restored_path": str(target),
+            "quarantined_path": "",
+            "message": "verified backup candidate not found",
+            "restored_at": 0,
+        }
+
+    candidate_integrity = database_integrity_state(candidate)
+    if candidate_integrity.get("db_integrity_known") and not candidate_integrity.get("db_integrity_ok"):
+        detail = str(candidate_integrity.get("db_integrity_message") or "").strip()
+        message = "verified backup candidate failed integrity check"
+        if detail:
+            message += f": {detail.splitlines()[0].strip()}"
+        return {
+            "ok": False,
+            "backup_path": str(candidate),
+            "restored_path": str(target),
+            "quarantined_path": "",
+            "message": message,
+            "restored_at": 0,
+        }
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_restore = target.with_name(f"{target.name}.{os.getpid()}.recovering")
+    for stale_path in (
+        temp_restore,
+        Path(f"{temp_restore}-wal"),
+        Path(f"{temp_restore}-shm"),
+    ):
+        try:
+            stale_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    src_conn: sqlite3.Connection | None = None
+    dst_conn: sqlite3.Connection | None = None
+    try:
+        src_conn = _connect_sqlite(candidate, apply_runtime_pragmas=False)
+        dst_conn = _connect_sqlite(temp_restore, apply_runtime_pragmas=False)
+        src_conn.backup(dst_conn)
+    finally:
+        if dst_conn is not None:
+            dst_conn.close()
+        if src_conn is not None:
+            src_conn.close()
+
+    restore_integrity = database_integrity_state(temp_restore)
+    if restore_integrity.get("db_integrity_known") and not restore_integrity.get("db_integrity_ok"):
+        detail = str(restore_integrity.get("db_integrity_message") or "").strip()
+        try:
+            temp_restore.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Failed to remove invalid DB recovery temp file %s", temp_restore, exc_info=True)
+        message = "temporary DB recovery copy failed integrity check"
+        if detail:
+            message += f": {detail.splitlines()[0].strip()}"
+        return {
+            "ok": False,
+            "backup_path": str(candidate),
+            "restored_path": str(target),
+            "quarantined_path": "",
+            "message": message,
+            "restored_at": 0,
+        }
+
+    quarantined_path = ""
+    quarantined_target: Path | None = None
+    quarantined_sidecars: list[tuple[Path, Path]] = []
+    sidecar_paths = (
+        Path(f"{target}-wal"),
+        Path(f"{target}-shm"),
+    )
+    try:
+        if target.exists():
+            quarantined_target = _timestamped_recovery_quarantine_path(target)
+            target.replace(quarantined_target)
+            quarantined_path = str(quarantined_target)
+            for sidecar_path in sidecar_paths:
+                if not sidecar_path.exists():
+                    continue
+                archived_sidecar = Path(f"{quarantined_target}{sidecar_path.name[len(target.name):]}")
+                sidecar_path.replace(archived_sidecar)
+                quarantined_sidecars.append((archived_sidecar, sidecar_path))
+        temp_restore.replace(target)
+    except Exception:
+        if not target.exists() and quarantined_target is not None and quarantined_target.exists():
+            try:
+                quarantined_target.replace(target)
+            except OSError:
+                logger.warning("Failed to roll back quarantined DB %s", quarantined_target, exc_info=True)
+            for archived_sidecar, original_sidecar in reversed(quarantined_sidecars):
+                if not archived_sidecar.exists() or original_sidecar.exists():
+                    continue
+                try:
+                    archived_sidecar.replace(original_sidecar)
+                except OSError:
+                    logger.warning(
+                        "Failed to roll back quarantined DB sidecar %s",
+                        archived_sidecar,
+                        exc_info=True,
+                    )
+        raise
+    finally:
+        try:
+            temp_restore.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Failed to remove DB recovery temp file %s", temp_restore, exc_info=True)
+
+    _prune_recovery_quarantine(target)
+    return {
+        "ok": True,
+        "backup_path": str(candidate),
+        "restored_path": str(target),
+        "quarantined_path": quarantined_path,
+        "message": "verified backup restored",
+        "restored_at": int(target.stat().st_mtime),
+    }
 
 
 def _ensure_table_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -270,8 +689,9 @@ def _backfill_retrain_run_shared_holdout_metrics(conn: sqlite3.Connection) -> No
         )
 
 
-def init_db() -> None:
-    conn = get_conn()
+def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = None) -> None:
+    target = Path(path) if path is not None else DB_PATH
+    conn = get_conn_for_path(target, apply_runtime_pragmas=True)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS seen_trades (
@@ -324,6 +744,15 @@ def init_db() -> None:
             raw_confidence      REAL,
             kelly_fraction      REAL NOT NULL,
             signal_mode         TEXT,
+            segment_id          TEXT,
+            policy_id           TEXT,
+            policy_bundle_version INTEGER NOT NULL DEFAULT 0,
+            promotion_epoch_id  INTEGER NOT NULL DEFAULT 0,
+            experiment_arm      TEXT NOT NULL DEFAULT 'champion',
+            expected_edge       REAL,
+            expected_fill_cost_usd REAL,
+            expected_exit_fee_usd REAL,
+            expected_close_fixed_cost_usd REAL,
             belief_prior        REAL,
             belief_blend        REAL,
             belief_evidence     INTEGER,
@@ -425,7 +854,11 @@ def init_db() -> None:
             log_loss        REAL NOT NULL,
             feature_cols    TEXT NOT NULL,
             model_path      TEXT NOT NULL,
-            deployed        INTEGER NOT NULL DEFAULT 0
+            deployed        INTEGER NOT NULL DEFAULT 0,
+            training_scope  TEXT NOT NULL DEFAULT 'all_history',
+            training_since_ts INTEGER NOT NULL DEFAULT 0,
+            training_routed_only INTEGER NOT NULL DEFAULT 0,
+            training_provenance_trusted INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS retrain_runs (
@@ -457,6 +890,11 @@ def init_db() -> None:
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             snapshot_at     INTEGER NOT NULL,
             mode            TEXT NOT NULL,
+            scope           TEXT NOT NULL DEFAULT 'all_history',
+            since_ts        INTEGER NOT NULL DEFAULT 0,
+            epoch_started_at INTEGER NOT NULL DEFAULT 0,
+            epoch_source    TEXT NOT NULL DEFAULT '',
+            legacy_resolved_excluded INTEGER NOT NULL DEFAULT 0,
             n_signals       INTEGER NOT NULL,
             n_acted         INTEGER NOT NULL,
             n_resolved      INTEGER NOT NULL,
@@ -813,6 +1251,27 @@ def init_db() -> None:
     )
     _ensure_table_columns(
         conn,
+        "perf_snapshots",
+        {
+            "scope": "TEXT NOT NULL DEFAULT 'all_history'",
+            "since_ts": "INTEGER NOT NULL DEFAULT 0",
+            "epoch_started_at": "INTEGER NOT NULL DEFAULT 0",
+            "epoch_source": "TEXT NOT NULL DEFAULT ''",
+            "legacy_resolved_excluded": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    _ensure_table_columns(
+        conn,
+        "model_history",
+        {
+            "training_scope": "TEXT NOT NULL DEFAULT 'all_history'",
+            "training_since_ts": "INTEGER NOT NULL DEFAULT 0",
+            "training_routed_only": "INTEGER NOT NULL DEFAULT 0",
+            "training_provenance_trusted": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    _ensure_table_columns(
+        conn,
         "replay_runs",
         {
             "window_start_ts": "INTEGER",
@@ -1023,6 +1482,15 @@ def init_db() -> None:
             "entry_gross_price": "REAL",
             "entry_gross_shares": "REAL",
             "entry_gross_size_usd": "REAL",
+            "segment_id": "TEXT",
+            "policy_id": "TEXT",
+            "policy_bundle_version": "INTEGER NOT NULL DEFAULT 0",
+            "promotion_epoch_id": "INTEGER NOT NULL DEFAULT 0",
+            "experiment_arm": "TEXT NOT NULL DEFAULT 'champion'",
+            "expected_edge": "REAL",
+            "expected_fill_cost_usd": "REAL",
+            "expected_exit_fee_usd": "REAL",
+            "expected_close_fixed_cost_usd": "REAL",
             "raw_confidence": "REAL",
             "signal_mode": "TEXT",
             "belief_prior": "REAL",
@@ -1133,7 +1601,12 @@ def init_db() -> None:
     _backfill_retrain_runs_from_model_history(conn)
     _backfill_retrain_run_shared_holdout_metrics(conn)
     conn.commit()
-    if _startup_heavy_maintenance_enabled(DB_PATH):
+    heavy_maintenance_enabled = (
+        _startup_heavy_maintenance_enabled(target)
+        if run_heavy_maintenance is None
+        else bool(run_heavy_maintenance)
+    )
+    if heavy_maintenance_enabled:
         try:
             _repair_trade_log_market_urls(conn)
             conn.execute(
@@ -1150,6 +1623,22 @@ def init_db() -> None:
                 SET token_id = LOWER(token_id)
                 WHERE token_id IS NOT NULL
                   AND token_id != LOWER(token_id)
+                """
+            )
+            conn.execute(
+                """
+                UPDATE trade_log
+                SET experiment_arm = LOWER(TRIM(experiment_arm))
+                WHERE experiment_arm IS NOT NULL
+                  AND TRIM(experiment_arm) <> ''
+                  AND experiment_arm != LOWER(TRIM(experiment_arm))
+                """
+            )
+            conn.execute(
+                """
+                UPDATE trade_log
+                SET experiment_arm = 'champion'
+                WHERE COALESCE(TRIM(experiment_arm), '') = ''
                 """
             )
             conn.execute(
@@ -1182,7 +1671,7 @@ def init_db() -> None:
     else:
         logger.info(
             "Skipping heavy startup DB maintenance for shared/network path: %s",
-            DB_PATH,
+            target,
         )
     conn.close()
 

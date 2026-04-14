@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import os
 import time
@@ -30,7 +31,13 @@ from config import (
 from economic_model import apply_probability_calibrator, expected_return_to_confidence, inverse_return_target
 from features import FEATURE_COLS, build_feature_map
 from market_scorer import MarketFeatures, MarketScorer
-from trade_contract import DATA_CONTRACT_VERSION, MODEL_LABEL_MODE
+from segment_policy import (
+    SEGMENT_FALLBACK,
+    SegmentRoute,
+    segment_route_for_trade,
+)
+from shadow_evidence import read_shadow_evidence_epoch
+from trade_contract import DATA_CONTRACT_VERSION, DEFAULT_EXPERIMENT_ARM, MODEL_LABEL_MODE
 from trader_scorer import TraderFeatures, TraderScorer
 
 logger = logging.getLogger(__name__)
@@ -39,6 +46,52 @@ TRADER_WEIGHT = 0.60
 MARKET_WEIGHT = 0.40
 HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
 HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
+SEGMENT_POLICY_ID = "shadow-runtime-segment-policy-v1"
+SEGMENT_POLICY_BUNDLE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class SegmentRuntimePolicy:
+    segment_id: str
+    policy_id: str
+    policy_bundle_version: int
+    watch_tier: str
+    horizon_bucket: str
+    fallback: bool
+    allowed_entry_price_bands: tuple[str, ...]
+    allowed_time_to_close_bands: tuple[str, ...]
+    heuristic_allowed_entry_price_bands: tuple[str, ...]
+    heuristic_min_entry_price: float
+    heuristic_max_entry_price: float
+    heuristic_min_time_to_close_seconds: float
+    model_allowed_entry_price_bands: tuple[str, ...]
+    model_min_time_to_close_seconds: float
+    model_edge_mid_confidence: float
+    model_edge_high_confidence: float
+    model_edge_mid_threshold: float
+    model_edge_high_threshold: float
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "segment_id": self.segment_id,
+            "policy_id": self.policy_id,
+            "policy_bundle_version": self.policy_bundle_version,
+            "watch_tier": self.watch_tier,
+            "horizon_bucket": self.horizon_bucket,
+            "fallback": self.fallback,
+            "allowed_entry_price_bands": list(self.allowed_entry_price_bands),
+            "allowed_time_to_close_bands": list(self.allowed_time_to_close_bands),
+            "heuristic_allowed_entry_price_bands": list(self.heuristic_allowed_entry_price_bands),
+            "heuristic_min_entry_price": round(self.heuristic_min_entry_price, 4),
+            "heuristic_max_entry_price": round(self.heuristic_max_entry_price, 4),
+            "heuristic_min_time_to_close_seconds": round(self.heuristic_min_time_to_close_seconds, 3),
+            "model_allowed_entry_price_bands": list(self.model_allowed_entry_price_bands),
+            "model_min_time_to_close_seconds": round(self.model_min_time_to_close_seconds, 3),
+            "model_edge_mid_confidence": round(self.model_edge_mid_confidence, 4),
+            "model_edge_high_confidence": round(self.model_edge_high_confidence, 4),
+            "model_edge_mid_threshold": round(self.model_edge_mid_threshold, 4),
+            "model_edge_high_threshold": round(self.model_edge_high_threshold, 4),
+        }
 
 
 class SignalEngine:
@@ -55,11 +108,18 @@ class SignalEngine:
         self._artifact_contract_version = None
         self._artifact_label_mode = None
         self._artifact_prediction_mode = None
+        self._artifact_training_scope = "unknown"
+        self._artifact_training_since_ts = 0
+        self._artifact_training_routed_only = False
+        self._artifact_training_provenance_trusted = False
+        self._artifact_training_block_reason = ""
         self._artifact_exists = False
         self._artifact_path = ""
         self._fallback_reason = "missing_artifact"
         self._load_error = ""
         self._loaded_at = 0
+        self._segment_policy_id = SEGMENT_POLICY_ID
+        self._segment_policy_bundle_version = SEGMENT_POLICY_BUNDLE_VERSION
         self._try_load_xgb()
 
     def _try_load_xgb(self) -> None:
@@ -70,6 +130,11 @@ class SignalEngine:
         self._artifact_contract_version = None
         self._artifact_label_mode = None
         self._artifact_prediction_mode = None
+        self._artifact_training_scope = "unknown"
+        self._artifact_training_since_ts = 0
+        self._artifact_training_routed_only = False
+        self._artifact_training_provenance_trusted = False
+        self._artifact_training_block_reason = ""
         self._fallback_reason = ""
         self._load_error = ""
         self._loaded_at = 0
@@ -87,6 +152,63 @@ class SignalEngine:
                 self._artifact_label_mode = str(artifact.get("label_mode") or "") or None
                 self._artifact_prediction_mode = str(artifact.get("prediction_mode") or "probability")
                 self._artifact_backend = str(artifact.get("model_backend") or "ml")
+                artifact_metrics = artifact.get("metrics") if isinstance(artifact.get("metrics"), dict) else {}
+                self._artifact_training_scope = str(
+                    artifact.get("training_scope")
+                    or artifact_metrics.get("training_scope")
+                    or "unknown"
+                ).strip().lower() or "unknown"
+                self._artifact_training_since_ts = max(
+                    int(
+                        artifact.get("training_since_ts")
+                        or artifact_metrics.get("training_since_ts")
+                        or 0
+                    ),
+                    0,
+                )
+                self._artifact_training_routed_only = bool(
+                    artifact.get("training_routed_only")
+                    if "training_routed_only" in artifact
+                    else artifact_metrics.get("training_routed_only")
+                )
+                self._artifact_training_provenance_trusted = bool(
+                    artifact.get("training_provenance_trusted")
+                    if "training_provenance_trusted" in artifact
+                    else artifact_metrics.get("training_provenance_trusted")
+                )
+                self._artifact_training_block_reason = str(
+                    artifact.get("training_provenance_block_reason")
+                    or artifact_metrics.get("training_provenance_block_reason")
+                    or ""
+                ).strip()
+                if not self._artifact_training_provenance_trusted and not self._artifact_training_block_reason:
+                    self._artifact_training_block_reason = (
+                        "artifact missing post-epoch routed training provenance"
+                    )
+                active_epoch_started_at = max(
+                    int(
+                        read_shadow_evidence_epoch().get("shadow_evidence_epoch_started_at")
+                        or 0
+                    ),
+                    0,
+                )
+                if active_epoch_started_at > 0:
+                    if self._artifact_training_scope != "current_evidence_window":
+                        self._artifact_training_provenance_trusted = False
+                        self._artifact_training_block_reason = (
+                            "artifact training scope does not match the active shadow evidence window"
+                        )
+                    elif not self._artifact_training_routed_only:
+                        self._artifact_training_provenance_trusted = False
+                        self._artifact_training_block_reason = (
+                            "artifact was not trained on routed-only post-epoch samples"
+                        )
+                    elif self._artifact_training_since_ts < active_epoch_started_at:
+                        self._artifact_training_provenance_trusted = False
+                        self._artifact_training_block_reason = (
+                            "artifact predates the active shadow evidence epoch "
+                            f"({self._artifact_training_since_ts} < {active_epoch_started_at})"
+                        )
                 if contract_version < DATA_CONTRACT_VERSION:
                     self._fallback_reason = "contract_mismatch"
                     logger.warning(
@@ -99,6 +221,15 @@ class SignalEngine:
                     logger.warning(
                         "Ignoring legacy model at %s because it was not trained under the current training-label contract",
                         path,
+                    )
+                    return
+                if not self._artifact_training_provenance_trusted:
+                    self._fallback_reason = "training_provenance_untrusted"
+                    logger.warning(
+                        "Ignoring model at %s because training provenance is untrusted: %s",
+                        path,
+                        self._artifact_training_block_reason
+                        or "artifact missing post-epoch routed training provenance",
                     )
                     return
                 self._xgb = artifact.get("model")
@@ -161,6 +292,81 @@ class SignalEngine:
             "model_load_error": self._load_error,
             "model_prediction_mode": self._artifact_prediction_mode or self._xgb_prediction_mode,
             "model_loaded_at": self._loaded_at,
+            "model_training_scope": self._artifact_training_scope,
+            "model_training_since_ts": self._artifact_training_since_ts,
+            "model_training_routed_only": bool(self._artifact_training_routed_only),
+            "model_training_provenance_trusted": bool(self._artifact_training_provenance_trusted),
+            "model_training_block_reason": self._artifact_training_block_reason,
+            "segment_policy_id": self._segment_policy_id,
+            "segment_policy_bundle_version": self._segment_policy_bundle_version,
+        }
+
+    def _segment_runtime_policy(self, route: SegmentRoute) -> SegmentRuntimePolicy:
+        return SegmentRuntimePolicy(
+            segment_id=route.segment_id,
+            policy_id=self._segment_policy_id,
+            policy_bundle_version=self._segment_policy_bundle_version,
+            watch_tier=route.watch_tier or SEGMENT_FALLBACK,
+            horizon_bucket=route.horizon_bucket or SEGMENT_FALLBACK,
+            fallback=bool(route.fallback),
+            allowed_entry_price_bands=allowed_entry_price_bands(),
+            allowed_time_to_close_bands=allowed_time_to_close_bands(),
+            heuristic_allowed_entry_price_bands=heuristic_allowed_entry_price_bands(),
+            heuristic_min_entry_price=heuristic_min_entry_price(),
+            heuristic_max_entry_price=heuristic_max_entry_price(),
+            heuristic_min_time_to_close_seconds=float(heuristic_min_time_to_close_seconds()),
+            model_allowed_entry_price_bands=xgboost_allowed_entry_price_bands(),
+            model_min_time_to_close_seconds=float(model_min_time_to_close_seconds()),
+            model_edge_mid_confidence=model_edge_mid_confidence(),
+            model_edge_high_confidence=model_edge_high_confidence(),
+            model_edge_mid_threshold=model_edge_mid_threshold(),
+            model_edge_high_threshold=model_edge_high_threshold(),
+        )
+
+    @staticmethod
+    def _segment_context(
+        market_features: MarketFeatures,
+        *,
+        watch_tier: str | None,
+    ) -> dict[str, object]:
+        time_to_close_seconds = max(float(getattr(market_features, "days_to_res", 0.0) or 0.0) * 86400.0, 0.0)
+        time_to_close_band = time_to_close_band_label(int(time_to_close_seconds))
+        route = segment_route_for_trade(
+            watch_tier=watch_tier,
+            time_to_close_band=time_to_close_band,
+        )
+        return {
+            "route": route,
+            "segment_id": route.segment_id,
+            "watch_tier": route.watch_tier or SEGMENT_FALLBACK,
+            "horizon_bucket": route.horizon_bucket or SEGMENT_FALLBACK,
+            "segment_fallback": bool(route.fallback),
+            "time_to_close_seconds": round(time_to_close_seconds, 3),
+            "time_to_close_band": time_to_close_band,
+        }
+
+    def _segment_payload(self, segment_policy: SegmentRuntimePolicy, segment_context: dict[str, object]) -> dict[str, object]:
+        segment_metadata = {
+            "segment_id": segment_policy.segment_id,
+            "watch_tier": str(segment_context.get("watch_tier") or segment_policy.watch_tier),
+            "horizon_bucket": str(segment_context.get("horizon_bucket") or segment_policy.horizon_bucket),
+            "segment_fallback": bool(segment_context.get("segment_fallback") or segment_policy.fallback),
+            "time_to_close_seconds": segment_context.get("time_to_close_seconds"),
+            "time_to_close_band": segment_context.get("time_to_close_band"),
+            "policy_id": segment_policy.policy_id,
+            "policy_bundle_version": segment_policy.policy_bundle_version,
+            "segment_policy": segment_policy.as_dict(),
+        }
+        return {
+            "segment_id": segment_policy.segment_id,
+            "policy_id": segment_policy.policy_id,
+            "policy_bundle_version": segment_policy.policy_bundle_version,
+            "watch_tier": segment_policy.watch_tier,
+            "horizon_bucket": segment_policy.horizon_bucket,
+            "experiment_arm": DEFAULT_EXPERIMENT_ARM,
+            "segment": {
+                **segment_metadata,
+            },
         }
 
     def evaluate(
@@ -169,8 +375,12 @@ class SignalEngine:
         market_features: MarketFeatures,
         order_size_usd: float = 10.0,
         trader_address: str | None = None,
+        watch_tier: str | None = None,
     ) -> dict:
         market_result = self.market_scorer.score(market_features)
+        segment_context = self._segment_context(market_features, watch_tier=watch_tier)
+        segment_route = segment_context["route"]
+        segment_policy = self._segment_runtime_policy(segment_route)
         if market_result["veto"]:
             return {
                 "confidence": 0.0,
@@ -179,16 +389,25 @@ class SignalEngine:
                 "mode": "veto",
                 "trader": {},
                 "market": market_result,
+                **self._segment_payload(segment_policy, segment_context),
             }
 
         if self._xgb is not None and allow_xgboost():
-            return self._evaluate_xgb(trader_features, market_features, order_size_usd)
+            return self._evaluate_xgb(
+                trader_features,
+                market_features,
+                order_size_usd,
+                segment_policy=segment_policy,
+                segment_context=segment_context,
+            )
 
         if allow_heuristic():
             return self._evaluate_heuristic(
                 trader_features,
                 market_features,
                 market_result,
+                segment_policy=segment_policy,
+                segment_context=segment_context,
                 trader_address=trader_address,
             )
 
@@ -207,6 +426,7 @@ class SignalEngine:
             "mode": "disabled",
             "trader": {},
             "market": market_result,
+            **self._segment_payload(segment_policy, segment_context),
         }
 
     def _evaluate_heuristic(
@@ -215,8 +435,13 @@ class SignalEngine:
         market_features: MarketFeatures,
         market_result: dict,
         *,
+        segment_policy: SegmentRuntimePolicy | None = None,
+        segment_context: dict[str, object] | None = None,
         trader_address: str | None = None,
     ) -> dict:
+        if segment_policy is None or segment_context is None:
+            segment_context = self._segment_context(market_features, watch_tier=None)
+            segment_policy = self._segment_runtime_policy(segment_context["route"])
         if not allow_heuristic():
             return {
                 "confidence": 0.0,
@@ -226,6 +451,7 @@ class SignalEngine:
                 "mode": "heuristic",
                 "trader": {},
                 "market": market_result,
+                **self._segment_payload(segment_policy, segment_context),
             }
         trader_result = self.trader_scorer.score(trader_features)
         trader_score = trader_result["score"]
@@ -249,15 +475,15 @@ class SignalEngine:
             if 0.0 < market_features.execution_price < 1.0
             else market_features.mid
         )
-        time_to_close_seconds = max(float(getattr(market_features, "days_to_res", 0.0) or 0.0) * 86400.0, 0.0)
-        time_to_close_band = time_to_close_band_label(int(time_to_close_seconds))
-        min_time_to_close_seconds = float(heuristic_min_time_to_close_seconds())
-        min_entry_price = heuristic_min_entry_price()
-        max_entry_price = heuristic_max_entry_price()
+        time_to_close_seconds = float(segment_context["time_to_close_seconds"])
+        time_to_close_band = str(segment_context["time_to_close_band"])
+        min_time_to_close_seconds = segment_policy.heuristic_min_time_to_close_seconds
+        min_entry_price = segment_policy.heuristic_min_entry_price
+        max_entry_price = segment_policy.heuristic_max_entry_price
         entry_price_band = entry_price_band_label(execution_price)
-        global_allowed_entry_price_bands = allowed_entry_price_bands()
-        global_allowed_time_to_close_bands = allowed_time_to_close_bands()
-        mode_allowed_entry_price_bands = heuristic_allowed_entry_price_bands()
+        global_allowed_entry_price_bands = segment_policy.allowed_entry_price_bands
+        global_allowed_time_to_close_bands = segment_policy.allowed_time_to_close_bands
+        mode_allowed_entry_price_bands = segment_policy.heuristic_allowed_entry_price_bands
         min_market_score, band_progress = self._heuristic_min_market_score(
             execution_price,
             min_entry_price,
@@ -339,6 +565,7 @@ class SignalEngine:
             "mode": "heuristic",
             "trader": trader_result,
             "market": market_result,
+            **self._segment_payload(segment_policy, segment_context),
         }
 
     @staticmethod
@@ -366,7 +593,13 @@ class SignalEngine:
         trader_features: TraderFeatures,
         market_features: MarketFeatures,
         _order_size_usd: float,
+        *,
+        segment_policy: SegmentRuntimePolicy | None = None,
+        segment_context: dict[str, object] | None = None,
     ) -> dict:
+        if segment_policy is None or segment_context is None:
+            segment_context = self._segment_context(market_features, watch_tier=None)
+            segment_policy = self._segment_runtime_policy(segment_context["route"])
         if not allow_xgboost():
             return {
                 "confidence": 0.0,
@@ -388,6 +621,7 @@ class SignalEngine:
                 "mode": "xgboost",
                 "trader": {},
                 "market": {},
+                **self._segment_payload(segment_policy, segment_context),
             }
         trader_result = self.trader_scorer.score(trader_features)
         market_result = self.market_scorer.score(market_features)
@@ -405,13 +639,13 @@ class SignalEngine:
             dtype=float,
         )
         execution_price = market_features.execution_price if market_features.execution_price > 0 else market_features.mid
-        time_to_close_seconds = max(float(getattr(market_features, "days_to_res", 0.0) or 0.0) * 86400.0, 0.0)
-        time_to_close_band = time_to_close_band_label(int(time_to_close_seconds))
-        min_time_to_close_seconds = float(model_min_time_to_close_seconds())
+        time_to_close_seconds = float(segment_context["time_to_close_seconds"])
+        time_to_close_band = str(segment_context["time_to_close_band"])
+        min_time_to_close_seconds = segment_policy.model_min_time_to_close_seconds
         entry_price_band = entry_price_band_label(execution_price)
-        global_allowed_entry_price_bands = allowed_entry_price_bands()
-        global_allowed_time_to_close_bands = allowed_time_to_close_bands()
-        mode_allowed_entry_price_bands = xgboost_allowed_entry_price_bands()
+        global_allowed_entry_price_bands = segment_policy.allowed_entry_price_bands
+        global_allowed_time_to_close_bands = segment_policy.allowed_time_to_close_bands
+        mode_allowed_entry_price_bands = segment_policy.model_allowed_entry_price_bands
         if self._xgb_prediction_mode == "expected_return":
             expected_return = float(inverse_return_target(self._xgb.predict(ordered)[0]))
             base_confidence = float(expected_return_to_confidence(expected_return, execution_price))
@@ -428,10 +662,10 @@ class SignalEngine:
         edge = confidence - execution_price
         base_edge_threshold = float(self._xgb_policy.get("edge_threshold", 0.0))
         edge_threshold = base_edge_threshold
-        if confidence >= model_edge_high_confidence():
-            edge_threshold = model_edge_high_threshold()
-        elif confidence >= model_edge_mid_confidence():
-            edge_threshold = model_edge_mid_threshold()
+        if confidence >= segment_policy.model_edge_high_confidence:
+            edge_threshold = segment_policy.model_edge_high_threshold
+        elif confidence >= segment_policy.model_edge_mid_confidence:
+            edge_threshold = segment_policy.model_edge_mid_threshold
         passed_global_band_filter = not global_allowed_entry_price_bands or entry_price_band in global_allowed_entry_price_bands
         passed_global_horizon_filter = (
             not global_allowed_time_to_close_bands or time_to_close_band in global_allowed_time_to_close_bands
@@ -480,4 +714,5 @@ class SignalEngine:
             "mode": "xgboost",
             "trader": trader_result,
             "market": market_result,
+            **self._segment_payload(segment_policy, segment_context),
         }

@@ -3,21 +3,31 @@ import { ApiError, apiBaseUrl, fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
 let botStateCache = { api_base_url: apiBaseUrl, api_error: '' };
 let shadowRestartPending = false;
+let shadowRestartKind = '';
 let shadowRestartRequestedAtMs = 0;
 let shadowRestartPreviousSessionId = null;
 let shadowRestartPreviousStartedAt = null;
 const SHADOW_RESTART_PENDING_TIMEOUT_MS = 45000;
-function shadowRestartPendingMessage() {
+function normalizeShadowRestartKind(kind) {
+    const normalized = String(kind || '').trim().toLowerCase();
+    return normalized === 'shadow_reset' || normalized === 'db_recovery' ? normalized : '';
+}
+function shadowRestartPendingMessage(kind = shadowRestartKind) {
     if (!shadowRestartPending) {
         return '';
     }
     if (shadowRestartRequestedAtMs > 0 && Date.now() - shadowRestartRequestedAtMs > SHADOW_RESTART_PENDING_TIMEOUT_MS) {
-        return 'Shadow restart is taking longer than expected. Waiting for a new backend session.';
+        return kind === 'db_recovery'
+            ? 'Shadow DB recovery is taking longer than expected. Waiting for a new backend session.'
+            : 'Shadow restart is taking longer than expected. Waiting for a new backend session.';
     }
-    return 'Shadow restart in progress. Waiting for backend to come back.';
+    return kind === 'db_recovery'
+        ? 'Shadow DB recovery in progress. Waiting for backend to come back.'
+        : 'Shadow restart in progress. Waiting for backend to come back.';
 }
 function clearShadowRestartPending() {
     shadowRestartPending = false;
+    shadowRestartKind = '';
     shadowRestartRequestedAtMs = 0;
     shadowRestartPreviousSessionId = null;
     shadowRestartPreviousStartedAt = null;
@@ -27,7 +37,11 @@ function resolveShadowRestartState(nextState) {
         return nextState;
     }
     if (Boolean(nextState.shadow_restart_pending)) {
-        return nextState;
+        const nextKind = normalizeShadowRestartKind(nextState.shadow_restart_kind) || shadowRestartKind;
+        shadowRestartKind = nextKind;
+        return nextKind && nextState.shadow_restart_kind !== nextKind
+            ? { ...nextState, shadow_restart_kind: nextKind }
+            : nextState;
     }
     const nextSessionId = String(nextState.session_id || '').trim();
     if (nextSessionId) {
@@ -51,17 +65,18 @@ function resolveShadowRestartState(nextState) {
     clearShadowRestartPending();
     return nextState;
 }
-function shadowRestartPlaceholderState(state) {
+function shadowRestartPlaceholderState(state, kind, message = '') {
     return {
         ...state,
         api_base_url: apiBaseUrl,
         api_error: '',
         shadow_restart_pending: true,
-        shadow_restart_message: shadowRestartPendingMessage(),
+        shadow_restart_kind: kind,
+        shadow_restart_message: String(message || '').trim() || shadowRestartPendingMessage(kind),
         // Preserve durable replay/retrain/promotion/gate truth while clearing only
         // session-scoped runtime fields during the restart handoff window.
         started_at: 0,
-        startup_detail: 'Restarting shadow bot',
+        startup_detail: kind === 'db_recovery' ? 'Recovering shadow database' : 'Restarting shadow bot',
         startup_failed: false,
         startup_failure_message: '',
         startup_validation_failed: false,
@@ -91,21 +106,25 @@ function shadowRestartPlaceholderState(state) {
     };
 }
 function shadowRestartWaitingState(nextState) {
+    const nextKind = normalizeShadowRestartKind(nextState.shadow_restart_kind) || shadowRestartKind;
+    shadowRestartKind = nextKind;
     return {
         ...nextState,
         api_base_url: apiBaseUrl,
         api_error: '',
         shadow_restart_pending: true,
-        shadow_restart_message: String(nextState.shadow_restart_message || '').trim() || shadowRestartPendingMessage(),
-        startup_detail: String(nextState.startup_detail || '').trim() || 'Restarting shadow bot'
+        shadow_restart_kind: nextKind,
+        shadow_restart_message: String(nextState.shadow_restart_message || '').trim() || shadowRestartPendingMessage(nextKind),
+        startup_detail: String(nextState.startup_detail || '').trim() || (nextKind === 'db_recovery' ? 'Recovering shadow database' : 'Restarting shadow bot')
     };
 }
-export function beginShadowRestartBotState() {
+export function beginShadowRestartBotState(kind, message = '') {
     shadowRestartPending = true;
+    shadowRestartKind = kind;
     shadowRestartRequestedAtMs = Date.now();
     shadowRestartPreviousSessionId = String(botStateCache.session_id || '').trim() || null;
     shadowRestartPreviousStartedAt = Number(botStateCache.started_at || 0) || null;
-    botStateCache = shadowRestartPlaceholderState(botStateCache);
+    botStateCache = shadowRestartPlaceholderState(botStateCache, kind, message);
 }
 export function isShadowRestartPending() {
     return shadowRestartPending || Boolean(botStateCache.shadow_restart_pending);
@@ -137,6 +156,7 @@ export function useBotState(intervalMs = 1000) {
                     api_base_url: apiBaseUrl,
                     api_error: '',
                     shadow_restart_pending: Boolean(responseState.shadow_restart_pending),
+                    shadow_restart_kind: normalizeShadowRestartKind(responseState.shadow_restart_kind),
                     shadow_restart_message: String(responseState.shadow_restart_message || '')
                 };
                 const resolvedState = resolveShadowRestartState(nextState);
@@ -156,16 +176,20 @@ export function useBotState(intervalMs = 1000) {
                         : `Could not reach backend API at ${apiBaseUrl}.`;
                 const cachedShadowRestartPending = Boolean(botStateCache.shadow_restart_pending);
                 const effectiveShadowRestartPending = cachedShadowRestartPending || shadowRestartPending;
+                const effectiveShadowRestartKind = cachedShadowRestartPending
+                    ? normalizeShadowRestartKind(botStateCache.shadow_restart_kind)
+                    : shadowRestartKind;
                 const effectiveShadowRestartMessage = cachedShadowRestartPending
                     ? String(botStateCache.shadow_restart_message || '')
                     : shadowRestartPending
-                        ? shadowRestartPendingMessage()
+                        ? shadowRestartPendingMessage(effectiveShadowRestartKind)
                         : '';
                 const nextState = {
                     ...botStateCache,
                     api_base_url: apiBaseUrl,
                     api_error: message,
                     shadow_restart_pending: effectiveShadowRestartPending,
+                    shadow_restart_kind: effectiveShadowRestartKind,
                     shadow_restart_message: effectiveShadowRestartMessage
                 };
             botStateCache = nextState;

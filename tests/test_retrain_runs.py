@@ -62,7 +62,10 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
                 db.init_db()
 
-                with patch("auto_retrain.load_training_data", return_value=[object()] * 3), patch(
+                with patch(
+                    "auto_retrain.read_shadow_evidence_epoch",
+                    return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+                ), patch("auto_retrain.load_training_data", return_value=[object()] * 3), patch(
                     "auto_retrain.min_samples_required", return_value=5
                 ), patch("auto_retrain.send_alert", return_value=None) as alert_mock, patch(
                     "auto_retrain.time.time", return_value=1_700_000_100
@@ -93,6 +96,48 @@ class RetrainRunHistoryTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_retrain_cycle_report_blocks_without_active_epoch(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+
+                with patch(
+                    "auto_retrain.read_shadow_evidence_epoch",
+                    return_value={"shadow_evidence_epoch_started_at": 0},
+                ), patch("auto_retrain.load_training_data") as load_mock, patch(
+                    "auto_retrain.send_alert", return_value=None
+                ), patch("auto_retrain.time.time", return_value=1_700_000_125):
+                    report = auto_retrain.retrain_cycle_report(object(), trigger="scheduled")
+
+                self.assertEqual(report["status"], "blocked_shadow_snapshot")
+                self.assertFalse(report["ok"])
+                load_mock.assert_not_called()
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT trigger, status, ok, deployed, sample_count, min_samples, started_at, finished_at, message
+                    FROM retrain_runs
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(row["trigger"], "scheduled")
+                self.assertEqual(row["status"], "blocked_shadow_snapshot")
+                self.assertEqual(int(row["ok"]), 0)
+                self.assertEqual(int(row["deployed"]), 0)
+                self.assertEqual(int(row["sample_count"]), 0)
+                self.assertEqual(int(row["min_samples"]), 0)
+                self.assertEqual(int(row["started_at"]), 1_700_000_125)
+                self.assertEqual(int(row["finished_at"]), 1_700_000_125)
+                self.assertIn("current evidence window is not active yet", row["message"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_retrain_cycle_report_logs_failed_attempt_when_loading_training_data_raises(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -101,6 +146,9 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 db.init_db()
 
                 with patch(
+                    "auto_retrain.read_shadow_evidence_epoch",
+                    return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+                ), patch(
                     "auto_retrain.load_training_data",
                     side_effect=RuntimeError("training data unavailable"),
                 ), patch("auto_retrain.send_alert", return_value=None), patch(
@@ -153,14 +201,23 @@ class RetrainRunHistoryTest(unittest.TestCase):
                     "incumbent_log_loss": 0.509,
                     "incumbent_brier_score": 0.175,
                 }
-                with patch("auto_retrain.load_training_data", return_value=[object()] * 12), patch(
+                sample_rows = [object()] * 12
+                with patch(
+                    "auto_retrain.read_shadow_evidence_epoch",
+                    return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+                ), patch("auto_retrain.load_training_data", return_value=sample_rows), patch(
                     "auto_retrain.min_samples_required", return_value=5
-                ), patch("auto_retrain.train", return_value=metrics), patch(
+                ), patch("auto_retrain.train", return_value=metrics) as train_mock, patch(
                     "auto_retrain.send_alert", return_value=None
                 ), patch("auto_retrain.time.time", return_value=1_700_000_200):
                     report = auto_retrain.retrain_cycle_report(object(), trigger="scheduled", started_at=1_700_000_150)
 
                 self.assertEqual(report["status"], "completed_not_deployed")
+                train_mock.assert_called_once_with(
+                    sample_rows,
+                    training_since_ts=1_700_000_400,
+                    training_routed_only=True,
+                )
 
                 conn = db.get_conn()
                 row = conn.execute(
@@ -262,7 +319,10 @@ class RetrainRunHistoryTest(unittest.TestCase):
             "val_total_pnl": -2.0,
         }
 
-        with patch("auto_retrain.load_training_data", return_value=[object()] * 12), patch(
+        with patch(
+            "auto_retrain.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+        ), patch("auto_retrain.load_training_data", return_value=[object()] * 12), patch(
             "auto_retrain.min_samples_required", return_value=5
         ), patch("auto_retrain.train", return_value=metrics), patch(
             "auto_retrain.send_alert", return_value=None
@@ -273,6 +333,41 @@ class RetrainRunHistoryTest(unittest.TestCase):
         alert_mock.assert_called_once()
         self.assertIn("retrain rejected", alert_mock.call_args.args[0])
         self.assertEqual(alert_mock.call_args.kwargs["kind"], "retrain")
+
+    def test_retrain_cycle_report_scopes_training_data_to_active_epoch_and_routed_rows(self) -> None:
+        with patch(
+            "auto_retrain.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+        ), patch(
+            "auto_retrain.load_training_data",
+            return_value=[object()] * 3,
+        ) as load_mock, patch(
+            "auto_retrain.min_samples_required",
+            return_value=5,
+        ), patch("auto_retrain.send_alert", return_value=None):
+            report = auto_retrain.retrain_cycle_report(object(), trigger="manual", started_at=1_700_000_300)
+
+        self.assertEqual(report["status"], "skipped_not_enough_samples")
+        load_mock.assert_called_once_with(since_ts=1_700_000_400, routed_only=True)
+
+    def test_retrain_cycle_report_scopes_training_data_to_latest_promotion_within_epoch(self) -> None:
+        with patch(
+            "auto_retrain.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+        ), patch(
+            "auto_retrain._latest_applied_replay_promotion_at",
+            return_value=1_700_000_900,
+        ), patch(
+            "auto_retrain.load_training_data",
+            return_value=[object()] * 3,
+        ) as load_mock, patch(
+            "auto_retrain.min_samples_required",
+            return_value=5,
+        ), patch("auto_retrain.send_alert", return_value=None):
+            report = auto_retrain.retrain_cycle_report(object(), trigger="manual", started_at=1_700_000_300)
+
+        self.assertEqual(report["status"], "skipped_not_enough_samples")
+        load_mock.assert_called_once_with(since_ts=1_700_000_900, routed_only=True)
 
     def test_retrain_cycle_report_alerts_when_model_is_accepted(self) -> None:
         metrics = {
@@ -287,7 +382,10 @@ class RetrainRunHistoryTest(unittest.TestCase):
         }
         engine = SimpleNamespace(reload_model=lambda: None)
 
-        with patch("auto_retrain.load_training_data", return_value=[object()] * 12), patch(
+        with patch(
+            "auto_retrain.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+        ), patch("auto_retrain.load_training_data", return_value=[object()] * 12), patch(
             "auto_retrain.min_samples_required", return_value=5
         ), patch("auto_retrain.train", return_value=metrics), patch(
             "auto_retrain.check_calibration", return_value={"calibration_bins": [1, 2, 3]}

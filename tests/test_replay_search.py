@@ -14,6 +14,15 @@ import replay_search
 
 
 class ReplaySearchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._runtime_trust_gate_patch = patch.object(
+            replay_search,
+            "_runtime_replay_search_trust_block_reason",
+            return_value="",
+        )
+        self._runtime_trust_gate_patch.start()
+        self.addCleanup(self._runtime_trust_gate_patch.stop)
+
     def _constraint_defaults(self, **overrides: object) -> dict[str, object]:
         values: dict[str, object] = {
             "allow_heuristic": True,

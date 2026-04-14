@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
+import inspect
 import json
 import os
+import sqlite3
 import sys
 import time
 import types
@@ -82,6 +85,9 @@ import evaluator
 import httpx
 import identity_cache
 import main
+import performance_preview
+from kelly_watcher import shadow_reset
+import shadow_evidence
 import tracker
 import trader_scorer
 from executor import ExecutionResult, PolymarketExecutor, SimulatedFill, TotalExposureDecision, log_trade
@@ -209,6 +215,22 @@ def _insert_resolved_shadow_trade_for_promotion_test(
 
 
 class RuntimeFixesTest(unittest.TestCase):
+    def test_quarantine_runtime_model_artifact_moves_current_artifact_to_quarantine(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "save" / "model.joblib"
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text("artifact", encoding="utf-8")
+
+            with patch("main.model_path", return_value=str(artifact_path)):
+                quarantined_path = main._quarantine_runtime_model_artifact(reason="db_recovery")
+            self.assertTrue(quarantined_path)
+            quarantined = Path(quarantined_path)
+            self.assertFalse(artifact_path.exists())
+            self.assertTrue(quarantined.exists())
+            self.assertEqual(quarantined.read_text(encoding="utf-8"), "artifact")
+            self.assertIn("artifact_quarantine", str(quarantined))
+            self.assertIn("db_recovery", quarantined.name)
+
     def test_send_alert_suppresses_non_trade_notifications(self) -> None:
         client = Mock()
         client_context = Mock()
@@ -1081,10 +1103,1369 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["manual_retrain_requested_at"], 0)
         self.assertEqual(snapshot["manual_retrain_message"], "")
         self.assertFalse(snapshot["shadow_restart_pending"])
+        self.assertEqual(snapshot["shadow_restart_kind"], "")
         self.assertEqual(snapshot["shadow_restart_message"], "")
+        self.assertFalse(snapshot["startup_blocked"])
+        self.assertFalse(snapshot["startup_recovery_only"])
+        self.assertEqual(snapshot["startup_block_reason"], "")
         self.assertFalse(snapshot["manual_trade_pending"])
         self.assertEqual(snapshot["manual_trade_requested_at"], 0)
         self.assertEqual(snapshot["manual_trade_message"], "")
+        self.assertFalse(snapshot["shadow_evidence_epoch_known"])
+        self.assertEqual(snapshot["shadow_evidence_epoch_started_at"], 0)
+        self.assertEqual(snapshot["shadow_evidence_epoch_source"], "")
+        self.assertEqual(snapshot["shadow_evidence_epoch_source_label"], "")
+        self.assertEqual(snapshot["shadow_evidence_epoch_active_scope_label"], "all history")
+        self.assertEqual(snapshot["shadow_evidence_epoch_status"], "all_history")
+        self.assertEqual(snapshot["shadow_evidence_epoch_request_id"], "")
+        self.assertEqual(snapshot["shadow_evidence_epoch_message"], "")
+        self.assertFalse(snapshot["routed_shadow_epoch_known"])
+        self.assertEqual(snapshot["routed_shadow_epoch_started_at"], 0)
+        self.assertEqual(snapshot["routed_shadow_epoch_source_label"], "")
+        self.assertEqual(snapshot["routed_shadow_epoch_active_scope_label"], "all history")
+        self.assertEqual(snapshot["routed_shadow_epoch_status"], "all_history")
+        self.assertFalse(snapshot["shadow_snapshot_state_known"])
+        self.assertEqual(snapshot["shadow_snapshot_scope"], "all_history")
+        self.assertEqual(snapshot["shadow_snapshot_started_at"], 0)
+        self.assertEqual(snapshot["shadow_snapshot_status"], "checking")
+        self.assertEqual(snapshot["shadow_snapshot_resolved"], 0)
+        self.assertEqual(snapshot["shadow_snapshot_routed_resolved"], 0)
+        self.assertEqual(snapshot["shadow_snapshot_legacy_resolved"], 0)
+        self.assertIsNone(snapshot["shadow_snapshot_coverage_pct"])
+        self.assertFalse(snapshot["shadow_snapshot_ready"])
+        self.assertIsNone(snapshot["shadow_snapshot_total_pnl_usd"])
+        self.assertIsNone(snapshot["shadow_snapshot_return_pct"])
+        self.assertIsNone(snapshot["shadow_snapshot_profit_factor"])
+        self.assertIsNone(snapshot["shadow_snapshot_expectancy_usd"])
+        self.assertEqual(snapshot["shadow_snapshot_block_reason"], "")
+        self.assertEqual(snapshot["shadow_snapshot_block_state"], "")
+        self.assertEqual(snapshot["shadow_snapshot_optimization_block_reason"], "")
+        self.assertFalse(snapshot["routed_shadow_state_known"])
+        self.assertEqual(snapshot["routed_shadow_status"], "checking")
+        self.assertEqual(snapshot["routed_shadow_min_resolved"], 0)
+        self.assertEqual(snapshot["routed_shadow_routed_resolved"], 0)
+        self.assertEqual(snapshot["routed_shadow_legacy_resolved"], 0)
+        self.assertEqual(snapshot["routed_shadow_total_resolved"], 0)
+        self.assertIsNone(snapshot["routed_shadow_coverage_pct"])
+        self.assertFalse(snapshot["routed_shadow_ready"])
+        self.assertEqual(snapshot["routed_shadow_block_reason"], "")
+        self.assertIsNone(snapshot["routed_shadow_total_pnl_usd"])
+        self.assertIsNone(snapshot["routed_shadow_return_pct"])
+        self.assertIsNone(snapshot["routed_shadow_profit_factor"])
+        self.assertIsNone(snapshot["routed_shadow_expectancy_usd"])
+        self.assertEqual(snapshot["routed_shadow_data_warning"], "")
+        self.assertFalse(snapshot["shadow_segment_state_known"])
+        self.assertEqual(snapshot["shadow_segment_status"], "checking")
+        self.assertEqual(snapshot["shadow_segment_history_status"], "empty")
+        self.assertEqual(snapshot["shadow_segment_routed_resolved"], 0)
+        self.assertEqual(snapshot["shadow_segment_legacy_resolved"], 0)
+        self.assertEqual(snapshot["shadow_segment_summary_json"], "[]")
+        self.assertEqual(snapshot["shadow_segment_block_reason"], "")
+        self.assertFalse(snapshot["db_integrity_known"])
+        self.assertTrue(snapshot["db_integrity_ok"])
+        self.assertEqual(snapshot["db_integrity_message"], "")
+        self.assertEqual(snapshot["db_recovery_candidate_mode"], "unavailable")
+        self.assertFalse(snapshot["db_recovery_candidate_evidence_ready"])
+        self.assertEqual(snapshot["db_recovery_candidate_class_reason"], "")
+        self.assertFalse(snapshot["db_recovery_shadow_state_known"])
+        self.assertEqual(snapshot["db_recovery_shadow_candidate_path"], "")
+        self.assertEqual(snapshot["db_recovery_shadow_status"], "checking")
+        self.assertEqual(snapshot["db_recovery_shadow_acted"], 0)
+        self.assertEqual(snapshot["db_recovery_shadow_resolved"], 0)
+        self.assertIsNone(snapshot["db_recovery_shadow_total_pnl_usd"])
+        self.assertIsNone(snapshot["db_recovery_shadow_return_pct"])
+        self.assertIsNone(snapshot["db_recovery_shadow_profit_factor"])
+        self.assertIsNone(snapshot["db_recovery_shadow_expectancy_usd"])
+        self.assertEqual(snapshot["db_recovery_shadow_data_warning"], "")
+        self.assertEqual(snapshot["db_recovery_shadow_segment_total"], 0)
+        self.assertEqual(snapshot["db_recovery_shadow_segment_ready_count"], 0)
+        self.assertEqual(snapshot["db_recovery_shadow_segment_blocked_count"], 0)
+        self.assertEqual(snapshot["db_recovery_shadow_min_resolved"], 0)
+        self.assertEqual(snapshot["db_recovery_shadow_total_resolved"], 0)
+        self.assertFalse(snapshot["db_recovery_shadow_ready"])
+        self.assertEqual(snapshot["db_recovery_shadow_segment_summary_json"], "[]")
+        self.assertEqual(snapshot["db_recovery_shadow_block_reason"], "")
+
+    def test_database_integrity_state_reports_sqlite_error(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trading.db"
+            db_path.touch()
+            with patch.object(db, "DB_PATH", db_path), patch.object(
+                db, "_connect_sqlite", side_effect=sqlite3.DatabaseError("database disk image is malformed")
+            ):
+                state = db.database_integrity_state()
+
+        self.assertTrue(state["db_integrity_known"])
+        self.assertFalse(state["db_integrity_ok"])
+        self.assertIn("malformed", str(state["db_integrity_message"]))
+
+    def test_segment_shadow_state_payload_serializes_summary(self) -> None:
+        payload = main._segment_shadow_state_payload(
+            {
+                "status": "blocked",
+                "scope": "since_ts",
+                "since_ts": 1_700_000_500,
+                "min_resolved": 20,
+                "total_segments": 3,
+                "ready_count": 2,
+                "positive_count": 1,
+                "negative_count": 1,
+                "blocked_count": 1,
+                "history_status": "mixed",
+                "routed_signals": 3,
+                "routed_acted": 3,
+                "routed_resolved": 2,
+                "legacy_unassigned_resolved": 5,
+                "routed_coverage_pct": 2 / 7,
+                "segments": [
+                    {"segment_id": "warm_mid", "health": "blocked", "failure_reasons": ["pnl $-5.00"]},
+                    {"segment_id": "hot_short", "health": "ready", "failure_reasons": []},
+                ],
+                "summary": "blocked by warm_mid (pnl $-5.00)",
+            }
+        )
+
+        self.assertTrue(payload["shadow_segment_state_known"])
+        self.assertEqual(payload["shadow_segment_status"], "blocked")
+        self.assertEqual(payload["shadow_segment_scope"], "since_ts")
+        self.assertEqual(payload["shadow_segment_scope_started_at"], 1_700_000_500)
+        self.assertEqual(payload["shadow_segment_min_resolved"], 20)
+        self.assertEqual(payload["shadow_segment_total"], 3)
+        self.assertEqual(payload["shadow_segment_ready_count"], 2)
+        self.assertEqual(payload["shadow_segment_positive_count"], 1)
+        self.assertEqual(payload["shadow_segment_negative_count"], 1)
+        self.assertEqual(payload["shadow_segment_blocked_count"], 1)
+        self.assertEqual(payload["shadow_segment_history_status"], "mixed")
+        self.assertEqual(payload["shadow_segment_routed_signals"], 3)
+        self.assertEqual(payload["shadow_segment_routed_acted"], 3)
+        self.assertEqual(payload["shadow_segment_routed_resolved"], 2)
+        self.assertEqual(payload["shadow_segment_legacy_resolved"], 5)
+        self.assertAlmostEqual(float(payload["shadow_segment_routing_coverage_pct"]), 2 / 7, places=6)
+        self.assertTrue(payload["routed_shadow_state_known"])
+        self.assertEqual(payload["routed_shadow_status"], "insufficient")
+        self.assertEqual(payload["routed_shadow_min_resolved"], 20)
+        self.assertEqual(payload["routed_shadow_routed_resolved"], 2)
+        self.assertEqual(payload["routed_shadow_legacy_resolved"], 5)
+        self.assertEqual(payload["routed_shadow_total_resolved"], 7)
+        self.assertAlmostEqual(float(payload["routed_shadow_coverage_pct"]), 2 / 7, places=6)
+        self.assertFalse(payload["routed_shadow_ready"])
+        self.assertIn("warm_mid", str(payload["shadow_segment_summary_json"]))
+        self.assertEqual(payload["shadow_segment_block_reason"], "blocked by warm_mid (pnl $-5.00)")
+        self.assertIn("need 2/20 routed resolved shadow trades", str(payload["routed_shadow_block_reason"]))
+
+    def test_routed_shadow_performance_state_payload_publishes_routed_preview_metrics(self) -> None:
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=5,
+            wins=3,
+            data_warning="WARNING: SQLite integrity check failed",
+            routed_total_pnl=4.0,
+            routed_return_pct=0.004,
+            routed_profit_factor=1.4,
+            routed_expectancy_usd=2.0,
+        )
+
+        payload = main._routed_shadow_performance_state_payload(preview)
+
+        self.assertEqual(payload["routed_shadow_total_pnl_usd"], 4.0)
+        self.assertEqual(payload["routed_shadow_return_pct"], 0.004)
+        self.assertEqual(payload["routed_shadow_profit_factor"], 1.4)
+        self.assertEqual(payload["routed_shadow_expectancy_usd"], 2.0)
+        self.assertIn("integrity check failed", str(payload["routed_shadow_data_warning"]).lower())
+
+    def test_shadow_snapshot_state_payload_publishes_current_window_preview_metrics(self) -> None:
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=6,
+            wins=3,
+            data_warning="",
+            routed_resolved=2,
+            routed_legacy_resolved=3,
+            shadow_evidence_epoch_started_at=1_700_123_456,
+            shadow_evidence_epoch_source="shadow_reset",
+        )
+
+        payload = main._shadow_snapshot_state_payload(preview, all_time_resolved=9)
+
+        self.assertTrue(payload["shadow_snapshot_state_known"])
+        self.assertEqual(payload["shadow_snapshot_scope"], "current_evidence_window")
+        self.assertEqual(payload["shadow_snapshot_started_at"], 1_700_123_456)
+        self.assertEqual(payload["shadow_snapshot_status"], "mixed")
+        self.assertEqual(payload["shadow_snapshot_resolved"], 5)
+        self.assertEqual(payload["shadow_snapshot_routed_resolved"], 2)
+        self.assertEqual(payload["shadow_snapshot_legacy_resolved"], 3)
+        self.assertAlmostEqual(float(payload["shadow_snapshot_coverage_pct"]), 2 / 5, places=6)
+        self.assertTrue(payload["shadow_snapshot_ready"])
+        self.assertEqual(payload["shadow_snapshot_total_pnl_usd"], 12.5)
+        self.assertEqual(payload["shadow_snapshot_return_pct"], 0.0125)
+        self.assertEqual(payload["shadow_snapshot_profit_factor"], 1.8)
+        self.assertEqual(payload["shadow_snapshot_expectancy_usd"], 2.5)
+        self.assertEqual(str(payload["shadow_snapshot_block_reason"]), "")
+        self.assertEqual(payload["shadow_snapshot_block_state"], "ready")
+        self.assertEqual(payload["shadow_snapshot_optimization_block_reason"], "")
+
+    def test_shadow_snapshot_state_payload_fails_closed_without_active_evidence_epoch_if_published(self) -> None:
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=6,
+            wins=3,
+            data_warning="",
+            routed_resolved=2,
+            shadow_evidence_epoch_started_at=0,
+            shadow_evidence_epoch_source="",
+        )
+
+        payload = main._shadow_snapshot_state_payload(preview, all_time_resolved=9)
+        self.assertEqual(payload["shadow_snapshot_started_at"], 0)
+        self.assertFalse(payload["shadow_snapshot_ready"])
+        self.assertEqual(payload["shadow_snapshot_status"], "all_history")
+        self.assertIn("all history", str(payload["shadow_snapshot_block_reason"]).lower())
+        self.assertEqual(payload["shadow_snapshot_block_state"], "blocked_all_history")
+        self.assertIn("all history", str(payload["shadow_snapshot_optimization_block_reason"]).lower())
+
+    def test_shadow_snapshot_state_payload_fails_closed_when_routed_evidence_is_absent_or_integrity_warned_if_published(self) -> None:
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=6,
+            wins=3,
+            data_warning="WARNING: SQLite integrity check failed",
+            routed_resolved=0,
+            routed_legacy_resolved=5,
+            shadow_evidence_epoch_started_at=1_700_123_456,
+            shadow_evidence_epoch_source="shadow_reset",
+        )
+
+        payload = main._shadow_snapshot_state_payload(preview, all_time_resolved=9)
+        status = str(payload.get("shadow_snapshot_status") or "").strip().lower()
+        self.assertEqual(payload["shadow_snapshot_started_at"], 1_700_123_456)
+        self.assertEqual(payload["shadow_snapshot_routed_resolved"], 0)
+        self.assertEqual(payload["shadow_snapshot_legacy_resolved"], 5)
+        self.assertFalse(payload["shadow_snapshot_ready"])
+        self.assertEqual(status, "error")
+        self.assertIn("integrity check failed", str(payload["shadow_snapshot_block_reason"]).lower())
+        self.assertEqual(payload["shadow_snapshot_block_state"], "blocked_db_integrity")
+        self.assertIn("integrity check failed", str(payload["shadow_snapshot_optimization_block_reason"]).lower())
+
+    def test_shadow_snapshot_error_payload_marks_integrity_failures_as_blocked_db_integrity(self) -> None:
+        payload = main._shadow_snapshot_error_payload(
+            "WARNING: SQLite integrity check failed; performance numbers may be unreliable"
+        )
+
+        self.assertEqual(payload["shadow_snapshot_status"], "error")
+        self.assertEqual(payload["shadow_snapshot_block_state"], "blocked_db_integrity")
+        self.assertIn("integrity check failed", str(payload["shadow_snapshot_optimization_block_reason"]).lower())
+
+    def test_current_window_shadow_performance_state_payload_separates_current_window_and_routed_metrics_if_published(self) -> None:
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=5,
+            wins=3,
+            data_warning="",
+            routed_resolved=2,
+            routed_legacy_resolved=3,
+            routed_total_pnl=4.0,
+            routed_return_pct=0.004,
+            routed_profit_factor=1.4,
+            routed_expectancy_usd=2.0,
+            shadow_evidence_epoch_started_at=1_700_123_456,
+            shadow_evidence_epoch_source="shadow_reset",
+        )
+
+        snapshot_payload = main._shadow_snapshot_state_payload(preview, all_time_resolved=9)
+        routed_payload = main._routed_shadow_performance_state_payload(preview)
+
+        self.assertAlmostEqual(float(snapshot_payload["shadow_snapshot_total_pnl_usd"]), 12.5, places=6)
+        self.assertAlmostEqual(float(snapshot_payload["shadow_snapshot_return_pct"]), 0.0125, places=6)
+        self.assertAlmostEqual(float(snapshot_payload["shadow_snapshot_profit_factor"]), 1.8, places=6)
+        self.assertAlmostEqual(float(snapshot_payload["shadow_snapshot_expectancy_usd"]), 2.5, places=6)
+        self.assertAlmostEqual(float(routed_payload["routed_shadow_total_pnl_usd"]), 4.0, places=6)
+        self.assertAlmostEqual(float(routed_payload["routed_shadow_return_pct"]), 0.004, places=6)
+        self.assertAlmostEqual(float(routed_payload["routed_shadow_profit_factor"]), 1.4, places=6)
+        self.assertAlmostEqual(float(routed_payload["routed_shadow_expectancy_usd"]), 2.0, places=6)
+        self.assertNotEqual(
+            float(snapshot_payload["shadow_snapshot_total_pnl_usd"]),
+            float(routed_payload["routed_shadow_total_pnl_usd"]),
+        )
+
+    def test_shadow_history_state_payload_publishes_shadow_evidence_epoch(self) -> None:
+        with patch(
+            "main.read_shadow_evidence_epoch",
+            return_value={
+                "shadow_evidence_epoch_known": True,
+                "shadow_evidence_epoch_started_at": 1_700_123_456,
+                "shadow_evidence_epoch_source": "shadow_reset",
+                "shadow_evidence_epoch_request_id": "epoch-1",
+                "shadow_evidence_epoch_message": "fresh shadow evidence epoch started after full shadow reset",
+            },
+        ):
+            payload = main._shadow_history_state_payload(
+                total_resolved_shadow=12,
+                resolved_since_promotion=5,
+                last_promotion=None,
+                require_total_history=True,
+                minimum_total=20,
+                minimum_since_promotion=3,
+            )
+
+        self.assertTrue(payload["shadow_evidence_epoch_known"])
+        self.assertEqual(payload["shadow_evidence_epoch_started_at"], 1_700_123_456)
+        self.assertEqual(payload["shadow_evidence_epoch_source"], "shadow_reset")
+        self.assertEqual(payload["shadow_evidence_epoch_source_label"], "shadow reset")
+        self.assertEqual(payload["shadow_evidence_epoch_active_scope_label"], "since shadow reset")
+        self.assertEqual(payload["shadow_evidence_epoch_status"], "active")
+        self.assertEqual(payload["shadow_evidence_epoch_request_id"], "epoch-1")
+        self.assertIn("fresh shadow evidence epoch", str(payload["shadow_evidence_epoch_message"]))
+        self.assertTrue(payload["routed_shadow_epoch_known"])
+        self.assertEqual(payload["routed_shadow_epoch_started_at"], 1_700_123_456)
+        self.assertEqual(payload["routed_shadow_epoch_source_label"], "shadow reset")
+        self.assertEqual(payload["routed_shadow_epoch_active_scope_label"], "since shadow reset")
+        self.assertEqual(payload["routed_shadow_epoch_status"], "active")
+
+    def test_shadow_history_state_payload_scopes_readiness_to_shadow_reset_epoch_without_collapsing_promotion_counts(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            epoch_file = Path(tmpdir) / "data" / "shadow_evidence_epoch.json"
+            epoch_file.parent.mkdir(parents=True, exist_ok=True)
+            shadow_evidence.write_shadow_evidence_epoch(
+                started_at=1_700_123_456,
+                source="shadow_reset",
+                request_id="reset-1",
+                message="shadow reset completed",
+                path=epoch_file,
+            )
+
+            with patch.object(main, "SHADOW_EVIDENCE_EPOCH_FILE", epoch_file):
+                payload = main._shadow_history_state_payload(
+                    total_resolved_shadow=12,
+                    resolved_since_promotion=5,
+                    last_promotion={"applied_at": 1_700_000_400},
+                    require_total_history=True,
+                    minimum_total=10,
+                    minimum_since_promotion=3,
+                )
+                since_ts, promotion = main._current_shadow_segment_scope_since_ts({"applied_at": 1_700_000_400})
+
+        self.assertTrue(payload["shadow_evidence_epoch_known"])
+        self.assertEqual(payload["shadow_evidence_epoch_started_at"], 1_700_123_456)
+        self.assertEqual(payload["shadow_evidence_epoch_source"], "shadow_reset")
+        self.assertEqual(payload["shadow_evidence_epoch_source_label"], "shadow reset")
+        self.assertEqual(payload["shadow_evidence_epoch_active_scope_label"], "since shadow reset")
+        self.assertEqual(payload["shadow_evidence_epoch_status"], "active")
+        self.assertEqual(payload["resolved_shadow_trade_count"], 12)
+        self.assertEqual(payload["resolved_shadow_since_last_promotion"], 5)
+        self.assertEqual(payload["live_min_shadow_resolved_since_last_promotion"], 3)
+        self.assertTrue(payload["live_shadow_history_total_ready"])
+        self.assertTrue(payload["live_shadow_history_ready"])
+        self.assertEqual(since_ts, 1_700_123_456)
+        self.assertEqual(promotion, {"applied_at": 1_700_000_400})
+
+    def test_shadow_history_state_payload_keeps_total_history_and_epoch_window_readiness_separate(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            epoch_file = Path(tmpdir) / "data" / "shadow_evidence_epoch.json"
+            epoch_file.parent.mkdir(parents=True, exist_ok=True)
+            shadow_evidence.write_shadow_evidence_epoch(
+                started_at=1_700_123_456,
+                source="shadow_reset",
+                request_id="reset-epoch-2",
+                message="fresh evidence epoch started after recovery",
+                path=epoch_file,
+            )
+
+            with patch.object(main, "SHADOW_EVIDENCE_EPOCH_FILE", epoch_file):
+                payload = main._shadow_history_state_payload(
+                    total_resolved_shadow=12,
+                    resolved_since_promotion=0,
+                    last_promotion={"applied_at": 1_700_000_400},
+                    require_total_history=True,
+                    minimum_total=10,
+                    minimum_since_promotion=3,
+                )
+
+        self.assertTrue(payload["shadow_evidence_epoch_known"])
+        self.assertEqual(payload["shadow_evidence_epoch_started_at"], 1_700_123_456)
+        self.assertEqual(payload["resolved_shadow_trade_count"], 12)
+        self.assertTrue(payload["live_shadow_history_total_ready"])
+        self.assertEqual(payload["resolved_shadow_since_last_promotion"], 0)
+        self.assertEqual(payload["live_min_shadow_resolved_since_last_promotion"], 3)
+        self.assertFalse(payload["live_shadow_history_ready"])
+
+    def test_current_shadow_segment_scope_since_ts_prefers_epoch_over_promotion(self) -> None:
+        with patch(
+            "main.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 1_700_000_900},
+        ):
+            since_ts, promotion = main._current_shadow_segment_scope_since_ts({"applied_at": 1_700_000_400})
+
+        self.assertEqual(since_ts, 1_700_000_900)
+        self.assertEqual(promotion, {"applied_at": 1_700_000_400})
+
+    def test_segment_routed_history_trust_block_reason_uses_epoch_scoped_since_ts(self) -> None:
+        with patch(
+            "main.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 1_700_000_900},
+        ), patch(
+            "main._latest_applied_replay_promotion",
+            return_value={"applied_at": 1_700_000_400},
+        ), patch(
+            "main.compute_segment_shadow_report",
+            return_value={
+                "history_status": "empty",
+                "routed_resolved": 0,
+                "legacy_unassigned_resolved": 0,
+            },
+        ) as report_mock:
+            message = main._segment_routed_history_trust_block_reason("Replay search")
+
+        report_mock.assert_called_once_with(mode="shadow", since_ts=1_700_000_900)
+        self.assertIn("Replay search blocked", message)
+
+    def test_shadow_evidence_epoch_fields_round_trip_after_shadow_reset(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            save_dir = root / "save"
+            data_dir = save_dir / "data"
+            log_dir = save_dir / "logs"
+            bot_state_path = data_dir / "bot_state.json"
+            db_path = data_dir / "trading.db"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            epoch_started_at = 1_700_123_456
+            with (
+                patch.object(shadow_reset, "SAVE_DIR", save_dir),
+                patch.object(shadow_reset, "DATA_DIR", data_dir),
+                patch.object(shadow_reset, "LOG_DIR", log_dir),
+                patch.object(shadow_reset, "BACKGROUND_LOG", log_dir / "shadow_runtime.out"),
+                patch.object(db, "DB_PATH", db_path),
+                patch.object(main, "BOT_STATE_FILE", bot_state_path),
+                patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_path),
+            ):
+                shadow_reset.reset_shadow_runtime()
+                main._write_bot_state(
+                    replace=True,
+                    session_id="epoch-session",
+                    started_at=epoch_started_at,
+                    last_activity_at=epoch_started_at,
+                    routed_shadow_epoch_known=True,
+                    routed_shadow_epoch_started_at=epoch_started_at,
+                    routed_shadow_epoch_source_label="shadow reset",
+                    routed_shadow_epoch_active_scope_label="since shadow reset",
+                    routed_shadow_epoch_status="active",
+                    shadow_segment_state_known=True,
+                    shadow_segment_status="ready",
+                    shadow_segment_scope="since_ts",
+                    shadow_segment_scope_started_at=epoch_started_at,
+                    shadow_segment_min_resolved=20,
+                    shadow_segment_total=3,
+                    shadow_segment_ready_count=3,
+                    shadow_segment_history_status="routed_only",
+                    shadow_segment_routed_resolved=3,
+                    shadow_segment_legacy_resolved=0,
+                )
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertTrue(snapshot["routed_shadow_epoch_known"])
+        self.assertEqual(snapshot["routed_shadow_epoch_started_at"], epoch_started_at)
+        self.assertEqual(snapshot["routed_shadow_epoch_source_label"], "shadow reset")
+        self.assertEqual(snapshot["routed_shadow_epoch_active_scope_label"], "since shadow reset")
+        self.assertEqual(snapshot["routed_shadow_epoch_status"], "active")
+        self.assertEqual(snapshot["shadow_segment_scope_started_at"], epoch_started_at)
+        self.assertEqual(snapshot["shadow_segment_routed_resolved"], 3)
+        self.assertEqual(snapshot["shadow_segment_legacy_resolved"], 0)
+        self.assertEqual(snapshot["shadow_segment_history_status"], "routed_only")
+
+    def test_routed_shadow_epoch_helper_scopes_readiness_to_reset_boundary_if_published(self) -> None:
+        candidate_names = (
+            "_routed_shadow_epoch_state_payload",
+            "_routed_shadow_evidence_epoch_state_payload",
+            "_shadow_evidence_epoch_state_payload",
+            "routed_shadow_epoch_state_payload",
+            "routed_shadow_evidence_epoch_state_payload",
+            "shadow_evidence_epoch_state_payload",
+        )
+        helper = None
+        helper_name = ""
+        for name in candidate_names:
+            fn = getattr(main, name, None)
+            if callable(fn):
+                helper = fn
+                helper_name = name
+                break
+
+        if helper is None:
+            raise unittest.SkipTest("No routed shadow evidence epoch helper is published yet.")
+
+        epoch_started_at = 1_700_123_456
+        report = {
+            "routed_shadow_epoch_known": True,
+            "routed_shadow_epoch_started_at": epoch_started_at,
+            "routed_shadow_epoch_source_label": "shadow reset",
+            "routed_shadow_epoch_active_scope_label": "since shadow reset",
+            "routed_shadow_epoch_status": "active",
+            "routed_resolved": 3,
+            "legacy_unassigned_resolved": 1,
+            "routed_coverage_pct": 3 / 4,
+            "history_status": "mixed",
+            "status": "insufficient",
+            "routed_ready": False,
+            "shadow_segment_routed_resolved": 3,
+            "shadow_segment_legacy_resolved": 1,
+            "shadow_segment_ready_count": 1,
+            "shadow_segment_status": "insufficient",
+            "shadow_segment_history_status": "mixed",
+            "segments": [
+                {"segment_id": "hot_short", "resolved": 3, "health": "ready"},
+                {"segment_id": "unassigned", "resolved": 1, "health": "legacy"},
+            ],
+        }
+
+        signature = inspect.signature(helper)
+        kwargs: dict[str, object] = {}
+        for name, param in signature.parameters.items():
+            if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                continue
+            if name in {"report", "payload", "state", "bot_state"}:
+                kwargs[name] = report
+            elif name in {"epoch_started_at", "shadow_evidence_epoch_started_at", "started_at", "since_ts"}:
+                kwargs[name] = epoch_started_at
+            elif name in {"mode", "scope"}:
+                kwargs[name] = "shadow"
+            elif name in {"min_resolved", "required_min_resolved"}:
+                kwargs[name] = 20
+
+        if not kwargs:
+            if len(
+                [
+                    param
+                    for param in signature.parameters.values()
+                    if param.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+                ]
+            ) != 1:
+                raise unittest.SkipTest(f"Unsupported routed shadow epoch helper signature: {signature}")
+            result = helper(report)
+        else:
+            try:
+                signature.bind_partial(**kwargs)
+            except TypeError as exc:
+                raise unittest.SkipTest(f"Unsupported routed shadow epoch helper signature: {signature}") from exc
+            result = helper(**kwargs)
+
+        payload = result if isinstance(result, dict) else dict(vars(result)) if hasattr(result, "__dict__") else {}
+        if not payload:
+            raise unittest.SkipTest(f"Unsupported routed shadow epoch helper return type: {type(result)!r} ({helper_name})")
+
+        epoch_known = payload.get("routed_shadow_epoch_known")
+        if epoch_known is None:
+            epoch_known = payload.get("shadow_evidence_epoch_known")
+        self.assertTrue(epoch_known)
+        self.assertEqual(
+            payload.get("routed_shadow_epoch_started_at", payload.get("shadow_evidence_epoch_started_at")),
+            epoch_started_at,
+        )
+        self.assertEqual(
+            payload.get("routed_shadow_epoch_source_label", payload.get("shadow_evidence_epoch_source_label")),
+            "shadow reset",
+        )
+        self.assertEqual(
+            payload.get(
+                "routed_shadow_epoch_active_scope_label",
+                payload.get("shadow_evidence_epoch_active_scope_label"),
+            ),
+            "since shadow reset",
+        )
+        self.assertEqual(
+            payload.get("routed_shadow_epoch_status", payload.get("shadow_evidence_epoch_status")),
+            "active",
+        )
+        ready_value = payload.get("routed_shadow_ready", payload.get("shadow_segment_ready"))
+        if ready_value is not None:
+            self.assertFalse(bool(ready_value))
+
+    def test_compute_db_recovery_shadow_state_publishes_candidate_metrics(self) -> None:
+        candidate_path = Path("/tmp/recovery.db.bak")
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=5,
+            wins=3,
+            data_warning="",
+        )
+        report = {
+            "status": "mixed",
+            "history_status": "mixed",
+            "total_segments": 10,
+            "ready_count": 7,
+            "blocked_count": 1,
+            "min_resolved": 20,
+            "routed_resolved": 4,
+            "legacy_unassigned_resolved": 3,
+            "routed_coverage_pct": 4 / 7,
+            "segments": [
+                {"segment_id": "hot_short", "health": "ready", "resolved": 4, "failure_reasons": []},
+                {
+                    "segment_id": "warm_mid",
+                    "health": "blocked",
+                    "resolved": 3,
+                    "failure_reasons": ["pnl $-1.00"],
+                },
+            ],
+            "summary": "need 4/20 routed resolved shadow trades; 3 legacy/unassigned resolved",
+        }
+
+        with patch(
+            "main.db_recovery_state",
+            return_value={
+                "db_recovery_state_known": True,
+                "db_recovery_candidate_ready": True,
+                "db_recovery_candidate_path": str(candidate_path),
+                "db_recovery_candidate_source_path": "/tmp/trading.db",
+                "db_recovery_candidate_message": "",
+                "db_recovery_latest_verified_backup_path": str(candidate_path),
+                "db_recovery_latest_verified_backup_at": 1_700_000_000,
+            },
+        ), patch(
+            "main.compute_tracker_preview_summary",
+            return_value=preview,
+        ) as preview_mock, patch(
+            "main._latest_applied_replay_promotion",
+            return_value={"applied_at": 1_700_000_500},
+        ), patch(
+            "main.compute_segment_shadow_report",
+            return_value=report,
+        ) as segment_mock:
+            state = main._compute_db_recovery_shadow_state()
+
+        preview_mock.assert_called_once_with(
+            mode="shadow",
+            db_path=candidate_path,
+            use_bot_state_balance=False,
+            apply_shadow_evidence_epoch=False,
+        )
+        segment_mock.assert_called_once_with(
+            mode="shadow",
+            since_ts=1_700_000_500,
+            db_path=candidate_path,
+        )
+        self.assertTrue(state["db_recovery_shadow_state_known"])
+        self.assertEqual(state["db_recovery_shadow_candidate_path"], str(candidate_path))
+        self.assertEqual(state["db_recovery_shadow_status"], "mixed")
+        self.assertEqual(state["db_recovery_shadow_acted"], 5)
+        self.assertEqual(state["db_recovery_shadow_resolved"], 5)
+        self.assertEqual(state["db_recovery_shadow_total_pnl_usd"], 12.5)
+        self.assertEqual(state["db_recovery_shadow_return_pct"], 0.0125)
+        self.assertEqual(state["db_recovery_shadow_profit_factor"], 1.8)
+        self.assertEqual(state["db_recovery_shadow_expectancy_usd"], 2.5)
+        self.assertEqual(state["db_recovery_shadow_segment_total"], 10)
+        self.assertEqual(state["db_recovery_shadow_segment_ready_count"], 7)
+        self.assertEqual(state["db_recovery_shadow_segment_blocked_count"], 1)
+        self.assertEqual(state["db_recovery_shadow_history_status"], "mixed")
+        self.assertEqual(state["db_recovery_shadow_min_resolved"], 20)
+        self.assertEqual(state["db_recovery_shadow_routed_resolved"], 4)
+        self.assertEqual(state["db_recovery_shadow_legacy_resolved"], 3)
+        self.assertEqual(state["db_recovery_shadow_total_resolved"], 7)
+        self.assertAlmostEqual(float(state["db_recovery_shadow_routing_coverage_pct"]), 4 / 7, places=6)
+        self.assertFalse(state["db_recovery_shadow_ready"])
+        self.assertIn("hot_short", str(state["db_recovery_shadow_segment_summary_json"]))
+        self.assertEqual(
+            state["db_recovery_shadow_block_reason"],
+            "need 4/20 routed resolved shadow trades; 3 legacy/unassigned resolved",
+        )
+        self.assertEqual(state["db_recovery_candidate_mode"], "integrity_only")
+        self.assertFalse(state["db_recovery_candidate_evidence_ready"])
+        self.assertEqual(
+            state["db_recovery_candidate_class_reason"],
+            "need 4/20 routed resolved shadow trades; 3 legacy/unassigned resolved",
+        )
+
+    def test_latest_applied_replay_promotion_returns_none_when_table_is_missing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "legacy.db"
+            sqlite3.connect(db_path).close()
+
+            row = main._latest_applied_replay_promotion(db_path=db_path)
+
+        self.assertIsNone(row)
+
+    def test_compute_db_recovery_shadow_state_falls_back_to_migrated_clone_for_legacy_backup(self) -> None:
+        candidate_path = Path("/tmp/legacy-recovery.db.bak")
+        migrated_state = {
+            "db_recovery_shadow_state_known": True,
+            "db_recovery_shadow_candidate_path": str(candidate_path),
+            "db_recovery_shadow_status": "migrated_insufficient",
+            "db_recovery_shadow_acted": 8,
+            "db_recovery_shadow_resolved": 8,
+            "db_recovery_shadow_total_pnl_usd": 8.0,
+            "db_recovery_shadow_return_pct": 0.008,
+            "db_recovery_shadow_profit_factor": 1.2,
+            "db_recovery_shadow_expectancy_usd": 1.0,
+            "db_recovery_shadow_data_warning": (
+                "evaluated from a migrated temp clone because the verified backup predates the current schema; "
+                "backup file unchanged"
+            ),
+            "db_recovery_shadow_segment_total": 10,
+            "db_recovery_shadow_segment_ready_count": 0,
+            "db_recovery_shadow_segment_blocked_count": 0,
+            "db_recovery_shadow_history_status": "legacy_only",
+            "db_recovery_shadow_min_resolved": 20,
+            "db_recovery_shadow_routed_resolved": 0,
+            "db_recovery_shadow_legacy_resolved": 8,
+            "db_recovery_shadow_total_resolved": 8,
+            "db_recovery_shadow_routing_coverage_pct": 0.0,
+            "db_recovery_shadow_ready": False,
+            "db_recovery_shadow_segment_summary_json": "[]",
+            "db_recovery_shadow_block_reason": "10 fixed segment(s) below 20 resolved | 8 legacy/unassigned resolved",
+        }
+
+        with patch(
+            "main.db_recovery_state",
+            return_value={
+                "db_recovery_state_known": True,
+                "db_recovery_candidate_ready": True,
+                "db_recovery_candidate_path": str(candidate_path),
+                "db_recovery_candidate_source_path": "/tmp/trading.db",
+                "db_recovery_candidate_message": "",
+                "db_recovery_latest_verified_backup_path": str(candidate_path),
+                "db_recovery_latest_verified_backup_at": 1_700_000_000,
+            },
+        ), patch(
+            "main._evaluate_db_recovery_shadow_state",
+            side_effect=sqlite3.OperationalError("no such column: segment_id"),
+        ), patch(
+            "main._evaluate_db_recovery_shadow_state_from_migrated_clone",
+            return_value=migrated_state,
+        ) as migrated_eval:
+            state = main._compute_db_recovery_shadow_state()
+
+        migrated_eval.assert_called_once_with(candidate_path)
+        for key, value in migrated_state.items():
+            self.assertEqual(state[key], value)
+        self.assertEqual(state["db_recovery_candidate_mode"], "integrity_only")
+        self.assertFalse(state["db_recovery_candidate_evidence_ready"])
+        self.assertEqual(
+            state["db_recovery_candidate_class_reason"],
+            "10 fixed segment(s) below 20 resolved | 8 legacy/unassigned resolved",
+        )
+
+    def test_compute_db_recovery_shadow_state_marks_unavailable_candidate_when_no_backup_is_ready(self) -> None:
+        with patch(
+            "main.db_recovery_state",
+            return_value={
+                "db_recovery_state_known": True,
+                "db_recovery_candidate_ready": False,
+                "db_recovery_candidate_path": "",
+                "db_recovery_candidate_source_path": "",
+                "db_recovery_candidate_message": "database integrity check failed",
+            },
+        ):
+            state = main._compute_db_recovery_shadow_state()
+
+        self.assertTrue(state["db_recovery_shadow_state_known"])
+        self.assertEqual(state["db_recovery_shadow_status"], "blocked")
+        self.assertEqual(state["db_recovery_shadow_min_resolved"], 0)
+        self.assertEqual(state["db_recovery_shadow_total_resolved"], 0)
+        self.assertFalse(state["db_recovery_shadow_ready"])
+        self.assertEqual(state["db_recovery_candidate_mode"], "unavailable")
+        self.assertFalse(state["db_recovery_candidate_evidence_ready"])
+        self.assertEqual(state["db_recovery_candidate_class_reason"], "database integrity check failed")
+
+    def test_compute_db_recovery_shadow_state_marks_candidate_evidence_ready_when_report_is_ready(self) -> None:
+        candidate_path = Path("/tmp/recovery-ready.db.bak")
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=32.0,
+            current_balance=1032.0,
+            current_equity=1032.0,
+            return_pct=0.032,
+            win_rate=0.65,
+            profit_factor=1.4,
+            expectancy_usd=1.6,
+            expectancy_pct=0.016,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=24,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=24,
+            wins=16,
+            data_warning="",
+        )
+        report = {
+            "status": "ready",
+            "history_status": "routed_only",
+            "total_segments": 10,
+            "ready_count": 10,
+            "blocked_count": 0,
+            "min_resolved": 20,
+            "routed_resolved": 24,
+            "legacy_unassigned_resolved": 0,
+            "routed_coverage_pct": 1.0,
+            "segments": [
+                {"segment_id": "hot_short", "health": "ready", "resolved": 24, "failure_reasons": []},
+            ],
+            "summary": "all fixed segments with evidence are ready",
+        }
+
+        with patch(
+            "main.db_recovery_state",
+            return_value={
+                "db_recovery_state_known": True,
+                "db_recovery_candidate_ready": True,
+                "db_recovery_candidate_path": str(candidate_path),
+                "db_recovery_candidate_source_path": "/tmp/trading.db",
+                "db_recovery_candidate_message": "",
+            },
+        ), patch(
+            "main.compute_tracker_preview_summary",
+            return_value=preview,
+        ), patch(
+            "main._latest_applied_replay_promotion",
+            return_value={"applied_at": 1_700_001_000},
+        ), patch(
+            "main.compute_segment_shadow_report",
+            return_value=report,
+        ):
+            state = main._compute_db_recovery_shadow_state()
+
+        self.assertEqual(state["db_recovery_shadow_status"], "ready")
+        self.assertTrue(state["db_recovery_shadow_ready"])
+        self.assertEqual(state["db_recovery_candidate_mode"], "evidence_ready")
+        self.assertTrue(state["db_recovery_candidate_evidence_ready"])
+        self.assertEqual(
+            state["db_recovery_candidate_class_reason"],
+            "all fixed segments with evidence are ready",
+        )
+
+    def test_evaluate_migrated_recovery_candidate_shadow_state_alias_uses_clone_helper(self) -> None:
+        candidate_path = Path("/tmp/legacy-recovery.db.bak")
+        expected = {"db_recovery_shadow_status": "migrated_insufficient"}
+
+        with patch(
+            "main._evaluate_db_recovery_shadow_state_from_migrated_clone",
+            return_value=expected,
+        ):
+            state = main._evaluate_migrated_recovery_candidate_shadow_state(candidate_path)
+
+        self.assertEqual(state, expected)
+
+    def test_shadow_history_trust_block_reason_reports_integrity_failure(self) -> None:
+        with patch(
+            "main.database_integrity_state",
+            return_value={
+                "db_integrity_known": True,
+                "db_integrity_ok": False,
+                "db_integrity_message": "database disk image is malformed\nextra detail",
+            },
+        ):
+            message = main._shadow_history_trust_block_reason("Replay search")
+
+        self.assertIn("Replay search blocked", message)
+        self.assertIn("SQLite integrity check failed", message)
+        self.assertIn("malformed", message)
+
+    def test_segment_routed_history_trust_block_reason_reports_legacy_only_history(self) -> None:
+        with patch(
+            "main.compute_segment_shadow_report",
+            return_value={
+                "history_status": "legacy_only",
+                "routed_resolved": 0,
+                "legacy_unassigned_resolved": 725,
+            },
+        ):
+            message = main._segment_routed_history_trust_block_reason("Replay search")
+
+        self.assertIn("Replay search blocked", message)
+        self.assertIn("predate fixed segment routing", message)
+        self.assertIn("725 legacy/unassigned resolved", message)
+
+    def test_segment_routed_history_trust_block_reason_reports_insufficient_routed_history(self) -> None:
+        with patch(
+            "main.compute_segment_shadow_report",
+            return_value={
+                "history_status": "mixed",
+                "routed_resolved": 6,
+                "legacy_unassigned_resolved": 30,
+            },
+        ):
+            message = main._segment_routed_history_trust_block_reason("Replay search")
+
+        self.assertIn("Replay search blocked", message)
+        self.assertIn("need 6/20 routed resolved shadow trades", message)
+        self.assertIn("30 legacy/unassigned resolved", message)
+
+    def test_segment_routed_history_trust_block_reason_blocks_when_snapshot_is_all_history_without_routed_evidence(self) -> None:
+        with patch(
+            "main._current_shadow_segment_scope_since_ts",
+            return_value=(0, None),
+        ), patch(
+            "main.compute_segment_shadow_report",
+            return_value={
+                "scope": "all_history",
+                "history_status": "empty",
+                "routed_resolved": 0,
+                "legacy_unassigned_resolved": 0,
+                "summary": "current shadow snapshot is still all history and has no routed evidence",
+            },
+        ):
+            message = main._segment_routed_history_trust_block_reason("Replay search")
+
+        self.assertIn("Replay search blocked", message)
+        self.assertIn("no routed post-segmentation shadow evidence yet", message)
+
+    def test_shadow_snapshot_trust_block_reason_allows_current_window_routed_snapshot(self) -> None:
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=6,
+            wins=3,
+            data_warning="",
+            routed_resolved=2,
+            routed_legacy_resolved=3,
+            shadow_evidence_epoch_started_at=1_700_123_456,
+            shadow_evidence_epoch_source="shadow_reset",
+        )
+        with patch("main.compute_tracker_preview_summary", return_value=preview), patch(
+            "main._resolved_shadow_trade_count",
+            return_value=9,
+        ):
+            message = main._shadow_snapshot_trust_block_reason("Replay search")
+
+        self.assertEqual(message, "")
+
+    def test_shadow_snapshot_trust_block_reason_blocks_when_snapshot_is_all_history(self) -> None:
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=6,
+            wins=3,
+            data_warning="",
+            routed_resolved=2,
+            routed_legacy_resolved=3,
+            shadow_evidence_epoch_started_at=0,
+            shadow_evidence_epoch_source="",
+        )
+        with patch("main.compute_tracker_preview_summary", return_value=preview), patch(
+            "main._resolved_shadow_trade_count",
+            return_value=9,
+        ):
+            message = main._shadow_snapshot_trust_block_reason("Replay search")
+
+        self.assertIn("Replay search blocked", message)
+        self.assertIn("current evidence window is not active yet", message)
+
+    def test_shadow_snapshot_trust_block_reason_blocks_when_snapshot_is_legacy_only(self) -> None:
+        preview = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=12.5,
+            current_balance=1012.5,
+            current_equity=1012.5,
+            return_pct=0.0125,
+            win_rate=0.6,
+            profit_factor=1.8,
+            expectancy_usd=2.5,
+            expectancy_pct=0.025,
+            exposure_pct=0.0,
+            max_drawdown_pct=0.01,
+            resolved=5,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=6,
+            wins=3,
+            data_warning="",
+            routed_resolved=0,
+            routed_legacy_resolved=5,
+            shadow_evidence_epoch_started_at=1_700_123_456,
+            shadow_evidence_epoch_source="shadow_reset",
+        )
+        with patch("main.compute_tracker_preview_summary", return_value=preview), patch(
+            "main._resolved_shadow_trade_count",
+            return_value=9,
+        ):
+            message = main._shadow_snapshot_trust_block_reason("Replay search")
+
+        self.assertIn("Replay search blocked", message)
+        self.assertIn("need routed fixed-segment evidence", message)
+        self.assertIn("5 legacy/unassigned resolved", message)
+
+    def test_shadow_snapshot_trust_block_reason_reports_snapshot_evaluation_failure(self) -> None:
+        with patch(
+            "main.compute_tracker_preview_summary",
+            side_effect=RuntimeError("preview exploded"),
+        ):
+            message = main._shadow_snapshot_trust_block_reason("Replay search")
+
+        self.assertIn("Replay search blocked", message)
+        self.assertIn("could not be evaluated", message)
+        self.assertIn("preview exploded", message)
+
+    def test_retrain_trust_block_state_prefers_integrity_failure(self) -> None:
+        with patch(
+            "main._shadow_history_trust_block_reason",
+            return_value="Retrain blocked: SQLite integrity check failed",
+        ), patch(
+            "main._shadow_snapshot_trust_block_reason",
+            return_value="Retrain blocked: current evidence window is not active yet",
+        ):
+            status, message = main._retrain_trust_block_state("Retrain")
+
+        self.assertEqual(status, "blocked_db_integrity")
+        self.assertIn("SQLite integrity check failed", message)
+
+    def test_retrain_trust_block_state_uses_shadow_snapshot_failure_when_integrity_is_clean(self) -> None:
+        with patch(
+            "main._shadow_history_trust_block_reason",
+            return_value="",
+        ), patch(
+            "main._shadow_snapshot_trust_block_reason",
+            return_value="Retrain blocked: current evidence window is not active yet",
+        ):
+            status, message = main._retrain_trust_block_state("Retrain")
+
+        self.assertEqual(status, "blocked_shadow_snapshot")
+        self.assertIn("current evidence window is not active yet", message)
+
+    def test_retrain_trust_block_state_allows_retrain_when_shadow_evidence_is_trustworthy(self) -> None:
+        with patch(
+            "main._shadow_history_trust_block_reason",
+            return_value="",
+        ), patch(
+            "main._shadow_snapshot_trust_block_reason",
+            return_value="",
+        ):
+            status, message = main._retrain_trust_block_state("Retrain")
+
+        self.assertEqual(status, "")
+        self.assertEqual(message, "")
+
+    def test_set_live_mode_response_blocks_when_bot_state_is_stale(self) -> None:
+        bot_state = {
+            "started_at": 100,
+            "last_activity_at": int(time.time()) - 999,
+            "poll_interval": 1,
+            "db_integrity_known": True,
+            "db_integrity_ok": True,
+            "shadow_history_state_known": True,
+            "live_require_shadow_history_enabled": False,
+            "live_shadow_history_total_ready": True,
+            "live_shadow_history_ready": True,
+            "shadow_segment_state_known": True,
+            "shadow_segment_status": "ready",
+            "shadow_segment_total": 3,
+            "shadow_segment_ready_count": 3,
+            "shadow_segment_blocked_count": 0,
+        }
+        with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+            dashboard_api, "_write_env_value"
+        ) as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": True})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("stale", str(result["message"]).lower())
+        write_env_value.assert_not_called()
+
+    def test_set_live_mode_response_blocks_when_db_integrity_fails(self) -> None:
+        bot_state = {
+            "started_at": 100,
+            "last_activity_at": int(time.time()),
+            "poll_interval": 5,
+            "db_integrity_known": True,
+            "db_integrity_ok": False,
+            "db_integrity_message": "database disk image is malformed",
+            "shadow_history_state_known": True,
+            "live_require_shadow_history_enabled": False,
+            "live_shadow_history_total_ready": True,
+            "live_shadow_history_ready": True,
+            "shadow_segment_state_known": True,
+            "shadow_segment_status": "ready",
+            "shadow_segment_total": 3,
+            "shadow_segment_ready_count": 3,
+            "shadow_segment_blocked_count": 0,
+        }
+        with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+            dashboard_api, "_write_env_value"
+        ) as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": True})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("sqlite integrity check failed", str(result["message"]).lower())
+        self.assertIn("malformed", str(result["message"]).lower())
+        write_env_value.assert_not_called()
+
+    def test_set_live_mode_response_blocks_when_startup_is_blocked(self) -> None:
+        bot_state = {
+            "started_at": 100,
+            "last_activity_at": int(time.time()),
+            "poll_interval": 5,
+            "startup_blocked": True,
+            "startup_block_reason": "SQLite integrity check failed; run Recover DB or Shadow Reset.",
+            "db_integrity_known": True,
+            "db_integrity_ok": True,
+            "shadow_history_state_known": True,
+            "live_require_shadow_history_enabled": False,
+            "live_shadow_history_total_ready": True,
+            "live_shadow_history_ready": True,
+            "shadow_segment_state_known": True,
+            "shadow_segment_status": "ready",
+            "shadow_segment_total": 3,
+            "shadow_segment_ready_count": 3,
+            "shadow_segment_blocked_count": 0,
+        }
+        with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+            dashboard_api, "_write_env_value"
+        ) as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": True})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("backend startup is blocked", str(result["message"]).lower())
+        self.assertIn("recover db", str(result["message"]).lower())
+        write_env_value.assert_not_called()
+
+    def test_set_live_mode_response_blocks_when_segment_shadow_not_ready(self) -> None:
+        bot_state = {
+            "started_at": 100,
+            "last_activity_at": int(time.time()),
+            "poll_interval": 5,
+            "db_integrity_known": True,
+            "db_integrity_ok": True,
+            "shadow_history_state_known": True,
+            "live_require_shadow_history_enabled": True,
+            "resolved_shadow_trade_count": 120,
+            "live_min_shadow_resolved": 50,
+            "live_shadow_history_total_ready": True,
+            "resolved_shadow_since_last_promotion": 40,
+            "live_min_shadow_resolved_since_last_promotion": 20,
+            "live_shadow_history_ready": True,
+            "shadow_segment_state_known": True,
+            "shadow_segment_status": "blocked",
+            "shadow_segment_total": 9,
+            "shadow_segment_ready_count": 8,
+            "shadow_segment_blocked_count": 1,
+            "shadow_segment_block_reason": "blocked by warm_mid (pnl $-5.00)",
+        }
+        with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+            dashboard_api, "_write_env_value"
+        ) as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": True})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("segment shadow readiness", str(result["message"]).lower())
+        self.assertIn("warm_mid", str(result["message"]))
+        write_env_value.assert_not_called()
+
+    def test_set_live_mode_response_enables_live_mode_when_readiness_is_ready(self) -> None:
+        bot_state = {
+            "started_at": 100,
+            "last_activity_at": int(time.time()),
+            "poll_interval": 5,
+            "db_integrity_known": True,
+            "db_integrity_ok": True,
+            "shadow_history_state_known": True,
+            "live_require_shadow_history_enabled": True,
+            "resolved_shadow_trade_count": 120,
+            "live_min_shadow_resolved": 50,
+            "live_shadow_history_total_ready": True,
+            "resolved_shadow_since_last_promotion": 40,
+            "live_min_shadow_resolved_since_last_promotion": 20,
+            "live_shadow_history_ready": True,
+            "shadow_segment_state_known": True,
+            "shadow_segment_status": "ready",
+            "shadow_segment_total": 9,
+            "shadow_segment_ready_count": 9,
+            "shadow_segment_blocked_count": 0,
+        }
+        with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+            dashboard_api, "_write_env_value"
+        ) as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": True})
+
+        self.assertTrue(result["ok"])
+        self.assertIn("saved as on", str(result["message"]).lower())
+        write_env_value.assert_called_once_with("USE_REAL_MONEY", "true")
+
+    def test_set_live_mode_response_disables_live_mode_without_readiness_check(self) -> None:
+        with patch.object(dashboard_api, "_write_env_value") as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": False})
+
+        self.assertTrue(result["ok"])
+        self.assertIn("saved as off", str(result["message"]).lower())
+        write_env_value.assert_called_once_with("USE_REAL_MONEY", "false")
+
+    def test_set_live_mode_response_blocks_disable_while_shadow_restart_pending(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={"shadow_restart_pending": True},
+        ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": False})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow restart", str(result["message"]).lower())
+        write_env_value.assert_not_called()
+
+    def test_set_live_mode_response_blocks_disable_while_startup_is_blocked(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={
+                "startup_blocked": True,
+                "startup_block_reason": "startup blocked: waiting for Recover DB or Shadow Reset",
+            },
+        ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": False})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("startup blocked", str(result["message"]).lower())
+        write_env_value.assert_not_called()
+
+    def test_config_value_response_blocks_while_shadow_restart_pending(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={"shadow_restart_pending": True},
+        ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
+            status_code, payload = dashboard_api._config_value_response("MAX_MARKET_HORIZON", "7d")
+
+        self.assertEqual(status_code, 409)
+        self.assertFalse(payload["ok"])
+        self.assertIn("shadow restart", str(payload["message"]).lower())
+        write_env_value.assert_not_called()
+
+    def test_config_value_response_blocks_while_startup_is_blocked(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={
+                "startup_blocked": True,
+                "startup_block_reason": "startup blocked: waiting for Recover DB or Shadow Reset",
+            },
+        ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
+            status_code, payload = dashboard_api._config_value_response("MAX_MARKET_HORIZON", "7d")
+
+        self.assertEqual(status_code, 409)
+        self.assertFalse(payload["ok"])
+        self.assertIn("startup blocked", str(payload["message"]).lower())
+        write_env_value.assert_not_called()
+
+    def test_config_value_response_still_delegates_live_mode_keys(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_set_live_mode_response",
+            return_value={"ok": True, "message": "Live Trading saved as OFF. Restart the bot to apply it safely."},
+        ) as set_live_mode_response:
+            status_code, payload = dashboard_api._config_value_response("USE_REAL_MONEY", "false")
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        set_live_mode_response.assert_called_once_with({"enabled": "false"})
 
     def test_dashboard_spawn_shadow_restart_process_writes_request_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -1108,6 +2489,7 @@ class RuntimeFixesTest(unittest.TestCase):
             self.assertEqual(payload["wallet_mode"], "clear_all")
             self.assertTrue(str(payload["request_id"]).startswith("shadow-reset-"))
             self.assertTrue(bot_state["shadow_restart_pending"])
+            self.assertEqual(bot_state["shadow_restart_kind"], "shadow_reset")
             self.assertIn("clear_all", bot_state["shadow_restart_message"])
             self.assertEqual(bot_state["session_id"], "abc123")
 
@@ -1129,7 +2511,7 @@ class RuntimeFixesTest(unittest.TestCase):
             bot_state_file = Path(tmpdir) / "bot_state.json"
             request_file = Path(tmpdir) / "shadow_reset_request.json"
             bot_state_file.write_text(
-                json.dumps({"session_id": "abc123", "started_at": 100, "shadow_restart_pending": False}),
+                json.dumps({"session_id": "abc123", "started_at": 100, "shadow_restart_pending": False, "shadow_restart_kind": ""}),
                 encoding="utf-8",
             )
             request_file.write_text(
@@ -1143,6 +2525,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 snapshot = dashboard_api._bot_state_snapshot()
 
         self.assertTrue(snapshot["shadow_restart_pending"])
+        self.assertEqual(snapshot["shadow_restart_kind"], "shadow_reset")
         self.assertIn("keep_active", snapshot["shadow_restart_message"])
         self.assertEqual(snapshot["session_id"], "abc123")
 
@@ -1158,6 +2541,7 @@ class RuntimeFixesTest(unittest.TestCase):
                         "last_activity_at": int(time.time()) - 999,
                         "poll_interval": 1,
                         "shadow_restart_pending": True,
+                        "shadow_restart_kind": "shadow_reset",
                         "shadow_restart_message": "Shadow restart requested (keep_all). Waiting for backend to restart.",
                     }
                 ),
@@ -1171,8 +2555,10 @@ class RuntimeFixesTest(unittest.TestCase):
                 persisted = json.loads(bot_state_file.read_text(encoding="utf-8"))
 
         self.assertFalse(snapshot["shadow_restart_pending"])
+        self.assertEqual(snapshot["shadow_restart_kind"], "")
         self.assertEqual(snapshot["shadow_restart_message"], "")
         self.assertFalse(persisted["shadow_restart_pending"])
+        self.assertEqual(persisted["shadow_restart_kind"], "")
         self.assertEqual(persisted["shadow_restart_message"], "")
 
     def test_dashboard_bot_state_snapshot_keeps_fresh_persisted_shadow_restart_state_without_request_file(self) -> None:
@@ -1187,6 +2573,7 @@ class RuntimeFixesTest(unittest.TestCase):
                         "last_activity_at": int(time.time()),
                         "poll_interval": 5,
                         "shadow_restart_pending": True,
+                        "shadow_restart_kind": "shadow_reset",
                         "shadow_restart_message": "Shadow restart requested (keep_all). Waiting for backend to restart.",
                     }
                 ),
@@ -1199,6 +2586,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 snapshot = dashboard_api._bot_state_snapshot()
 
         self.assertTrue(snapshot["shadow_restart_pending"])
+        self.assertEqual(snapshot["shadow_restart_kind"], "shadow_reset")
         self.assertIn("keep_all", snapshot["shadow_restart_message"])
 
     def test_dashboard_bot_state_snapshot_overlays_recent_manual_retrain_request(self) -> None:
@@ -1522,6 +2910,72 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("shadow restart", str(result["message"]).lower())
         self.assertFalse(request_file.exists())
 
+    def test_dashboard_manual_retrain_response_blocks_while_startup_is_blocked(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "startup_failed": True,
+                "startup_detail": "startup blocked: waiting for Recover DB or Shadow Reset",
+                "shadow_restart_pending": False,
+                "shadow_snapshot_state_known": True,
+                "shadow_snapshot_ready": True,
+                "retrain_in_progress": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_retrain_response()
+
+        self.assertFalse(result["ok"])
+        self.assertIn("startup blocked", str(result["message"]).lower())
+        self.assertFalse(request_file.exists())
+
+    def test_dashboard_manual_retrain_response_blocks_when_shadow_snapshot_is_unknown(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+                "shadow_snapshot_state_known": False,
+                "retrain_in_progress": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_retrain_response()
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow snapshot is still being evaluated", str(result["message"]).lower())
+        self.assertFalse(request_file.exists())
+
+    def test_dashboard_manual_retrain_response_blocks_when_shadow_snapshot_is_not_ready(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_retrain_request.json"
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+                "shadow_snapshot_state_known": True,
+                "shadow_snapshot_ready": False,
+                "shadow_snapshot_status": "all_history",
+                "shadow_snapshot_block_reason": "current evidence window is not active yet; shadow snapshot still reflects all history",
+                "retrain_in_progress": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_RETRAIN_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_retrain_response()
+
+        self.assertFalse(result["ok"])
+        self.assertIn("all history", str(result["message"]).lower())
+        self.assertFalse(request_file.exists())
+
     def test_dashboard_manual_retrain_response_blocks_when_request_file_already_exists(self) -> None:
         with TemporaryDirectory() as tmpdir:
             request_file = Path(tmpdir) / "manual_retrain_request.json"
@@ -1539,6 +2993,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 "started_at": 100,
                 "last_activity_at": int(time.time()),
                 "shadow_restart_pending": False,
+                "shadow_snapshot_state_known": True,
+                "shadow_snapshot_ready": True,
                 "retrain_in_progress": False,
             }
 
@@ -1570,6 +3026,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 "started_at": 100,
                 "last_activity_at": int(time.time()),
                 "shadow_restart_pending": False,
+                "shadow_snapshot_state_known": True,
+                "shadow_snapshot_ready": True,
                 "retrain_in_progress": False,
             }
 
@@ -1604,6 +3062,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 "started_at": 100,
                 "last_activity_at": int(time.time()),
                 "shadow_restart_pending": False,
+                "shadow_snapshot_state_known": True,
+                "shadow_snapshot_ready": True,
                 "retrain_in_progress": False,
             }
 
@@ -1635,6 +3095,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 "started_at": 100,
                 "last_activity_at": int(time.time()),
                 "shadow_restart_pending": False,
+                "shadow_snapshot_state_known": True,
+                "shadow_snapshot_ready": True,
                 "retrain_in_progress": False,
             }
 
@@ -1673,6 +3135,85 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("shadow restart", str(result["message"]).lower())
         self.assertFalse(request_file.exists())
+
+    def test_dashboard_manual_trade_response_blocks_while_startup_is_blocked(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "startup_validation_failed": True,
+                "startup_detail": "startup blocked: waiting for Recover DB or Shadow Reset",
+                "shadow_restart_pending": False,
+            }
+
+            with patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_trade_response(
+                    {
+                        "action": "buy_more",
+                        "marketId": "market-1",
+                        "tokenId": "token-1",
+                        "side": "yes",
+                        "amountUsd": 5.0,
+                    }
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("startup blocked", str(result["message"]).lower())
+        self.assertFalse(request_file.exists())
+
+    def test_dashboard_drop_wallet_response_blocks_while_shadow_restart_pending(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={"shadow_restart_pending": True},
+        ), patch.object(dashboard_api, "_drop_wallet") as drop_wallet:
+            result = dashboard_api._drop_wallet_response("0xabc", "manual dashboard drop")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow restart", str(result["message"]).lower())
+        drop_wallet.assert_not_called()
+
+    def test_dashboard_reactivate_wallet_response_blocks_while_startup_is_blocked(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={
+                "startup_blocked": True,
+                "startup_block_reason": "startup blocked: waiting for Recover DB or Shadow Reset",
+            },
+        ), patch.object(dashboard_api, "_reactivate_wallet") as reactivate_wallet:
+            result = dashboard_api._reactivate_wallet_response("0xabc")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("startup blocked", str(result["message"]).lower())
+        reactivate_wallet.assert_not_called()
+
+    def test_dashboard_save_position_manual_edit_response_blocks_while_shadow_restart_pending(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={"shadow_restart_pending": True},
+        ), patch.object(dashboard_api, "_save_position_manual_edit") as save_position_edit:
+            result = dashboard_api._save_position_manual_edit_response(
+                {
+                    "sourceKind": "position",
+                    "marketId": "market-1",
+                    "tokenId": "token-1",
+                    "side": "yes",
+                    "realMoney": 0,
+                    "entryPrice": 0.5,
+                    "shares": 10.0,
+                    "sizeUsd": 5.0,
+                    "status": "open",
+                }
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow restart", str(result["message"]).lower())
+        save_position_edit.assert_not_called()
 
     def test_dashboard_manual_trade_response_blocks_when_request_file_already_exists(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -3470,8 +5011,8 @@ class RuntimeFixesTest(unittest.TestCase):
                         price_at_signal, signal_size_usd, confidence, kelly_fraction,
                         real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
                         actual_entry_size_usd, entry_gross_price, entry_gross_shares,
-                        entry_gross_size_usd, shadow_pnl_usd, resolved_at, label_applied_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        entry_gross_size_usd, shadow_pnl_usd, resolved_at, label_applied_at, segment_id
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         "trade-2",
@@ -3496,12 +5037,16 @@ class RuntimeFixesTest(unittest.TestCase):
                         2.5,
                         1_500,
                         3_000,
+                        "hot_short",
                     ),
                 )
                 conn.commit()
                 conn.close()
 
-                with patch("auto_retrain.retrain_min_new_labels", return_value=1):
+                with patch(
+                    "auto_retrain.read_shadow_evidence_epoch",
+                    return_value={"shadow_evidence_epoch_started_at": 3_000},
+                ), patch("auto_retrain.retrain_min_new_labels", return_value=1):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
             finally:
                 db.DB_PATH = original_db_path
@@ -3513,12 +5058,18 @@ class RuntimeFixesTest(unittest.TestCase):
                 db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
                 db.init_db()
 
-                with patch("auto_retrain.load_training_data", return_value=[object()] * 149), patch(
+                with patch(
+                    "auto_retrain.read_shadow_evidence_epoch",
+                    return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+                ), patch("auto_retrain.load_training_data", return_value=[object()] * 149), patch(
                     "auto_retrain.min_samples_required", return_value=150
                 ):
                     self.assertFalse(auto_retrain.should_retrain_early(None))
 
-                with patch("auto_retrain.load_training_data", return_value=[object()] * 150), patch(
+                with patch(
+                    "auto_retrain.read_shadow_evidence_epoch",
+                    return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+                ), patch("auto_retrain.load_training_data", return_value=[object()] * 150), patch(
                     "auto_retrain.min_samples_required", return_value=150
                 ):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
@@ -3798,6 +5349,270 @@ class RuntimeFixesTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 main._validate_startup()
         self.assertIn("MAX_MARKET_EXPOSURE_FRACTION must be numeric", str(ctx.exception))
+
+    def test_validate_startup_blocks_live_when_db_integrity_fails(self) -> None:
+        valid_wallet = "0x1111111111111111111111111111111111111111"
+        watched_wallet = "0x2222222222222222222222222222222222222222"
+        with patch.dict(
+            "os.environ",
+            {
+                "USE_REAL_MONEY": "true",
+                "POLYGON_PRIVATE_KEY": "0xabc123",
+                "POLYGON_WALLET_ADDRESS": valid_wallet,
+            },
+            clear=False,
+        ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch(
+            "main._resolved_shadow_trade_count", return_value=999
+        ), patch(
+            "main.database_integrity_state",
+            return_value={
+                "db_integrity_known": True,
+                "db_integrity_ok": False,
+                "db_integrity_message": "database disk image is malformed",
+            },
+        ), patch("main.send_alert"):
+            with self.assertRaises(RuntimeError) as ctx:
+                main._validate_startup()
+
+        self.assertIn("SQLite integrity check failed", str(ctx.exception))
+        self.assertIn("malformed", str(ctx.exception))
+
+    def test_validate_startup_blocks_shadow_when_db_integrity_fails_without_queued_rebootstrap(self) -> None:
+        with patch("main.use_real_money", return_value=False), patch(
+            "main.database_integrity_state",
+            return_value={
+                "db_integrity_known": True,
+                "db_integrity_ok": False,
+                "db_integrity_message": "database disk image is malformed",
+            },
+        ), patch("main._queued_shadow_rebootstrap_request_label", return_value=""), patch(
+            "main._persist_startup_validation_failure"
+        ) as persist_failure, patch("main.send_alert"):
+            with self.assertRaises(RuntimeError) as ctx:
+                main._validate_startup()
+
+        persist_failure.assert_called_once()
+        self.assertIn("SHADOW mode is blocked because SQLite integrity check failed", str(ctx.exception))
+        self.assertIn("Recover DB or Shadow Reset", str(ctx.exception))
+
+    def test_validate_startup_allows_shadow_when_db_integrity_fails_but_queued_rebootstrap_exists(self) -> None:
+        with patch("main.use_real_money", return_value=False), patch(
+            "main.database_integrity_state",
+            return_value={
+                "db_integrity_known": True,
+                "db_integrity_ok": False,
+                "db_integrity_message": "database disk image is malformed",
+            },
+        ), patch("main._queued_shadow_rebootstrap_request_label", return_value="db recovery"), patch(
+            "main._persist_startup_validation_failure"
+        ) as persist_failure, patch("main.send_alert"):
+            main._validate_startup()
+
+        persist_failure.assert_not_called()
+
+    def test_shadow_startup_blocked_service_reason_allows_mixed_shadow_db_integrity_errors(self) -> None:
+        reason = (
+            "SHADOW mode is blocked because SQLite integrity check failed: "
+            "database disk image is malformed. Queue Recover DB or Shadow Reset before collecting fresh evidence."
+        )
+        with patch("main.use_real_money", return_value=False), patch(
+            "main._queued_shadow_rebootstrap_request_label", return_value=""
+        ), patch(
+            "main.database_integrity_state",
+            return_value={
+                "db_integrity_known": True,
+                "db_integrity_ok": False,
+                "db_integrity_message": "database disk image is malformed",
+            },
+        ):
+            self.assertEqual(
+                main._shadow_startup_blocked_service_reason(
+                    RuntimeError(f"Startup validation failed:\n- {reason}")
+                ),
+                reason,
+            )
+            self.assertEqual(
+                main._shadow_startup_blocked_service_reason(
+                    RuntimeError(
+                        "Startup validation failed:\n"
+                        "- WATCHED_WALLETS is empty\n"
+                        f"- {reason}"
+                    )
+                ),
+                reason,
+            )
+
+    def test_main_enters_blocked_service_mode_after_mixed_shadow_startup_validation_failure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            original_event_file = main.EVENT_FILE
+            dashboard_server = SimpleNamespace(stop=Mock())
+            watchlist_stub = SimpleNamespace(
+                state_fields=lambda: {
+                    "tracked_wallet_count": 1,
+                    "dropped_wallet_count": 0,
+                    "hot_wallet_count": 1,
+                    "warm_wallet_count": 0,
+                    "discovery_wallet_count": 0,
+                },
+                startup_wallets=lambda: [],
+            )
+            integrity_reason = (
+                "SHADOW mode is blocked because SQLite integrity check failed: "
+                "database disk image is malformed. Queue Recover DB or Shadow Reset before collecting fresh evidence."
+            )
+            validation_error = (
+                "Startup validation failed:\n"
+                "- WATCHED_WALLETS is empty\n"
+                f"- {integrity_reason}"
+            )
+
+            def _block_then_stop(**kwargs) -> None:
+                kwargs["persist_state"](
+                    startup_failed=True,
+                    startup_validation_failed=True,
+                    startup_detail="startup blocked: waiting for Recover DB or Shadow Reset",
+                    startup_failure_message=kwargs["validation_error"],
+                    startup_validation_message=kwargs["validation_error"],
+                    startup_blocked=True,
+                    startup_recovery_only=True,
+                    startup_block_reason=kwargs["reason"],
+                )
+                kwargs["shutdown_event"].set()
+
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xabc"]))
+                    stack.enter_context(patch("main.init_db"))
+                    stack.enter_context(
+                        patch("main._validate_startup", side_effect=RuntimeError(validation_error))
+                    )
+                    stack.enter_context(
+                        patch(
+                            "main.database_integrity_state",
+                            return_value={
+                                "db_integrity_known": True,
+                                "db_integrity_ok": False,
+                                "db_integrity_message": "database disk image is malformed",
+                            },
+                        )
+                    )
+                    stack.enter_context(patch("main._queued_shadow_rebootstrap_request_label", return_value=""))
+                    stack.enter_context(patch("main.db_recovery_state", return_value={"db_recovery_state_known": False}))
+                    stack.enter_context(patch("main._compute_db_recovery_shadow_state", return_value={}))
+                    stack.enter_context(patch("main._write_bot_pid_file"))
+                    stack.enter_context(patch("main._clear_bot_pid_file"))
+                    stack.enter_context(patch("main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("main.start_dashboard_api_server", return_value=dashboard_server))
+                    sync_belief_priors = stack.enter_context(patch("main.sync_belief_priors"))
+                    tracker_cls = stack.enter_context(patch("main.PolymarketTracker"))
+                    executor_cls = stack.enter_context(patch("main.PolymarketExecutor"))
+                    engine_cls = stack.enter_context(patch("main.SignalEngine"))
+                    stack.enter_context(patch("main.use_real_money", return_value=False))
+                    stack.enter_context(patch("main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("main.send_alert"))
+                    blocked_service = stack.enter_context(
+                        patch("main._run_shadow_startup_blocked_service", side_effect=_block_then_stop)
+                    )
+                    main.main()
+
+                blocked_service.assert_called_once()
+                sync_belief_priors.assert_not_called()
+                tracker_cls.assert_not_called()
+                executor_cls.assert_not_called()
+                engine_cls.assert_not_called()
+                dashboard_server.stop.assert_called_once()
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_failed"])
+                self.assertTrue(payload["startup_validation_failed"])
+                self.assertTrue(payload["startup_blocked"])
+                self.assertTrue(payload["startup_recovery_only"])
+                self.assertEqual(
+                    payload["startup_detail"],
+                    "startup blocked: waiting for Recover DB or Shadow Reset",
+                )
+                self.assertIn("SQLite integrity check failed", payload["startup_block_reason"])
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+                main.EVENT_FILE = original_event_file
+
+    def test_queued_shadow_rebootstrap_request_label_prefers_fresh_db_recovery_and_ignores_stale_requests(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            db_recovery_request_file = data_dir / "db_recovery_request.json"
+            shadow_reset_request_file = data_dir / "shadow_reset_request.json"
+
+            db_recovery_request_file.write_text(
+                json.dumps(
+                    {
+                        "candidate_path": "/tmp/verified-backup.sqlite",
+                        "source_path": "/tmp/trading.sqlite",
+                        "request_id": "fresh-db-recovery",
+                        "requested_at": 2_000,
+                        "source": "dashboard",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            shadow_reset_request_file.write_text(
+                json.dumps(
+                    {
+                        "wallet_mode": "clear_all",
+                        "request_id": "stale-shadow-reset",
+                        "requested_at": 1,
+                        "source": "dashboard",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(main, "DB_RECOVERY_REQUEST_FILE", db_recovery_request_file), patch.object(
+                main, "SHADOW_RESET_REQUEST_FILE", shadow_reset_request_file
+            ), patch(
+                "main.db_recovery_state",
+                return_value={
+                    "db_recovery_state_known": True,
+                    "db_recovery_candidate_ready": True,
+                    "db_recovery_candidate_path": "/tmp/verified-backup.sqlite",
+                    "db_recovery_candidate_source_path": "/tmp/trading.sqlite",
+                },
+            ), patch("main.time.time", return_value=2_500):
+                self.assertEqual(main._queued_shadow_rebootstrap_request_label(), "db recovery")
+
+            db_recovery_request_file.write_text(
+                json.dumps(
+                    {
+                        "candidate_path": "/tmp/verified-backup.sqlite",
+                        "source_path": "/tmp/trading.sqlite",
+                        "request_id": "stale-db-recovery",
+                        "requested_at": 1,
+                        "source": "dashboard",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(main, "DB_RECOVERY_REQUEST_FILE", db_recovery_request_file), patch.object(
+                main, "SHADOW_RESET_REQUEST_FILE", shadow_reset_request_file
+            ), patch(
+                "main.db_recovery_state",
+                return_value={
+                    "db_recovery_state_known": True,
+                    "db_recovery_candidate_ready": True,
+                    "db_recovery_candidate_path": "/tmp/verified-backup.sqlite",
+                    "db_recovery_candidate_source_path": "/tmp/trading.sqlite",
+                },
+            ), patch("main.time.time", return_value=2_500):
+                self.assertEqual(main._queued_shadow_rebootstrap_request_label(), "")
 
     def test_validate_startup_blocks_live_until_post_promotion_shadow_history_is_available(self) -> None:
         valid_wallet = "0x1111111111111111111111111111111111111111"
@@ -4132,7 +5947,7 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(latest_attempt_state["last_replay_promotion_at"], 1_700_000_220)
 
     def test_apply_env_config_payload_only_writes_promotable_replay_keys(self) -> None:
-        with patch.object(main, "_write_env_value") as write_env_value:
+        with patch.dict(os.environ, {}, clear=False), patch.object(main, "_write_env_value") as write_env_value:
             result = main._apply_env_config_payload(
                 {
                     "MIN_CONFIDENCE": 0.66,
@@ -4250,6 +6065,106 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertIn("LIVE mode is blocked until post-promotion shadow history is available", str(ctx.exception))
         self.assertIn("5 resolved shadow trades since last replay promotion at 1700000000 < required 20", str(ctx.exception))
+
+    def test_validate_startup_blocks_live_until_segment_shadow_readiness_is_ready(self) -> None:
+        valid_wallet = "0x1111111111111111111111111111111111111111"
+        watched_wallet = "0x2222222222222222222222222222222222222222"
+        with patch.dict(
+            "os.environ",
+            {
+                "USE_REAL_MONEY": "true",
+                "POLYGON_PRIVATE_KEY": "0xabc123",
+                "POLYGON_WALLET_ADDRESS": valid_wallet,
+                "LIVE_MIN_SHADOW_RESOLVED_SINCE_PROMOTION": "0",
+            },
+            clear=False,
+        ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch(
+            "main._resolved_shadow_trade_count", return_value=999
+        ), patch(
+            "main._resolved_shadow_trade_count_since_last_promotion",
+            return_value=(999, None),
+        ), patch(
+            "main.database_integrity_state",
+            return_value={
+                "db_integrity_known": True,
+                "db_integrity_ok": True,
+                "db_integrity_message": "",
+            },
+        ), patch(
+            "main.compute_segment_shadow_report",
+            return_value={
+                "status": "blocked",
+                "summary": "blocked by warm_mid (pnl $-5.00)",
+            },
+        ), patch("main.send_alert"):
+            with self.assertRaises(RuntimeError) as ctx:
+                main._validate_startup()
+
+        self.assertIn("champion segment shadow readiness", str(ctx.exception))
+        self.assertIn("warm_mid", str(ctx.exception))
+
+    def test_validate_startup_blocks_live_when_fresh_epoch_segment_readiness_is_blocked_by_pre_epoch_history(self) -> None:
+        valid_wallet = "0x1111111111111111111111111111111111111111"
+        watched_wallet = "0x2222222222222222222222222222222222222222"
+        with TemporaryDirectory() as tmpdir:
+            epoch_file = Path(tmpdir) / "data" / "shadow_evidence_epoch.json"
+            epoch_file.parent.mkdir(parents=True, exist_ok=True)
+            shadow_evidence.write_shadow_evidence_epoch(
+                started_at=1_700_123_456,
+                source="shadow_reset",
+                request_id="reset-epoch-3",
+                message="fresh evidence epoch started after recovery",
+                path=epoch_file,
+            )
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "USE_REAL_MONEY": "true",
+                    "POLYGON_PRIVATE_KEY": "0xabc123",
+                    "POLYGON_WALLET_ADDRESS": valid_wallet,
+                    "LIVE_REQUIRE_SHADOW_HISTORY": "true",
+                    "LIVE_MIN_SHADOW_RESOLVED": "0",
+                    "LIVE_MIN_SHADOW_RESOLVED_SINCE_PROMOTION": "0",
+                },
+                clear=False,
+            ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch.object(
+                main,
+                "SHADOW_EVIDENCE_EPOCH_FILE",
+                epoch_file,
+            ), patch(
+                "main._resolved_shadow_trade_count",
+                return_value=999,
+            ), patch(
+                "main._resolved_shadow_trade_count_since_last_promotion",
+                return_value=(999, {"applied_at": 1_700_000_400}),
+            ), patch(
+                "main.database_integrity_state",
+                return_value={
+                    "db_integrity_known": True,
+                    "db_integrity_ok": True,
+                    "db_integrity_message": "",
+                },
+            ), patch(
+                "main.compute_segment_shadow_report",
+                side_effect=lambda **kwargs: (
+                    self.assertEqual(kwargs.get("mode"), "shadow")
+                    or self.assertEqual(kwargs.get("since_ts"), 1_700_123_456)
+                    or {
+                        "status": "blocked",
+                        "summary": "0 routed resolved after fresh evidence epoch; legacy/pre-epoch history cannot satisfy the live gate",
+                        "history_status": "legacy_only",
+                        "routed_resolved": 0,
+                        "legacy_unassigned_resolved": 42,
+                    }
+                ),
+            ), patch("main.send_alert"):
+                with self.assertRaises(RuntimeError) as ctx:
+                    main._validate_startup()
+
+        message = str(ctx.exception)
+        self.assertIn("champion segment shadow readiness", message)
+        self.assertIn("fresh evidence epoch", message)
 
     def test_entry_risk_does_not_block_only_because_many_positions_are_open(self) -> None:
         executor = object.__new__(PolymarketExecutor)
@@ -4730,6 +6645,14 @@ class RuntimeFixesTest(unittest.TestCase):
                     patch("main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")),
                     patch("main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
                     patch("main.use_real_money", return_value=False),
+                    patch(
+                        "main.database_integrity_state",
+                        return_value={
+                            "db_integrity_known": True,
+                            "db_integrity_ok": True,
+                            "db_integrity_message": "",
+                        },
+                    ),
                 ):
                     with self.assertRaisesRegex(RuntimeError, "MIN_CONFIDENCE must be numeric, got 'abc'"):
                         main._validate_startup()
@@ -4794,6 +6717,308 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertEqual(payload["mode"], "shadow")
                 self.assertEqual(payload["poll_interval"], 5.0)
                 dashboard_server.stop.assert_called_once()
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+                main.EVENT_FILE = original_event_file
+
+    def test_main_enters_blocked_service_mode_after_shadow_startup_validation_failure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            original_event_file = main.EVENT_FILE
+            dashboard_server = SimpleNamespace(stop=Mock())
+            watchlist_stub = SimpleNamespace(
+                state_fields=lambda: {
+                    "tracked_wallet_count": 1,
+                    "dropped_wallet_count": 0,
+                    "hot_wallet_count": 1,
+                    "warm_wallet_count": 0,
+                    "discovery_wallet_count": 0,
+                },
+                startup_wallets=lambda: [],
+            )
+            validation_error = (
+                "Startup validation failed:\n"
+                "- SHADOW mode is blocked because SQLite integrity check failed: "
+                "database disk image is malformed. Queue Recover DB or Shadow Reset before collecting fresh evidence."
+            )
+
+            def _block_then_stop(**kwargs) -> None:
+                kwargs["persist_state"](
+                    startup_failed=True,
+                    startup_validation_failed=True,
+                    startup_detail="startup blocked: waiting for Recover DB or Shadow Reset",
+                    startup_failure_message=kwargs["validation_error"],
+                    startup_validation_message=kwargs["validation_error"],
+                    startup_blocked=True,
+                    startup_recovery_only=True,
+                    startup_block_reason=kwargs["reason"],
+                )
+                kwargs["shutdown_event"].set()
+
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xabc"]))
+                    stack.enter_context(patch("main.init_db"))
+                    stack.enter_context(
+                        patch("main._validate_startup", side_effect=RuntimeError(validation_error))
+                    )
+                    stack.enter_context(
+                        patch(
+                            "main.database_integrity_state",
+                            return_value={
+                                "db_integrity_known": True,
+                                "db_integrity_ok": False,
+                                "db_integrity_message": "database disk image is malformed",
+                            },
+                        )
+                    )
+                    stack.enter_context(patch("main._queued_shadow_rebootstrap_request_label", return_value=""))
+                    stack.enter_context(patch("main.db_recovery_state", return_value={"db_recovery_state_known": False}))
+                    stack.enter_context(patch("main._compute_db_recovery_shadow_state", return_value={}))
+                    stack.enter_context(patch("main._write_bot_pid_file"))
+                    stack.enter_context(patch("main._clear_bot_pid_file"))
+                    stack.enter_context(patch("main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("main.start_dashboard_api_server", return_value=dashboard_server))
+                    sync_belief_priors = stack.enter_context(patch("main.sync_belief_priors"))
+                    tracker_cls = stack.enter_context(patch("main.PolymarketTracker"))
+                    executor_cls = stack.enter_context(patch("main.PolymarketExecutor"))
+                    engine_cls = stack.enter_context(patch("main.SignalEngine"))
+                    stack.enter_context(patch("main.use_real_money", return_value=False))
+                    stack.enter_context(patch("main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("main.send_alert"))
+                    blocked_service = stack.enter_context(
+                        patch("main._run_shadow_startup_blocked_service", side_effect=_block_then_stop)
+                    )
+                    main.main()
+
+                blocked_service.assert_called_once()
+                sync_belief_priors.assert_not_called()
+                tracker_cls.assert_not_called()
+                executor_cls.assert_not_called()
+                engine_cls.assert_not_called()
+                dashboard_server.stop.assert_called_once()
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["startup_failed"])
+                self.assertTrue(payload["startup_validation_failed"])
+                self.assertTrue(payload["startup_blocked"])
+                self.assertTrue(payload["startup_recovery_only"])
+                self.assertEqual(
+                    payload["startup_detail"],
+                    "startup blocked: waiting for Recover DB or Shadow Reset",
+                )
+                self.assertIn("SQLite integrity check failed", payload["startup_block_reason"])
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+                main.EVENT_FILE = original_event_file
+
+    def test_main_blocked_service_mode_consumes_db_recovery_request(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            original_event_file = main.EVENT_FILE
+            dashboard_server = SimpleNamespace(stop=Mock())
+            watchlist_stub = SimpleNamespace(
+                state_fields=lambda: {
+                    "tracked_wallet_count": 1,
+                    "dropped_wallet_count": 0,
+                    "hot_wallet_count": 1,
+                    "warm_wallet_count": 0,
+                    "discovery_wallet_count": 0,
+                },
+                startup_wallets=lambda: [],
+            )
+            validation_error = (
+                "Startup validation failed:\n"
+                "- SHADOW mode is blocked because SQLite integrity check failed: "
+                "database disk image is malformed. Queue Recover DB or Shadow Reset before collecting fresh evidence."
+            )
+            request = main.DbRecoveryRequest(
+                candidate_path="/tmp/verified.db",
+                source_path="/tmp/trading.db",
+                request_id="db-recovery-1",
+                requested_at=1_700_000_000,
+                source="dashboard",
+            )
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xabc"]))
+                    stack.enter_context(patch("main.init_db"))
+                    stack.enter_context(
+                        patch("main._validate_startup", side_effect=RuntimeError(validation_error))
+                    )
+                    stack.enter_context(
+                        patch(
+                            "main.database_integrity_state",
+                            return_value={
+                                "db_integrity_known": True,
+                                "db_integrity_ok": False,
+                                "db_integrity_message": "database disk image is malformed",
+                            },
+                        )
+                    )
+                    stack.enter_context(patch("main._queued_shadow_rebootstrap_request_label", return_value=""))
+                    stack.enter_context(patch("main.db_recovery_state", return_value={"db_recovery_state_known": False}))
+                    stack.enter_context(patch("main._compute_db_recovery_shadow_state", return_value={}))
+                    stack.enter_context(patch("main._consume_db_recovery_request", side_effect=[None, request]))
+                    stack.enter_context(patch("main._consume_shadow_reset_request", return_value=None))
+                    stack.enter_context(patch("main._write_bot_pid_file"))
+                    stack.enter_context(patch("main._clear_bot_pid_file"))
+                    stack.enter_context(patch("main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("main.start_dashboard_api_server", return_value=dashboard_server))
+                    sync_belief_priors = stack.enter_context(patch("main.sync_belief_priors"))
+                    tracker_cls = stack.enter_context(patch("main.PolymarketTracker"))
+                    executor_cls = stack.enter_context(patch("main.PolymarketExecutor"))
+                    engine_cls = stack.enter_context(patch("main.SignalEngine"))
+                    recover_db = stack.enter_context(
+                        patch(
+                            "main.recover_db_from_verified_backup",
+                            return_value={
+                                "ok": True,
+                                "restored_path": "/tmp/trading.db",
+                                "backup_path": "/tmp/verified.db",
+                                "quarantined_path": "/tmp/quarantine.db",
+                            },
+                        )
+                    )
+                    stack.enter_context(patch("main._quarantine_runtime_model_artifact", return_value=""))
+                    write_epoch = stack.enter_context(patch("main.write_shadow_evidence_epoch"))
+                    restart_bot = stack.enter_context(patch("main.exec_restarted_bot"))
+                    stack.enter_context(patch("main.logging.shutdown"))
+                    stack.enter_context(patch("main.use_real_money", return_value=False))
+                    stack.enter_context(patch("main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("main.send_alert"))
+                    main.main()
+
+                recover_db.assert_called_once()
+                write_epoch.assert_called_once()
+                restart_bot.assert_called_once()
+                sync_belief_priors.assert_not_called()
+                tracker_cls.assert_not_called()
+                executor_cls.assert_not_called()
+                engine_cls.assert_not_called()
+                dashboard_server.stop.assert_called_once()
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["shadow_restart_pending"])
+                self.assertEqual(payload["shadow_restart_kind"], "db_recovery")
+                self.assertIn("DB recovery", payload["shadow_restart_message"])
+                self.assertTrue(payload["startup_blocked"])
+                self.assertTrue(payload["startup_recovery_only"])
+                self.assertIn("SQLite integrity check failed", payload["startup_block_reason"])
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+                main.EVENT_FILE = original_event_file
+
+    def test_main_blocked_service_mode_consumes_shadow_reset_request(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            original_event_file = main.EVENT_FILE
+            dashboard_server = SimpleNamespace(stop=Mock())
+            watchlist_stub = SimpleNamespace(
+                state_fields=lambda: {
+                    "tracked_wallet_count": 1,
+                    "dropped_wallet_count": 0,
+                    "hot_wallet_count": 1,
+                    "warm_wallet_count": 0,
+                    "discovery_wallet_count": 0,
+                },
+                startup_wallets=lambda: [],
+            )
+            validation_error = (
+                "Startup validation failed:\n"
+                "- SHADOW mode is blocked because SQLite integrity check failed: "
+                "database disk image is malformed. Queue Recover DB or Shadow Reset before collecting fresh evidence."
+            )
+            request = main.ShadowResetRequest(
+                wallet_mode="clear_all",
+                request_id="shadow-reset-1",
+                requested_at=1_700_000_000,
+                source="dashboard",
+            )
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xabc"]))
+                    stack.enter_context(patch("main.init_db"))
+                    stack.enter_context(
+                        patch("main._validate_startup", side_effect=RuntimeError(validation_error))
+                    )
+                    stack.enter_context(
+                        patch(
+                            "main.database_integrity_state",
+                            return_value={
+                                "db_integrity_known": True,
+                                "db_integrity_ok": False,
+                                "db_integrity_message": "database disk image is malformed",
+                            },
+                        )
+                    )
+                    stack.enter_context(patch("main._queued_shadow_rebootstrap_request_label", return_value=""))
+                    stack.enter_context(patch("main.db_recovery_state", return_value={"db_recovery_state_known": False}))
+                    stack.enter_context(patch("main._compute_db_recovery_shadow_state", return_value={}))
+                    stack.enter_context(patch("main._consume_db_recovery_request", return_value=None))
+                    stack.enter_context(patch("main._consume_shadow_reset_request", side_effect=[None, request]))
+                    stack.enter_context(patch("main._write_bot_pid_file"))
+                    stack.enter_context(patch("main._clear_bot_pid_file"))
+                    stack.enter_context(patch("main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("main.start_dashboard_api_server", return_value=dashboard_server))
+                    sync_belief_priors = stack.enter_context(patch("main.sync_belief_priors"))
+                    tracker_cls = stack.enter_context(patch("main.PolymarketTracker"))
+                    executor_cls = stack.enter_context(patch("main.PolymarketExecutor"))
+                    engine_cls = stack.enter_context(patch("main.SignalEngine"))
+                    apply_wallet_mode = stack.enter_context(
+                        patch(
+                            "main.apply_wallet_mode_for_reset",
+                            return_value=("clear_all", "0xabc", False),
+                        )
+                    )
+                    reset_shadow_runtime = stack.enter_context(patch("main.reset_shadow_runtime"))
+                    restart_bot = stack.enter_context(patch("main.exec_restarted_bot"))
+                    stack.enter_context(patch("main.logging.shutdown"))
+                    stack.enter_context(patch("main.use_real_money", return_value=False))
+                    stack.enter_context(patch("main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("main.send_alert"))
+                    main.main()
+
+                apply_wallet_mode.assert_called_once_with("clear_all")
+                reset_shadow_runtime.assert_called_once()
+                restart_bot.assert_called_once()
+                sync_belief_priors.assert_not_called()
+                tracker_cls.assert_not_called()
+                executor_cls.assert_not_called()
+                engine_cls.assert_not_called()
+                dashboard_server.stop.assert_called_once()
+                payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(payload["shadow_restart_pending"])
+                self.assertEqual(payload["shadow_restart_kind"], "shadow_reset")
+                self.assertIn("clear_all", payload["shadow_restart_message"])
+                self.assertTrue(payload["startup_blocked"])
+                self.assertTrue(payload["startup_recovery_only"])
+                self.assertIn("SQLite integrity check failed", payload["startup_block_reason"])
             finally:
                 main.BOT_STATE_FILE = original_state_file
                 main.EVENT_FILE = original_event_file

@@ -6,10 +6,14 @@ import time
 from alerter import build_lines, send_alert
 from config import retrain_min_new_labels
 from db import get_conn, init_db
+from shadow_evidence import read_shadow_evidence_epoch
+from segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
 from trade_contract import RESOLVED_TRAINING_SAMPLE_SQL
 from train import check_calibration, load_training_data, min_samples_required, train
 
 logger = logging.getLogger(__name__)
+_ROUTED_RETRAIN_SEGMENT_IDS: tuple[str, ...] = (*SEGMENT_IDS, SEGMENT_FALLBACK)
+_ROUTED_RETRAIN_SEGMENT_SQL = ",".join("?" for _ in _ROUTED_RETRAIN_SEGMENT_IDS)
 
 
 def _send_retrain_alert(message: str) -> None:
@@ -97,13 +101,68 @@ def _finalize_retrain_report(
     return finalized
 
 
+def _latest_applied_replay_promotion_at() -> int:
+    conn = get_conn()
+    try:
+        try:
+            row = conn.execute(
+                """
+                SELECT applied_at
+                FROM replay_promotions
+                WHERE status='applied'
+                  AND applied_at > 0
+                ORDER BY applied_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        except Exception as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return max(int(row["applied_at"] or 0), 0) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def _active_retrain_training_scope() -> tuple[int | None, bool]:
+    epoch_state = read_shadow_evidence_epoch()
+    epoch_started_at = max(int(epoch_state.get("shadow_evidence_epoch_started_at") or 0), 0)
+    if epoch_started_at <= 0:
+        return None, False
+    promotion_applied_at = _latest_applied_replay_promotion_at()
+    return max(epoch_started_at, promotion_applied_at), True
+
+
+def _retrain_training_scope_block_reason() -> str:
+    since_ts, routed_only = _active_retrain_training_scope()
+    if since_ts is None or since_ts <= 0 or not routed_only:
+        return (
+            "current evidence window is not active yet; retrain must wait for fresh "
+            "post-reset routed shadow history"
+        )
+    return ""
+
+
 def retrain_cycle_report(signal_engine, *, trigger: str = "manual", started_at: int | None = None) -> dict[str, object]:
     started_at = int(started_at or time.time())
     sample_count = 0
     min_samples = 0
 
     try:
-        df = load_training_data()
+        scope_block_reason = _retrain_training_scope_block_reason()
+        if scope_block_reason:
+            logger.info("Auto-retrain blocked: %s", scope_block_reason)
+            return _finalize_retrain_report({
+                "ok": False,
+                "status": "blocked_shadow_snapshot",
+                "sample_count": 0,
+                "min_samples": min_samples,
+                "deployed": False,
+                "message": f"Auto-retrain blocked: {scope_block_reason}",
+            }, trigger=trigger, started_at=started_at)
+
+        since_ts, routed_only = _active_retrain_training_scope()
+        df = load_training_data(since_ts=since_ts, routed_only=routed_only)
         sample_count = len(df)
         min_samples = min_samples_required()
         if sample_count < min_samples:
@@ -118,7 +177,11 @@ def retrain_cycle_report(signal_engine, *, trigger: str = "manual", started_at: 
                 "message": message,
             }, trigger=trigger, started_at=started_at)
 
-        metrics = train(df)
+        metrics = train(
+            df,
+            training_since_ts=since_ts,
+            training_routed_only=routed_only,
+        )
         if metrics.get("skipped"):
             reason = str(metrics.get("reason") or "training skipped")
             message = f"Retrain skipped: {reason}"
@@ -225,7 +288,10 @@ def retrain_cycle(signal_engine) -> bool:
 
 
 def should_retrain_early(_signal_engine) -> bool:
+    if _retrain_training_scope_block_reason():
+        return False
     threshold = retrain_min_new_labels()
+    since_ts, routed_only = _active_retrain_training_scope()
     conn = get_conn()
     row = conn.execute(
         "SELECT trained_at FROM model_history WHERE deployed=1 ORDER BY trained_at DESC LIMIT 1"
@@ -233,18 +299,27 @@ def should_retrain_early(_signal_engine) -> bool:
     conn.close()
 
     if row is None:
-        return len(load_training_data()) >= min_samples_required()
+        return len(load_training_data(since_ts=since_ts, routed_only=routed_only)) >= min_samples_required()
 
     last_retrain = row["trained_at"]
+    where_clauses = [f"({RESOLVED_TRAINING_SAMPLE_SQL})", "COALESCE(label_applied_at, resolved_at, placed_at) > ?"]
+    params: list[object] = [last_retrain]
+    if since_ts is not None and since_ts > 0:
+        where_clauses.append("COALESCE(label_applied_at, resolved_at, placed_at) >= ?")
+        params.append(since_ts)
+    if routed_only:
+        where_clauses.append(
+            f"COALESCE(NULLIF(TRIM(segment_id), ''), '') IN ({_ROUTED_RETRAIN_SEGMENT_SQL})"
+        )
+        params.extend(_ROUTED_RETRAIN_SEGMENT_IDS)
     conn = get_conn()
     new_labeled = conn.execute(
         f"""
         SELECT COUNT(*) AS n
         FROM trade_log
-        WHERE {RESOLVED_TRAINING_SAMPLE_SQL}
-          AND COALESCE(label_applied_at, resolved_at, placed_at) > ?
+        WHERE {" AND ".join(where_clauses)}
         """,
-        (last_retrain,),
+        tuple(params),
     ).fetchone()["n"]
     conn.close()
 

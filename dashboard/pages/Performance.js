@@ -4,6 +4,7 @@ import { BarSparkline } from '../components/BarSparkline.js';
 import { Box } from '../components/Box.js';
 import { ModalOverlay } from '../components/ModalOverlay.js';
 import { StatRow } from '../components/StatRow.js';
+import { buildPerformanceResolutionDisplay } from './performanceResolution.js';
 import { fit, fitRight, formatAdaptiveDollar, formatAdaptiveNumber, formatDisplayId, formatShortDateTime, formatDollar, formatNumber, formatPct, secondsAgo, truncate, terminalHyperlink, timeUntil, shortAddress } from '../format.js';
 import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
@@ -19,6 +20,9 @@ AND COALESCE(source_action, 'buy')='buy'
 AND actual_entry_price IS NOT NULL
 AND actual_entry_shares IS NOT NULL
 AND actual_entry_size_usd IS NOT NULL
+`;
+const CHAMPION_TRADE_LOG_WHERE = `
+LOWER(COALESCE(tl.experiment_arm, 'champion')) = 'champion'
 `;
 const REALIZED_CLOSE_TS_SQL = `COALESCE(exited_at, resolved_at, placed_at)`;
 const OPEN_EXECUTED_ENTRY_WHERE = `
@@ -61,6 +65,7 @@ SELECT
 FROM trade_log tl
 WHERE tl.real_money = 0
   AND ${OPEN_EXECUTED_ENTRY_WHERE}
+  AND ${CHAMPION_TRADE_LOG_WHERE}
 ORDER BY tl.placed_at DESC, tl.id DESC
 `;
 const LIVE_POSITIONS_SQL = `
@@ -73,6 +78,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -83,6 +89,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -94,6 +101,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -104,6 +112,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -116,6 +125,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -126,6 +136,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -222,6 +233,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -232,6 +244,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -265,6 +278,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
@@ -277,6 +291,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
@@ -291,6 +306,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
@@ -303,6 +319,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.market_close_ts IS NOT NULL
         AND tl.market_close_ts > 0
@@ -348,6 +365,7 @@ SELECT
   ROUND(CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END, 3) AS pnl_usd
 FROM trade_log tl
 WHERE ${EXECUTED_ENTRY_WHERE}
+  AND ${CHAMPION_TRADE_LOG_WHERE}
   AND (CASE WHEN tl.real_money = 0 THEN tl.shadow_pnl_usd ELSE tl.actual_pnl_usd END) IS NOT NULL
 ORDER BY COALESCE(NULLIF(tl.exited_at, 0), NULLIF(tl.resolved_at, 0), NULLIF(tl.market_close_ts, 0), tl.placed_at) DESC, tl.id DESC
 `;
@@ -1659,7 +1677,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     ];
     const summaryRightStats = [
         {
-            label: 'Current balance',
+            label: activeMode === 'live' ? 'Current balance' : 'Estimated shadow bankroll',
             value: activeBalance == null ? '-' : `$${activeBalance.toFixed(3)}`,
             color: activeBalance != null ? theme.white : theme.dim
         },
@@ -1866,8 +1884,15 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                 const actionColor = outcomeColor(actionText);
                 const entryColor = row.entry_price > 0 ? probabilityColor(row.entry_price) : theme.dim;
                 const confidenceColor = row.confidence != null ? probabilityColor(row.confidence) : theme.dim;
-                const resolutionTs = row.resolution_ts || row.market_close_ts;
-                const resolutionColor = row.status === 'waiting' || row.status === 'cashing_out' ? theme.red : theme.dim;
+                const resolutionDisplay = buildPerformanceResolutionDisplay(row, nowTs, {
+                    formatShortDateTime,
+                    timeUntil
+                });
+                const resolutionColor = resolutionDisplay.resolutionTone === 'red'
+                    ? theme.red
+                    : resolutionDisplay.resolutionTone === 'yellow'
+                        ? theme.yellow
+                        : theme.dim;
                 const shares = row.shares;
                 const toWin = row.status === 'exit'
                     ? row.exit_size_usd
@@ -1878,32 +1903,13 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                             : null;
                 const profit = displayProfit(row);
                 const cashOutNow = displayCashOutNow(row);
-                const statusText = row.status === 'cashing_out'
-                    ? 'cashing out'
-                    : row.status === 'win'
-                    ? 'win'
-                    : row.status === 'lose'
-                        ? 'lose'
-                        : row.status === 'exit'
-                            ? profit != null && profit > 0
-                                ? 'exit up'
-                                : profit != null && profit < 0
-                                    ? 'exit down'
-                                    : 'exited'
-                            : 'waiting';
-                const statusColor = row.status === 'cashing_out'
-                    ? theme.yellow
-                    : row.status === 'win'
+                const statusColor = resolutionDisplay.statusTone === 'green'
                     ? theme.green
-                    : row.status === 'lose'
+                    : resolutionDisplay.statusTone === 'red'
                         ? theme.red
-                        : row.status === 'exit'
-                            ? profit != null && profit > 0
-                                ? theme.green
-                                : profit != null && profit < 0
-                                    ? theme.red
-                                    : theme.yellow
-                            : theme.yellow;
+                        : resolutionDisplay.statusTone === 'yellow'
+                            ? theme.yellow
+                            : theme.dim;
                 const toWinColor = toWin != null ? positiveDollarColor(toWin, 100) : theme.dim;
                 const profitColor = profit == null
                     ? theme.dim
@@ -1949,10 +1955,10 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                         React.createElement(Text, { backgroundColor: rowBackground }, " "))) : null,
                     React.createElement(Text, { color: confidenceColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(formatPct(row.confidence, 1), positionsLayout.confidenceWidth)),
                     React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                    React.createElement(Text, { color: resolutionColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(formatShortDateTime(resolutionTs), resolutionWidth)),
+                    React.createElement(Text, { color: resolutionColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(resolutionDisplay.resolutionLabel, resolutionWidth)),
                     showTtr || showStatus ? (React.createElement(React.Fragment, null,
                         React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                        React.createElement(Text, { color: showStatus ? statusColor : resolutionColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(showStatus ? statusText : timeUntil(row.market_close_ts), trailingWidth)))) : null));
+                        React.createElement(Text, { color: showStatus ? statusColor : resolutionColor, backgroundColor: rowBackground, bold: isSelected }, fitRight(showStatus ? resolutionDisplay.statusLabel : resolutionDisplay.ttrLabel, trailingWidth)))) : null));
             }))));
     };
     const renderPageBody = () => (React.createElement(React.Fragment, null,

@@ -4,18 +4,41 @@ from typing import Any
 
 DATA_CONTRACT_VERSION = 6
 MODEL_LABEL_MODE = "expected_return_weighted_counterfactual_v1"
+DEFAULT_EXPERIMENT_ARM = "champion"
+CHALLENGER_EXPERIMENT_ARM = "challenger"
 RESOLVED_PNL_SQL = "COALESCE(actual_pnl_usd, shadow_pnl_usd)"
 REALIZED_CLOSE_TS_SQL = "COALESCE(exited_at, resolved_at, placed_at)"
 PROFITABLE_TRADE_SQL = f"CASE WHEN {RESOLVED_PNL_SQL} > 0 THEN 1 ELSE 0 END"
-OBSERVED_BUY_SQL = "COALESCE(source_action, 'buy')='buy'"
+
+
+def experiment_arm_expr(alias: str = "") -> str:
+    prefix = f"{alias}." if alias else ""
+    return f"LOWER(COALESCE({prefix}experiment_arm, '{DEFAULT_EXPERIMENT_ARM}'))"
+
+
+def champion_experiment_arm_sql(alias: str = "") -> str:
+    return f"{experiment_arm_expr(alias)} = '{DEFAULT_EXPERIMENT_ARM}'"
+
+
+def non_challenger_experiment_arm_sql(alias: str = "") -> str:
+    return champion_experiment_arm_sql(alias)
+
+
+NON_CHALLENGER_EXPERIMENT_ARM_SQL = non_challenger_experiment_arm_sql()
+
+OBSERVED_BUY_SQL = f"""
+COALESCE(source_action, 'buy')='buy'
+AND {non_challenger_experiment_arm_sql()}
+"""
 RESOLVED_OBSERVED_BUY_SQL = f"""
 {OBSERVED_BUY_SQL}
 AND {RESOLVED_PNL_SQL} IS NOT NULL
 """
 
-EXECUTED_ENTRY_SQL = """
+EXECUTED_ENTRY_SQL = f"""
 skipped=0
 AND COALESCE(source_action, 'buy')='buy'
+AND {non_challenger_experiment_arm_sql()}
 AND actual_entry_price IS NOT NULL
 AND actual_entry_shares IS NOT NULL
 AND actual_entry_size_usd IS NOT NULL

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -243,6 +244,7 @@ class ShadowResetTest(unittest.TestCase):
             manual_retrain_file = data_dir / "manual_retrain_request.json"
             manual_trade_file = data_dir / "manual_trade_request.json"
             telegram_state_file = data_dir / "telegram_state.json"
+            shadow_evidence_epoch_file = data_dir / "shadow_evidence_epoch.json"
             background_log = log_dir / "shadow_runtime.out"
             backup_db = backups_dir / "trading_before_shadow_reset.db"
             model_artifact = save_dir / "model.joblib"
@@ -404,6 +406,8 @@ class ShadowResetTest(unittest.TestCase):
 
                 shadow_reset.reset_shadow_runtime()
 
+                epoch_payload = json.loads(shadow_evidence_epoch_file.read_text(encoding="utf-8"))
+
                 conn = db.get_conn()
                 try:
                     model_history_count = conn.execute("SELECT COUNT(*) FROM model_history").fetchone()[0]
@@ -437,6 +441,9 @@ class ShadowResetTest(unittest.TestCase):
             self.assertTrue(data_dir.exists())
             self.assertTrue(log_dir.exists())
             self.assertTrue(db_path.exists())
+            self.assertTrue(shadow_evidence_epoch_file.exists())
+            self.assertGreater(int(epoch_payload.get("started_at") or 0), 0)
+            self.assertEqual(str(epoch_payload.get("source") or ""), "shadow_reset")
             self.assertFalse(event_file.exists())
             self.assertFalse(bot_state_file.exists())
             self.assertFalse(pid_file.exists())

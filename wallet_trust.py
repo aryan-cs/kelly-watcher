@@ -23,7 +23,13 @@ from config import (
     wallet_trusted_min_resolved_copied_buys,
 )
 from db import get_conn
-from trade_contract import OBSERVED_BUY_SQL, RESOLVED_EXECUTED_ENTRY_SQL, RESOLVED_OBSERVED_BUY_SQL, resolved_pnl_expr
+from trade_contract import (
+    NON_CHALLENGER_EXPERIMENT_ARM_SQL,
+    OBSERVED_BUY_SQL,
+    RESOLVED_EXECUTED_ENTRY_SQL,
+    RESOLVED_OBSERVED_BUY_SQL,
+    resolved_pnl_expr,
+)
 
 OVERRIDE_CACHE_TTL_SECONDS = 60.0
 _override_cache: tuple[float, dict[str, "WalletSkipOverrideStats"]] | None = None
@@ -293,11 +299,12 @@ def _load_wallet_skip_override_stats() -> dict[str, WalletSkipOverrideStats]:
     conn = get_conn()
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT trader_address, skip_reason, counterfactual_return
             FROM trade_log
             WHERE skipped=1
               AND COALESCE(source_action, 'buy')='buy'
+              AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
               AND counterfactual_return IS NOT NULL
             """
         ).fetchall()

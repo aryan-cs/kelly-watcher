@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import tempfile
 import uuid
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -49,6 +52,7 @@ from config import (
     model_edge_high_threshold,
     model_edge_mid_confidence,
     model_edge_mid_threshold,
+    model_path,
     max_live_drawdown_pct,
     max_live_health_failures,
     max_market_horizon_seconds,
@@ -110,10 +114,25 @@ from config import (
     xgboost_allowed_entry_price_bands,
 )
 from dashboard_api import DashboardApiServer, ENV_PATH, _write_env_value, start_dashboard_api_server
-from db import DB_PATH, get_conn, init_db
+from db import (
+    DB_PATH,
+    create_verified_backup,
+    database_integrity_state,
+    db_recovery_state,
+    get_conn,
+    get_conn_for_path,
+    init_db,
+    recover_db_from_verified_backup,
+)
 from dedup import DedupeCache
 from economics import EntryEconomics
-from evaluator import daily_report, resolve_shadow_trades
+from evaluator import (
+    SEGMENT_SHADOW_MIN_RESOLVED,
+    UNASSIGNED_SEGMENT_ID,
+    compute_segment_shadow_report,
+    daily_report,
+    resolve_shadow_trades,
+)
 from executor import PolymarketExecutor
 from kelly import size_signal
 from kelly_watcher.shadow_reset import (
@@ -124,8 +143,11 @@ from kelly_watcher.shadow_reset import (
 )
 from market_scorer import MarketScorer, build_market_features
 from market_urls import market_url_from_metadata
+from performance_preview import compute_tracker_preview_summary
 from replay import REPLAY_POLICY_CONFIG_KEY_MAP
+from segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
 from signal_engine import SignalEngine
+from shadow_evidence import read_shadow_evidence_epoch, write_shadow_evidence_epoch
 from telegram_runtime import service_telegram_commands
 from trade_contract import OPEN_EXECUTED_ENTRY_SQL, RESOLVED_EXECUTED_ENTRY_SQL
 from tracker import PolymarketTracker, TradeEvent
@@ -134,10 +156,13 @@ from runtime_paths import (
     BOT_PID_FILE,
     BOT_STATE_FILE,
     DATA_DIR,
+    DB_RECOVERY_REQUEST_FILE,
     EVENT_FILE,
     LOG_DIR,
     MANUAL_RETRAIN_REQUEST_FILE,
     MANUAL_TRADE_REQUEST_FILE,
+    REPO_ROOT,
+    SHADOW_EVIDENCE_EPOCH_FILE,
     SHADOW_RESET_REQUEST_FILE,
 )
 from wallet_trust import (
@@ -179,6 +204,12 @@ _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECA
 class ShadowResetRequested(Exception):
     def __init__(self, request: ShadowResetRequest) -> None:
         super().__init__(f"shadow reset requested ({request.wallet_mode})")
+        self.request = request
+
+
+class DbRecoveryRequested(Exception):
+    def __init__(self, request: DbRecoveryRequest) -> None:
+        super().__init__("DB recovery requested")
         self.request = request
 
 
@@ -339,6 +370,15 @@ class ShadowResetRequest:
 
 
 @dataclass(frozen=True)
+class DbRecoveryRequest:
+    candidate_path: str
+    source_path: str
+    request_id: str
+    requested_at: int
+    source: str
+
+
+@dataclass(frozen=True)
 class EntryPauseState:
     key: str
     reason: str
@@ -490,6 +530,9 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "startup_failure_message": "",
         "startup_validation_failed": False,
         "startup_validation_message": "",
+        "startup_blocked": False,
+        "startup_recovery_only": False,
+        "startup_block_reason": "",
         "last_poll_at": 0,
         "last_poll_duration_s": 0.0,
         "bankroll_usd": None,
@@ -509,6 +552,7 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "manual_retrain_requested_at": 0,
         "manual_retrain_message": "",
         "shadow_restart_pending": False,
+        "shadow_restart_kind": "",
         "shadow_restart_message": "",
         "manual_trade_pending": False,
         "manual_trade_requested_at": 0,
@@ -546,12 +590,125 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "last_applied_replay_promotion_pnl_delta_usd": None,
         "shadow_history_state_known": False,
         "resolved_shadow_trade_count": 0,
+        "shadow_history_all_time_resolved": 0,
         "live_require_shadow_history_enabled": False,
         "live_min_shadow_resolved": 0,
         "live_shadow_history_total_ready": True,
         "resolved_shadow_since_last_promotion": 0,
+        "shadow_history_current_baseline_at": 0,
+        "shadow_history_current_baseline_label": "initial policy",
         "live_min_shadow_resolved_since_last_promotion": 0,
         "live_shadow_history_ready": True,
+        "shadow_history_epoch_known": False,
+        "shadow_history_epoch_started_at": 0,
+        "shadow_history_epoch_source_label": "",
+        "shadow_history_epoch_active_scope_label": "all history",
+        "shadow_history_epoch_status": "all_history",
+        "shadow_history_epoch_total_resolved": 0,
+        "shadow_history_epoch_ready_count": 0,
+        "shadow_history_epoch_blocked_count": 0,
+        "shadow_history_epoch_min_resolved": 0,
+        "shadow_history_epoch_routed_resolved": 0,
+        "shadow_history_epoch_legacy_resolved": 0,
+        "shadow_history_epoch_coverage_pct": None,
+        "shadow_history_epoch_ready": False,
+        "shadow_history_epoch_block_reason": "",
+        "shadow_evidence_epoch_known": False,
+        "shadow_evidence_epoch_started_at": 0,
+        "shadow_evidence_epoch_source": "",
+        "shadow_evidence_epoch_source_label": "",
+        "shadow_evidence_epoch_active_scope_label": "all history",
+        "shadow_evidence_epoch_status": "all_history",
+        "shadow_evidence_epoch_request_id": "",
+        "shadow_evidence_epoch_message": "",
+        "routed_shadow_epoch_known": False,
+        "routed_shadow_epoch_started_at": 0,
+        "routed_shadow_epoch_source_label": "",
+        "routed_shadow_epoch_active_scope_label": "all history",
+        "routed_shadow_epoch_status": "all_history",
+        "shadow_snapshot_state_known": False,
+        "shadow_snapshot_scope": "all_history",
+        "shadow_snapshot_started_at": 0,
+        "shadow_snapshot_status": "checking",
+        "shadow_snapshot_resolved": 0,
+        "shadow_snapshot_routed_resolved": 0,
+        "shadow_snapshot_legacy_resolved": 0,
+        "shadow_snapshot_coverage_pct": None,
+        "shadow_snapshot_ready": False,
+        "shadow_snapshot_total_pnl_usd": None,
+        "shadow_snapshot_return_pct": None,
+        "shadow_snapshot_profit_factor": None,
+        "shadow_snapshot_expectancy_usd": None,
+        "shadow_snapshot_block_reason": "",
+        "shadow_snapshot_block_state": "",
+        "shadow_snapshot_optimization_block_reason": "",
+        "routed_shadow_state_known": False,
+        "routed_shadow_status": "checking",
+        "routed_shadow_min_resolved": 0,
+        "routed_shadow_routed_resolved": 0,
+        "routed_shadow_legacy_resolved": 0,
+        "routed_shadow_total_resolved": 0,
+        "routed_shadow_coverage_pct": None,
+        "routed_shadow_ready": False,
+        "routed_shadow_block_reason": "",
+        "routed_shadow_total_pnl_usd": None,
+        "routed_shadow_return_pct": None,
+        "routed_shadow_profit_factor": None,
+        "routed_shadow_expectancy_usd": None,
+        "routed_shadow_data_warning": "",
+        "shadow_segment_state_known": False,
+        "shadow_segment_status": "checking",
+        "shadow_segment_scope": "all_history",
+        "shadow_segment_scope_started_at": 0,
+        "shadow_segment_min_resolved": 0,
+        "shadow_segment_total": 0,
+        "shadow_segment_ready_count": 0,
+        "shadow_segment_positive_count": 0,
+        "shadow_segment_negative_count": 0,
+        "shadow_segment_blocked_count": 0,
+        "shadow_segment_history_status": "empty",
+        "shadow_segment_routed_signals": 0,
+        "shadow_segment_routed_acted": 0,
+        "shadow_segment_routed_resolved": 0,
+        "shadow_segment_legacy_resolved": 0,
+        "shadow_segment_routing_coverage_pct": None,
+        "shadow_segment_summary_json": "[]",
+        "shadow_segment_block_reason": "",
+        "db_integrity_known": False,
+        "db_integrity_ok": True,
+        "db_integrity_message": "",
+        "db_recovery_state_known": False,
+        "db_recovery_candidate_ready": False,
+        "db_recovery_candidate_path": "",
+        "db_recovery_candidate_source_path": "",
+        "db_recovery_candidate_message": "",
+        "db_recovery_candidate_mode": "unavailable",
+        "db_recovery_candidate_evidence_ready": False,
+        "db_recovery_candidate_class_reason": "",
+        "db_recovery_latest_verified_backup_path": "",
+        "db_recovery_latest_verified_backup_at": 0,
+        "db_recovery_shadow_state_known": False,
+        "db_recovery_shadow_candidate_path": "",
+        "db_recovery_shadow_status": "checking",
+        "db_recovery_shadow_acted": 0,
+        "db_recovery_shadow_resolved": 0,
+        "db_recovery_shadow_total_pnl_usd": None,
+        "db_recovery_shadow_return_pct": None,
+        "db_recovery_shadow_profit_factor": None,
+        "db_recovery_shadow_expectancy_usd": None,
+        "db_recovery_shadow_data_warning": "",
+        "db_recovery_shadow_segment_total": 0,
+        "db_recovery_shadow_segment_ready_count": 0,
+        "db_recovery_shadow_segment_blocked_count": 0,
+        "db_recovery_shadow_history_status": "empty",
+        "db_recovery_shadow_min_resolved": 0,
+        "db_recovery_shadow_routed_resolved": 0,
+        "db_recovery_shadow_legacy_resolved": 0,
+        "db_recovery_shadow_total_resolved": 0,
+        "db_recovery_shadow_routing_coverage_pct": None,
+        "db_recovery_shadow_ready": False,
+        "db_recovery_shadow_segment_summary_json": "[]",
+        "db_recovery_shadow_block_reason": "",
         "loaded_scorer": "heuristic",
         "loaded_model_backend": "heuristic",
         "model_artifact_exists": False,
@@ -566,6 +723,11 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "model_load_error": "",
         "model_prediction_mode": "",
         "model_loaded_at": 0,
+        "model_training_scope": "unknown",
+        "model_training_since_ts": 0,
+        "model_training_routed_only": False,
+        "model_training_provenance_trusted": False,
+        "model_training_block_reason": "",
     }
 
 
@@ -652,6 +814,9 @@ def _persist_startup_failure_state(
         startup_failure_message=str(message or "").strip(),
         startup_validation_failed=bool(validation_failed),
         startup_validation_message=str(message or "").strip() if validation_failed else "",
+        startup_blocked=False,
+        startup_recovery_only=False,
+        startup_block_reason="",
     )
     for loader, payload_builder in (
         (_latest_retrain_run, _latest_retrain_state_payload),
@@ -666,21 +831,69 @@ def _persist_startup_failure_state(
         if row is not None:
             state.update(payload_builder(row))
     try:
-        total_resolved_shadow = _resolved_shadow_trade_count()
-        resolved_since_promotion, last_promotion = _resolved_shadow_trade_count_since_last_promotion()
+        shadow_history_metrics, last_promotion = _shadow_history_gate_metrics()
         require_total_history = live_require_shadow_history()
         minimum_total = live_min_shadow_resolved() if require_total_history else 0
         minimum_since_promotion = max(live_min_shadow_resolved_since_promotion(), 0)
         state.update(
             _shadow_history_state_payload(
-                total_resolved_shadow=total_resolved_shadow,
-                resolved_since_promotion=resolved_since_promotion,
+                total_resolved_shadow=int(shadow_history_metrics["current_window_resolved"] or 0),
+                resolved_since_promotion=int(shadow_history_metrics["current_baseline_resolved"] or 0),
                 last_promotion=last_promotion,
                 require_total_history=require_total_history,
                 minimum_total=minimum_total,
                 minimum_since_promotion=minimum_since_promotion,
+                all_time_resolved_shadow=int(shadow_history_metrics["all_time_resolved"] or 0),
+                routed_resolved_shadow=int(
+                    shadow_history_metrics["routed_current_window_resolved"] or 0
+                ),
             )
         )
+    except Exception:
+        pass
+    try:
+        since_ts, _ = _current_shadow_segment_scope_since_ts()
+        state.update(
+            _segment_shadow_state_payload(
+                compute_segment_shadow_report(
+                    mode="shadow",
+                    since_ts=since_ts,
+                )
+            )
+        )
+    except Exception as exc:
+        state.update(_segment_shadow_error_payload(str(exc)))
+    try:
+        preview = compute_tracker_preview_summary(
+            mode="shadow",
+            use_bot_state_balance=False,
+            since_ts=_shadow_evidence_epoch_started_at(),
+            apply_shadow_evidence_epoch=False,
+        )
+        state.update(
+            _shadow_snapshot_state_payload(
+                preview,
+                all_time_resolved=_resolved_shadow_trade_count(),
+            )
+        )
+        state.update(
+            _routed_shadow_performance_state_payload(
+                preview
+            )
+        )
+    except Exception as exc:
+        state.update(_shadow_snapshot_error_payload(str(exc)))
+        state.update(_routed_shadow_performance_error_payload(str(exc)))
+    try:
+        state.update(database_integrity_state())
+    except Exception:
+        pass
+    try:
+        state.update(db_recovery_state())
+    except Exception:
+        pass
+    try:
+        state.update(_compute_db_recovery_shadow_state())
     except Exception:
         pass
     _write_bot_state(replace=True, **state)
@@ -1178,6 +1391,38 @@ def _service_manual_trade_request(handle_request) -> bool:
         return False
 
 
+def _configured_model_artifact_path() -> Path:
+    artifact_path = Path(model_path())
+    if artifact_path.is_absolute():
+        return artifact_path
+    return (REPO_ROOT / artifact_path).resolve()
+
+
+def _quarantine_runtime_model_artifact(*, reason: str) -> str:
+    artifact_path = _configured_model_artifact_path()
+    if not artifact_path.exists():
+        return ""
+    quarantine_dir = artifact_path.parent / "artifact_quarantine"
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    normalized_reason = re.sub(r"[^a-z0-9_-]+", "_", str(reason or "quarantine").strip().lower()) or "quarantine"
+    candidate = quarantine_dir / f"{artifact_path.stem}.{normalized_reason}.{timestamp}{artifact_path.suffix}"
+    attempt = 1
+    while candidate.exists():
+        candidate = quarantine_dir / (
+            f"{artifact_path.stem}.{normalized_reason}.{timestamp}_{attempt}{artifact_path.suffix}"
+        )
+        attempt += 1
+    artifact_path.replace(candidate)
+    logger.warning(
+        "Quarantined runtime model artifact %s to %s (%s)",
+        artifact_path,
+        candidate,
+        normalized_reason,
+    )
+    return str(candidate)
+
+
 def _parse_shadow_reset_request_payload(payload: dict) -> ShadowResetRequest:
     if not isinstance(payload, dict):
         raise ValueError("shadow reset request payload must be an object")
@@ -1192,6 +1437,20 @@ def _parse_shadow_reset_request_payload(payload: dict) -> ShadowResetRequest:
         requested_at=int(payload.get("requested_at") or 0),
         source=str(payload.get("source") or "dashboard").strip().lower() or "dashboard",
     )
+
+
+def _peek_shadow_reset_request() -> ShadowResetRequest | None:
+    if not SHADOW_RESET_REQUEST_FILE.exists():
+        return None
+    try:
+        payload = json.loads(SHADOW_RESET_REQUEST_FILE.read_text(encoding="utf-8"))
+        request = _parse_shadow_reset_request_payload(payload)
+    except Exception:
+        return None
+    now_ts = int(time.time())
+    if request.requested_at > 0 and (now_ts - request.requested_at) > 900:
+        return None
+    return request
 
 
 def _consume_shadow_reset_request() -> ShadowResetRequest | None:
@@ -1231,6 +1490,127 @@ def _consume_shadow_reset_request() -> ShadowResetRequest | None:
         request.request_id or "-",
     )
     return request
+
+
+def _canonical_db_recovery_request_path(path_text: str) -> str:
+    raw_path = str(path_text or "").strip()
+    if not raw_path:
+        return ""
+    try:
+        return str(Path(raw_path).expanduser().resolve(strict=False))
+    except Exception:
+        return str(Path(raw_path).expanduser().absolute())
+
+
+def _validated_db_recovery_request_paths(candidate_path: str, source_path: str) -> tuple[str, str]:
+    recovery = db_recovery_state()
+    expected_candidate_path = _canonical_db_recovery_request_path(
+        str(recovery.get("db_recovery_candidate_path") or "").strip()
+    )
+    expected_source_path = _canonical_db_recovery_request_path(
+        str(recovery.get("db_recovery_candidate_source_path") or DB_PATH).strip()
+    )
+    requested_candidate_path = _canonical_db_recovery_request_path(candidate_path)
+    requested_source_path = _canonical_db_recovery_request_path(source_path or str(DB_PATH))
+
+    if not bool(recovery.get("db_recovery_candidate_ready")) or not expected_candidate_path:
+        raise ValueError("DB recovery request must target the current verified backup candidate")
+    if requested_candidate_path != expected_candidate_path:
+        raise ValueError(
+            "DB recovery request candidate_path does not match the current verified backup candidate"
+        )
+    if requested_source_path != expected_source_path:
+        raise ValueError(
+            "DB recovery request source_path does not match the current verified recovery source"
+        )
+    return expected_candidate_path, expected_source_path
+
+
+def _parse_db_recovery_request_payload(payload: dict) -> DbRecoveryRequest:
+    if not isinstance(payload, dict):
+        raise ValueError("DB recovery request payload must be an object")
+
+    candidate_path = str(payload.get("candidate_path") or payload.get("candidatePath") or "").strip()
+    source_path = str(
+        payload.get("candidate_source_path")
+        or payload.get("source_path")
+        or payload.get("sourcePath")
+        or ""
+    ).strip()
+    if not candidate_path:
+        raise ValueError("DB recovery request must include candidate_path")
+    candidate_path, source_path = _validated_db_recovery_request_paths(candidate_path, source_path)
+
+    return DbRecoveryRequest(
+        candidate_path=candidate_path,
+        source_path=source_path,
+        request_id=str(payload.get("request_id") or "").strip(),
+        requested_at=int(payload.get("requested_at") or 0),
+        source=str(payload.get("source") or "dashboard").strip().lower() or "dashboard",
+    )
+
+
+def _peek_db_recovery_request() -> DbRecoveryRequest | None:
+    if not DB_RECOVERY_REQUEST_FILE.exists():
+        return None
+    try:
+        payload = json.loads(DB_RECOVERY_REQUEST_FILE.read_text(encoding="utf-8"))
+        request = _parse_db_recovery_request_payload(payload)
+    except Exception:
+        return None
+    now_ts = int(time.time())
+    if request.requested_at > 0 and (now_ts - request.requested_at) > 900:
+        return None
+    return request
+
+
+def _consume_db_recovery_request() -> DbRecoveryRequest | None:
+    if not DB_RECOVERY_REQUEST_FILE.exists():
+        return None
+
+    try:
+        payload = json.loads(DB_RECOVERY_REQUEST_FILE.read_text(encoding="utf-8"))
+        request = _parse_db_recovery_request_payload(payload)
+    except Exception as exc:
+        logger.warning("Discarding invalid DB recovery request: %s", exc)
+        try:
+            DB_RECOVERY_REQUEST_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return None
+
+    try:
+        DB_RECOVERY_REQUEST_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+    now_ts = int(time.time())
+    if request.requested_at > 0 and (now_ts - request.requested_at) > 900:
+        logger.info(
+            "Ignoring stale DB recovery request from %s (age=%ss request_id=%s)",
+            request.source,
+            now_ts - request.requested_at,
+            request.request_id or "-",
+        )
+        return None
+
+    logger.warning(
+        "DB recovery requested by %s (candidate=%s request_id=%s)",
+        request.source,
+        request.candidate_path,
+        request.request_id or "-",
+    )
+    return request
+
+
+def _queued_shadow_rebootstrap_request_label() -> str:
+    db_recovery_request = _peek_db_recovery_request()
+    if db_recovery_request is not None:
+        return "db recovery"
+    shadow_reset_request = _peek_shadow_reset_request()
+    if shadow_reset_request is not None:
+        return "shadow reset"
+    return ""
 
 
 def _manual_trade_event(
@@ -1777,6 +2157,7 @@ def process_event(
             **_event_market_payload(event),
             "side": event.side,
             "action": event.action,
+            "watch_tier": event.watch_tier,
             "price": event.price,
             "shares": event.shares,
             "amount_usd": event.size_usd,
@@ -1807,6 +2188,7 @@ def process_event(
                     **_event_market_payload(event),
                     "side": event.side,
                     "action": event.action,
+                    "watch_tier": event.watch_tier,
                     "price": round(execution_price, 6),
                     "shares": round(result.shares, 6),
                     "amount_usd": result.dollar_size,
@@ -1969,7 +2351,21 @@ def process_event(
         market_f,
         rough_size,
         trader_address=event.trader_address,
+        watch_tier=event.watch_tier,
     )
+    signal = dict(signal)
+    signal["watch_tier"] = event.watch_tier or str(signal.get("watch_tier") or "")
+    segment_meta = signal.get("segment")
+    if isinstance(segment_meta, dict):
+        signal["segment_id"] = str(segment_meta.get("segment_id") or signal.get("segment_id") or "")
+        signal["segment_watch_tier"] = str(segment_meta.get("watch_tier") or signal["watch_tier"] or "")
+        signal["segment_horizon_bucket"] = str(segment_meta.get("horizon_bucket") or "")
+        signal["policy_id"] = str(segment_meta.get("policy_id") or signal.get("policy_id") or "")
+        signal["policy_bundle_version"] = segment_meta.get("policy_bundle_version") or signal.get(
+            "policy_bundle_version"
+        )
+        signal["segment_policy_id"] = signal["policy_id"]
+        signal["segment_policy_bundle_version"] = signal["policy_bundle_version"]
     if signal.get("veto"):
         reason = _humanize_market_veto(signal["veto"])
         executor.log_skip(
@@ -2331,6 +2727,7 @@ def process_event(
                 **_event_market_payload(event),
                 "side": event.side,
                 "action": event.action,
+                "watch_tier": event.watch_tier,
                 "price": round(execution_price, 6),
                 "shares": round(result.shares, 6),
                 "amount_usd": result.dollar_size,
@@ -2346,6 +2743,11 @@ def process_event(
                 "belief_evidence": signal.get("belief_evidence"),
                 "trader_score": signal.get("trader", {}).get("score"),
                 "market_score": signal.get("market", {}).get("score"),
+                "segment_id": signal.get("segment_id"),
+                "watch_tier": signal.get("watch_tier"),
+                "segment_horizon_bucket": signal.get("segment_horizon_bucket"),
+                "segment_policy_id": signal.get("segment_policy_id"),
+                "segment_policy_bundle_version": signal.get("segment_policy_bundle_version"),
                 "wallet_trust_tier": trust_state.tier,
                 "wallet_trust_note": sizing.get("wallet_trust_note"),
                 "wallet_quality_score": sizing.get("wallet_quality_score"),
@@ -2363,8 +2765,83 @@ def process_event(
 
 
 def _backup_db() -> None:
-    if DB_PATH.exists():
-        shutil.copy(DB_PATH, DB_PATH.with_suffix(".db.bak"))
+    result = create_verified_backup()
+    if bool(result.get("ok")):
+        logger.info("Verified DB backup created at %s", result.get("backup_path"))
+    else:
+        logger.warning("Verified DB backup skipped: %s", result.get("message") or "unknown error")
+
+
+def _shadow_history_trust_block_reason(action_label: str) -> str:
+    integrity = database_integrity_state()
+    if integrity.get("db_integrity_known") and not integrity.get("db_integrity_ok"):
+        detail = str(integrity.get("db_integrity_message") or "").splitlines()[0].strip()
+        suffix = f" ({detail})" if detail else ""
+        return (
+            f"{str(action_label or 'shadow optimization').strip() or 'shadow optimization'} blocked: "
+            f"SQLite integrity check failed; shadow history is not trustworthy{suffix}"
+        )
+    return ""
+
+
+def _segment_routed_history_trust_block_reason(action_label: str) -> str:
+    try:
+        since_ts, _ = _current_shadow_segment_scope_since_ts()
+        report = compute_segment_shadow_report(mode="shadow", since_ts=since_ts)
+    except Exception as exc:
+        return (
+            f"{str(action_label or 'shadow optimization').strip() or 'shadow optimization'} blocked: "
+            f"champion segment shadow history could not be evaluated ({exc})"
+        )
+
+    routed_state = _routed_shadow_gate_state(report)
+    if bool(routed_state.get("routed_shadow_ready")):
+        return ""
+    detail = str(routed_state.get("routed_shadow_block_reason") or "").strip()
+    return (
+        f"{str(action_label or 'shadow optimization').strip() or 'shadow optimization'} blocked: "
+        f"{detail or 'routed post-segmentation shadow evidence is insufficient'}"
+    )
+
+
+def _shadow_snapshot_trust_block_reason(action_label: str) -> str:
+    try:
+        preview = compute_tracker_preview_summary(
+            mode="shadow",
+            use_bot_state_balance=False,
+            since_ts=_shadow_evidence_epoch_started_at(),
+            apply_shadow_evidence_epoch=False,
+        )
+        payload = _shadow_snapshot_state_payload(
+            preview,
+            all_time_resolved=_resolved_shadow_trade_count(),
+        )
+    except Exception as exc:
+        return (
+            f"{str(action_label or 'shadow optimization').strip() or 'shadow optimization'} blocked: "
+            f"current shadow snapshot could not be evaluated ({exc})"
+        )
+
+    if bool(payload.get("shadow_snapshot_ready")):
+        return ""
+
+    detail = str(payload.get("shadow_snapshot_block_reason") or "").strip()
+    if not detail:
+        detail = "current shadow snapshot is not trustworthy"
+    return (
+        f"{str(action_label or 'shadow optimization').strip() or 'shadow optimization'} blocked: "
+        f"{detail}"
+    )
+
+
+def _retrain_trust_block_state(action_label: str) -> tuple[str, str]:
+    blocked_message = _shadow_history_trust_block_reason(action_label)
+    if blocked_message:
+        return "blocked_db_integrity", blocked_message
+    blocked_message = _shadow_snapshot_trust_block_reason(action_label)
+    if blocked_message:
+        return "blocked_shadow_snapshot", blocked_message
+    return "", ""
 
 
 def _looks_like_placeholder(value: str) -> bool:
@@ -2377,40 +2854,59 @@ def _looks_like_placeholder(value: str) -> bool:
     )
 
 
-def _resolved_shadow_trade_count() -> int:
+_ROUTED_SHADOW_SEGMENT_IDS: tuple[str, ...] = (*SEGMENT_IDS, SEGMENT_FALLBACK)
+_ROUTED_SHADOW_SEGMENT_PLACEHOLDERS = ",".join("?" for _ in _ROUTED_SHADOW_SEGMENT_IDS)
+
+
+def _resolved_shadow_trade_count_filtered(
+    *,
+    since_ts: int = 0,
+    routed_only: bool | None = None,
+) -> int:
+    where_clauses = [
+        "real_money=0",
+        RESOLVED_EXECUTED_ENTRY_SQL,
+    ]
+    params: list[Any] = []
+    if since_ts > 0:
+        where_clauses.append("resolved_at > ?")
+        params.append(int(since_ts))
+    if routed_only is True:
+        where_clauses.append(
+            f"COALESCE(TRIM(segment_id), '') IN ({_ROUTED_SHADOW_SEGMENT_PLACEHOLDERS})"
+        )
+        params.extend(_ROUTED_SHADOW_SEGMENT_IDS)
+    elif routed_only is False:
+        where_clauses.append(
+            f"COALESCE(TRIM(segment_id), '') NOT IN ({_ROUTED_SHADOW_SEGMENT_PLACEHOLDERS})"
+        )
+        params.extend(_ROUTED_SHADOW_SEGMENT_IDS)
+
     conn = get_conn()
     try:
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS n
             FROM trade_log
-            WHERE real_money=0 AND {RESOLVED_EXECUTED_ENTRY_SQL}
-            """
+            WHERE {" AND ".join(where_clauses)}
+            """,
+            tuple(params),
         ).fetchone()
         return int(row["n"] or 0)
     finally:
         conn.close()
+
+
+def _resolved_shadow_trade_count() -> int:
+    return _resolved_shadow_trade_count_filtered()
 
 
 def _resolved_shadow_trade_count_since(since_ts: int) -> int:
-    if since_ts <= 0:
-        return _resolved_shadow_trade_count()
-    conn = get_conn()
-    try:
-        row = conn.execute(
-            f"""
-            SELECT COUNT(*) AS n
-            FROM trade_log
-            WHERE real_money=0
-              AND resolved_at IS NOT NULL
-              AND resolved_at > ?
-              AND {RESOLVED_EXECUTED_ENTRY_SQL}
-            """,
-            (int(since_ts),),
-        ).fetchone()
-        return int(row["n"] or 0)
-    finally:
-        conn.close()
+    return _resolved_shadow_trade_count_filtered(since_ts=max(int(since_ts or 0), 0))
+
+
+def _resolved_shadow_trade_count_in_current_evidence_window() -> int:
+    return _resolved_shadow_trade_count_since(_shadow_evidence_epoch_started_at())
 
 
 def _compact_json(payload: Any) -> str:
@@ -2533,28 +3029,87 @@ def _latest_replay_promotion() -> dict[str, Any] | None:
         conn.close()
 
 
-def _latest_applied_replay_promotion() -> dict[str, Any] | None:
-    conn = get_conn()
+def _latest_applied_replay_promotion(*, db_path: Path | None = None) -> dict[str, Any] | None:
+    conn = get_conn_for_path(db_path, apply_runtime_pragmas=False) if db_path is not None else get_conn()
     try:
-        row = conn.execute(
-            """
-            SELECT *
-            FROM replay_promotions
-            WHERE status='applied'
-              AND applied_at > 0
-            ORDER BY applied_at DESC, id DESC
-            LIMIT 1
-            """
-        ).fetchone()
+        try:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM replay_promotions
+                WHERE status='applied'
+                  AND applied_at > 0
+                ORDER BY applied_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return None
+            raise
         return dict(row) if row is not None else None
     finally:
         conn.close()
 
 
-def _resolved_shadow_trade_count_since_last_promotion() -> tuple[int, dict[str, Any] | None]:
-    promotion = _latest_applied_replay_promotion()
-    since_ts = int((promotion or {}).get("applied_at") or 0)
-    return _resolved_shadow_trade_count_since(since_ts), promotion
+def _resolved_shadow_trade_count_since_last_promotion(
+    promotion: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, Any] | None]:
+    current_promotion = promotion if promotion is not None else _latest_applied_replay_promotion()
+    since_ts = int((current_promotion or {}).get("applied_at") or 0)
+    effective_since_ts = _effective_shadow_evidence_since_ts(since_ts)
+    return _resolved_shadow_trade_count_since(effective_since_ts), current_promotion
+
+
+def _current_shadow_segment_scope_since_ts(
+    promotion: dict[str, Any] | None = None,
+) -> tuple[int | None, dict[str, Any] | None]:
+    current_promotion = promotion if promotion is not None else _latest_applied_replay_promotion()
+    promotion_since_ts = int((current_promotion or {}).get("applied_at") or 0)
+    effective_since_ts = _effective_shadow_evidence_since_ts(promotion_since_ts)
+    return (effective_since_ts if effective_since_ts > 0 else None), current_promotion
+
+
+def _shadow_history_gate_metrics(
+    *,
+    last_promotion: dict[str, Any] | None = None,
+) -> tuple[dict[str, int], dict[str, Any] | None]:
+    current_promotion = last_promotion if last_promotion is not None else _latest_applied_replay_promotion()
+    all_time_resolved = _resolved_shadow_trade_count()
+    current_window_resolved = _resolved_shadow_trade_count_in_current_evidence_window()
+    current_baseline_resolved, current_promotion = _resolved_shadow_trade_count_since_last_promotion(
+        current_promotion
+    )
+    routed_current_window_resolved = _resolved_shadow_trade_count_filtered(
+        since_ts=_shadow_evidence_epoch_started_at(),
+        routed_only=True,
+    )
+    return (
+        {
+            "all_time_resolved": all_time_resolved,
+            "current_window_resolved": current_window_resolved,
+            "current_baseline_resolved": current_baseline_resolved,
+            "routed_current_window_resolved": routed_current_window_resolved,
+        },
+        current_promotion,
+    )
+
+
+def _shadow_history_current_baseline_label(
+    *,
+    last_promotion: dict[str, Any] | None = None,
+    epoch_payload: dict[str, Any] | None = None,
+) -> str:
+    current_promotion = last_promotion if last_promotion is not None else _latest_applied_replay_promotion()
+    current_epoch_payload = epoch_payload if epoch_payload is not None else _shadow_evidence_epoch_state_payload()
+    epoch_started_at = max(int(current_epoch_payload.get("shadow_evidence_epoch_started_at") or 0), 0)
+    epoch_source_label = str(current_epoch_payload.get("shadow_evidence_epoch_source_label") or "").strip()
+    promotion_applied_at = int((current_promotion or {}).get("applied_at") or 0)
+    if epoch_started_at > 0 and epoch_started_at >= promotion_applied_at:
+        return f"{epoch_source_label or 'current evidence epoch'} at {epoch_started_at}"
+    if promotion_applied_at > 0:
+        return f"last replay promotion at {promotion_applied_at}"
+    return "initial policy"
 
 
 def _replay_promotion_event_at(promotion: dict[str, Any] | None) -> int:
@@ -2608,6 +3163,92 @@ def _applied_replay_promotion_state_payload(promotion: dict[str, Any] | None) ->
         score_delta=row.get("score_delta"),
         pnl_delta_usd=row.get("pnl_delta_usd"),
     )
+
+
+def _shadow_evidence_epoch_state_payload(report: dict[str, Any] | None = None) -> dict[str, object]:
+    epoch_state = read_shadow_evidence_epoch(path=SHADOW_EVIDENCE_EPOCH_FILE)
+    report = report or {}
+    source = str(
+        report.get("shadow_evidence_epoch_source")
+        or epoch_state.get("shadow_evidence_epoch_source")
+        or ""
+    ).strip().lower()
+    started_at = max(
+        int(
+            report.get("shadow_evidence_epoch_started_at")
+            or report.get("routed_shadow_epoch_started_at")
+            or epoch_state.get("shadow_evidence_epoch_started_at")
+            or 0
+        ),
+        0,
+    )
+    source_label = str(
+        report.get("shadow_evidence_epoch_source_label")
+        or report.get("routed_shadow_epoch_source_label")
+        or source.replace("_", " ").strip()
+        or ""
+    ).strip()
+    known = bool(
+        report.get("shadow_evidence_epoch_known")
+        if "shadow_evidence_epoch_known" in report
+        else report.get("routed_shadow_epoch_known")
+        if "routed_shadow_epoch_known" in report
+        else epoch_state.get("shadow_evidence_epoch_known")
+    )
+    active_scope_label = str(
+        report.get("shadow_evidence_epoch_active_scope_label")
+        or report.get("routed_shadow_epoch_active_scope_label")
+        or (f"since {source_label}" if started_at > 0 and source_label else "all history")
+    ).strip()
+    status = str(
+        report.get("shadow_evidence_epoch_status")
+        or report.get("routed_shadow_epoch_status")
+        or ("active" if started_at > 0 else "all_history")
+    ).strip()
+    return {
+        "shadow_evidence_epoch_known": known,
+        "shadow_evidence_epoch_started_at": started_at,
+        "shadow_evidence_epoch_source": source,
+        "shadow_evidence_epoch_source_label": source_label,
+        "shadow_evidence_epoch_active_scope_label": active_scope_label,
+        "shadow_evidence_epoch_status": status,
+        "shadow_evidence_epoch_request_id": str(
+            report.get("shadow_evidence_epoch_request_id")
+            or epoch_state.get("shadow_evidence_epoch_request_id")
+            or ""
+        ).strip(),
+        "shadow_evidence_epoch_message": str(
+            report.get("shadow_evidence_epoch_message")
+            or epoch_state.get("shadow_evidence_epoch_message")
+            or ""
+        ).strip(),
+        "routed_shadow_epoch_known": known,
+        "routed_shadow_epoch_started_at": started_at,
+        "routed_shadow_epoch_source_label": source_label,
+        "routed_shadow_epoch_active_scope_label": active_scope_label,
+        "routed_shadow_epoch_status": status,
+    }
+
+
+def _shadow_evidence_epoch_started_at() -> int:
+    return max(
+        int(
+            read_shadow_evidence_epoch(path=SHADOW_EVIDENCE_EPOCH_FILE).get(
+                "shadow_evidence_epoch_started_at"
+            )
+            or 0
+        ),
+        0,
+    )
+
+
+def _effective_shadow_evidence_since_ts(*timestamps: int | None) -> int:
+    effective = _shadow_evidence_epoch_started_at()
+    for raw in timestamps:
+        candidate = max(int(raw or 0), 0)
+        if candidate > effective:
+            effective = candidate
+    return effective
 
 
 def _latest_replay_promotion_state_payload(promotion: dict[str, Any] | None) -> dict[str, object]:
@@ -2666,23 +3307,705 @@ def _shadow_history_state_payload(
     require_total_history: bool,
     minimum_total: int,
     minimum_since_promotion: int,
+    all_time_resolved_shadow: int | None = None,
+    routed_resolved_shadow: int | None = None,
 ) -> dict[str, object]:
+    epoch_payload = _shadow_evidence_epoch_state_payload()
     total_resolved = max(int(total_resolved_shadow or 0), 0)
     resolved_since = max(int(resolved_since_promotion or 0), 0)
+    all_time_resolved = max(
+        int(all_time_resolved_shadow if all_time_resolved_shadow is not None else total_resolved),
+        0,
+    )
+    routed_resolved = max(int(routed_resolved_shadow or 0), 0)
     total_required = max(int(minimum_total or 0), 0) if require_total_history else 0
     since_required = max(int(minimum_since_promotion or 0), 0)
+    epoch_started_at = max(int(epoch_payload.get("shadow_evidence_epoch_started_at") or 0), 0)
+    promotion_applied_at = int((last_promotion or {}).get("applied_at") or 0)
+    current_baseline_at = _effective_shadow_evidence_since_ts(promotion_applied_at)
+    epoch_source_label = str(epoch_payload.get("shadow_evidence_epoch_source_label") or "").strip()
+    current_baseline_label = _shadow_history_current_baseline_label(
+        last_promotion=last_promotion,
+        epoch_payload=epoch_payload,
+    )
+    legacy_all_time_resolved = max(all_time_resolved - total_resolved, 0)
+    current_window_blocked = max(total_resolved - resolved_since, 0)
+    current_window_coverage_pct = (
+        _finite_float_or_none(round(resolved_since / total_resolved, 6))
+        if total_resolved > 0
+        else None
+    )
+    total_ready = (total_resolved >= total_required) if require_total_history else True
+    since_ready = resolved_since >= since_required
+    gate_ready = total_ready and since_ready
+    block_reasons: list[str] = []
+    if require_total_history and not total_ready:
+        block_reasons.append(
+            f"need {total_resolved}/{total_required} resolved shadow trades in the current evidence window"
+        )
+    if since_required > 0 and not since_ready:
+        block_reasons.append(
+            f"need {resolved_since}/{since_required} resolved shadow trades since {current_baseline_label}"
+        )
+    if legacy_all_time_resolved > 0 and total_resolved <= 0:
+        block_reasons.append(
+            f"{legacy_all_time_resolved} legacy/all-time resolved shadow trades remain excluded from the current evidence window"
+        )
+    block_reason = "; ".join(block_reasons)
+    if gate_ready:
+        epoch_status = "ready"
+    elif total_resolved > 0:
+        epoch_status = "blocked"
+    elif legacy_all_time_resolved > 0 and epoch_started_at > 0:
+        epoch_status = "legacy_only"
+    else:
+        epoch_status = str(epoch_payload.get("shadow_evidence_epoch_status") or "all_history")
     payload: dict[str, object] = {
         "shadow_history_state_known": True,
         "resolved_shadow_trade_count": total_resolved,
+        "shadow_history_all_time_resolved": all_time_resolved,
         "live_require_shadow_history_enabled": bool(require_total_history),
         "live_min_shadow_resolved": total_required,
-        "live_shadow_history_total_ready": (total_resolved >= total_required) if require_total_history else True,
+        "live_shadow_history_total_ready": total_ready,
         "resolved_shadow_since_last_promotion": resolved_since,
+        "shadow_history_current_baseline_at": current_baseline_at,
+        "shadow_history_current_baseline_label": current_baseline_label,
         "live_min_shadow_resolved_since_last_promotion": since_required,
-        "live_shadow_history_ready": resolved_since >= since_required,
+        "live_shadow_history_ready": since_ready,
+        "shadow_history_epoch_known": bool(epoch_payload.get("shadow_evidence_epoch_known")),
+        "shadow_history_epoch_started_at": epoch_started_at,
+        "shadow_history_epoch_source_label": epoch_source_label,
+        "shadow_history_epoch_active_scope_label": str(
+            epoch_payload.get("shadow_evidence_epoch_active_scope_label") or "all history"
+        ).strip(),
+        "shadow_history_epoch_status": epoch_status,
+        "shadow_history_epoch_total_resolved": total_resolved,
+        "shadow_history_epoch_ready_count": resolved_since,
+        "shadow_history_epoch_blocked_count": current_window_blocked,
+        "shadow_history_epoch_min_resolved": max(total_required, since_required),
+        "shadow_history_epoch_routed_resolved": routed_resolved,
+        "shadow_history_epoch_legacy_resolved": legacy_all_time_resolved,
+        "shadow_history_epoch_coverage_pct": current_window_coverage_pct,
+        "shadow_history_epoch_ready": gate_ready,
+        "shadow_history_epoch_block_reason": block_reason,
     }
+    payload.update(epoch_payload)
     payload.update(_applied_replay_promotion_state_payload(last_promotion))
     return payload
+
+
+def _segment_shadow_state_payload(report: dict[str, Any]) -> dict[str, object]:
+    segments = report.get("segments") or []
+    routed_resolved, legacy_resolved, history_status, routed_coverage_pct = _segment_history_metrics_from_report(report)
+    routed_state = _routed_shadow_gate_state(report)
+    return {
+        **_shadow_evidence_epoch_state_payload(report),
+        "shadow_segment_state_known": True,
+        "shadow_segment_status": str(report.get("status") or "unknown"),
+        "shadow_segment_scope": str(report.get("scope") or "all_history"),
+        "shadow_segment_scope_started_at": int(report.get("since_ts") or 0),
+        "shadow_segment_min_resolved": max(int(report.get("min_resolved") or 0), 0),
+        "shadow_segment_total": max(int(report.get("total_segments") or 0), 0),
+        "shadow_segment_ready_count": max(int(report.get("ready_count") or 0), 0),
+        "shadow_segment_positive_count": max(int(report.get("positive_count") or 0), 0),
+        "shadow_segment_negative_count": max(int(report.get("negative_count") or 0), 0),
+        "shadow_segment_blocked_count": max(int(report.get("blocked_count") or 0), 0),
+        "shadow_segment_history_status": history_status,
+        "shadow_segment_routed_signals": max(int(report.get("routed_signals") or 0), 0),
+        "shadow_segment_routed_acted": max(int(report.get("routed_acted") or 0), 0),
+        "shadow_segment_routed_resolved": routed_resolved,
+        "shadow_segment_legacy_resolved": legacy_resolved,
+        "shadow_segment_routing_coverage_pct": routed_coverage_pct,
+        "shadow_segment_summary_json": json.dumps(_json_safe_value(segments), separators=(",", ":")),
+        "shadow_segment_block_reason": str(report.get("summary") or "").strip(),
+        **routed_state,
+    }
+
+
+def _segment_shadow_error_payload(message: str) -> dict[str, object]:
+    return {
+        **_shadow_evidence_epoch_state_payload(),
+        "shadow_segment_state_known": True,
+        "shadow_segment_status": "error",
+        "shadow_segment_scope": "all_history",
+        "shadow_segment_scope_started_at": 0,
+        "shadow_segment_min_resolved": 0,
+        "shadow_segment_total": 0,
+        "shadow_segment_ready_count": 0,
+        "shadow_segment_positive_count": 0,
+        "shadow_segment_negative_count": 0,
+        "shadow_segment_blocked_count": 0,
+        "shadow_segment_history_status": "empty",
+        "shadow_segment_routed_signals": 0,
+        "shadow_segment_routed_acted": 0,
+        "shadow_segment_routed_resolved": 0,
+        "shadow_segment_legacy_resolved": 0,
+        "shadow_segment_routing_coverage_pct": None,
+        "shadow_segment_summary_json": "[]",
+        "shadow_segment_block_reason": str(message or "").strip(),
+        "routed_shadow_state_known": True,
+        "routed_shadow_status": "error",
+        "routed_shadow_min_resolved": max(int(SEGMENT_SHADOW_MIN_RESOLVED or 0), 0),
+        "routed_shadow_routed_resolved": 0,
+        "routed_shadow_legacy_resolved": 0,
+        "routed_shadow_total_resolved": 0,
+        "routed_shadow_coverage_pct": None,
+        "routed_shadow_ready": False,
+        "routed_shadow_block_reason": str(message or "").strip(),
+    }
+
+
+def _finite_float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _message_looks_like_integrity_failure(message: object) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        needle in text
+        for needle in (
+            "integrity check failed",
+            "database disk image is malformed",
+            "sqlite",
+            "corrupt",
+            "checksum",
+            "invalid page",
+            "rowid out of order",
+            "btreeinitpage",
+        )
+    )
+
+
+def _routed_shadow_performance_state_payload(preview) -> dict[str, object]:
+    return {
+        "routed_shadow_total_pnl_usd": _finite_float_or_none(getattr(preview, "routed_total_pnl", None)),
+        "routed_shadow_return_pct": _finite_float_or_none(getattr(preview, "routed_return_pct", None)),
+        "routed_shadow_profit_factor": _finite_float_or_none(getattr(preview, "routed_profit_factor", None)),
+        "routed_shadow_expectancy_usd": _finite_float_or_none(getattr(preview, "routed_expectancy_usd", None)),
+        "routed_shadow_data_warning": str(getattr(preview, "data_warning", "") or "").strip(),
+    }
+
+
+def _shadow_snapshot_state_payload(
+    preview,
+    *,
+    all_time_resolved: int | None = None,
+) -> dict[str, object]:
+    epoch_state = _shadow_evidence_epoch_state_payload()
+    scope_started_at = max(
+        int(getattr(preview, "shadow_evidence_epoch_started_at", 0) or 0),
+        int(epoch_state.get("shadow_evidence_epoch_started_at") or 0),
+        0,
+    )
+    scope_source = str(getattr(preview, "shadow_evidence_epoch_source", "") or "").strip().lower()
+    scope = "all_history"
+    if scope_started_at > 0:
+        scope = "current_evidence_window"
+    resolved = max(int(getattr(preview, "resolved", 0) or 0), 0)
+    total_all_time_resolved = max(int(all_time_resolved if all_time_resolved is not None else resolved), 0)
+    excluded_pre_window_resolved = max(total_all_time_resolved - resolved, 0)
+    routed_resolved = max(int(getattr(preview, "routed_resolved", 0) or 0), 0)
+    legacy_resolved = max(int(getattr(preview, "routed_legacy_resolved", 0) or 0), 0)
+    total_resolved_history = routed_resolved + legacy_resolved
+    coverage_pct = (
+        _finite_float_or_none(round(routed_resolved / total_resolved_history, 6))
+        if total_resolved_history > 0
+        else None
+    )
+    data_warning = str(getattr(preview, "data_warning", "") or "").strip()
+    if data_warning:
+        status = "error"
+    elif scope == "current_evidence_window":
+        if resolved > 0 and routed_resolved > 0 and legacy_resolved > 0:
+            status = "mixed"
+        elif resolved > 0 and routed_resolved <= 0 and legacy_resolved > 0:
+            status = "legacy_only"
+        elif resolved > 0 and routed_resolved > 0:
+            status = "ready"
+        elif resolved <= 0 and excluded_pre_window_resolved > 0:
+            status = "excluded"
+        else:
+            status = "idle"
+    else:
+        status = "all_history"
+    ready = (
+        scope == "current_evidence_window"
+        and not data_warning
+        and resolved > 0
+        and routed_resolved > 0
+        and (coverage_pct is None or coverage_pct > 0)
+    )
+    block_reasons: list[str] = []
+    if scope != "current_evidence_window":
+        block_reasons.append(
+            "current evidence window is not active yet; shadow snapshot still reflects all history"
+        )
+    if data_warning:
+        block_reasons.append(data_warning)
+    if scope == "current_evidence_window" and routed_resolved <= 0 and legacy_resolved > 0:
+        block_reasons.append(
+            f"need routed fixed-segment evidence; {legacy_resolved} legacy/unassigned resolved rows are not sufficient"
+        )
+    if scope == "current_evidence_window" and resolved <= 0 and excluded_pre_window_resolved > 0:
+        block_reasons.append(
+            f"{excluded_pre_window_resolved} pre-window resolved shadow trades remain excluded from this snapshot"
+        )
+    block_reason = "; ".join(reason for reason in block_reasons if reason)
+    if data_warning:
+        block_state = "blocked_db_integrity" if _message_looks_like_integrity_failure(data_warning) else "blocked_error"
+    elif scope != "current_evidence_window":
+        block_state = "blocked_all_history"
+    elif resolved > 0 and routed_resolved <= 0 and legacy_resolved > 0:
+        block_state = "blocked_legacy_only"
+    elif resolved <= 0 and excluded_pre_window_resolved > 0:
+        block_state = "blocked_pre_window_excluded"
+    elif resolved <= 0:
+        block_state = "blocked_empty"
+    else:
+        block_state = "ready" if ready else "partial"
+    return {
+        "shadow_snapshot_state_known": True,
+        "shadow_snapshot_scope": scope,
+        "shadow_snapshot_started_at": scope_started_at,
+        "shadow_snapshot_status": status,
+        "shadow_snapshot_resolved": resolved,
+        "shadow_snapshot_routed_resolved": routed_resolved,
+        "shadow_snapshot_legacy_resolved": legacy_resolved,
+        "shadow_snapshot_coverage_pct": coverage_pct,
+        "shadow_snapshot_ready": ready,
+        "shadow_snapshot_total_pnl_usd": _finite_float_or_none(getattr(preview, "total_pnl", None)),
+        "shadow_snapshot_return_pct": _finite_float_or_none(getattr(preview, "return_pct", None)),
+        "shadow_snapshot_profit_factor": _finite_float_or_none(getattr(preview, "profit_factor", None)),
+        "shadow_snapshot_expectancy_usd": _finite_float_or_none(getattr(preview, "expectancy_usd", None)),
+        "shadow_snapshot_block_reason": block_reason,
+        "shadow_snapshot_block_state": block_state,
+        "shadow_snapshot_optimization_block_reason": "" if ready else block_reason,
+    }
+
+
+def _shadow_snapshot_error_payload(message: str) -> dict[str, object]:
+    block_reason = str(message or "").strip()
+    block_state = "blocked_db_integrity" if _message_looks_like_integrity_failure(block_reason) else "blocked_error"
+    return {
+        "shadow_snapshot_state_known": True,
+        "shadow_snapshot_scope": "all_history",
+        "shadow_snapshot_started_at": 0,
+        "shadow_snapshot_status": "error",
+        "shadow_snapshot_resolved": 0,
+        "shadow_snapshot_routed_resolved": 0,
+        "shadow_snapshot_legacy_resolved": 0,
+        "shadow_snapshot_coverage_pct": None,
+        "shadow_snapshot_ready": False,
+        "shadow_snapshot_total_pnl_usd": None,
+        "shadow_snapshot_return_pct": None,
+        "shadow_snapshot_profit_factor": None,
+        "shadow_snapshot_expectancy_usd": None,
+        "shadow_snapshot_block_reason": block_reason,
+        "shadow_snapshot_block_state": block_state,
+        "shadow_snapshot_optimization_block_reason": block_reason,
+    }
+
+
+def _routed_shadow_performance_error_payload(message: str) -> dict[str, object]:
+    return {
+        "routed_shadow_total_pnl_usd": None,
+        "routed_shadow_return_pct": None,
+        "routed_shadow_profit_factor": None,
+        "routed_shadow_expectancy_usd": None,
+        "routed_shadow_data_warning": str(message or "").strip(),
+    }
+
+
+def _db_recovery_shadow_idle_payload(
+    *,
+    candidate_path: str = "",
+    status: str = "idle",
+    block_reason: str = "",
+) -> dict[str, object]:
+    return {
+        "db_recovery_shadow_state_known": True,
+        "db_recovery_shadow_candidate_path": str(candidate_path or "").strip(),
+        "db_recovery_shadow_status": str(status or "idle").strip() or "idle",
+        "db_recovery_shadow_acted": 0,
+        "db_recovery_shadow_resolved": 0,
+        "db_recovery_shadow_total_pnl_usd": None,
+        "db_recovery_shadow_return_pct": None,
+        "db_recovery_shadow_profit_factor": None,
+        "db_recovery_shadow_expectancy_usd": None,
+        "db_recovery_shadow_data_warning": "",
+        "db_recovery_shadow_segment_total": 0,
+        "db_recovery_shadow_segment_ready_count": 0,
+        "db_recovery_shadow_segment_blocked_count": 0,
+        "db_recovery_shadow_history_status": "empty",
+        "db_recovery_shadow_min_resolved": 0,
+        "db_recovery_shadow_routed_resolved": 0,
+        "db_recovery_shadow_legacy_resolved": 0,
+        "db_recovery_shadow_total_resolved": 0,
+        "db_recovery_shadow_routing_coverage_pct": None,
+        "db_recovery_shadow_ready": False,
+        "db_recovery_shadow_segment_summary_json": "[]",
+        "db_recovery_shadow_block_reason": str(block_reason or "").strip(),
+    }
+
+
+def _db_recovery_candidate_classification_state(
+    *,
+    recovery_state: dict[str, object] | None = None,
+    shadow_state: dict[str, object] | None = None,
+) -> dict[str, object]:
+    recovery = dict(recovery_state or {})
+    shadow = dict(shadow_state or {})
+    candidate_ready = bool(recovery.get("db_recovery_candidate_ready"))
+    candidate_path = str(
+        recovery.get("db_recovery_candidate_path")
+        or shadow.get("db_recovery_shadow_candidate_path")
+        or ""
+    ).strip()
+    unavailable_reason = str(recovery.get("db_recovery_candidate_message") or "").strip()
+
+    if not candidate_ready or not candidate_path:
+        return {
+            "db_recovery_candidate_mode": "unavailable",
+            "db_recovery_candidate_evidence_ready": False,
+            "db_recovery_candidate_class_reason": unavailable_reason,
+        }
+
+    shadow_status = str(shadow.get("db_recovery_shadow_status") or "").strip().lower()
+    shadow_ready = bool(shadow.get("db_recovery_shadow_ready"))
+    shadow_reason = str(shadow.get("db_recovery_shadow_block_reason") or "").strip()
+    history_status = str(shadow.get("db_recovery_shadow_history_status") or "").strip().lower()
+
+    evidence_ready = shadow_ready and shadow_status.endswith("ready")
+    if evidence_ready:
+        return {
+            "db_recovery_candidate_mode": "evidence_ready",
+            "db_recovery_candidate_evidence_ready": True,
+            "db_recovery_candidate_class_reason": (
+                shadow_reason
+                or "verified backup is both integrity-restorable and fixed-segment evidence-ready"
+            ),
+        }
+
+    if not shadow_reason:
+        if history_status == "legacy_only":
+            shadow_reason = (
+                "verified backup restores ledger integrity but only contains legacy/unassigned resolved history"
+            )
+        elif shadow_status in {"legacy", "legacy_only", "migrated_legacy_only"}:
+            shadow_reason = "verified backup restores ledger integrity but is legacy-only, not evidence-ready"
+        elif shadow_status in {"insufficient", "migrated_insufficient"}:
+            shadow_reason = "verified backup restores ledger integrity but lacks enough routed shadow evidence"
+        elif shadow_status in {"error", "blocked"}:
+            shadow_reason = "verified backup restores ledger integrity but shadow evidence evaluation is not trustworthy"
+        else:
+            shadow_reason = "verified backup restores ledger integrity but is not fixed-segment evidence-ready"
+
+    return {
+        "db_recovery_candidate_mode": "integrity_only",
+        "db_recovery_candidate_evidence_ready": False,
+        "db_recovery_candidate_class_reason": shadow_reason,
+    }
+
+
+def _segment_history_metrics_from_report(report: dict[str, Any]) -> tuple[int, int, str, float | None]:
+    segments = report.get("segments") or []
+    routed_resolved = max(int(report.get("routed_resolved") or 0), 0)
+    legacy_resolved = max(int(report.get("legacy_unassigned_resolved") or 0), 0)
+
+    if segments and routed_resolved <= 0:
+        routed_resolved = sum(
+            max(int((row or {}).get("resolved") or 0), 0)
+            for row in segments
+            if str((row or {}).get("segment_id") or "").strip() != UNASSIGNED_SEGMENT_ID
+            and str((row or {}).get("health") or "").strip().lower() != "unexpected"
+        )
+    if segments and legacy_resolved <= 0:
+        legacy_resolved = sum(
+            max(int((row or {}).get("resolved") or 0), 0)
+            for row in segments
+            if str((row or {}).get("segment_id") or "").strip() == UNASSIGNED_SEGMENT_ID
+        )
+
+    history_status = str(report.get("history_status") or "").strip()
+    if not history_status:
+        if routed_resolved <= 0 and legacy_resolved > 0:
+            history_status = "legacy_only"
+        elif routed_resolved > 0 and legacy_resolved > 0:
+            history_status = "mixed"
+        elif routed_resolved > 0:
+            history_status = "routed_only"
+        else:
+            history_status = "empty"
+
+    routed_coverage_pct = _finite_float_or_none(report.get("routed_coverage_pct"))
+    total_resolved = routed_resolved + legacy_resolved
+    if routed_coverage_pct is None and total_resolved > 0:
+        routed_coverage_pct = routed_resolved / total_resolved
+    return routed_resolved, legacy_resolved, history_status, routed_coverage_pct
+
+
+def _routed_shadow_gate_state(
+    report: dict[str, Any],
+    *,
+    min_resolved: int = SEGMENT_SHADOW_MIN_RESOLVED,
+) -> dict[str, object]:
+    routed_resolved, legacy_resolved, history_status, routed_coverage_pct = _segment_history_metrics_from_report(report)
+    minimum = max(int(min_resolved or 0), 0)
+    total_resolved = routed_resolved + legacy_resolved
+    ready = total_resolved > 0 if minimum <= 0 else routed_resolved >= minimum
+
+    if total_resolved <= 0:
+        status = "empty"
+        block_reason = "no routed post-segmentation shadow evidence yet"
+        ready = False
+    elif history_status == "legacy_only":
+        status = "legacy_only"
+        block_reason = (
+            "all resolved shadow rows predate fixed segment routing; "
+            f"{routed_resolved} routed resolved, {legacy_resolved} legacy/unassigned resolved"
+        )
+        ready = False
+    elif not ready:
+        status = "insufficient"
+        block_reason = (
+            f"need {routed_resolved}/{minimum} routed resolved shadow trades; "
+            f"{legacy_resolved} legacy/unassigned resolved remain excluded from fixed-segment evidence"
+        )
+    else:
+        status = "ready"
+        block_reason = (
+            f"{routed_resolved}/{total_resolved} resolved shadow trades are routed fixed-segment rows"
+            if legacy_resolved > 0
+            else f"{routed_resolved} routed resolved shadow trades available"
+        )
+
+    return {
+        "routed_shadow_state_known": True,
+        "routed_shadow_status": status,
+        "routed_shadow_min_resolved": minimum,
+        "routed_shadow_routed_resolved": routed_resolved,
+        "routed_shadow_legacy_resolved": legacy_resolved,
+        "routed_shadow_total_resolved": total_resolved,
+        "routed_shadow_coverage_pct": routed_coverage_pct,
+        "routed_shadow_ready": bool(ready),
+        "routed_shadow_block_reason": block_reason,
+    }
+
+
+def _db_recovery_shadow_state_payload(
+    *,
+    candidate_path: Path,
+    preview,
+    report: dict[str, Any],
+    extra_data_warning: str = "",
+    status_override: str = "",
+) -> dict[str, object]:
+    segments = report.get("segments") or []
+    routed_resolved, legacy_resolved, history_status, routed_coverage_pct = _segment_history_metrics_from_report(report)
+    routed_state = _routed_shadow_gate_state(report)
+    data_warning_parts = [str(preview.data_warning or "").strip(), str(extra_data_warning or "").strip()]
+    data_warning = " | ".join(part for part in data_warning_parts if part)
+    return {
+        "db_recovery_shadow_state_known": True,
+        "db_recovery_shadow_candidate_path": str(candidate_path),
+        "db_recovery_shadow_status": str(status_override or report.get("status") or "unknown"),
+        "db_recovery_shadow_acted": max(int(preview.acted or 0), 0),
+        "db_recovery_shadow_resolved": max(int(preview.resolved or 0), 0),
+        "db_recovery_shadow_total_pnl_usd": _finite_float_or_none(preview.total_pnl),
+        "db_recovery_shadow_return_pct": _finite_float_or_none(preview.return_pct),
+        "db_recovery_shadow_profit_factor": _finite_float_or_none(preview.profit_factor),
+        "db_recovery_shadow_expectancy_usd": _finite_float_or_none(preview.expectancy_usd),
+        "db_recovery_shadow_data_warning": data_warning,
+        "db_recovery_shadow_segment_total": max(int(report.get("total_segments") or 0), 0),
+        "db_recovery_shadow_segment_ready_count": max(int(report.get("ready_count") or 0), 0),
+        "db_recovery_shadow_segment_blocked_count": max(int(report.get("blocked_count") or 0), 0),
+        "db_recovery_shadow_history_status": history_status,
+        "db_recovery_shadow_min_resolved": max(int(routed_state.get("routed_shadow_min_resolved") or 0), 0),
+        "db_recovery_shadow_routed_resolved": routed_resolved,
+        "db_recovery_shadow_legacy_resolved": legacy_resolved,
+        "db_recovery_shadow_total_resolved": max(int(routed_state.get("routed_shadow_total_resolved") or 0), 0),
+        "db_recovery_shadow_routing_coverage_pct": routed_coverage_pct,
+        "db_recovery_shadow_ready": bool(routed_state.get("routed_shadow_ready")),
+        "db_recovery_shadow_segment_summary_json": json.dumps(
+            _json_safe_value(segments),
+            separators=(",", ":"),
+        ),
+        "db_recovery_shadow_block_reason": str(report.get("summary") or "").strip(),
+    }
+
+
+def _db_recovery_shadow_preview_only_payload(
+    *,
+    candidate_path: Path,
+    preview,
+    status: str,
+    block_reason: str,
+    extra_data_warning: str = "",
+) -> dict[str, object]:
+    data_warning_parts = [str(preview.data_warning or "").strip(), str(extra_data_warning or "").strip()]
+    data_warning = " | ".join(part for part in data_warning_parts if part)
+    return {
+        "db_recovery_shadow_state_known": True,
+        "db_recovery_shadow_candidate_path": str(candidate_path),
+        "db_recovery_shadow_status": str(status or "legacy").strip() or "legacy",
+        "db_recovery_shadow_acted": max(int(preview.acted or 0), 0),
+        "db_recovery_shadow_resolved": max(int(preview.resolved or 0), 0),
+        "db_recovery_shadow_total_pnl_usd": _finite_float_or_none(preview.total_pnl),
+        "db_recovery_shadow_return_pct": _finite_float_or_none(preview.return_pct),
+        "db_recovery_shadow_profit_factor": _finite_float_or_none(preview.profit_factor),
+        "db_recovery_shadow_expectancy_usd": _finite_float_or_none(preview.expectancy_usd),
+        "db_recovery_shadow_data_warning": data_warning,
+        "db_recovery_shadow_segment_total": 0,
+        "db_recovery_shadow_segment_ready_count": 0,
+        "db_recovery_shadow_segment_blocked_count": 0,
+        "db_recovery_shadow_history_status": "empty",
+        "db_recovery_shadow_min_resolved": max(int(SEGMENT_SHADOW_MIN_RESOLVED or 0), 0),
+        "db_recovery_shadow_routed_resolved": 0,
+        "db_recovery_shadow_legacy_resolved": 0,
+        "db_recovery_shadow_total_resolved": 0,
+        "db_recovery_shadow_routing_coverage_pct": None,
+        "db_recovery_shadow_ready": False,
+        "db_recovery_shadow_segment_summary_json": "[]",
+        "db_recovery_shadow_block_reason": str(block_reason or "").strip(),
+    }
+
+
+def _is_missing_schema_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "no such table" in message or "no such column" in message
+
+
+def _evaluate_db_recovery_shadow_state(
+    candidate_path: Path,
+    *,
+    evaluation_path: Path,
+    status_prefix: str = "",
+    extra_data_warning: str = "",
+) -> dict[str, object]:
+    preview = compute_tracker_preview_summary(
+        mode="shadow",
+        db_path=evaluation_path,
+        use_bot_state_balance=False,
+        apply_shadow_evidence_epoch=False,
+    )
+    last_promotion = _latest_applied_replay_promotion(db_path=evaluation_path)
+    since_ts = int((last_promotion or {}).get("applied_at") or 0)
+    report = compute_segment_shadow_report(
+        mode="shadow",
+        since_ts=since_ts if since_ts > 0 else None,
+        db_path=evaluation_path,
+    )
+    status_override = ""
+    reported_status = str(report.get("status") or "").strip()
+    if status_prefix and reported_status:
+        status_override = f"{status_prefix}_{reported_status}"
+    elif status_prefix:
+        status_override = status_prefix
+    return _db_recovery_shadow_state_payload(
+        candidate_path=candidate_path,
+        preview=preview,
+        report=report,
+        extra_data_warning=extra_data_warning,
+        status_override=status_override,
+    )
+
+
+def _evaluate_db_recovery_shadow_state_from_migrated_clone(candidate_path: Path) -> dict[str, object]:
+    note = (
+        "evaluated from a migrated temp clone because the verified backup predates the current schema; "
+        "backup file unchanged"
+    )
+    with tempfile.TemporaryDirectory(prefix="db-recovery-shadow-") as tmpdir:
+        temp_db = Path(tmpdir) / candidate_path.name
+        shutil.copy2(candidate_path, temp_db)
+        init_db(path=temp_db, run_heavy_maintenance=False)
+        return _evaluate_db_recovery_shadow_state(
+            candidate_path,
+            evaluation_path=temp_db,
+            status_prefix="migrated",
+            extra_data_warning=note,
+        )
+
+
+def _evaluate_migrated_recovery_candidate_shadow_state(candidate_path: Path) -> dict[str, object]:
+    return _evaluate_db_recovery_shadow_state_from_migrated_clone(Path(candidate_path))
+
+
+def _compute_db_recovery_shadow_state() -> dict[str, object]:
+    recovery = db_recovery_state()
+    candidate_text = str(recovery.get("db_recovery_candidate_path") or "").strip()
+    if not candidate_text:
+        failure_message = str(recovery.get("db_recovery_candidate_message") or "").strip()
+        shadow_state = _db_recovery_shadow_idle_payload(
+            status="blocked" if failure_message else "idle",
+            block_reason=failure_message,
+        )
+        return {
+            **shadow_state,
+            **_db_recovery_candidate_classification_state(
+                recovery_state=recovery,
+                shadow_state=shadow_state,
+            ),
+        }
+
+    candidate_path = Path(candidate_text)
+    try:
+        try:
+            shadow_state = _evaluate_db_recovery_shadow_state(
+                candidate_path,
+                evaluation_path=candidate_path,
+            )
+        except sqlite3.OperationalError as exc:
+            if _is_missing_schema_error(exc):
+                shadow_state = _evaluate_db_recovery_shadow_state_from_migrated_clone(candidate_path)
+            else:
+                raise
+        return {
+            **shadow_state,
+            **_db_recovery_candidate_classification_state(
+                recovery_state=recovery,
+                shadow_state=shadow_state,
+            ),
+        }
+    except Exception as exc:
+        shadow_state = _db_recovery_shadow_idle_payload(
+            candidate_path=str(candidate_path),
+            status="error",
+            block_reason=str(exc).strip() or exc.__class__.__name__,
+        )
+        return {
+            **shadow_state,
+            **_db_recovery_candidate_classification_state(
+                recovery_state=recovery,
+                shadow_state=shadow_state,
+            ),
+        }
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        if value > 0:
+            return "inf"
+        if value < 0:
+            return "-inf"
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
+    return value
 
 
 def _latest_replay_search_run_id() -> int:
@@ -3985,6 +5308,26 @@ def _validate_startup() -> None:
             f"REPLAY_AUTO_PROMOTE_MIN_PNL_DELTA_USD is {auto_promote_min_pnl:.2f}; negative thresholds will allow lower replay P&L promotions"
         )
 
+    db_integrity = database_integrity_state()
+    db_integrity_failed = bool(db_integrity.get("db_integrity_known")) and not bool(db_integrity.get("db_integrity_ok"))
+    if db_integrity.get("db_integrity_known") and not db_integrity.get("db_integrity_ok"):
+        db_error = str(db_integrity.get("db_integrity_message") or "").strip()
+        db_summary = db_error.splitlines()[0].strip() if db_error else "unknown integrity failure"
+        if use_real_money():
+            errors.append(f"LIVE mode is blocked because SQLite integrity check failed: {db_summary}")
+        else:
+            queued_rebootstrap = _queued_shadow_rebootstrap_request_label()
+            if queued_rebootstrap:
+                warnings.append(
+                    "SQLite integrity check failed: "
+                    f"{db_summary} (allowing startup because a queued {queued_rebootstrap} request will restart on a clean base)"
+                )
+            else:
+                errors.append(
+                    "SHADOW mode is blocked because SQLite integrity check failed: "
+                    f"{db_summary}. Queue Recover DB or Shadow Reset before collecting fresh evidence."
+                )
+
     if use_real_money():
         our_wallet = wallet_address()
         if _looks_like_placeholder(private_key()):
@@ -4033,13 +5376,14 @@ def _validate_startup() -> None:
                 f"got {live_health_failure_limit}"
             )
         if live_require_shadow_history():
-            resolved = _resolved_shadow_trade_count()
+            resolved = _resolved_shadow_trade_count_in_current_evidence_window()
             minimum = _capture_config(live_min_shadow_resolved)
             if minimum is None:
                 minimum = 0
             if resolved < minimum:
                 errors.append(
-                    f"LIVE mode is blocked until shadow history is available: {resolved} resolved shadow trades < required {minimum}"
+                    "LIVE mode is blocked until shadow history is available in the current evidence window: "
+                    f"{resolved} resolved shadow trades < required {minimum}"
                 )
         if auto_promote_enabled:
             warnings.append("REPLAY_AUTO_PROMOTE is enabled, but scheduled auto-promotion only applies in shadow mode")
@@ -4048,12 +5392,35 @@ def _validate_startup() -> None:
         if live_min_shadow_since_promotion > 0:
             resolved_since_promotion, last_promotion = _resolved_shadow_trade_count_since_last_promotion()
             if resolved_since_promotion < live_min_shadow_since_promotion:
-                baseline = "initial policy"
-                if last_promotion is not None:
-                    baseline = f"last replay promotion at {int(last_promotion.get('applied_at') or 0)}"
+                baseline = _shadow_history_current_baseline_label(last_promotion=last_promotion)
                 errors.append(
-                    "LIVE mode is blocked until post-promotion shadow history is available: "
+                    "LIVE mode is blocked until post-promotion shadow history is available in the current evidence window: "
                     f"{resolved_since_promotion} resolved shadow trades since {baseline} < required {live_min_shadow_since_promotion}"
+                )
+        if not db_integrity_failed:
+            try:
+                since_ts, _ = _current_shadow_segment_scope_since_ts()
+                segment_report = compute_segment_shadow_report(
+                    mode="shadow",
+                    since_ts=since_ts,
+                )
+                segment_status = str(segment_report.get("status") or "").strip().lower()
+                if segment_status != "ready":
+                    segment_summary = str(segment_report.get("summary") or "").strip()
+                    if segment_summary:
+                        errors.append(
+                            "LIVE mode is blocked until champion segment shadow readiness is ready: "
+                            f"{segment_summary}"
+                        )
+                    else:
+                        errors.append(
+                            "LIVE mode is blocked until champion segment shadow readiness is ready: "
+                            f"status={segment_status or 'unknown'}"
+                        )
+            except Exception as exc:
+                errors.append(
+                    "LIVE mode is blocked because champion segment shadow readiness could not be computed: "
+                    f"{exc}"
                 )
 
     for warning in warnings:
@@ -4066,6 +5433,80 @@ def _validate_startup() -> None:
         if use_real_money():
             send_alert(build_lines("startup validation failed", build_bullets(errors)), kind="error")
         raise RuntimeError(message)
+
+
+def _shadow_startup_blocked_service_reason(exc: BaseException) -> str:
+    if use_real_money():
+        return ""
+    if _queued_shadow_rebootstrap_request_label():
+        return ""
+
+    error_lines = [
+        line[2:].strip()
+        for line in str(exc or "").splitlines()
+        if str(line or "").strip().startswith("- ")
+    ]
+    if not error_lines:
+        message = str(exc or "").strip()
+        if message:
+            error_lines = [message]
+    reason = ""
+    for line in error_lines:
+        if line.startswith("SHADOW mode is blocked because SQLite integrity check failed:"):
+            reason = line
+            break
+    if not reason:
+        return ""
+
+    db_integrity = database_integrity_state()
+    if not bool(db_integrity.get("db_integrity_known")):
+        return ""
+    if bool(db_integrity.get("db_integrity_ok")):
+        return ""
+    return reason
+
+
+def _run_shadow_startup_blocked_service(
+    *,
+    reason: str,
+    validation_error: str,
+    shutdown_event: threading.Event,
+    persist_state: Callable[..., None],
+    heartbeat: Callable[..., None],
+    service_rebootstrap_requests_only: Callable[[], None],
+    refresh_db_integrity_state: Callable[[], None] | None = None,
+    refresh_db_recovery_state: Callable[[], None] | None = None,
+    refresh_db_recovery_shadow_state: Callable[[], None] | None = None,
+) -> None:
+    detail = "startup blocked: waiting for Recover DB or Shadow Reset"
+    next_refresh_at = 0.0
+    logger.warning("%s Entering startup blocked-service mode.", reason)
+
+    while not shutdown_event.is_set():
+        now_ts = time.time()
+        if now_ts >= next_refresh_at:
+            if refresh_db_integrity_state is not None:
+                refresh_db_integrity_state()
+            if refresh_db_recovery_state is not None:
+                refresh_db_recovery_state()
+            if refresh_db_recovery_shadow_state is not None:
+                refresh_db_recovery_shadow_state()
+            persist_state(
+                startup_failed=True,
+                startup_validation_failed=True,
+                startup_detail=detail,
+                startup_failure_message=validation_error,
+                startup_validation_message=validation_error,
+                startup_blocked=True,
+                startup_recovery_only=True,
+                startup_block_reason=reason,
+                loop_in_progress=False,
+            )
+            next_refresh_at = now_ts + 30.0
+        heartbeat(force=True)
+        service_rebootstrap_requests_only()
+        if shutdown_event.wait(0.5):
+            break
 
 
 def _init_live_entry_guard(executor: PolymarketExecutor) -> LiveEntryGuard | None:
@@ -4179,10 +5620,20 @@ def main() -> None:
     shutdown_event = threading.Event()
     previous_signal_handlers = _install_shutdown_signal_handlers(shutdown_event)
     pending_shadow_reset: ShadowResetRequest | None = None
+    pending_db_recovery: DbRecoveryRequest | None = None
     cleanup_done = False
+    startup_ready = False
+    shadow_startup_blocked_reason = ""
+    startup_validation_error = ""
 
     init_db()
-    _validate_startup()
+    try:
+        _validate_startup()
+    except RuntimeError as exc:
+        shadow_startup_blocked_reason = _shadow_startup_blocked_service_reason(exc)
+        if not shadow_startup_blocked_reason:
+            raise
+        startup_validation_error = str(exc).strip() or shadow_startup_blocked_reason
     _write_bot_pid_file()
     EVENT_FILE.touch(exist_ok=True)
     _repair_event_file_market_urls()
@@ -4202,6 +5653,7 @@ def main() -> None:
         bot_state_snapshot.update(_latest_replay_promotion_state_payload(latest_promotion_attempt))
     if latest_promotion is not None:
         bot_state_snapshot.update(_applied_replay_promotion_state_payload(latest_promotion))
+    bot_state_snapshot.update(_shadow_evidence_epoch_state_payload())
     last_activity_write_at = 0.0
     current_loop_started_at = 0
     bot_state_lock = threading.Lock()
@@ -4264,21 +5716,85 @@ def main() -> None:
         _persist_bot_state(**_replay_promotion_state_updates(result))
 
     def _refresh_shadow_history_state() -> None:
-        total_resolved_shadow = _resolved_shadow_trade_count()
-        resolved_since_promotion, last_promotion = _resolved_shadow_trade_count_since_last_promotion()
+        shadow_history_metrics, last_promotion = _shadow_history_gate_metrics()
         require_total_history = live_require_shadow_history()
         minimum_total = live_min_shadow_resolved() if require_total_history else 0
         required_since_promotion = max(live_min_shadow_resolved_since_promotion(), 0)
         _persist_bot_state(
             **_shadow_history_state_payload(
-                total_resolved_shadow=total_resolved_shadow,
-                resolved_since_promotion=resolved_since_promotion,
+                total_resolved_shadow=int(shadow_history_metrics["current_window_resolved"] or 0),
+                resolved_since_promotion=int(shadow_history_metrics["current_baseline_resolved"] or 0),
                 last_promotion=last_promotion,
                 require_total_history=require_total_history,
                 minimum_total=minimum_total,
                 minimum_since_promotion=required_since_promotion,
+                all_time_resolved_shadow=int(shadow_history_metrics["all_time_resolved"] or 0),
+                routed_resolved_shadow=int(
+                    shadow_history_metrics["routed_current_window_resolved"] or 0
+                ),
             )
         )
+
+    def _refresh_segment_shadow_state() -> None:
+        try:
+            since_ts, _ = _current_shadow_segment_scope_since_ts()
+            report = compute_segment_shadow_report(
+                mode="shadow",
+                since_ts=since_ts,
+            )
+            _persist_bot_state(**_segment_shadow_state_payload(report))
+        except Exception as exc:
+            _persist_bot_state(**_segment_shadow_error_payload(str(exc)))
+
+    def _refresh_routed_shadow_performance_state() -> None:
+        try:
+            preview = compute_tracker_preview_summary(
+                mode="shadow",
+                use_bot_state_balance=False,
+                since_ts=_shadow_evidence_epoch_started_at(),
+                apply_shadow_evidence_epoch=False,
+            )
+            _persist_bot_state(
+                **_shadow_snapshot_state_payload(
+                    preview,
+                    all_time_resolved=_resolved_shadow_trade_count(),
+                ),
+                **_routed_shadow_performance_state_payload(preview),
+            )
+        except Exception as exc:
+            _persist_bot_state(
+                **_shadow_snapshot_error_payload(str(exc)),
+                **_routed_shadow_performance_error_payload(str(exc)),
+            )
+
+    def _refresh_db_integrity_state() -> None:
+        _persist_bot_state(**database_integrity_state())
+
+    def _refresh_db_recovery_state() -> None:
+        _persist_bot_state(**db_recovery_state())
+
+    def _refresh_db_recovery_shadow_state() -> None:
+        _persist_bot_state(**_compute_db_recovery_shadow_state())
+
+    def _service_rebootstrap_requests_only() -> None:
+        db_recovery_request = _consume_db_recovery_request()
+        if db_recovery_request is not None:
+            _persist_bot_state(
+                shadow_restart_pending=True,
+                shadow_restart_kind="db_recovery",
+                shadow_restart_message=(
+                    "Shadow DB recovery in progress. Waiting for backend to restart."
+                ),
+            )
+            raise DbRecoveryRequested(db_recovery_request)
+        request = _consume_shadow_reset_request()
+        if request is not None:
+            _persist_bot_state(
+                shadow_restart_pending=True,
+                shadow_restart_kind="shadow_reset",
+                shadow_restart_message=f"Shadow restart in progress ({request.wallet_mode}). Waiting for backend to restart.",
+            )
+            raise ShadowResetRequested(request)
 
     def _record_replay_promotion(
         *,
@@ -4510,6 +6026,8 @@ def main() -> None:
             _persist_runtime_truth()
             _persist_replay_promotion_state(result)
             _refresh_shadow_history_state()
+            _refresh_segment_shadow_state()
+            _refresh_routed_shadow_performance_state()
             return result
         except Exception as exc:
             if isinstance(apply_result, dict):
@@ -4533,6 +6051,42 @@ def main() -> None:
             return result
 
     def _run_replay_search_job(trigger: str) -> bool:
+        blocked_message = _shadow_history_trust_block_reason("Replay search")
+        if blocked_message:
+            logger.warning(blocked_message)
+            _persist_bot_state(
+                **_replay_search_transient_status_state(
+                    status="blocked_db_integrity",
+                    message=blocked_message,
+                    trigger=trigger,
+                )
+            )
+            return False
+
+        snapshot_blocked_message = _shadow_snapshot_trust_block_reason("Replay search")
+        if snapshot_blocked_message:
+            logger.warning(snapshot_blocked_message)
+            _persist_bot_state(
+                **_replay_search_transient_status_state(
+                    status="blocked_shadow_snapshot",
+                    message=snapshot_blocked_message,
+                    trigger=trigger,
+                )
+            )
+            return False
+
+        routed_history_blocked_message = _segment_routed_history_trust_block_reason("Replay search")
+        if routed_history_blocked_message:
+            logger.warning(routed_history_blocked_message)
+            _persist_bot_state(
+                **_replay_search_transient_status_state(
+                    status="blocked_routed_history",
+                    message=routed_history_blocked_message,
+                    trigger=trigger,
+                )
+            )
+            return False
+
         if not replay_search_lock.acquire(blocking=False):
             message = f"Replay search request ignored: already running ({trigger})"
             logger.info(message)
@@ -4715,6 +6269,17 @@ def main() -> None:
             replay_search_lock.release()
 
     def _run_retrain_job(trigger: str) -> bool:
+        blocked_status, blocked_message = _retrain_trust_block_state("Retrain")
+        if blocked_message:
+            logger.warning(blocked_message)
+            _persist_bot_state(
+                last_retrain_status=blocked_status,
+                last_retrain_message=blocked_message,
+                last_retrain_trigger=trigger,
+                last_retrain_deployed=False,
+            )
+            return False
+
         if not retrain_lock.acquire(blocking=False):
             message = f"Retrain request ignored: already running ({trigger})"
             logger.info(message)
@@ -4800,13 +6365,7 @@ def main() -> None:
             retrain_lock.release()
 
     def _service_runtime_requests() -> None:
-        request = _consume_shadow_reset_request()
-        if request is not None:
-            _persist_bot_state(
-                shadow_restart_pending=True,
-                shadow_restart_message=f"Shadow restart in progress ({request.wallet_mode}). Waiting for backend to restart.",
-            )
-            raise ShadowResetRequested(request)
+        _service_rebootstrap_requests_only()
         _service_manual_retrain_request(_run_retrain_job)
         _service_manual_trade_request(
             lambda request: _process_manual_trade_request(
@@ -4820,170 +6379,228 @@ def main() -> None:
         )
 
     try:
+        _service_rebootstrap_requests_only()
         _persist_bot_state(**watchlist.state_fields())
         dashboard_api_server = start_dashboard_api_server()
-        _set_startup_detail("loading watchlist")
-        _set_startup_detail("syncing belief priors")
-        sync_belief_priors()
-
-        _set_startup_detail("creating tracker")
-        tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
-        _set_startup_detail("connecting executor")
-        executor = PolymarketExecutor()
-        _set_startup_detail("checking wallet balance")
-        executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
-        _persist_bot_state(bankroll_usd=round(executor.get_usdc_balance(), 2))
-        _set_startup_detail("starting telegram replies")
-        telegram_command_stop = threading.Event()
-        telegram_command_thread = threading.Thread(
-            target=_run_telegram_command_loop,
-            args=(telegram_command_stop,),
-            name="telegram-command-loop",
-            daemon=True,
-        )
-        telegram_command_thread.start()
-        startup_wallets = watchlist.startup_wallets()
-        _set_startup_detail("initializing risk guards")
-        live_entry_guard = _init_live_entry_guard(executor)
-        daily_loss_guard = _init_daily_loss_guard(executor)
-        _set_startup_detail("loading signal engine")
-        engine = SignalEngine()
-        _persist_runtime_truth()
-        _set_startup_detail("loading trade cache")
-        dedup = DedupeCache()
-        dedup.load_from_db(rebuild_shadow_positions=True)
-        tracker.seen_ids.update(dedup.seen_ids)
-        _set_startup_detail(
-            f"loaded {len(dedup.seen_ids)} seen ids, {len(dedup.open_positions)} open positions"
-        )
-        _set_startup_detail("syncing live positions" if use_real_money() else "rebuilding shadow positions")
-        initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
-        if use_real_money() and not initial_live_sync_ok:
-            raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
-        _refresh_shadow_history_state()
-
-        def _refresh_watchlist() -> None:
-            refresh_trader_cache(watchlist.active_wallets())
-            watchlist.refresh(run_auto_drop=True)
-            _persist_bot_state(**watchlist.state_fields())
-
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(
-            lambda: (
-                _resolve_trades_and_alert(),
-                dedup.load_from_db(rebuild_shadow_positions=False),
-                _refresh_shadow_history_state(),
-            ),
-            "interval",
-            minutes=2,
-            id="resolve_trades",
-        )
-        scheduler.add_job(
-            daily_report,
-            "cron",
-            hour=8,
-            minute=0,
-            id="daily_report",
-        )
-        retrain_cadence = retrain_base_cadence()
-        retrain_hour = retrain_hour_local()
-        retrain_trigger = {"hour": retrain_hour, "minute": 0, "id": "scheduled_retrain"}
-        if retrain_cadence == "weekly":
-            scheduler.add_job(
-                lambda: _run_retrain_job("scheduled"),
-                "cron",
-                day_of_week="mon",
-                **retrain_trigger,
+        if shadow_startup_blocked_reason:
+            _run_shadow_startup_blocked_service(
+                reason=shadow_startup_blocked_reason,
+                validation_error=startup_validation_error or shadow_startup_blocked_reason,
+                shutdown_event=shutdown_event,
+                persist_state=_persist_bot_state,
+                heartbeat=_heartbeat,
+                service_rebootstrap_requests_only=_service_rebootstrap_requests_only,
+                refresh_db_integrity_state=_refresh_db_integrity_state,
+                refresh_db_recovery_state=_refresh_db_recovery_state,
+                refresh_db_recovery_shadow_state=_refresh_db_recovery_shadow_state,
             )
         else:
-            scheduler.add_job(
-                lambda: _run_retrain_job("scheduled"),
-                "cron",
-                **retrain_trigger,
-            )
-        replay_search_cadence = replay_search_base_cadence()
-        replay_search_hour = replay_search_hour_local()
-        replay_search_trigger = {"hour": replay_search_hour, "minute": 0, "id": "scheduled_replay_search"}
-        if replay_search_cadence == "weekly":
-            scheduler.add_job(
-                lambda: _run_replay_search_job("scheduled"),
-                "cron",
-                day_of_week="mon",
-                **replay_search_trigger,
-            )
-        elif replay_search_cadence == "daily":
-            scheduler.add_job(
-                lambda: _run_replay_search_job("scheduled"),
-                "cron",
-                **replay_search_trigger,
-            )
-        scheduler.add_job(
-            lambda: should_retrain_early(engine) and _run_retrain_job("early"),
-            "interval",
-            seconds=retrain_early_check_seconds(),
-            id="early_retrain_check",
-        )
-        scheduler.add_job(
-            lambda: dedup.sync_positions_from_api(tracker, wallet_address()),
-            "interval",
-            minutes=5,
-            id="sync_positions",
-        )
-        scheduler.add_job(
-            lambda: _run_stop_loss_checks(tracker, executor, dedup),
-            "interval",
-            minutes=1,
-            id="stop_loss_check",
-        )
-        scheduler.add_job(
-            _refresh_watchlist,
-            "interval",
-            minutes=10,
-            id="refresh_trader_cache",
-        )
-        scheduler.add_job(
-            _backup_db,
-            "cron",
-            hour=4,
-            id="db_backup",
-        )
-        _set_startup_detail("starting scheduler")
-        scheduler.start()
-        _log_runtime_ready(tracker, watchlist)
-        _persist_bot_state(startup_detail="waiting for first poll")
-        startup_warmup_thread = threading.Thread(
-            target=_run_deferred_startup_tasks,
-            kwargs={
-                "startup_wallets": startup_wallets,
-                "tracker": tracker,
-                "watchlist": watchlist,
-                "dedup": dedup,
-                "engine": engine,
-                "persist_state": _persist_bot_state,
-                "run_retrain_job": _run_retrain_job,
-            },
-            name="startup-warmup",
-            daemon=True,
-        )
-        startup_warmup_thread.start()
+            _set_startup_detail("loading watchlist")
+            _set_startup_detail("syncing belief priors")
+            sync_belief_priors()
 
-        mode_str = "LIVE" if use_real_money() else "SHADOW"
-        tier_state = watchlist.state_fields()
-        send_alert(
-            build_lines(
-                f"bot started in {mode_str.lower()} mode",
-                f"watching {len(tracker.wallets)} wallets",
-                (
-                    "tracked/dropped: "
-                    f"{tier_state['tracked_wallet_count']}/{tier_state['dropped_wallet_count']}"
+            _set_startup_detail("creating tracker")
+            tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
+            _set_startup_detail("connecting executor")
+            executor = PolymarketExecutor()
+            _set_startup_detail("checking wallet balance")
+            executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
+            _persist_bot_state(bankroll_usd=round(executor.get_usdc_balance(), 2))
+            _set_startup_detail("starting telegram replies")
+            telegram_command_stop = threading.Event()
+            telegram_command_thread = threading.Thread(
+                target=_run_telegram_command_loop,
+                args=(telegram_command_stop,),
+                name="telegram-command-loop",
+                daemon=True,
+            )
+            telegram_command_thread.start()
+            startup_wallets = watchlist.startup_wallets()
+            _set_startup_detail("initializing risk guards")
+            live_entry_guard = _init_live_entry_guard(executor)
+            daily_loss_guard = _init_daily_loss_guard(executor)
+            _set_startup_detail("loading signal engine")
+            engine = SignalEngine()
+            _persist_runtime_truth()
+            _set_startup_detail("loading trade cache")
+            dedup = DedupeCache()
+            dedup.load_from_db(rebuild_shadow_positions=True)
+            tracker.seen_ids.update(dedup.seen_ids)
+            _set_startup_detail(
+                f"loaded {len(dedup.seen_ids)} seen ids, {len(dedup.open_positions)} open positions"
+            )
+            _set_startup_detail("syncing live positions" if use_real_money() else "rebuilding shadow positions")
+            initial_live_sync_ok = dedup.sync_positions_from_api(tracker, wallet_address())
+            if use_real_money() and not initial_live_sync_ok:
+                raise RuntimeError("Initial live positions sync failed; refusing to start without a confirmed view of open positions")
+            _refresh_shadow_history_state()
+            _refresh_segment_shadow_state()
+            _refresh_routed_shadow_performance_state()
+            _refresh_db_integrity_state()
+            _refresh_db_recovery_state()
+            _refresh_db_recovery_shadow_state()
+
+            def _refresh_watchlist() -> None:
+                refresh_trader_cache(watchlist.active_wallets())
+                watchlist.refresh(run_auto_drop=True)
+                _persist_bot_state(**watchlist.state_fields())
+
+            scheduler = BackgroundScheduler()
+            scheduler.add_job(
+                lambda: (
+                    _resolve_trades_and_alert(),
+                    dedup.load_from_db(rebuild_shadow_positions=False),
+                    _refresh_shadow_history_state(),
+                    _refresh_segment_shadow_state(),
+                    _refresh_routed_shadow_performance_state(),
                 ),
-                (
-                    "hot/warm/discovery: "
-                    f"{tier_state['hot_wallet_count']}/{tier_state['warm_wallet_count']}/{tier_state['discovery_wallet_count']}"
+                "interval",
+                minutes=2,
+                id="resolve_trades",
+            )
+            scheduler.add_job(
+                daily_report,
+                "cron",
+                hour=8,
+                minute=0,
+                id="daily_report",
+            )
+            retrain_cadence = retrain_base_cadence()
+            retrain_hour = retrain_hour_local()
+            retrain_trigger = {"hour": retrain_hour, "minute": 0, "id": "scheduled_retrain"}
+            if retrain_cadence == "weekly":
+                scheduler.add_job(
+                    lambda: _run_retrain_job("scheduled"),
+                    "cron",
+                    day_of_week="mon",
+                    **retrain_trigger,
+                )
+            else:
+                scheduler.add_job(
+                    lambda: _run_retrain_job("scheduled"),
+                    "cron",
+                    **retrain_trigger,
+                )
+            replay_search_cadence = replay_search_base_cadence()
+            replay_search_hour = replay_search_hour_local()
+            replay_search_trigger = {"hour": replay_search_hour, "minute": 0, "id": "scheduled_replay_search"}
+            if replay_search_cadence == "weekly":
+                scheduler.add_job(
+                    lambda: _run_replay_search_job("scheduled"),
+                    "cron",
+                    day_of_week="mon",
+                    **replay_search_trigger,
+                )
+            elif replay_search_cadence == "daily":
+                scheduler.add_job(
+                    lambda: _run_replay_search_job("scheduled"),
+                    "cron",
+                    **replay_search_trigger,
+                )
+            scheduler.add_job(
+                lambda: should_retrain_early(engine) and _run_retrain_job("early"),
+                "interval",
+                seconds=retrain_early_check_seconds(),
+                id="early_retrain_check",
+            )
+            scheduler.add_job(
+                lambda: dedup.sync_positions_from_api(tracker, wallet_address()),
+                "interval",
+                minutes=5,
+                id="sync_positions",
+            )
+            scheduler.add_job(
+                lambda: _run_stop_loss_checks(tracker, executor, dedup),
+                "interval",
+                minutes=1,
+                id="stop_loss_check",
+            )
+            scheduler.add_job(
+                _refresh_watchlist,
+                "interval",
+                minutes=10,
+                id="refresh_trader_cache",
+            )
+            scheduler.add_job(
+                _backup_db,
+                "cron",
+                hour=4,
+                id="db_backup",
+            )
+            scheduler.add_job(
+                _refresh_db_integrity_state,
+                "interval",
+                hours=1,
+                id="db_integrity_check",
+            )
+            scheduler.add_job(
+                _refresh_db_recovery_state,
+                "interval",
+                hours=1,
+                id="db_recovery_check",
+            )
+            scheduler.add_job(
+                _refresh_db_recovery_shadow_state,
+                "interval",
+                hours=1,
+                id="db_recovery_shadow_check",
+            )
+            _set_startup_detail("starting scheduler")
+            scheduler.start()
+            _log_runtime_ready(tracker, watchlist)
+            _persist_bot_state(startup_detail="waiting for first poll")
+            startup_warmup_thread = threading.Thread(
+                target=_run_deferred_startup_tasks,
+                kwargs={
+                    "startup_wallets": startup_wallets,
+                    "tracker": tracker,
+                    "watchlist": watchlist,
+                    "dedup": dedup,
+                    "engine": engine,
+                    "persist_state": _persist_bot_state,
+                    "run_retrain_job": _run_retrain_job,
+                },
+                name="startup-warmup",
+                daemon=True,
+            )
+            startup_warmup_thread.start()
+
+            mode_str = "LIVE" if use_real_money() else "SHADOW"
+            tier_state = watchlist.state_fields()
+            send_alert(
+                build_lines(
+                    f"bot started in {mode_str.lower()} mode",
+                    f"watching {len(tracker.wallets)} wallets",
+                    (
+                        "tracked/dropped: "
+                        f"{tier_state['tracked_wallet_count']}/{tier_state['dropped_wallet_count']}"
+                    ),
+                    (
+                        "hot/warm/discovery: "
+                        f"{tier_state['hot_wallet_count']}/{tier_state['warm_wallet_count']}/{tier_state['discovery_wallet_count']}"
+                    ),
+                    f"poll interval: {poll_interval()}s",
                 ),
-                f"poll interval: {poll_interval()}s",
-            ),
-            kind="status",
+                kind="status",
+            )
+            startup_ready = True
+    except ShadowResetRequested as exc:
+        pending_shadow_reset = exc.request
+        shutdown_event.set()
+        logger.warning(
+            "Processing shadow reset request from %s (wallet_mode=%s request_id=%s)",
+            exc.request.source,
+            exc.request.wallet_mode,
+            exc.request.request_id or "-",
+        )
+    except DbRecoveryRequested as exc:
+        pending_db_recovery = exc.request
+        shutdown_event.set()
+        logger.warning(
+            "Processing DB recovery request from %s (candidate=%s request_id=%s)",
+            exc.request.source,
+            exc.request.candidate_path,
+            exc.request.request_id or "-",
         )
     except Exception as exc:
         detail = f"startup failed: {exc}"
@@ -5001,146 +6618,153 @@ def main() -> None:
         raise
 
     try:
-        entry_pause_alerts = EntryPauseAlertTracker()
-        first_poll_logged = False
-        while not shutdown_event.is_set():
-            loop_start = time.time()
-            current_loop_started_at = int(loop_start)
-            _heartbeat(force=True)
-            event_count = 0
-            polled_wallet_count = 0
-            bankroll = 0.0
-            account_equity = 0.0
-            entry_block_reason = None
-            try:
-                bankroll = executor.get_usdc_balance()
-                account_equity = executor.get_account_equity_usd()
-                if bankroll < 1.0:
-                    logger.warning("Low balance: $%.2f - skipping poll", bankroll)
-                else:
-                    _heartbeat()
-                    watchlist.refresh(run_auto_drop=False)
-                    poll_batches = watchlist.poll_batches()
-                    polled_wallet_count = sum(len(batch.wallets) for batch in poll_batches)
-                    _persist_bot_state(
-                        polled_wallet_count=polled_wallet_count,
-                        **watchlist.state_fields(),
-                    )
-                    events = []
-                    for batch in poll_batches:
-                        if shutdown_event.is_set():
-                            break
-                        if not batch.wallets:
-                            continue
-                        events.extend(tracker.poll(list(batch.wallets), trade_limit=batch.trade_limit))
-                    event_count = len(events)
-                    entry_pause_state = _entry_pause_state(
-                        tracker,
-                        executor,
-                        live_entry_guard,
-                        daily_loss_guard,
-                        account_equity,
-                    )
-                    entry_block_reason = entry_pause_state.reason if entry_pause_state is not None else None
-                    entry_pause_alert = entry_pause_alerts.update(entry_pause_state)
-                    if entry_pause_alert is not None:
-                        transition, alert_state = entry_pause_alert
-                        if transition == "paused" and alert_state is not None:
-                            logger.error(alert_state.reason)
-                            send_alert(
-                                build_lines(
-                                    "entries paused",
-                                    alert_state.reason,
-                                    "new entries are paused until the condition clears",
-                                ),
-                                kind="warning",
-                            )
-                        elif transition == "resumed":
-                            if alert_state is not None:
-                                logger.info("Entry pause cleared: %s", alert_state.reason)
-                            send_alert(
-                                build_lines(
-                                    "entries resumed",
-                                    "the pause condition cleared and new entries are enabled again",
-                                ),
-                                kind="status",
-                            )
-                    for event in events:
-                        if shutdown_event.is_set():
-                            break
+        if startup_ready:
+            entry_pause_alerts = EntryPauseAlertTracker()
+            first_poll_logged = False
+            while not shutdown_event.is_set():
+                loop_start = time.time()
+                current_loop_started_at = int(loop_start)
+                _heartbeat(force=True)
+                event_count = 0
+                polled_wallet_count = 0
+                bankroll = 0.0
+                account_equity = 0.0
+                entry_block_reason = None
+                try:
+                    bankroll = executor.get_usdc_balance()
+                    account_equity = executor.get_account_equity_usd()
+                    if bankroll < 1.0:
+                        logger.warning("Low balance: $%.2f - skipping poll", bankroll)
+                    else:
                         _heartbeat()
-                        try:
-                            bankroll = max(
-                                bankroll
-                                + process_event(
-                                    event,
-                                    engine,
-                                    executor,
-                                    dedup,
-                                    bankroll,
-                                    account_equity,
-                                    entry_block_reason=entry_block_reason,
-                                ),
-                                0.0,
+                        watchlist.refresh(run_auto_drop=False)
+                        poll_batches = watchlist.poll_batches()
+                        polled_wallet_count = sum(len(batch.wallets) for batch in poll_batches)
+                        _persist_bot_state(
+                            polled_wallet_count=polled_wallet_count,
+                            **watchlist.state_fields(),
+                        )
+                        events = []
+                        for batch in poll_batches:
+                            if shutdown_event.is_set():
+                                break
+                            if not batch.wallets:
+                                continue
+                            events.extend(
+                                tracker.poll(
+                                    list(batch.wallets),
+                                    trade_limit=batch.trade_limit,
+                                    watch_tier=batch.watch_tier,
+                                )
                             )
-                            account_equity = executor.get_account_equity_usd()
-                        except Exception as exc:
-                            logger.error(
-                                "Event processing failed for trade %s: %s",
-                                event.trade_id,
-                                exc,
-                                exc_info=True,
-                            )
-                            send_alert(
-                                build_market_error_alert(
-                                    "event processing failed",
-                                    question=event.question,
-                                    market_url=_market_url_for_event(event),
-                                    detail=f"trade {event.trade_id[:12]} failed: {exc}",
-                                    tracked_trader_name=getattr(event, "trader_name", None),
-                                    tracked_trader_address=getattr(event, "trader_address", None),
-                                ),
-                                kind="error",
-                            )
-                        finally:
-                            if event.trade_id in dedup.seen_ids:
-                                tracker.seen_ids.add(event.trade_id)
-            except Exception as exc:
-                logger.error("Main loop error: %s", exc, exc_info=True)
-                send_alert(build_lines("bot loop error", str(exc)), kind="error")
+                        event_count = len(events)
+                        entry_pause_state = _entry_pause_state(
+                            tracker,
+                            executor,
+                            live_entry_guard,
+                            daily_loss_guard,
+                            account_equity,
+                        )
+                        entry_block_reason = entry_pause_state.reason if entry_pause_state is not None else None
+                        entry_pause_alert = entry_pause_alerts.update(entry_pause_state)
+                        if entry_pause_alert is not None:
+                            transition, alert_state = entry_pause_alert
+                            if transition == "paused" and alert_state is not None:
+                                logger.error(alert_state.reason)
+                                send_alert(
+                                    build_lines(
+                                        "entries paused",
+                                        alert_state.reason,
+                                        "new entries are paused until the condition clears",
+                                    ),
+                                    kind="warning",
+                                )
+                            elif transition == "resumed":
+                                if alert_state is not None:
+                                    logger.info("Entry pause cleared: %s", alert_state.reason)
+                                send_alert(
+                                    build_lines(
+                                        "entries resumed",
+                                        "the pause condition cleared and new entries are enabled again",
+                                    ),
+                                    kind="status",
+                                )
+                        for event in events:
+                            if shutdown_event.is_set():
+                                break
+                            _heartbeat()
+                            try:
+                                bankroll = max(
+                                    bankroll
+                                    + process_event(
+                                        event,
+                                        engine,
+                                        executor,
+                                        dedup,
+                                        bankroll,
+                                        account_equity,
+                                        entry_block_reason=entry_block_reason,
+                                    ),
+                                    0.0,
+                                )
+                                account_equity = executor.get_account_equity_usd()
+                            except Exception as exc:
+                                logger.error(
+                                    "Event processing failed for trade %s: %s",
+                                    event.trade_id,
+                                    exc,
+                                    exc_info=True,
+                                )
+                                send_alert(
+                                    build_market_error_alert(
+                                        "event processing failed",
+                                        question=event.question,
+                                        market_url=_market_url_for_event(event),
+                                        detail=f"trade {event.trade_id[:12]} failed: {exc}",
+                                        tracked_trader_name=getattr(event, "trader_name", None),
+                                        tracked_trader_address=getattr(event, "trader_address", None),
+                                    ),
+                                    kind="error",
+                                )
+                            finally:
+                                if event.trade_id in dedup.seen_ids:
+                                    tracker.seen_ids.add(event.trade_id)
+                except Exception as exc:
+                    logger.error("Main loop error: %s", exc, exc_info=True)
+                    send_alert(build_lines("bot loop error", str(exc)), kind="error")
 
-            elapsed = time.time() - loop_start
-            state_snapshot = {
-                "started_at": start_ts,
-                "last_loop_started_at": current_loop_started_at,
-                "last_activity_at": int(time.time()),
-                "startup_detail": "",
-                "last_poll_at": int(time.time()),
-                "last_poll_duration_s": round(elapsed, 3),
-                "bankroll_usd": round(bankroll, 2),
-                "last_event_count": event_count,
-                "polled_wallet_count": polled_wallet_count,
-                "loop_in_progress": False,
-                **watchlist.state_fields(),
-            }
-            current_loop_started_at = 0
-            _persist_bot_state(**state_snapshot)
-            _service_runtime_requests()
-            if not first_poll_logged:
-                _log_first_poll_summary(
-                    elapsed=elapsed,
-                    polled_wallet_count=polled_wallet_count,
-                    event_count=event_count,
-                    bankroll=bankroll,
+                elapsed = time.time() - loop_start
+                state_snapshot = {
+                    "started_at": start_ts,
+                    "last_loop_started_at": current_loop_started_at,
+                    "last_activity_at": int(time.time()),
+                    "startup_detail": "",
+                    "last_poll_at": int(time.time()),
+                    "last_poll_duration_s": round(elapsed, 3),
+                    "bankroll_usd": round(bankroll, 2),
+                    "last_event_count": event_count,
+                    "polled_wallet_count": polled_wallet_count,
+                    "loop_in_progress": False,
+                    **watchlist.state_fields(),
+                }
+                current_loop_started_at = 0
+                _persist_bot_state(**state_snapshot)
+                _service_runtime_requests()
+                if not first_poll_logged:
+                    _log_first_poll_summary(
+                        elapsed=elapsed,
+                        polled_wallet_count=polled_wallet_count,
+                        event_count=event_count,
+                        bankroll=bankroll,
+                    )
+                    first_poll_logged = True
+                _wait_for_next_poll(
+                    loop_start,
+                    state_snapshot,
+                    _service_runtime_requests,
+                    stop_event=shutdown_event,
                 )
-                first_poll_logged = True
-            _wait_for_next_poll(
-                loop_start,
-                state_snapshot,
-                _service_runtime_requests,
-                stop_event=shutdown_event,
-            )
-        logger.info("Shutdown requested. Exiting main loop.")
+            logger.info("Shutdown requested. Exiting main loop.")
     except ShadowResetRequested as exc:
         pending_shadow_reset = exc.request
         shutdown_event.set()
@@ -5150,13 +6774,59 @@ def main() -> None:
             exc.request.wallet_mode,
             exc.request.request_id or "-",
         )
+    except DbRecoveryRequested as exc:
+        pending_db_recovery = exc.request
+        shutdown_event.set()
+        logger.warning(
+            "Processing DB recovery request from %s (candidate=%s request_id=%s)",
+            exc.request.source,
+            exc.request.candidate_path,
+            exc.request.request_id or "-",
+        )
     except KeyboardInterrupt:
         shutdown_event.set()
         logger.info("Shutting down...")
         send_alert("bot stopped", kind="status")
     finally:
         _cleanup_runtime()
-        if pending_shadow_reset is not None:
+        if pending_db_recovery is not None:
+            try:
+                recovery_result = recover_db_from_verified_backup(
+                    path=Path(pending_db_recovery.source_path) if pending_db_recovery.source_path else DB_PATH,
+                    backup_path=Path(pending_db_recovery.candidate_path),
+                )
+                if not bool(recovery_result.get("ok")):
+                    raise RuntimeError(str(recovery_result.get("message") or "DB recovery failed"))
+                logger.warning(
+                    "DB recovery restored %s from %s (quarantined=%s)",
+                    recovery_result.get("restored_path"),
+                    recovery_result.get("backup_path"),
+                    recovery_result.get("quarantined_path") or "-",
+                )
+                model_quarantined_path = _quarantine_runtime_model_artifact(reason="db_recovery")
+                if model_quarantined_path:
+                    logger.warning(
+                        "DB recovery quarantined deployed model artifact at %s",
+                        model_quarantined_path,
+                    )
+                write_shadow_evidence_epoch(
+                    path=SHADOW_EVIDENCE_EPOCH_FILE,
+                    source="db_recovery",
+                    request_id=pending_db_recovery.request_id,
+                    message="fresh shadow evidence epoch started after DB recovery",
+                )
+                logging.shutdown()
+                exec_restarted_bot()
+            except Exception:
+                _persist_bot_state(
+                    shadow_restart_pending=False,
+                    shadow_restart_kind="",
+                    shadow_restart_message="",
+                    startup_failed=True,
+                    startup_failure_message="DB recovery failed before restart",
+                )
+                raise
+        elif pending_shadow_reset is not None:
             normalized_wallet_mode = pending_shadow_reset.wallet_mode
             previous_wallets = ""
             wallets_updated = False

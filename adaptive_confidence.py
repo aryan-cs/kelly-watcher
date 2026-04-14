@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from config import min_confidence
 from db import get_conn
+from trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 
 CACHE_TTL_SECONDS = 60.0
 SHORT_WINDOW_SECONDS = 15 * 60
@@ -207,7 +208,7 @@ def _load_snapshot() -> AdaptiveFloorSnapshot:
     conn = get_conn()
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 trader_address,
                 skipped,
@@ -222,6 +223,7 @@ def _load_snapshot() -> AdaptiveFloorSnapshot:
                 market_close_ts
             FROM trade_log
             WHERE COALESCE(source_action, 'buy')='buy'
+              AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
               AND (
                   (skipped=1 AND outcome IS NOT NULL)
                   OR (

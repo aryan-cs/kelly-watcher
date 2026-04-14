@@ -32,6 +32,7 @@ from config import (
     xgboost_allowed_entry_price_bands,
 )
 from runtime_paths import TRADING_DB_PATH
+from trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 
 HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
 HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
@@ -279,7 +280,7 @@ def _simulate(
     initial_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
     rows = conn.execute(
-        """
+        f"""
         SELECT
             id,
             trade_id,
@@ -303,6 +304,7 @@ def _simulate(
         FROM trade_log
         WHERE COALESCE(source_action, 'buy')='buy'
           AND real_money=?
+          AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
           AND (? IS NULL OR placed_at >= ?)
           AND (? IS NULL OR placed_at < ?)
         ORDER BY placed_at ASC, id ASC

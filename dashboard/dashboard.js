@@ -4,7 +4,7 @@ import { cycleDurationPreset, editableConfigFields, isPresetDurationField, readE
 import { MODEL_PANEL_COLUMN_LAYOUT, MODEL_PANEL_DEFS, Models } from './pages/Models.js';
 import { requestManualRetrain } from './retrainControl.js';
 import { stackPanels } from './responsive.js';
-import { dangerActions, restartShadowAccount, setLiveTradingEnabled } from './settingsDanger.js';
+import { dangerActions, recoverShadowDatabase, restartShadowAccount, setLiveTradingEnabled } from './settingsDanger.js';
 import { theme } from './theme.js';
 import { LiveFeed } from './pages/LiveFeed.js';
 import { Signals } from './pages/Signals.js';
@@ -97,9 +97,8 @@ function renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetCh
             return React.createElement(Settings, { editor: settingsEditor });
     }
 }
-function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, transientNotice }) {
+function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, transientNotice }) {
     const terminal = useTerminalSize();
-    const botState = useBotState();
     const mode = botState.mode === 'live' ? '[LIVE]' : '[SHADOW]';
     const modeColor = botState.mode === 'live' ? theme.green : theme.dim;
     const now = Date.now() / 1000;
@@ -119,10 +118,21 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
     const activityIsFresh = lastActivityAt > 0 && (now - lastActivityAt) <= activityWindow;
     const startupDetail = String(botState.startup_detail || '').trim();
     const startupFailed = Boolean(botState.startup_failed || botState.startup_validation_failed);
+    const startupBlocked = Boolean(botState.startup_blocked) || /startup blocked/i.test(startupDetail);
+    const startupRecoveryOnly = Boolean(botState.startup_recovery_only) || startupBlocked;
+    const startupBlockReason = String(botState.startup_block_reason || '').trim();
     const startupFailureMessage = String(botState.startup_failure_message || botState.startup_validation_message || '').trim();
-    const startupFailureText = startupDetail || startupFailureMessage || 'startup failed';
+    const startupFailureText = startupBlockReason || startupDetail || startupFailureMessage || (startupRecoveryOnly ? 'recovery-only mode' : 'startup failed');
     const shadowRestartPending = Boolean(botState.shadow_restart_pending);
     const shadowRestartMessage = String(botState.shadow_restart_message || '').trim() || 'shadow restart in progress';
+    const manualRetrainBlockedMessage = shadowRestartPending
+        ? shadowRestartMessage
+        : startupRecoveryOnly
+            ? startupFailureText || 'Recovery-only mode: manual retrain is unavailable until Recover DB or Restart Shadow completes.'
+            : '';
+    const selectedDangerAction = dangerActions[settingsEditor.dangerSelectedIndex];
+    const configEditBlocked = shadowRestartPending || startupRecoveryOnly;
+    const liveModeSelectionBlocked = selectedDangerAction?.id === 'live_trading' && (shadowRestartPending || startupRecoveryOnly);
     const apiError = String(botState.api_error || '').trim();
     const apiIssueTag = /token|unauthorized/i.test(apiError) ? 'api auth error' : 'api offline';
     const startupInProgress = startedAt > 0 && lastPollAt <= 0;
@@ -138,7 +148,9 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
                     ? theme.yellow
                     : theme.red;
     const backendStatusText = startupFailed
-        ? startupFailureText
+        ? startupRecoveryOnly
+            ? startupFailureText || 'recovery-only mode'
+            : startupFailureText
         : apiError
             ? apiIssueTag
             : shadowRestartPending
@@ -230,10 +242,14 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
                             : '↑/↓: settings  enter: edit in config  esc: close  r: refresh  q: exit'
                         : terminal.compact
                             ? selectedModelPanel.id === 'training_cycle'
-                                ? '↑↓/←→ select  enter help  t retrain  r refresh  q exit'
+                                ? manualRetrainBlockedMessage
+                                    ? '↑↓/←→ select  enter help  t blocked  r refresh  q exit'
+                                    : '↑↓/←→ select  enter help  t retrain  r refresh  q exit'
                                 : '↑↓/←→ select  enter help  r refresh  q exit'
                             : selectedModelPanel.id === 'training_cycle'
-                                ? '↑/↓/←/→: select  enter: help  t: retrain now  r: refresh  q: exit'
+                                ? manualRetrainBlockedMessage
+                                    ? '↑/↓/←/→: select  enter: help  t: blocked  r: refresh  q: exit'
+                                    : '↑/↓/←/→: select  enter: help  t: retrain now  r: refresh  q: exit'
                                 : '↑/↓/←/→: select  enter: help  r: refresh  q: exit'
                     : page === 5
                         ? terminal.compact
@@ -248,9 +264,17 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
                                     ? terminal.compact
                                         ? '↑↓ presets  enter save  esc cancel  r refresh  q exit'
                                         : '↑/↓: cycle presets  enter: save  esc: cancel  r: refresh  q: exit'
-                                    : terminal.compact
-                                        ? '←→ box  ↑↓ select  enter open  r refresh  q exit'
-                                        : '←/→: switch box  ↑/↓: select  enter: edit/open  r: refresh  q: exit'
+                                    : settingsEditor.focusArea === 'config' && configEditBlocked
+                                        ? terminal.compact
+                                            ? '←→ box  ↑↓ select  enter blocked  r refresh  q exit'
+                                            : '←/→: switch box  ↑/↓: select  enter: blocked  r: refresh  q: exit'
+                                        : settingsEditor.focusArea === 'danger' && liveModeSelectionBlocked
+                                            ? terminal.compact
+                                                ? '←→ box  ↑↓ select  enter blocked  r refresh  q exit'
+                                                : '←/→: switch box  ↑/↓: select  enter: blocked  r: refresh  q: exit'
+                                            : terminal.compact
+                                                ? '←→ box  ↑↓ select  enter open  r refresh  q exit'
+                                                : '←/→: switch box  ↑/↓: select  enter: edit/open  r: refresh  q: exit'
                             : terminal.compact
                                 ? 'r refresh  q exit'
                                 : 'r: refresh  q: exit';
@@ -281,6 +305,7 @@ function AppContent({ page, isRefreshing, settingsEditor, feedScrollOffset, onFe
             React.createElement(Text, { color: footerStatusColor }, activeTransientNotice ? activeTransientNotice.message : footerStatusText))))));
 }
 function App() {
+    const botState = useBotState();
     const [terminalBackgroundColor] = useState(() => globalThis.__KELLY_WATCHER_TERMINAL_BG__);
     const [page, setPage] = useState(1);
     const [refreshToken, setRefreshToken] = useState(0);
@@ -335,18 +360,18 @@ function App() {
         isEditing: false,
         draft: '',
         replaceDraftOnInput: false,
-        statusMessage: 'Use left/right to switch boxes. Use up/down to select. Enter edits config or opens the selected danger action.',
+        statusMessage: 'Use left/right to switch boxes. Use up/down to select. Enter opens the selected control when it is available.',
         statusTone: 'info',
         focusArea: 'config',
         dangerSelectedIndex: 0,
         dangerConfirm: null
     }));
     const dashboardConfig = useDashboardConfig();
-    const beginShadowRestartUiReset = () => {
+    const beginShadowRestartUiReset = (kind, message = '') => {
         clearEventStreamCache();
         clearQueryCache();
         clearIdentityCache();
-        beginShadowRestartBotState();
+        beginShadowRestartBotState(kind, message);
         setFeedScrollOffset(0);
         setSignalsScrollOffset(0);
         setSignalsHorizontalOffset(0);
@@ -391,8 +416,99 @@ function App() {
     }, [dashboardConfig]);
     const selectedField = editableConfigFields[settingsEditor.selectedIndex];
     const selectedDangerAction = dangerActions[settingsEditor.dangerSelectedIndex];
+    const appStartupDetail = String(botState.startup_detail || '').trim();
+    const appStartupBlocked = Boolean(botState.startup_blocked) || /startup blocked/i.test(appStartupDetail);
+    const startupRecoveryOnly = Boolean(botState.startup_recovery_only) || appStartupBlocked;
+    const startupFailureText = String(botState.startup_block_reason || '').trim()
+        || appStartupDetail
+        || String(botState.startup_failure_message || botState.startup_validation_message || '').trim()
+        || (startupRecoveryOnly ? 'recovery-only mode' : 'startup failed');
+    const shadowRestartPending = Boolean(botState.shadow_restart_pending);
+    const shadowRestartMessage = String(botState.shadow_restart_message || '').trim() || 'shadow restart in progress';
+    const manualRetrainBlockedMessage = shadowRestartPending
+        ? shadowRestartMessage
+        : startupRecoveryOnly
+            ? startupFailureText || 'Recovery-only mode: manual retrain is unavailable until Recover DB or Restart Shadow completes.'
+            : '';
+    const configEditBlockedMessage = shadowRestartPending
+        ? `${shadowRestartMessage} Config edits stay blocked until the backend restarts.`
+        : startupRecoveryOnly
+            ? `${startupFailureText || 'Recovery-only mode'} Config edits stay blocked until Recover DB or Restart Shadow completes.`
+            : '';
+    const liveModeBlockedMessage = shadowRestartPending
+        ? `${shadowRestartMessage} Live-mode requests stay blocked until the backend restarts.`
+        : startupRecoveryOnly
+            ? startupFailureText || 'Live trading stays blocked while the backend is in recovery-only mode.'
+            : '';
+    const dbRecoveryCandidateReady = Boolean(botState.db_recovery_candidate_ready);
+    const dbRecoveryCandidateModeRaw = String(botState.db_recovery_candidate_mode || '').trim().toLowerCase();
+    const dbRecoveryCandidateEvidenceReady = Boolean(botState.db_recovery_candidate_evidence_ready);
+    const dbRecoveryCandidateClassReason = String(botState.db_recovery_candidate_class_reason || '').trim();
+    const dbRecoveryCandidateMode = !dbRecoveryCandidateReady
+        ? 'unavailable'
+        : dbRecoveryCandidateModeRaw === 'evidence_ready' || dbRecoveryCandidateEvidenceReady
+            ? 'evidence_ready'
+            : 'integrity_only';
+    const dbRecoveryCandidateModeLabel = dbRecoveryCandidateMode === 'evidence_ready'
+        ? 'evidence-ready'
+        : dbRecoveryCandidateMode === 'integrity_only'
+            ? 'integrity-only'
+            : 'unavailable';
+    const dbRecoveryCandidateUnavailableMessage = dbRecoveryCandidateClassReason
+        || String(botState.db_recovery_candidate_message || '').trim()
+        || 'Recover DB is unavailable because no verified backup candidate is ready.';
     const selectedModelPanel = MODEL_PANEL_DEFS[Math.max(0, Math.min(modelSelectionIndex, MODEL_PANEL_DEFS.length - 1))];
     const selectedModelSettingKeys = selectedModelPanel?.settingKeys || [];
+    useEffect(() => {
+        if (!configEditBlockedMessage && !liveModeBlockedMessage && !shadowRestartPending) {
+            return;
+        }
+        setSettingsEditor((current) => {
+            let next = current;
+            let changed = false;
+            let nextStatusMessage = current.statusMessage;
+            let nextStatusTone = current.statusTone;
+            if (current.isEditing && configEditBlockedMessage) {
+                next = {
+                    ...next,
+                    isEditing: false,
+                    draft: '',
+                    replaceDraftOnInput: false
+                };
+                nextStatusMessage = configEditBlockedMessage;
+                nextStatusTone = 'error';
+                changed = true;
+            }
+            const actionId = current.dangerConfirm?.actionId || '';
+            if (actionId === 'live_trading' && liveModeBlockedMessage) {
+                next = {
+                    ...next,
+                    focusArea: 'danger',
+                    dangerConfirm: null
+                };
+                nextStatusMessage = liveModeBlockedMessage;
+                nextStatusTone = 'error';
+                changed = true;
+            }
+            else if (shadowRestartPending && (actionId === 'restart_shadow' || actionId === 'recover_db')) {
+                next = {
+                    ...next,
+                    dangerConfirm: null
+                };
+                nextStatusMessage = shadowRestartMessage;
+                nextStatusTone = 'info';
+                changed = true;
+            }
+            if (!changed) {
+                return current;
+            }
+            return {
+                ...next,
+                statusMessage: nextStatusMessage,
+                statusTone: nextStatusTone
+            };
+        });
+    }, [configEditBlockedMessage, liveModeBlockedMessage, shadowRestartPending, shadowRestartMessage]);
     const walletPaneCount = (pane) => {
         if (pane === 'best')
             return walletMeta.bestCount;
@@ -802,6 +918,14 @@ function App() {
         }
     };
     const saveConfigValue = async (rawValue) => {
+        if (configEditBlockedMessage) {
+            setSettingsEditor((current) => ({
+                ...current,
+                statusMessage: configEditBlockedMessage,
+                statusTone: 'error'
+            }));
+            return;
+        }
         const validation = validateEditableConfigValue(selectedField, rawValue);
         if (!validation.ok) {
             setSettingsEditor((current) => ({
@@ -838,6 +962,19 @@ function App() {
         }
     };
     const beginConfigEdit = () => {
+        if (configEditBlockedMessage) {
+            setSettingsEditor((current) => ({
+                ...current,
+                focusArea: 'config',
+                isEditing: false,
+                draft: '',
+                replaceDraftOnInput: false,
+                dangerConfirm: null,
+                statusMessage: configEditBlockedMessage,
+                statusTone: 'error'
+            }));
+            return;
+        }
         const currentValue = settingsEditor.values[selectedField.key] || selectedField.defaultValue;
         if (selectedField.kind === 'bool') {
             const nextValue = currentValue.toLowerCase() === 'true' ? 'false' : 'true';
@@ -866,6 +1003,21 @@ function App() {
         const currentValue = values[field.key] || field.defaultValue;
         setModelDetailOpen(false);
         setPage(6);
+        if (configEditBlockedMessage) {
+            setSettingsEditor((current) => ({
+                ...current,
+                values,
+                focusArea: 'config',
+                selectedIndex: fieldIndex,
+                isEditing: false,
+                draft: '',
+                replaceDraftOnInput: false,
+                dangerConfirm: null,
+                statusMessage: configEditBlockedMessage,
+                statusTone: 'error'
+            }));
+            return;
+        }
         setSettingsEditor((current) => ({
             ...current,
             values,
@@ -939,7 +1091,27 @@ function App() {
         if (!selectedDangerAction) {
             return;
         }
+        if (shadowRestartPending && (selectedDangerAction.id === 'restart_shadow' || selectedDangerAction.id === 'recover_db')) {
+            setSettingsEditor((current) => ({
+                ...current,
+                focusArea: 'danger',
+                dangerConfirm: null,
+                statusMessage: shadowRestartMessage,
+                statusTone: 'info'
+            }));
+            return;
+        }
         if (selectedDangerAction.id === 'live_trading') {
+            if (liveModeBlockedMessage) {
+                setSettingsEditor((current) => ({
+                    ...current,
+                    focusArea: 'danger',
+                    dangerConfirm: null,
+                    statusMessage: liveModeBlockedMessage,
+                    statusTone: 'error'
+                }));
+                return;
+            }
             const envValues = readEnvValues();
             const currentValue = String(envValues.USE_REAL_MONEY || '').trim().toLowerCase() === 'true';
             setSettingsEditor((current) => ({
@@ -949,17 +1121,58 @@ function App() {
                     actionId: 'live_trading',
                     title: currentValue ? 'Disable Live Trading?' : 'Enable Live Trading?',
                     message: currentValue
-                        ? 'This only updates config. The running bot will stay in its current mode until you restart it.'
-                        : 'This arms real-money mode in config. The running bot will stay unchanged until you restart it.',
+                        ? 'This sends a guarded request to turn live mode off. The running bot will stay in its current mode until the backend applies it.'
+                        : 'This sends a guarded request to turn live mode on. DB integrity, shadow-history, and segment-shadow readiness must all be satisfied before the backend will allow it.',
                     options: currentValue
                         ? [
-                            { id: 'confirm_disable', label: 'Disable live trading', description: 'Save USE_REAL_MONEY=false.' },
+                            { id: 'confirm_disable', label: 'Disable live trading', description: 'Call the guarded live-mode endpoint with enabled=false.' },
                             { id: 'cancel', label: 'Cancel', description: 'Leave config unchanged.' }
                         ]
                         : [
-                            { id: 'confirm_enable', label: 'Enable live trading', description: 'Save USE_REAL_MONEY=true.' },
+                            { id: 'confirm_enable', label: 'Enable live trading', description: 'Call the guarded live-mode endpoint with enabled=true after readiness checks pass.' },
                             { id: 'cancel', label: 'Cancel', description: 'Leave config unchanged.' }
                         ],
+                    selectedIndex: 0
+                },
+                statusMessage: 'Use up/down to choose. Enter confirms. Esc cancels.',
+                statusTone: 'info'
+            }));
+            return;
+        }
+        if (selectedDangerAction.id === 'recover_db') {
+            if (dbRecoveryCandidateMode === 'unavailable') {
+                setSettingsEditor((current) => ({
+                    ...current,
+                    focusArea: 'danger',
+                    dangerConfirm: null,
+                    statusMessage: dbRecoveryCandidateUnavailableMessage,
+                    statusTone: 'error'
+                }));
+                return;
+            }
+            const recoveryClassMessage = dbRecoveryCandidateMode === 'evidence_ready'
+                ? 'Current candidate class: evidence-ready. It restores ledger integrity and passes the current shadow evidence gate.'
+                : 'Current candidate class: integrity-only. It can restore ledger integrity, but it is not evidence-ready for routing, model, or live-readiness decisions.';
+            const recoveryReasonMessage = dbRecoveryCandidateClassReason
+                ? ` ${dbRecoveryCandidateClassReason}`
+                : '';
+            const recoveryOptionLabel = dbRecoveryCandidateMode === 'evidence_ready'
+                ? 'Restore evidence-ready backup'
+                : 'Restore integrity-only backup';
+            const recoveryOptionDescription = dbRecoveryCandidateMode === 'evidence_ready'
+                ? 'Replace the shadow database with the latest verified backup, keeping a backup that is both recoverable and evidence-ready.'
+                : 'Replace the shadow database with the latest verified backup to restore ledger integrity. This backup is not evidence-ready.';
+            setSettingsEditor((current) => ({
+                ...current,
+                focusArea: 'danger',
+                dangerConfirm: {
+                    actionId: 'recover_db',
+                    title: `Recover Database From ${dbRecoveryCandidateModeLabel} Backup?`,
+                    message: `This restores the shadow database from the latest verified backup, then restarts shadow mode. ${recoveryClassMessage}${recoveryReasonMessage}`,
+                    options: [
+                        { id: 'confirm_recover', label: recoveryOptionLabel, description: recoveryOptionDescription },
+                        { id: 'cancel', label: 'Cancel', description: 'Leave the current database unchanged.' }
+                    ],
                     selectedIndex: 0
                 },
                 statusMessage: 'Use up/down to choose. Enter confirms. Esc cancels.',
@@ -1001,9 +1214,32 @@ function App() {
             }));
             return;
         }
+        if (confirm.actionId === 'live_trading' && liveModeBlockedMessage) {
+            setSettingsEditor((current) => ({
+                ...current,
+                focusArea: 'danger',
+                dangerConfirm: null,
+                statusMessage: liveModeBlockedMessage,
+                statusTone: 'error'
+            }));
+            return;
+        }
+        if (shadowRestartPending
+            && (confirm.actionId === 'restart_shadow' || confirm.actionId === 'recover_db')) {
+            setSettingsEditor((current) => ({
+                ...current,
+                focusArea: 'danger',
+                dangerConfirm: null,
+                statusMessage: shadowRestartMessage,
+                statusTone: 'info'
+            }));
+            return;
+        }
         const result = confirm.actionId === 'live_trading'
             ? await setLiveTradingEnabled(selectedOption.id === 'confirm_enable')
-            : await restartShadowAccount(selectedOption.id);
+            : confirm.actionId === 'recover_db'
+                ? await recoverShadowDatabase()
+                : await restartShadowAccount(selectedOption.id);
         setSettingsEditor((current) => ({
             ...current,
             values: readEditableConfigValues(),
@@ -1013,8 +1249,8 @@ function App() {
             statusTone: result.ok ? 'success' : 'error'
         }));
         if (result.ok) {
-            if (confirm.actionId === 'restart_shadow') {
-                beginShadowRestartUiReset();
+            if (confirm.actionId === 'restart_shadow' || confirm.actionId === 'recover_db') {
+                beginShadowRestartUiReset(confirm.actionId === 'recover_db' ? 'db_recovery' : 'shadow_reset', result.message);
             }
             setIsRefreshing(true);
             setRefreshToken((current) => current + 1);
@@ -1324,6 +1560,10 @@ function App() {
         }
         if (page === 4) {
             if (!modelDetailOpen && normalized === 't' && selectedModelPanel.id === 'training_cycle') {
+                if (manualRetrainBlockedMessage) {
+                    showTransientNotice(manualRetrainBlockedMessage, shadowRestartPending ? 'info' : 'error');
+                    return;
+                }
                 void (async () => {
                     try {
                         const result = await requestManualRetrain();
@@ -1442,18 +1682,34 @@ function App() {
             }
             if (normalized === 'a' && walletPane === 'dropped' && selectedDroppedWalletAddress) {
                 void (async () => {
-                    if (await reactivateDroppedWallet(selectedDroppedWalletAddress)) {
-                        setWalletDetailOpen(false);
-                        setRefreshToken((current) => current + 1);
+                    try {
+                        const result = await reactivateDroppedWallet(selectedDroppedWalletAddress);
+                        showTransientNotice(result.message, result.ok ? 'success' : 'error');
+                        if (result.ok) {
+                            setWalletDetailOpen(false);
+                            setRefreshToken((current) => current + 1);
+                        }
+                    }
+                    catch (error) {
+                        const message = error instanceof Error ? error.message : 'Unknown wallet reactivation error';
+                        showTransientNotice(message, 'error');
                     }
                 })();
                 return;
             }
             if (normalized === 'd' && walletPane === 'tracked' && selectedTrackedWalletAddress) {
                 void (async () => {
-                    if (await dropTrackedWallet(selectedTrackedWalletAddress)) {
-                        setWalletDetailOpen(false);
-                        setRefreshToken((current) => current + 1);
+                    try {
+                        const result = await dropTrackedWallet(selectedTrackedWalletAddress);
+                        showTransientNotice(result.message, result.ok ? 'success' : 'error');
+                        if (result.ok) {
+                            setWalletDetailOpen(false);
+                            setRefreshToken((current) => current + 1);
+                        }
+                    }
+                    catch (error) {
+                        const message = error instanceof Error ? error.message : 'Unknown wallet drop error';
+                        showTransientNotice(message, 'error');
                     }
                 })();
                 return;
@@ -1848,7 +2104,7 @@ function App() {
     });
     return (React.createElement(TerminalSizeProvider, { backgroundColor: terminalBackgroundColor },
         React.createElement(ManualRefreshProvider, { refreshToken: refreshToken },
-            React.createElement(AppContent, { page: page, isRefreshing: isRefreshing, settingsEditor: settingsEditor, feedScrollOffset: feedScrollOffset, onFeedScrollOffsetChange: setFeedScrollOffset, signalsScrollOffset: signalsScrollOffset, onSignalsScrollOffsetChange: setSignalsScrollOffset, signalsHorizontalOffset: signalsHorizontalOffset, onSignalsHorizontalOffsetChange: setSignalsHorizontalOffset, perfCurrentScrollOffset: perfCurrentScrollOffset, perfPastScrollOffset: perfPastScrollOffset, perfActivePane: perfActivePane, perfSelectedBox: perfSelectedBox, perfDailyDetailOpen: perfDailyDetailOpen, perfDailyDetailScrollOffset: perfDailyDetailScrollOffset, perfPositionAction: perfPositionAction, perfPositionEdit: perfPositionEdit, pendingPerfExits: pendingPerfExits, modelSelectionIndex: modelSelectionIndex, modelDetailOpen: modelDetailOpen, modelSettingSelectionIndex: modelSettingSelectionIndex, walletPane: walletPane, walletBestSelectionIndex: walletBestSelectionIndex, walletWorstSelectionIndex: walletWorstSelectionIndex, walletTrackedSelectionIndex: walletTrackedSelectionIndex, walletDroppedSelectionIndex: walletDroppedSelectionIndex, walletDetailOpen: walletDetailOpen, onWalletMetaChange: setWalletMeta, onPerfCurrentScrollOffsetChange: setPerfCurrentScrollOffset, onPerfPastScrollOffsetChange: setPerfPastScrollOffset, onPerfDailyDetailScrollOffsetChange: setPerfDailyDetailScrollOffset, onPerfSelectionMetaChange: setPerfSelectionMeta, onPerfDetailHistoryMetaChange: setPerfDetailHistoryMeta, onPendingPerfExitSettlement: handlePendingPerfExitSettlement, transientNotice: transientNotice }))));
+            React.createElement(AppContent, { botState: botState, page: page, isRefreshing: isRefreshing, settingsEditor: settingsEditor, feedScrollOffset: feedScrollOffset, onFeedScrollOffsetChange: setFeedScrollOffset, signalsScrollOffset: signalsScrollOffset, onSignalsScrollOffsetChange: setSignalsScrollOffset, signalsHorizontalOffset: signalsHorizontalOffset, onSignalsHorizontalOffsetChange: setSignalsHorizontalOffset, perfCurrentScrollOffset: perfCurrentScrollOffset, perfPastScrollOffset: perfPastScrollOffset, perfActivePane: perfActivePane, perfSelectedBox: perfSelectedBox, perfDailyDetailOpen: perfDailyDetailOpen, perfDailyDetailScrollOffset: perfDailyDetailScrollOffset, perfPositionAction: perfPositionAction, perfPositionEdit: perfPositionEdit, pendingPerfExits: pendingPerfExits, modelSelectionIndex: modelSelectionIndex, modelDetailOpen: modelDetailOpen, modelSettingSelectionIndex: modelSettingSelectionIndex, walletPane: walletPane, walletBestSelectionIndex: walletBestSelectionIndex, walletWorstSelectionIndex: walletWorstSelectionIndex, walletTrackedSelectionIndex: walletTrackedSelectionIndex, walletDroppedSelectionIndex: walletDroppedSelectionIndex, walletDetailOpen: walletDetailOpen, onWalletMetaChange: setWalletMeta, onPerfCurrentScrollOffsetChange: setPerfCurrentScrollOffset, onPerfPastScrollOffsetChange: setPerfPastScrollOffset, onPerfDailyDetailScrollOffsetChange: setPerfDailyDetailScrollOffset, onPerfSelectionMetaChange: setPerfSelectionMeta, onPerfDetailHistoryMetaChange: setPerfDetailHistoryMeta, onPendingPerfExitSettlement: handlePendingPerfExitSettlement, transientNotice: transientNotice }))));
 }
 function clearTerminal() {
     if (!process.stdout.isTTY) {

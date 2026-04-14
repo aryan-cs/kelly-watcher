@@ -25,6 +25,7 @@ from config import (
     warm_wallet_count,
 )
 from db import get_conn
+from trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ class WatchTierSnapshot:
 class PollBatch:
     wallets: tuple[str, ...]
     trade_limit: int
+    watch_tier: str
 
 
 HOT_WALLET_TRADE_FETCH_LIMIT = 30
@@ -298,6 +300,7 @@ def _wallet_logged_activity_map(wallet_addresses: list[str]) -> dict[str, int]:
             SELECT trader_address, MAX(placed_at) AS last_logged_ts
             FROM trade_log
             WHERE trader_address IN ({placeholders})
+              AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
             GROUP BY trader_address
             """,
             tuple(wallets),
@@ -323,10 +326,10 @@ def _wallet_skip_metrics_map(wallet_addresses: list[str]) -> dict[str, WalletSki
             f"""
             SELECT
                 LOWER(trader_address) AS trader_address,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' THEN 1 ELSE 0 END) AS total_buy_signals,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {_UNCOPYABLE_TIMING_SQL} THEN 1 ELSE 0 END) AS timing_skips,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {_UNCOPYABLE_LIQUIDITY_SQL} THEN 1 ELSE 0 END) AS liquidity_skips,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {_UNCOPYABLE_SKIP_SQL} THEN 1 ELSE 0 END) AS uncopyable_skips,
+                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} THEN 1 ELSE 0 END) AS total_buy_signals,
+                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} AND {_UNCOPYABLE_TIMING_SQL} THEN 1 ELSE 0 END) AS timing_skips,
+                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} AND {_UNCOPYABLE_LIQUIDITY_SQL} THEN 1 ELSE 0 END) AS liquidity_skips,
+                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} AND {_UNCOPYABLE_SKIP_SQL} THEN 1 ELSE 0 END) AS uncopyable_skips,
                 SUM(CASE WHEN {_RESOLVED_COPIED_BUY_SQL} THEN 1 ELSE 0 END) AS resolved_copied_count
             FROM trade_log
             WHERE trader_address IN ({placeholders})
@@ -559,7 +562,7 @@ def _refresh_wallet_policy_metrics(wallet_addresses: list[str]) -> dict[str, Wal
             f"""
             SELECT
                 LOWER(trader_address) AS trader_address,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' THEN 1 ELSE 0 END) AS total_buy_signals,
+                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} THEN 1 ELSE 0 END) AS total_buy_signals,
                 SUM(CASE WHEN {_RESOLVED_COPIED_BUY_SQL} THEN 1 ELSE 0 END) AS resolved_copied_count,
                 SUM(CASE WHEN {_RESOLVED_COPIED_BUY_SQL} AND {_RESOLVED_PNL_SQL} > 0 THEN 1 ELSE 0 END) AS resolved_copied_wins,
                 AVG(
@@ -1361,32 +1364,42 @@ class WatchlistManager:
             snapshot = self._snapshot
             loop_count = self._loop_count
 
-            batches: list[PollBatch] = []
-            if snapshot.hot:
+        batches: list[PollBatch] = []
+        if snapshot.hot:
+            batches.append(
+                PollBatch(
+                    wallets=tuple(_normalize_wallets(list(snapshot.hot))),
+                    trade_limit=HOT_WALLET_TRADE_FETCH_LIMIT,
+                    watch_tier="hot",
+                )
+            )
+        if snapshot.warm and (loop_count % warm_poll_interval_multiplier()) == 0:
+            batches.append(
+                PollBatch(
+                    wallets=tuple(_normalize_wallets(list(snapshot.warm))),
+                    trade_limit=WARM_WALLET_TRADE_FETCH_LIMIT,
+                    watch_tier="warm",
+                )
+            )
+        if snapshot.discovery and (loop_count % discovery_poll_interval_multiplier()) == 0:
+            batches.append(
+                PollBatch(
+                    wallets=tuple(_normalize_wallets(list(snapshot.discovery))),
+                    trade_limit=DISCOVERY_WALLET_TRADE_FETCH_LIMIT,
+                    watch_tier="discovery",
+                )
+            )
+        if not batches:
+            fallback = tuple(_normalize_wallets(list(snapshot.hot or snapshot.warm or snapshot.discovery)))
+            if fallback:
+                fallback_tier = "hot" if snapshot.hot else "warm" if snapshot.warm else "discovery"
                 batches.append(
                     PollBatch(
-                        wallets=tuple(_normalize_wallets(list(snapshot.hot))),
+                        wallets=fallback,
                         trade_limit=HOT_WALLET_TRADE_FETCH_LIMIT,
+                        watch_tier=fallback_tier,
                     )
                 )
-            if snapshot.warm and (loop_count % warm_poll_interval_multiplier()) == 0:
-                batches.append(
-                    PollBatch(
-                        wallets=tuple(_normalize_wallets(list(snapshot.warm))),
-                        trade_limit=WARM_WALLET_TRADE_FETCH_LIMIT,
-                    )
-                )
-            if snapshot.discovery and (loop_count % discovery_poll_interval_multiplier()) == 0:
-                batches.append(
-                    PollBatch(
-                        wallets=tuple(_normalize_wallets(list(snapshot.discovery))),
-                        trade_limit=DISCOVERY_WALLET_TRADE_FETCH_LIMIT,
-                    )
-                )
-            if not batches:
-                fallback = tuple(_normalize_wallets(list(snapshot.hot or snapshot.warm or snapshot.discovery)))
-                if fallback:
-                    batches.append(PollBatch(wallets=fallback, trade_limit=HOT_WALLET_TRADE_FETCH_LIMIT))
         return batches
 
     def state_fields(self) -> dict[str, int]:

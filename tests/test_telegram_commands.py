@@ -176,7 +176,7 @@ class TelegramCommandTest(unittest.TestCase):
                 summary = performance_preview.compute_tracker_preview_summary(now_ts=1_700_000_400)
                 message = performance_preview.render_tracker_preview_message(summary)
 
-                self.assertEqual(summary.title, "Tracker")
+                self.assertEqual(summary.title, "Shadow tracker")
                 self.assertEqual(summary.mode, "shadow")
                 self.assertEqual(summary.acted, 2)
                 self.assertEqual(summary.resolved, 1)
@@ -193,10 +193,12 @@ class TelegramCommandTest(unittest.TestCase):
                 self.assertAlmostEqual(summary.max_drawdown_pct or 0.0, 0.0)
                 self.assertAlmostEqual(summary.avg_confidence or 0.0, 0.7)
                 self.assertAlmostEqual(summary.avg_total or 0.0, 9.5)
-                self.assertIn("Tracker performance", message)
+                self.assertIn("Shadow tracker performance", message)
+                self.assertIn("Shadow/paper estimates only; /balance does not read a live wallet balance.", message)
                 self.assertIn("Total P&L: +$3.000", message)
                 self.assertIn("Return %: 2.260%", message)
-                self.assertIn("Current balance: $123.456", message)
+                self.assertIn("Estimated shadow bankroll: $123.456", message)
+                self.assertIn("Estimated paper equity: $135.456", message)
                 self.assertIn("Profit factor: inf", message)
                 self.assertIn("Expectancy: +$3.000 / 42.860%", message)
                 self.assertIn("Exposure: 8.860%", message)
@@ -414,6 +416,50 @@ class TelegramCommandTest(unittest.TestCase):
             "30d:\n"
             "- unavailable",
         )
+
+    def test_render_tracker_preview_message_includes_integrity_warning(self) -> None:
+        summary = performance_preview.PerformancePreviewSummary(
+            title="Shadow tracker",
+            mode="shadow",
+            total_pnl=1.0,
+            current_balance=101.0,
+            current_equity=102.0,
+            return_pct=0.01,
+            win_rate=1.0,
+            profit_factor=float("inf"),
+            expectancy_usd=1.0,
+            expectancy_pct=0.1,
+            exposure_pct=0.02,
+            max_drawdown_pct=0.0,
+            resolved=1,
+            avg_confidence=0.7,
+            avg_total=10.0,
+            acted=1,
+            wins=1,
+            data_warning="WARNING: SQLite integrity check failed; performance numbers may be unreliable",
+            routed_history_status="mixed",
+            routed_resolved=1,
+            routed_legacy_resolved=2,
+            routed_total_pnl=0.5,
+            routed_return_pct=0.005,
+            routed_profit_factor=1.2,
+            routed_expectancy_usd=0.5,
+            routed_expectancy_pct=0.05,
+            routed_coverage_pct=1 / 3,
+        )
+
+        message = performance_preview.render_tracker_preview_message(summary)
+
+        self.assertIn("WARNING: SQLite integrity check failed; performance numbers may be unreliable", message)
+        self.assertIn(
+            "Preview blocked: shadow performance numbers are not trustworthy until Recover DB or Restart Shadow restores a clean ledger.",
+            message,
+        )
+        self.assertNotIn("Estimated shadow bankroll: $101.000", message)
+        self.assertNotIn("Total P&L: +$1.000", message)
+        self.assertIn("Routed fixed-segment shadow only", message)
+        self.assertIn("Routed coverage: 33.333% (1 routed resolved, 2 legacy/unassigned resolved excluded)", message)
+        self.assertIn("Routed history: mixed", message)
 
 
 if __name__ == "__main__":

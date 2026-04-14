@@ -33,7 +33,7 @@ from config import (
     use_real_money,
     wallet_address,
 )
-from db import get_conn
+from db import current_promotion_epoch_id, get_conn
 from economics import (
     EntryEconomics,
     ExitEconomics,
@@ -43,6 +43,7 @@ from economics import (
 )
 from market_urls import market_url_from_metadata
 from trade_contract import (
+    DEFAULT_EXPERIMENT_ARM,
     OPEN_EXECUTED_ENTRY_SQL,
     remaining_entry_shares_expr,
     remaining_entry_size_expr,
@@ -453,18 +454,19 @@ class PolymarketExecutor:
                         ELSE 0
                     END
                 ) AS remaining_cost,
-                SUM(
-                    CASE
-                        WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy' AND exited_at IS NULL AND outcome IS NULL
-                            THEN COALESCE(realized_exit_pnl_usd, 0)
-                        WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy'
-                            THEN COALESCE(shadow_pnl_usd, 0)
-                        ELSE 0
-                    END
-                ) AS realized_pnl
-            FROM trade_log
-            WHERE real_money=0
-            """
+            SUM(
+                CASE
+                    WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy' AND exited_at IS NULL AND outcome IS NULL
+                        THEN COALESCE(realized_exit_pnl_usd, 0)
+                    WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy'
+                        THEN COALESCE(shadow_pnl_usd, 0)
+                    ELSE 0
+                END
+            ) AS realized_pnl
+        FROM trade_log
+        WHERE real_money=0
+          AND LOWER(COALESCE(experiment_arm, '{DEFAULT_EXPERIMENT_ARM}')) = '{DEFAULT_EXPERIMENT_ARM}'
+        """
         ).fetchone()
         conn.close()
         realized_pnl = float(row["realized_pnl"] or 0.0)
@@ -2550,6 +2552,76 @@ def log_trade(
     entry_gross_price = float(entry_economics.gross_price) if entry_economics is not None else None
     entry_gross_shares = float(entry_economics.gross_shares) if entry_economics is not None else None
     entry_gross_size_usd = float(entry_economics.gross_spent_usd) if entry_economics is not None else None
+    segment_id = None
+    policy_id = None
+    policy_bundle_version = 0
+    promotion_epoch_id = 0
+    experiment_arm = DEFAULT_EXPERIMENT_ARM
+    expected_edge = None
+    expected_fill_cost_usd = None
+    expected_exit_fee_usd = None
+    expected_close_fixed_cost_usd = None
+    if isinstance(signal, dict):
+        segment_meta = signal.get("segment") if isinstance(signal.get("segment"), dict) else {}
+        segment_id = signal.get("segment_id") or segment_meta.get("segment_id")
+        policy_id = signal.get("policy_id") or segment_meta.get("policy_id")
+        try:
+            policy_bundle_version = int(
+                signal.get("policy_bundle_version")
+                or segment_meta.get("policy_bundle_version")
+                or 0
+            )
+        except (TypeError, ValueError):
+            policy_bundle_version = 0
+        try:
+            promotion_epoch_id = int(signal.get("promotion_epoch_id") or 0)
+        except (TypeError, ValueError):
+            promotion_epoch_id = 0
+        signal_arm = str(signal.get("experiment_arm") or segment_meta.get("experiment_arm") or "").strip().lower()
+        if signal_arm:
+            experiment_arm = signal_arm
+        expected_edge_value = signal.get("edge")
+        try:
+            expected_edge = float(expected_edge_value) if expected_edge_value is not None else None
+        except (TypeError, ValueError):
+            expected_edge = None
+    event_segment_id = getattr(event, "segment_id", None)
+    event_policy_id = getattr(event, "policy_id", None)
+    event_policy_bundle_version = getattr(event, "policy_bundle_version", None)
+    event_promotion_epoch_id = getattr(event, "promotion_epoch_id", None)
+    event_experiment_arm = str(getattr(event, "experiment_arm", "") or "").strip().lower()
+    if segment_id is None and event_segment_id is not None:
+        segment_id = event_segment_id
+    if policy_id is None and event_policy_id is not None:
+        policy_id = event_policy_id
+    try:
+        policy_bundle_version = int(event_policy_bundle_version) if event_policy_bundle_version is not None else policy_bundle_version
+    except (TypeError, ValueError):
+        pass
+    try:
+        promotion_epoch_id = int(event_promotion_epoch_id) if event_promotion_epoch_id is not None else promotion_epoch_id
+    except (TypeError, ValueError):
+        pass
+    if event_experiment_arm:
+        experiment_arm = event_experiment_arm
+    if entry_economics is not None:
+        expected_fill_cost_usd = round(
+            float(entry_economics.entry_fee_usd) + float(entry_economics.fixed_cost_usd),
+            6,
+        )
+        expected_exit_fee_usd = float(entry_economics.expected_exit_fee_usd)
+        expected_close_fixed_cost_usd = float(entry_economics.expected_close_fixed_cost_usd)
+        try:
+            expected_edge = round(float(confidence) - float(entry_economics.sizing_effective_price), 6)
+        except (TypeError, ValueError):
+            expected_edge = expected_edge
+    if expected_edge is None:
+        try:
+            expected_edge = round(float(confidence) - float(price), 6)
+        except (TypeError, ValueError):
+            expected_edge = None
+    if promotion_epoch_id <= 0:
+        promotion_epoch_id = current_promotion_epoch_id()
     values = [
         trade_id,
         market_id,
@@ -2600,6 +2672,15 @@ def log_trade(
         signal.get("raw_confidence") if isinstance(signal, dict) else None,
         kelly_f,
         signal.get("mode") if isinstance(signal, dict) else None,
+        segment_id,
+        policy_id,
+        policy_bundle_version,
+        promotion_epoch_id,
+        experiment_arm,
+        expected_edge,
+        expected_fill_cost_usd,
+        expected_exit_fee_usd,
+        expected_close_fixed_cost_usd,
         signal.get("belief_prior") if isinstance(signal, dict) else None,
         signal.get("belief_blend") if isinstance(signal, dict) else None,
         signal.get("belief_evidence") if isinstance(signal, dict) else None,
@@ -2655,7 +2736,9 @@ def log_trade(
             actual_entry_size_usd, entry_fee_rate_bps, entry_fee_usd, entry_fee_shares,
             entry_fixed_cost_usd, entry_gross_price, entry_gross_shares, entry_gross_size_usd,
             confidence, raw_confidence, kelly_fraction,
-            signal_mode, belief_prior, belief_blend, belief_evidence, trader_score,
+            signal_mode, segment_id, policy_id, policy_bundle_version, promotion_epoch_id,
+            experiment_arm, expected_edge, expected_fill_cost_usd, expected_exit_fee_usd,
+            expected_close_fixed_cost_usd, belief_prior, belief_blend, belief_evidence, trader_score,
             market_score, market_veto, real_money, order_id, skipped, skip_reason, placed_at,
             remaining_entry_shares, remaining_entry_size_usd, remaining_source_shares,
             realized_exit_shares, realized_exit_size_usd, realized_exit_pnl_usd, partial_exit_count,

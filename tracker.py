@@ -61,6 +61,7 @@ class TradeEvent:
     metadata_fetched_at: int = 0
     orderbook_fetched_at: int = 0
     market_close_ts: int = 0
+    watch_tier: str = ""
 
 
 @dataclass
@@ -556,7 +557,13 @@ class PolymarketTracker:
                     results[token_id] = (None, None, 0)
         return results
 
-    def poll(self, wallet_addresses: list[str] | None = None, *, trade_limit: int = 50) -> list[TradeEvent]:
+    def poll(
+        self,
+        wallet_addresses: list[str] | None = None,
+        *,
+        trade_limit: int = 50,
+        watch_tier: str = "",
+    ) -> list[TradeEvent]:
         new_events: list[TradeEvent] = []
         poll_started_at = int(time.time())
         poll_seen: set[str] = set()
@@ -628,6 +635,7 @@ class PolymarketTracker:
                     poll_started_at,
                     market_meta=meta,
                     metadata_fetched_at=metadata_fetched_at,
+                    watch_tier=watch_tier,
                 )
                 if event is None:
                     continue
@@ -684,6 +692,7 @@ class PolymarketTracker:
         *,
         market_meta: dict[str, Any] | None = None,
         metadata_fetched_at: int = 0,
+        watch_tier: str = "",
     ) -> TradeEvent | None:
         try:
             condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip()
@@ -763,6 +772,7 @@ class PolymarketTracker:
                 poll_started_at=poll_started_at,
                 metadata_fetched_at=fetched_at,
                 market_close_ts=self._normalize_timestamp(close_time) if close_time else 0,
+                watch_tier=str(watch_tier or "").strip().lower(),
             )
         except Exception as exc:
             logger.warning("Failed to parse trade event: %s", exc)

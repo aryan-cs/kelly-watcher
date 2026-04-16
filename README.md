@@ -1,6 +1,6 @@
 # Kelly Watcher
 
-Kelly Watcher is a local, operator-driven Polymarket copy-trading system. It watches selected wallets, scores incoming trades, sizes positions with Kelly-style logic, executes in shadow or live mode, records everything to SQLite, and exposes both a terminal dashboard and a web dashboard for monitoring the bot in real time.
+Kelly Watcher is a local, operator-driven Polymarket copy-trading system. It watches selected wallets, scores incoming trades, sizes positions with Kelly-style logic, executes in shadow or live mode, records everything to SQLite, and exposes a web dashboard for monitoring and control in real time. Wallet registry state and discovery candidates are surfaced through the browser and backed by SQLite when the runtime has the needed tables.
 
 This repository is meant to be clonable by another developer without any private local state. Secrets, databases, logs, model artifacts, and other runtime files are intentionally excluded from git. A fresh clone should be able to install dependencies, create `save/.env.dev`, start in shadow mode, and begin operating from there.
 
@@ -9,11 +9,10 @@ This repository is meant to be clonable by another developer without any private
 - A Python backend that polls watched wallets and decides whether to copy trades.
 - A shadow trading path that simulates fills from captured order books.
 - A live trading path guarded by readiness and risk checks.
-- A terminal dashboard built with Ink + React.
 - A responsive web dashboard that can be viewed from any device on the network.
-- Wallet discovery and identity resolution tools.
+- Wallet discovery, lifecycle, and identity resolution tools.
 - A training and auto-retraining pipeline for the model-based signal path.
-- Tests covering runtime behavior, training/search logic, market URL handling, CLI behavior, and retrain bookkeeping.
+- Tests covering runtime behavior, training/search logic, market URL handling, dashboard/API behavior, and retrain bookkeeping.
 
 ## What This Repository Does Not Commit
 
@@ -56,7 +55,8 @@ The codebase is organized so the repo root only keeps project-level metadata and
 - `src/kelly_watcher/research/` contains replay, search, training, and auto-retrain code.
 - `src/kelly_watcher/integrations/` contains alerting and Telegram integration code.
 - `src/kelly_watcher/tools/` contains operator utilities such as wallet ranking and setup helpers.
-- `dashboard-cli/` and `dashboard-web/` contain the terminal and browser dashboards.
+- `dashboard-web/` contains the supported browser dashboard.
+- `dashboard-cli/` is legacy/internal and is no longer part of the recommended operator workflow.
 - `docs/` holds planning and support documentation, and `tests/` holds the regression suite.
 
 Important distinction:
@@ -70,7 +70,7 @@ You need:
 
 - Python 3.11+
 - `uv`
-- Node.js and `npm` for the dashboards
+- Node.js and `npm` for the web dashboard
 - network access to Polymarket APIs
 
 Optional for live trading:
@@ -81,8 +81,8 @@ Optional for live trading:
 
 Notes:
 
-- Both dashboards talk to the backend over HTTP, so they no longer need direct SQLite access.
-- The repository includes `uv.lock`, `dashboard-cli/package-lock.json`, and `dashboard-web/package-lock.json` so installs are reproducible.
+- The web dashboard talks to the backend over HTTP, so it does not need direct SQLite access.
+- The repository includes `uv.lock` and `dashboard-web/package-lock.json` so installs are reproducible for the supported operator path.
 
 ## Quick Start
 
@@ -99,13 +99,7 @@ cd kelly-watcher
 uv sync
 ```
 
-### 3. Install dashboard dependencies
-
-```bash
-cd dashboard-cli
-npm install
-cd ..
-```
+### 3. Install web dashboard dependencies
 
 ```bash
 cd dashboard-web
@@ -136,14 +130,13 @@ copy .env.example save\.env.dev
 
 At minimum for shadow mode, set:
 
-- `WATCHED_WALLETS`
 - `USE_REAL_MONEY=false`
 
-`WATCHED_WALLETS` should be a comma-separated list of lowercase wallet addresses.
+If this is the first time you are bootstrapping the bot, you can seed `WATCHED_WALLETS` once. After the first import, manage wallets from the web dashboard instead of editing the env file by hand.
 
 ### 5. Populate a watchlist
 
-If you already know the wallets, paste them into `save/.env.dev`.
+If you already know the wallets, you may paste them into `save/.env.dev` for the one-time bootstrap import. After that, the web dashboard is the supported place to review and manage the wallet registry.
 
 If you only know Polymarket handles or profile URLs, use:
 
@@ -164,7 +157,7 @@ If you want the backend-compatible discovery scan that excludes already tracked 
 uv run discover-copytrade-wallets
 ```
 
-These tools print either a ready-to-paste `WATCHED_WALLETS=...` line or a `CANDIDATE_WALLETS=...` shortlist.
+These tools are still useful for diagnostics, but the browser discovery panel is the primary operator workflow and the dashboard can trigger scans directly.
 
 ### 6. Start the backend
 
@@ -198,16 +191,9 @@ If you want to run the dashboard on another computer, set:
 - optionally `DASHBOARD_API_TOKEN=some-shared-secret`
 - set `DASHBOARD_WEB_URL=http://your-tailscale-magicdns-name:8765` if you want Telegram `/link` replies to return an explicit browser URL
 
-### 7. Start a dashboard
+### 7. Start the web dashboard
 
-In a second terminal, choose one of these:
-
-Terminal CLI:
-
-```bash
-cd dashboard-cli
-npm start
-```
+In a second terminal, use one of these browser workflows.
 
 Web dashboard for development:
 
@@ -229,12 +215,7 @@ uv run kelly-watcher
 
 Then open `http://BACKEND_HOST:8765` from any phone or laptop that can reach the backend machine.
 
-To run either dashboard against a backend on another computer, point it at the backend API:
-
-```bash
-cd dashboard-cli
-KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm start
-```
+To run the web dashboard against a backend on another computer during development, point it at the backend API:
 
 ```bash
 cd dashboard-web
@@ -244,35 +225,18 @@ VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm run dev
 If the backend sets `DASHBOARD_API_TOKEN`, also set:
 
 ```bash
-cd dashboard-cli
-KELLY_API_BASE_URL=http://BACKEND_HOST:8765 KELLY_API_TOKEN=some-shared-secret npm start
-```
-
-```bash
 cd dashboard-web
 VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 VITE_KELLY_API_TOKEN=some-shared-secret npm run dev
 ```
 
-You can also put those in each dashboard app's local `.env` file instead of exporting them every time:
-
-```env
-KELLY_API_BASE_URL=http://windows-box.tailnet-name.ts.net:8765
-KELLY_API_TOKEN=some-shared-secret
-```
+You can also put those in `dashboard-web/.env.local` instead of exporting them every time:
 
 ```env
 VITE_KELLY_API_BASE_URL=http://windows-box.tailnet-name.ts.net:8765
 VITE_KELLY_API_TOKEN=some-shared-secret
 ```
 
-Both dashboards read their API base URL and token from their local `.env`, with shell environment variables taking precedence if you set both.
-
-For terminal dashboard development from the TypeScript sources instead of the checked-in runtime JS:
-
-```bash
-cd dashboard-cli
-npm run dev
-```
+The web dashboard reads its API base URL and token from `dashboard-web/.env.local`, with shell environment variables taking precedence if you set both.
 
 ## Runtime Modes
 
@@ -283,14 +247,14 @@ This is the default and the recommended starting point.
 Requirements:
 
 - `USE_REAL_MONEY=false`
-- `WATCHED_WALLETS` configured
+- the wallet registry has been bootstrapped once, or the backend can import `WATCHED_WALLETS` on first run
 
 Behavior:
 
 - no real orders are sent
 - fills are simulated from the captured order book
 - positions, skips, resolutions, and PnL are still logged normally
-- the dashboard works the same way as in live mode
+- the web dashboard works the same way as in live mode
 
 Reset helper:
 
@@ -315,7 +279,7 @@ What `shadow-reset` does:
 - refuses to run if `USE_REAL_MONEY=true`
 - stops an existing bot process
 - deletes shadow runtime state such as the SQLite DB and event stream
-- preserves config, `WATCHED_WALLETS`, identity cache, logs, and your model artifact
+- preserves config, identity cache, logs, and your model artifact
 - recreates the DB and restarts the bot
 
 ### Live Mode
@@ -455,20 +419,18 @@ Current model behavior:
 
 If a retrain passes deployment checks, the bot reloads the model automatically.
 
-### 9. Dashboards
+### 9. Dashboard
 
-There are now two frontends:
+The supported operator frontend is `dashboard-web`, the responsive browser UI served by the backend or by Vite during development.
 
-- `dashboard-cli`: the Ink terminal operator UI
-- `dashboard-web`: the responsive browser UI
-
-Both use the same HTTP API exposed by `src/kelly_watcher/dashboard_api.py`.
+The web dashboard uses the HTTP API exposed by `src/kelly_watcher/dashboard_api.py`.
 
 Recommended approach:
 
 - develop the web app with Vite in `dashboard-web/`
 - build it with `npm run build`
 - let the Python backend serve the built files from `dashboard-web/dist`
+- use the browser to review managed wallets, trigger discovery scans, and inspect wallet lifecycle events
 
 That keeps local development fast on macOS and keeps Windows deployment simple because production only needs the Python bot plus static files.
 
@@ -500,16 +462,26 @@ The most important tables in `save/data/trading.db` are:
 - `retrain_runs`: every retrain attempt, including skipped and rejected runs
 - `wallet_cursors`: per-wallet polling cursors
 - `wallet_watch_state`: tracked/dropped wallet state
+- `wallet_discovery_candidates`: cached discovery shortlist from the backend scan
 
 ## Dashboard Guide
 
-The web dashboard is an early responsive surface for overview, incoming trade flow, scored signals, and operator runtime status.
+The web dashboard is the supported operator surface. It is built to work from any device that can reach the backend over your local network or Tailscale network.
 
-The terminal dashboard currently has six main pages.
+### Overview Cards
 
-### Page 1: Live Feed
+The top summary row shows:
 
-Shows raw incoming watched-wallet trades before the bot makes a copy decision.
+- current mode
+- runtime duration
+- bankroll
+- polling state
+- model/runtime compatibility
+- shadow-readiness status
+
+### Incoming Feed
+
+Shows recent watched-wallet trades before the bot makes a copy decision.
 
 Useful for checking:
 
@@ -517,9 +489,9 @@ Useful for checking:
 - whether watched wallets are active
 - whether prices and sizes look sane
 
-### Page 2: Signals
+### Decision Stream
 
-Shows accepted, rejected, skipped, and paused decisions after scoring.
+Shows recent scored signals after confidence, market, and risk checks.
 
 Useful for checking:
 
@@ -527,63 +499,39 @@ Useful for checking:
 - whether thresholds are too strict
 - whether vetoes or risk controls are dominating
 
-### Page 3: Performance
+### System Detail
 
-Shows open positions, closed positions, and performance state.
-
-Useful for checking:
-
-- current exposure
-- recent exits
-- shadow or live PnL
-- time spent in positions
-
-### Page 4: Models
-
-Shows model and retrain health.
+Shows operator-facing runtime facts such as API target, last poll time, retrain state, replay-search state, and shadow-restart status.
 
 Useful for checking:
 
-- whether the deployed model beats baseline
-- whether retraining is succeeding
-- whether the bot is on heuristics or a model-backed path
+- whether the browser is pointed at the right backend
+- whether auth is required or the saved token was rejected
+- whether retrain, replay-search, or restart work is queued or running
 
-### Page 5: Wallets
+### Token Prompt
 
-Shows wallet-level quality and tracking information.
+If `DASHBOARD_API_TOKEN` is enabled on the backend, the web dashboard prompts for a bearer token on that device and stores it in the browser unless you inject it through Vite env vars during development.
 
-Useful for checking:
+### Wallet Registry
 
-- which wallets are helping
-- which wallets are stale or downgraded
-- which ones have local resolved copied history
+Shows the current wallet registry snapshot from the backend, including each wallet's status and any discovery context that is already cached in SQLite. Use the action button on each row to drop or reactivate a wallet.
 
-### Page 6: Settings
+### Discovery
 
-Shows runtime state plus editable env-backed config values.
+Shows discovery candidates cached by the backend and includes a `Scan now` button. This is the browser path for refreshing candidate wallets without waiting for the scheduler.
 
-Important behavior:
+### Membership Timeline
 
-- some fields apply on the next loop
-- some fields require a bot restart
-- toggling live trading only edits the active env profile file such as `save/.env.dev`; it does not hot-switch the running bot
+Shows wallet lifecycle events or, when the event table is not yet available, a snapshot-derived timeline of the current wallet state. It is meant to keep the browser honest about which data is historical and which data is current-state only.
 
-## Dashboard Controls
+## Dashboard Workflow
 
-Global:
-
-- `1` through `6`: switch pages
-- `r`: refresh
-- `q`: quit
-
-Page-specific:
-
-- Live Feed: `Up/Down` scroll
-- Signals: `Up/Down` scroll, `Left/Right` pan long text
-- Performance: arrows to move, `j/k` to scroll, `Enter` for detail, `Esc` to close
-- Models: arrows to move, `Enter` for detail
-- Wallets: `Up/Down` select, `Enter` detail, `Esc` close
-- Settings: arrows or `j/k` select, `Enter` or `e` edit, `Esc` cancel
+- Open the backend URL or the Vite dev server in a browser.
+- Use `Refresh now` to force an immediate reload.
+- If auth is enabled, paste the shared token for that device.
+- Open market links from the incoming-feed or decision-stream cards when you need the Polymarket page.
+- Use the wallet registry and discovery panels to manage the tracked-wallet set and trigger scans from the browser.
 
 ## Common Commands
 
@@ -591,13 +539,6 @@ Start the bot:
 
 ```bash
 uv run kelly-watcher
-```
-
-Start the terminal dashboard:
-
-```bash
-cd dashboard-cli
-npm start
 ```
 
 Start the web dashboard in development:
@@ -661,7 +602,7 @@ All env parsing lives in `src/kelly_watcher/config.py`. Duration values typicall
 
 ### Required or commonly changed
 
-- `WATCHED_WALLETS`: comma-separated watched wallet addresses
+- `WATCHED_WALLETS`: optional one-time bootstrap list of comma-separated watched wallet addresses
 - `USE_REAL_MONEY`: `false` for shadow, `true` for live
 - `MIN_CONFIDENCE`: minimum signal confidence
 - `MIN_BET_USD`: minimum order size
@@ -721,6 +662,8 @@ All env parsing lives in `src/kelly_watcher/config.py`. Duration values typicall
 - `WALLET_QUALITY_SIZE_MIN_MULTIPLIER`
 - `WALLET_QUALITY_SIZE_MAX_MULTIPLIER`
 
+Wallet membership itself is expected to live in SQLite-backed runtime state, with `WATCHED_WALLETS` acting as a first-run import source rather than the steady-state registry.
+
 ### Retraining and logging
 
 - `RETRAIN_BASE_CADENCE`
@@ -768,12 +711,9 @@ Watchlist and wallet tooling:
 
 Dashboard:
 
-- `dashboard-cli/dashboard.tsx`: main terminal UI
-- `dashboard-cli/pages/*.tsx`: page views
-- `dashboard-cli/configEditor.ts`: env-backed editable settings
-- `dashboard-cli/settingsDanger.ts`: live toggle and shadow reset actions
 - `dashboard-web/src/App.tsx`: responsive browser dashboard
 - `dashboard-web/src/api.ts`: browser API client and token handling
+- `src/kelly_watcher/dashboard_api.py`: backend API and static asset serving for the browser UI
 
 Packaging and entrypoints:
 
@@ -784,7 +724,8 @@ Packaging and entrypoints:
 ## Operational Notes
 
 - This is an operator system, not a fire-and-forget hosted service.
-- `dashboard-cli` is still a local terminal app.
+- The supported operator interface is the web dashboard.
+- The wallet registry and discovery panels are the primary workflow; terminal wallet ops are legacy.
 - `dashboard-web` can be reached from any device that can hit the backend host and port.
 - A fresh clone starts on heuristics unless you later train and deploy a model artifact.
 - Runtime backups and scheduled jobs are driven by `src/kelly_watcher/main.py`, not by external infra.
@@ -810,7 +751,7 @@ uv run python -m unittest discover -s tests
 Areas covered by tests include:
 
 - runtime and startup regressions
-- CLI launch behavior
+- dashboard/API behavior
 - expected-return model handling
 - training-data contract rules
 - search/holdout planning
@@ -834,7 +775,7 @@ For the web dashboard, also confirm `dashboard-web/dist` exists if you are openi
 
 Check:
 
-- `WATCHED_WALLETS` is populated
+- the wallet registry has been bootstrapped or imported
 - the watched wallets are actually active
 - your poll interval is sane
 - the logs are not showing repeated API failures or rate limits

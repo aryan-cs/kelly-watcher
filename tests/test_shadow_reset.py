@@ -132,17 +132,17 @@ class ShadowResetTest(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("Shadow runtime reset.", output)
         self.assertIn("Initial bankroll: $3000.00", output)
-        self.assertIn("WATCHED_WALLETS preserved.", output)
+        self.assertIn("Managed wallet registry preserved.", output)
 
-    def test_run_keep_active_wallets_rewrites_watchlist_before_restart(self) -> None:
+    def test_run_keep_active_wallets_writes_snapshot_before_restart(self) -> None:
         stdout = io.StringIO()
         with patch.object(shadow_reset, "use_real_money", return_value=False), patch.object(
             shadow_reset, "shadow_bankroll_usd", return_value=3000.0
-        ), patch.object(shadow_reset, "_read_env_value", return_value="0xactive,0xdropped"), patch.object(
+        ), patch.object(shadow_reset.db, "load_managed_wallets", return_value=["0xactive", "0xdropped"]), patch.object(
             shadow_reset, "_active_watched_wallets", return_value=["0xactive"]
         ) as active_wallets, patch.object(
-            shadow_reset, "_write_env_value"
-        ) as write_env_value, patch.object(
+            shadow_reset, "_write_wallet_registry_snapshot", return_value='{"mode":"keep_active","wallets":["0xactive"]}'
+        ) as write_snapshot, patch.object(
             shadow_reset, "stop_existing_bot"
         ) as stop_bot, patch.object(
             shadow_reset, "reset_shadow_runtime"
@@ -155,10 +155,29 @@ class ShadowResetTest(unittest.TestCase):
         stop_bot.assert_called_once_with(target_pids=None)
         reset_runtime.assert_called_once_with()
         active_wallets.assert_called_once_with(["0xactive", "0xdropped"])
-        write_env_value.assert_called_once_with("WATCHED_WALLETS", "0xactive")
+        write_snapshot.assert_called_once_with(["0xactive"], mode="keep_active")
         output = stdout.getvalue()
-        self.assertIn("Reducing WATCHED_WALLETS to currently active wallets", output)
-        self.assertIn("WATCHED_WALLETS reduced to active wallets.", output)
+        self.assertIn("Reducing the managed wallet registry to currently active wallets", output)
+        self.assertIn("Managed wallet registry reduced to active wallets.", output)
+
+    def test_apply_wallet_mode_for_reset_fails_closed_when_registry_load_fails(self) -> None:
+        with patch.object(
+            shadow_reset.db,
+            "load_managed_wallets",
+            side_effect=RuntimeError("db unavailable"),
+        ), patch.object(
+            shadow_reset,
+            "_read_env_value",
+            return_value="0xenv1,0xenv2",
+        ), patch.object(
+            shadow_reset,
+            "_write_wallet_registry_snapshot",
+            return_value='{"mode":"keep_all","wallets":[]}',
+        ) as write_snapshot:
+            with self.assertRaisesRegex(RuntimeError, "managed wallet registry is unavailable"):
+                shadow_reset.apply_wallet_mode_for_reset("keep_all")
+
+        write_snapshot.assert_not_called()
 
     def test_run_forwards_target_pids_to_stop_existing_bot(self) -> None:
         stdout = io.StringIO()
@@ -192,6 +211,56 @@ class ShadowResetTest(unittest.TestCase):
                 shadow_reset._launch_background_bot_verified()
 
         sleep_mock.assert_called_once_with(1.5)
+
+    def test_launch_background_bot_routes_stdio_to_rotating_child_log(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            log_dir = repo_root / "save" / "logs"
+            data_dir = repo_root / "save" / "data"
+            background_log = log_dir / "shadow_runtime.out"
+            pid_file = data_dir / "shadow_bot.pid"
+            env = {"BASE_ENV": "1"}
+
+            class _Process:
+                pid = 2468
+
+            with patch.object(shadow_reset, "REPO_ROOT", repo_root), patch.object(
+                shadow_reset, "LOG_DIR", log_dir
+            ), patch.object(
+                shadow_reset, "DATA_DIR", data_dir
+            ), patch.object(
+                shadow_reset, "BACKGROUND_LOG", background_log
+            ), patch.object(
+                shadow_reset, "PID_FILE", pid_file
+            ), patch.object(
+                shadow_reset, "runtime_env", return_value=dict(env)
+            ), patch.object(
+                shadow_reset, "_bot_command", return_value=["python", "-m", "kelly_watcher.main"]
+            ), patch.object(
+                shadow_reset.subprocess, "Popen", return_value=_Process()
+            ) as popen_mock:
+                pid = shadow_reset.launch_background_bot()
+                self.assertEqual(pid, 2468)
+                kwargs = popen_mock.call_args.kwargs
+                self.assertEqual(kwargs["stdin"], shadow_reset.subprocess.DEVNULL)
+                self.assertEqual(kwargs["stdout"], shadow_reset.subprocess.DEVNULL)
+                self.assertEqual(kwargs["stderr"], shadow_reset.subprocess.DEVNULL)
+                self.assertEqual(kwargs["cwd"], str(repo_root))
+                self.assertTrue(kwargs["start_new_session"])
+                self.assertEqual(kwargs["env"]["BASE_ENV"], "1")
+                self.assertEqual(
+                    kwargs["env"][shadow_reset.RUNTIME_STDIO_LOG_PATH_ENV],
+                    str(background_log),
+                )
+                self.assertEqual(
+                    kwargs["env"][shadow_reset.RUNTIME_STDIO_LOG_MAX_BYTES_ENV],
+                    str(shadow_reset.BACKGROUND_LOG_MAX_BYTES),
+                )
+                self.assertEqual(
+                    kwargs["env"][shadow_reset.RUNTIME_STDIO_LOG_BACKUPS_ENV],
+                    str(shadow_reset.BACKGROUND_LOG_BACKUP_COUNT),
+                )
+                self.assertEqual(pid_file.read_text(encoding="utf-8").strip(), "2468")
 
     def test_active_watched_wallets_excludes_only_dropped_wallets(self) -> None:
         with TemporaryDirectory() as tmpdir:

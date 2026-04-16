@@ -28,10 +28,16 @@ from kelly_watcher.data.db import (
     db_recovery_state,
     get_conn,
     get_trade_log_read_conn,
+    load_wallet_promotion_state,
     trade_log_archive_state,
 )
 from kelly_watcher.env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, repo_env_path_for_profile
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
+from kelly_watcher.engine.wallet_trust import get_wallet_trust_state
+from kelly_watcher.runtime.wallet_discovery import (
+    load_wallet_discovery_candidates,
+    refresh_wallet_discovery_candidates,
+)
 from kelly_watcher.runtime_paths import (
     BOT_STATE_FILE,
     DATA_DIR,
@@ -46,6 +52,13 @@ from kelly_watcher.runtime_paths import (
 )
 
 logger = logging.getLogger(__name__)
+_DB_RECOVERY_STATE_CACHE: dict[str, Any] | None = None
+_DB_RECOVERY_STATE_CACHE_AT = 0.0
+_DB_RECOVERY_STATE_CACHE_TTL_SECONDS = 30.0
+_DB_RECOVERY_STATE_CACHE_LOCK = threading.Lock()
+_MANAGED_WALLET_TRUST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_MANAGED_WALLET_TRUST_CACHE_TTL_SECONDS = 10.0
+_MANAGED_WALLET_TRUST_CACHE_LOCK = threading.Lock()
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
@@ -291,13 +304,32 @@ def _read_safe_env_values() -> dict[str, str]:
     return safe_values
 
 
+def _cached_db_recovery_state(*, force: bool = False) -> dict[str, Any]:
+    global _DB_RECOVERY_STATE_CACHE, _DB_RECOVERY_STATE_CACHE_AT
+    now = time.time()
+    with _DB_RECOVERY_STATE_CACHE_LOCK:
+        if (
+            not force
+            and _DB_RECOVERY_STATE_CACHE is not None
+            and (now - _DB_RECOVERY_STATE_CACHE_AT) < _DB_RECOVERY_STATE_CACHE_TTL_SECONDS
+        ):
+            return dict(_DB_RECOVERY_STATE_CACHE)
+    state = dict(db_recovery_state())
+    with _DB_RECOVERY_STATE_CACHE_LOCK:
+        _DB_RECOVERY_STATE_CACHE = dict(state)
+        _DB_RECOVERY_STATE_CACHE_AT = now
+    return state
+
+
 def _config_snapshot() -> dict[str, Any]:
     safe_values = _read_safe_env_values()
-    watched_wallets = [
+    legacy_bootstrap_watched_wallets = [
         wallet.strip().lower()
         for wallet in str(safe_values.get("WATCHED_WALLETS", "") or "").split(",")
         if wallet.strip()
     ]
+    wallet_registry_source = _wallet_registry_source()
+    live_wallets = _wallet_registry_addresses()
     rows: list[dict[str, str]] = []
     for key, value in _read_env_items():
         if key == "WATCHED_WALLETS":
@@ -306,9 +338,483 @@ def _config_snapshot() -> dict[str, Any]:
         rows.append({"key": key, "value": redacted})
     return {
         "safe_values": safe_values,
-        "watched_wallets": watched_wallets,
+        "watched_wallets": live_wallets,
+        "live_wallets": live_wallets,
+        "live_wallet_count": len(live_wallets),
+        "wallet_registry_source": wallet_registry_source,
+        "legacy_bootstrap_watched_wallets": legacy_bootstrap_watched_wallets,
         "rows": rows,
     }
+
+
+def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _sqlite_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    except sqlite3.DatabaseError:
+        return set()
+    return {str(row["name"] or "").strip() for row in rows if str(row["name"] or "").strip()}
+
+
+def _sqlite_fetch_rows(sql: str, params: list[Any]) -> list[dict[str, Any]]:
+    conn = get_conn()
+    try:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _wallet_registry_source() -> str:
+    try:
+        conn = get_conn()
+    except sqlite3.DatabaseError:
+        return "unavailable"
+    try:
+        if _sqlite_table_exists(conn, "managed_wallets"):
+            return "managed_wallets"
+        if _sqlite_table_exists(conn, "wallet_watch_state"):
+            return "wallet_watch_state"
+        return "unavailable"
+    finally:
+        conn.close()
+
+
+def _wallet_registry_addresses() -> list[str]:
+    try:
+        conn = get_conn()
+    except sqlite3.DatabaseError:
+        return []
+    try:
+        if _sqlite_table_exists(conn, "managed_wallets"):
+            rows = conn.execute("SELECT wallet_address FROM managed_wallets ORDER BY wallet_address ASC").fetchall()
+        elif _sqlite_table_exists(conn, "wallet_watch_state"):
+            rows = conn.execute(
+                "SELECT wallet_address FROM wallet_watch_state ORDER BY wallet_address ASC"
+            ).fetchall()
+        else:
+            rows = []
+    finally:
+        conn.close()
+
+    wallets: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        wallet = str(row["wallet_address"] or "").strip().lower()
+        if not wallet or wallet in seen:
+            continue
+        seen.add(wallet)
+        wallets.append(wallet)
+    return wallets
+
+
+def _wallet_watch_state_map(wallet_addresses: list[str]) -> dict[str, dict[str, Any]]:
+    wallets = [wallet.strip().lower() for wallet in wallet_addresses if str(wallet or "").strip()]
+    if not wallets:
+        return {}
+    placeholders = ",".join("?" for _ in wallets)
+    try:
+        rows = _sqlite_fetch_rows(
+            f"""
+            SELECT
+              wallet_address,
+              status,
+              status_reason,
+              dropped_at,
+              reactivated_at,
+              tracking_started_at,
+              last_source_ts_at_status,
+              updated_at
+            FROM wallet_watch_state
+            WHERE wallet_address IN ({placeholders})
+            """,
+            wallets,
+        )
+    except sqlite3.DatabaseError:
+        return {}
+
+    return {str(row["wallet_address"] or "").strip().lower(): row for row in rows}
+
+
+def _discover_candidate_map(limit: int | None = None) -> dict[str, dict[str, Any]]:
+    try:
+        rows = load_wallet_discovery_candidates(limit=limit)
+    except sqlite3.DatabaseError:
+        return {}
+    return {
+        str(row.get("wallet_address") or "").strip().lower(): row
+        for row in rows
+        if str(row.get("wallet_address") or "").strip()
+    }
+
+
+def _wallet_policy_metrics_rows(wallet_addresses: list[str]) -> dict[str, dict[str, Any]]:
+    wallets = [str(wallet or "").strip().lower() for wallet in wallet_addresses if str(wallet or "").strip()]
+    if not wallets:
+        return {}
+
+    placeholders = ",".join("?" for _ in wallets)
+    conn = get_conn()
+    try:
+        if not _sqlite_table_exists(conn, "wallet_policy_metrics"):
+            return {}
+        rows = conn.execute(
+            f"""
+            SELECT
+              wallet_address,
+              local_quality_score,
+              local_weight,
+              local_drop_ready,
+              local_drop_reason,
+              post_promotion_baseline_at,
+              post_promotion_source,
+              post_promotion_reason,
+              post_promotion_total_buy_signals,
+              post_promotion_uncopyable_skips,
+              post_promotion_uncopyable_skip_rate,
+              post_promotion_resolved_copied_count,
+              post_promotion_resolved_copied_win_rate,
+              post_promotion_resolved_copied_avg_return,
+              post_promotion_resolved_copied_total_pnl_usd,
+              post_promotion_last_resolved_at,
+              post_promotion_evidence_ready,
+              post_promotion_evidence_note,
+              updated_at
+            FROM wallet_policy_metrics
+            WHERE wallet_address IN ({placeholders})
+            """,
+            tuple(wallets),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        str(row["wallet_address"] or "").strip().lower(): dict(row)
+        for row in rows
+        if str(row["wallet_address"] or "").strip()
+    }
+
+
+def _wallet_trust_snapshot_map(wallet_addresses: list[str]) -> dict[str, dict[str, Any]]:
+    wallets = [str(wallet or "").strip().lower() for wallet in wallet_addresses if str(wallet or "").strip()]
+    if not wallets:
+        return {}
+
+    now = time.time()
+    snapshots: dict[str, dict[str, Any]] = {}
+    stale_wallets: list[str] = []
+    with _MANAGED_WALLET_TRUST_CACHE_LOCK:
+        for wallet in wallets:
+            cached = _MANAGED_WALLET_TRUST_CACHE.get(wallet)
+            if cached and now - float(cached[0]) <= _MANAGED_WALLET_TRUST_CACHE_TTL_SECONDS:
+                snapshots[wallet] = dict(cached[1])
+            else:
+                stale_wallets.append(wallet)
+
+    if stale_wallets:
+        refreshed_at = time.time()
+        refreshed: dict[str, dict[str, Any]] = {}
+        for wallet in stale_wallets:
+            try:
+                state = get_wallet_trust_state(wallet)
+                refreshed[wallet] = {
+                    "trust_tier": str(state.tier or "").strip(),
+                    "trust_size_multiplier": float(state.size_multiplier),
+                    "trust_note": str(state.tier_note or "").strip(),
+                }
+            except sqlite3.DatabaseError:
+                refreshed[wallet] = {}
+        with _MANAGED_WALLET_TRUST_CACHE_LOCK:
+            for wallet, snapshot in refreshed.items():
+                _MANAGED_WALLET_TRUST_CACHE[wallet] = (refreshed_at, dict(snapshot))
+        snapshots.update(refreshed)
+
+    return snapshots
+
+
+def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
+    conn = get_conn()
+    try:
+        if _sqlite_table_exists(conn, "managed_wallets"):
+            columns = _sqlite_table_columns(conn, "managed_wallets")
+            select_parts = [
+                "wallet_address",
+                "tracking_enabled" if "tracking_enabled" in columns else "1 AS tracking_enabled",
+                "source" if "source" in columns else "'managed_wallets' AS source",
+                "added_at" if "added_at" in columns else "0 AS added_at",
+                "updated_at" if "updated_at" in columns else "0 AS updated_at",
+                "disabled_at" if "disabled_at" in columns else "0 AS disabled_at",
+                "disabled_reason" if "disabled_reason" in columns else "'' AS disabled_reason",
+                "metadata_json" if "metadata_json" in columns else "'{}' AS metadata_json",
+            ]
+            query = (
+                "SELECT\n  "
+                + ", ".join(select_parts)
+                + "\nFROM managed_wallets\n"
+                + "ORDER BY COALESCE(tracking_enabled, 0) DESC, "
+                + "COALESCE(updated_at, added_at, 0) DESC, wallet_address ASC\n"
+                + "LIMIT ?"
+            )
+            rows = conn.execute(query, (max(int(limit or 250), 1),)).fetchall()
+            registry_source = "managed_wallets"
+        elif _sqlite_table_exists(conn, "wallet_watch_state"):
+            rows = conn.execute(
+                """
+                SELECT
+                  wallet_address,
+                  status,
+                  status_reason,
+                  dropped_at,
+                  reactivated_at,
+                  tracking_started_at,
+                  last_source_ts_at_status,
+                  updated_at
+                FROM wallet_watch_state
+                ORDER BY
+                  CASE status WHEN 'active' THEN 0 WHEN 'dropped' THEN 1 ELSE 2 END,
+                  updated_at DESC,
+                  wallet_address ASC
+                LIMIT ?
+                """,
+                (max(int(limit or 250), 1),),
+            ).fetchall()
+            registry_source = "wallet_watch_state"
+        else:
+            return []
+    finally:
+        conn.close()
+
+    identities = _identity_lookup()
+    discovery_map = _discover_candidate_map(limit)
+    watch_state_map = _wallet_watch_state_map([str(row["wallet_address"] or "") for row in rows])
+    policy_metrics_map = _wallet_policy_metrics_rows([str(row["wallet_address"] or "") for row in rows])
+    promotion_state_map = load_wallet_promotion_state([str(row["wallet_address"] or "") for row in rows])
+    trust_state_map = _wallet_trust_snapshot_map([str(row["wallet_address"] or "") for row in rows])
+
+    payloads: list[dict[str, Any]] = []
+    for row in rows:
+        row_dict = dict(row)
+        wallet = str(row_dict.get("wallet_address") or "").strip().lower()
+        if not wallet:
+            continue
+        identity = identities.get(wallet, "")
+        discovery = discovery_map.get(wallet, {})
+        watch_state = watch_state_map.get(wallet, {})
+        policy_metrics = policy_metrics_map.get(wallet, {})
+        promotion_state = promotion_state_map.get(wallet, {})
+        trust_state = trust_state_map.get(wallet, {})
+        source = str(row_dict.get("source") or registry_source).strip()
+        tracking_enabled = bool(row_dict.get("tracking_enabled")) if "tracking_enabled" in row_dict else str(row_dict.get("status") or "").strip().lower() != "dropped"
+        payload: dict[str, Any] = {
+            "wallet_address": wallet,
+            "username": identity or str(discovery.get("username") or "").strip(),
+            "registry_source": registry_source,
+            "source": source or registry_source,
+            "tracking_enabled": tracking_enabled,
+            "status": str(watch_state.get("status") or row_dict.get("status") or ("active" if tracking_enabled else "disabled")).strip(),
+            "status_reason": str(watch_state.get("status_reason") or row_dict.get("disabled_reason") or row_dict.get("status_reason") or "").strip(),
+            "added_at": int(row_dict.get("added_at") or row_dict.get("tracking_started_at") or 0),
+            "updated_at": int(row_dict.get("updated_at") or 0),
+            "disabled_at": int(row_dict.get("disabled_at") or row_dict.get("dropped_at") or 0),
+            "disabled_reason": str(row_dict.get("disabled_reason") or row_dict.get("status_reason") or "").strip(),
+            "tracking_started_at": int(row_dict.get("tracking_started_at") or 0),
+            "last_source_ts_at_status": int(row_dict.get("last_source_ts_at_status") or 0),
+            "post_promotion_baseline_at": int(
+                policy_metrics.get("post_promotion_baseline_at")
+                or promotion_state.get("baseline_at")
+                or 0
+            ),
+            "post_promotion_source": str(
+                policy_metrics.get("post_promotion_source")
+                or promotion_state.get("promotion_source")
+                or ""
+            ).strip(),
+            "post_promotion_reason": str(
+                policy_metrics.get("post_promotion_reason")
+                or promotion_state.get("promotion_reason")
+                or ""
+            ).strip(),
+            "post_promotion_total_buy_signals": int(policy_metrics.get("post_promotion_total_buy_signals") or 0),
+            "post_promotion_uncopyable_skips": int(policy_metrics.get("post_promotion_uncopyable_skips") or 0),
+            "post_promotion_uncopyable_skip_rate": float(policy_metrics.get("post_promotion_uncopyable_skip_rate") or 0.0),
+            "post_promotion_resolved_copied_count": int(policy_metrics.get("post_promotion_resolved_copied_count") or 0),
+            "post_promotion_resolved_copied_win_rate": (
+                float(policy_metrics.get("post_promotion_resolved_copied_win_rate"))
+                if policy_metrics.get("post_promotion_resolved_copied_win_rate") is not None
+                else None
+            ),
+            "post_promotion_resolved_copied_avg_return": (
+                float(policy_metrics.get("post_promotion_resolved_copied_avg_return"))
+                if policy_metrics.get("post_promotion_resolved_copied_avg_return") is not None
+                else None
+            ),
+            "post_promotion_resolved_copied_total_pnl_usd": float(
+                policy_metrics.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0
+            ),
+            "post_promotion_last_resolved_at": int(policy_metrics.get("post_promotion_last_resolved_at") or 0),
+            "post_promotion_evidence_ready": bool(policy_metrics.get("post_promotion_evidence_ready") or False),
+            "post_promotion_evidence_note": str(policy_metrics.get("post_promotion_evidence_note") or "").strip(),
+            "trust_tier": str(trust_state.get("trust_tier") or "").strip(),
+            "trust_size_multiplier": (
+                float(trust_state["trust_size_multiplier"])
+                if trust_state.get("trust_size_multiplier") is not None
+                else None
+            ),
+            "trust_note": str(trust_state.get("trust_note") or "").strip(),
+        }
+        if discovery:
+            payload.update(
+                discovery_score=float(discovery.get("follow_score") or 0),
+                discovery_accepted=bool(discovery.get("accepted")),
+                discovery_reason=str(discovery.get("reject_reason") or "").strip(),
+                discovery_style=str(discovery.get("style") or discovery.get("watch_style") or "").strip(),
+                discovery_rank=discovery.get("leaderboard_rank"),
+                discovery_sources=list(discovery.get("source_labels") or []),
+                discovery_updated_at=int(discovery.get("updated_at") or 0),
+            )
+        payloads.append(payload)
+    return payloads
+
+
+def _wallet_membership_events(limit: int | None = None) -> tuple[list[dict[str, Any]], str]:
+    conn = get_conn()
+    try:
+        if _sqlite_table_exists(conn, "wallet_membership_events"):
+            rows = conn.execute(
+                """
+                SELECT
+                  wallet_address,
+                  action,
+                  source,
+                  reason,
+                  payload_json,
+                  created_at
+                FROM wallet_membership_events
+                ORDER BY created_at DESC, wallet_address ASC
+                LIMIT ?
+                """,
+                (max(int(limit or 250), 1),),
+            ).fetchall()
+            source = "wallet_membership_events"
+            events: list[dict[str, Any]] = []
+            for row in rows:
+                payload_json = str(row["payload_json"] or "{}")
+                try:
+                    payload = json.loads(payload_json)
+                except json.JSONDecodeError:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                events.append(
+                    {
+                        "wallet_address": str(row["wallet_address"] or "").strip().lower(),
+                        "action": str(row["action"] or "").strip(),
+                        "source": str(row["source"] or "").strip(),
+                        "reason": str(row["reason"] or "").strip(),
+                        "created_at": int(row["created_at"] or 0),
+                        "payload": payload,
+                    }
+                )
+            return events, source
+
+        if _sqlite_table_exists(conn, "wallet_watch_state"):
+            rows = conn.execute(
+                """
+                SELECT
+                  wallet_address,
+                  status,
+                  status_reason,
+                  dropped_at,
+                  reactivated_at,
+                  tracking_started_at,
+                  updated_at
+                FROM wallet_watch_state
+                ORDER BY updated_at DESC, wallet_address ASC
+                LIMIT ?
+                """,
+                (max(int(limit or 250), 1),),
+            ).fetchall()
+            events = []
+            for row in rows:
+                wallet = str(row["wallet_address"] or "").strip().lower()
+                if not wallet:
+                    continue
+                created_at = int(row["updated_at"] or row["tracking_started_at"] or 0)
+                events.append(
+                    {
+                        "wallet_address": wallet,
+                        "action": str(row["status"] or "tracked").strip(),
+                        "source": "wallet_watch_state",
+                        "reason": str(row["status_reason"] or "").strip(),
+                        "created_at": created_at,
+                        "payload": {
+                            "status": str(row["status"] or "").strip(),
+                            "dropped_at": int(row["dropped_at"] or 0),
+                            "reactivated_at": int(row["reactivated_at"] or 0),
+                            "tracking_started_at": int(row["tracking_started_at"] or 0),
+                        },
+                    }
+                )
+            return events, "wallet_watch_state"
+        return [], "unavailable"
+    finally:
+        conn.close()
+
+
+def _wallet_registry_summary(limit: int | None = None) -> dict[str, Any]:
+    wallets = _managed_wallet_rows(limit)
+    event_rows, event_source = _wallet_membership_events(limit)
+    return {
+        "ok": True,
+        "source": _wallet_registry_source(),
+        "wallets": wallets,
+        "count": len(wallets),
+        "events": event_rows,
+        "event_source": event_source,
+        "event_count": len(event_rows),
+    }
+
+
+def _discovery_candidates_response(limit: int | None = None) -> dict[str, Any]:
+    candidates = load_wallet_discovery_candidates(limit=limit)
+    accepted_count = sum(1 for row in candidates if bool(row.get("accepted")))
+    return {
+        "ok": True,
+        "source": "wallet_discovery_candidates",
+        "candidates": candidates,
+        "count": len(candidates),
+        "ready_count": accepted_count,
+        "review_count": max(len(candidates) - accepted_count, 0),
+    }
+
+
+def _discovery_scan_response() -> dict[str, Any]:
+    blocked_response = _blocked_shadow_mutation_response("Wallet discovery scan")
+    if blocked_response is not None:
+        return blocked_response
+    integrity = database_integrity_state()
+    if bool(integrity.get("db_integrity_known")) and not bool(integrity.get("db_integrity_ok")):
+        detail = str(integrity.get("db_integrity_message") or "").splitlines()[0].strip()
+        suffix = f": {detail}" if detail else ""
+        return {
+            "ok": False,
+            "message": f"Wallet discovery scan is unavailable because SQLite integrity check failed{suffix}.",
+        }
+
+    try:
+        summary = refresh_wallet_discovery_candidates(_wallet_registry_addresses())
+    except Exception as exc:  # pragma: no cover - defensive network/runtime guard
+        logger.exception("Wallet discovery scan failed")
+        return {"ok": False, "message": f"Wallet discovery scan failed: {exc}"}
+
+    return summary
 
 
 def _write_env_value(key: str, value: str) -> None:
@@ -392,6 +898,29 @@ def _write_atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temp_path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
     temp_path.replace(path)
+
+
+def _normalize_trading_mode(value: Any, fallback: str = "shadow") -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"shadow", "live"}:
+        return normalized
+    return fallback
+
+
+def _effective_bot_mode(configured_mode: str, bot_state: dict[str, Any]) -> tuple[str, str]:
+    configured = _normalize_trading_mode(configured_mode)
+    if configured != "live":
+        return "shadow", ""
+    startup_block = _startup_block_reason(bot_state)
+    if startup_block:
+        return "shadow", f"configured live but forced shadow: {startup_block}"
+    if bool(bot_state.get("shadow_restart_pending")):
+        detail = str(bot_state.get("shadow_restart_message") or "").strip() or "shadow restart pending"
+        return "shadow", f"configured live but forced shadow: {detail}"
+    if bool(bot_state.get("db_integrity_known")) and not bool(bot_state.get("db_integrity_ok")):
+        detail = str(bot_state.get("db_integrity_message") or "").splitlines()[0].strip() or "unknown integrity failure"
+        return "shadow", f"configured live but forced shadow: SQLite integrity check failed: {detail}"
+    return "live", ""
 
 
 def _shadow_restart_pending_message(wallet_mode: str = "") -> str:
@@ -506,6 +1035,8 @@ def _persist_manual_request_cleared_state(
 def _bot_state_snapshot() -> dict[str, Any]:
     bot_state = _read_json_dict(BOT_STATE_FILE)
     bot_state.update(
+        startup_failed=bool(bot_state.get("startup_failed")),
+        startup_validation_failed=bool(bot_state.get("startup_validation_failed")),
         manual_retrain_pending=bool(bot_state.get("manual_retrain_pending")),
         manual_retrain_requested_at=int(bot_state.get("manual_retrain_requested_at") or 0),
         manual_retrain_message=str(bot_state.get("manual_retrain_message") or ""),
@@ -524,6 +1055,50 @@ def _bot_state_snapshot() -> dict[str, Any]:
         trade_log_archive_last_vacuumed=bool(bot_state.get("trade_log_archive_last_vacuumed")),
         trade_log_archive_block_reason=str(bot_state.get("trade_log_archive_block_reason") or ""),
     )
+    startup_failure_message = str(
+        bot_state.get("startup_failure_message")
+        or bot_state.get("startup_validation_message")
+        or ""
+    ).strip()
+    startup_detail = str(bot_state.get("startup_detail") or "").strip()
+    startup_failed = bool(bot_state.get("startup_failed"))
+    startup_validation_failed = bool(bot_state.get("startup_validation_failed"))
+    if (startup_failed or startup_validation_failed) and not bool(bot_state.get("startup_blocked")):
+        bot_state["startup_blocked"] = True
+        if not str(bot_state.get("startup_block_reason") or "").strip():
+            bot_state["startup_block_reason"] = startup_failure_message or startup_detail
+    if "db_recovery_inventory" not in bot_state or not isinstance(bot_state.get("db_recovery_inventory"), list):
+        bot_state["db_recovery_inventory"] = []
+    bot_state["db_recovery_inventory_count"] = max(int(bot_state.get("db_recovery_inventory_count") or 0), 0)
+    needs_recovery_fallback = (
+        not bot_state["db_recovery_inventory"]
+        or not bool(bot_state.get("db_recovery_candidate_ready"))
+        or not str(bot_state.get("db_recovery_candidate_path") or "").strip()
+    )
+    if needs_recovery_fallback:
+        try:
+            recovery_state = _cached_db_recovery_state()
+        except Exception:
+            recovery_state = {}
+        for key in (
+            "db_recovery_state_known",
+            "db_recovery_candidate_ready",
+            "db_recovery_candidate_path",
+            "db_recovery_candidate_source_path",
+            "db_recovery_candidate_message",
+            "db_recovery_latest_verified_backup_path",
+            "db_recovery_latest_verified_backup_at",
+        ):
+            if key in recovery_state:
+                bot_state[key] = recovery_state[key]
+        inventory = recovery_state.get("db_recovery_inventory")
+        if isinstance(inventory, list):
+            bot_state["db_recovery_inventory"] = inventory
+            bot_state["db_recovery_inventory_count"] = max(
+                int(recovery_state.get("db_recovery_inventory_count") or len(inventory)),
+                0,
+            )
+    bot_state.update(_db_recovery_candidate_snapshot(bot_state))
     request_payload = _request_payload_if_fresh(MANUAL_RETRAIN_REQUEST_FILE, 900)
     if request_payload is not None:
         bot_state.update(
@@ -605,6 +1180,17 @@ def _bot_state_snapshot() -> dict[str, Any]:
             trade_log_archive_request_message="",
         )
         _write_atomic_json(BOT_STATE_FILE, bot_state)
+    configured_mode = _normalize_trading_mode(bot_state.get("configured_mode"), "")
+    if not configured_mode:
+        configured_mode = "live" if _live_trading_enabled_in_config() else _normalize_trading_mode(
+            bot_state.get("mode"), "shadow"
+        )
+    mode, mode_block_reason = _effective_bot_mode(configured_mode, bot_state)
+    bot_state.update(
+        configured_mode=configured_mode,
+        mode=mode,
+        mode_block_reason=mode_block_reason,
+    )
     return bot_state
 
 
@@ -618,13 +1204,15 @@ def _heartbeat_window_seconds(bot_state: dict[str, Any]) -> int:
 
 def _startup_block_reason(bot_state: dict[str, Any]) -> str:
     startup_blocked = bool(bot_state.get("startup_blocked"))
+    startup_failed = bool(bot_state.get("startup_failed"))
+    startup_validation_failed = bool(bot_state.get("startup_validation_failed"))
     startup_detail = str(bot_state.get("startup_detail") or "").strip()
     startup_failure_message = str(
         bot_state.get("startup_failure_message")
         or bot_state.get("startup_validation_message")
         or ""
     ).strip()
-    if not startup_blocked and "startup blocked" not in startup_detail.lower():
+    if not startup_blocked and not startup_failed and not startup_validation_failed and "startup blocked" not in startup_detail.lower():
         return ""
     detail = str(
         bot_state.get("startup_block_reason")
@@ -1323,6 +1911,23 @@ def _live_mode_enable_block_reasons(bot_state: dict[str, Any] | None = None) -> 
 def _set_live_mode_response(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     enabled = _live_mode_enabled_from_payload(payload)
     bot_state = _bot_state_snapshot()
+    if not enabled:
+        _write_env_value("USE_REAL_MONEY", "false")
+        if bool(bot_state.get("shadow_restart_pending")):
+            return {
+                "ok": True,
+                "message": "Live Trading saved as OFF. Shadow restart is already pending and will continue in shadow mode.",
+            }
+        startup_block = _startup_block_reason(bot_state)
+        if startup_block:
+            return {
+                "ok": True,
+                "message": "Live Trading saved as OFF. The backend is currently blocked, but the persisted config is now shadow-only.",
+            }
+        return {
+            "ok": True,
+            "message": "Live Trading saved as OFF. Restart the bot to apply it safely.",
+        }
     blocked = _blocked_shadow_mutation_response("Live mode changes", bot_state)
     if blocked:
         startup_block = _startup_block_reason(bot_state)
@@ -1332,12 +1937,6 @@ def _set_live_mode_response(payload: dict[str, Any] | None = None) -> dict[str, 
                 "message": f"Live trading remains blocked: backend startup is blocked: {startup_block}",
             }
         return blocked
-    if not enabled:
-        _write_env_value("USE_REAL_MONEY", "false")
-        return {
-            "ok": True,
-            "message": "Live Trading saved as OFF. Restart the bot to apply it safely.",
-        }
 
     reasons = _live_mode_enable_block_reasons()
     if reasons:
@@ -1587,6 +2186,19 @@ def _config_value_response(key: str, value: str) -> tuple[int, dict[str, Any]]:
     if normalized_key == "USE_REAL_MONEY":
         result = _set_live_mode_response({"enabled": normalized_value})
         return (200 if result.get("ok") else 409, result)
+    if normalized_key == "WATCHED_WALLETS":
+        snapshot = _config_snapshot()
+        return (
+            409,
+            {
+                "ok": False,
+                "message": (
+                    "WATCHED_WALLETS is bootstrap-only after the DB-backed wallet registry migration. "
+                    "Use the wallet registry and shadow-reset controls in the web dashboard instead."
+                ),
+                **snapshot,
+            },
+        )
 
     blocked_response = _blocked_shadow_mutation_response("Config editing")
     if blocked_response is not None:
@@ -1830,6 +2442,35 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"events": _recent_events(max_events)})
             return
 
+        if path in {"/api/wallets", "/api/wallets/events", "/api/discovery/candidates"}:
+            blocked = _blocked_query_response()
+            if blocked:
+                self._send_json(409, blocked)
+                return
+            query = parse_qs(parsed.query)
+            try:
+                limit = max(1, min(int(query.get("limit", ["250"])[0]), 1000))
+            except (TypeError, ValueError):
+                limit = 250
+            if path == "/api/wallets":
+                self._send_json(200, _wallet_registry_summary(limit))
+                return
+            if path == "/api/wallets/events":
+                events, source = _wallet_membership_events(limit)
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "source": source,
+                        "events": events,
+                        "count": len(events),
+                    },
+                )
+                return
+            if path == "/api/discovery/candidates":
+                self._send_json(200, _discovery_candidates_response(limit))
+                return
+
         if path == "/api/config":
             self._send_json(200, _config_snapshot())
             return
@@ -1880,6 +2521,10 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
 
             if path == "/api/manual-trade":
                 self._send_json(200, _manual_trade_response(body))
+                return
+
+            if path == "/api/discovery/scan":
+                self._send_json(202, _discovery_scan_response())
                 return
 
             if path == "/api/wallets/drop":

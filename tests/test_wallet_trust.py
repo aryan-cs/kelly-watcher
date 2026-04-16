@@ -24,6 +24,8 @@ def _insert_trade(
     trader_address: str,
     skipped: bool,
     resolved_pnl_usd: float | None = None,
+    placed_at: int = 1_700_000_000,
+    resolved_at: int | None = None,
 ) -> None:
     actual_entry_price = 0.50 if not skipped else None
     actual_entry_shares = 20.0 if not skipped else None
@@ -34,8 +36,8 @@ def _insert_trade(
             trade_id, market_id, question, trader_address, side, source_action,
             price_at_signal, signal_size_usd, confidence, kelly_fraction,
             real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
-            actual_entry_size_usd, shadow_pnl_usd
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            actual_entry_size_usd, shadow_pnl_usd, resolved_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             trade_id,
@@ -50,11 +52,12 @@ def _insert_trade(
             0.10,
             0,
             1 if skipped else 0,
-            1_700_000_000,
+            placed_at,
             actual_entry_price,
             actual_entry_shares,
             actual_entry_size_usd,
             resolved_pnl_usd,
+            resolved_at,
         ),
     )
 
@@ -91,6 +94,30 @@ def _insert_counterfactual_skip(
             skip_reason,
             1_700_000_000,
             counterfactual_return,
+        ),
+    )
+
+
+def _insert_promotion_event(
+    conn,
+    *,
+    wallet_address: str,
+    promoted_at: int,
+    reason: str = "ready wallet discovered in shadow scan",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO wallet_membership_events (
+            wallet_address, action, source, reason, payload_json, created_at
+        ) VALUES (?,?,?,?,?,?)
+        """,
+        (
+            wallet_address,
+            "promote",
+            "auto_promoted",
+            reason,
+            '{"promotion_source":"wallet_discovery","promoted_at":%d}' % promoted_at,
+            promoted_at,
         ),
     )
 
@@ -288,6 +315,171 @@ class WalletTrustTest(unittest.TestCase):
                 self.assertAlmostEqual(state.local_performance_penalty_multiplier or 0.0, 0.25, places=6)
                 self.assertIn("local copied avg return -15.0%", state.tier_note or "")
                 self.assertIn("limiting size to 25%", state.tier_note or "")
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_auto_promoted_wallet_stays_in_promotion_probation_until_post_promotion_history_exists(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                for idx in range(20):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"pre-promotion-{idx}",
+                        trader_address="0xabc",
+                        skipped=False,
+                        resolved_pnl_usd=0.5,
+                        placed_at=1_700_000_000,
+                        resolved_at=1_700_000_200,
+                    )
+                _insert_promotion_event(conn, wallet_address="0xabc", promoted_at=1_700_000_100)
+                conn.commit()
+                conn.close()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
+                    },
+                    clear=False,
+                ):
+                    state = get_wallet_trust_state("0xabc")
+
+                self.assertEqual(state.tier, "promotion_probation")
+                self.assertAlmostEqual(state.size_multiplier, 0.05, places=6)
+                self.assertEqual(state.post_promotion_baseline_at, 1_700_000_100)
+                self.assertEqual(state.post_promotion_resolved_copied_buy_count, 0)
+                self.assertFalse(state.post_promotion_evidence_ready)
+                self.assertIn("0/3", state.tier_note or "")
+                self.assertIn("0/8", state.tier_note or "")
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_auto_promoted_wallet_returns_to_trusted_after_post_promotion_history_clears_gate(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                for idx in range(17):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"trusted-before-{idx}",
+                        trader_address="0xabc",
+                        skipped=False,
+                        resolved_pnl_usd=0.4,
+                    )
+                _insert_promotion_event(conn, wallet_address="0xabc", promoted_at=1_700_000_050)
+                for idx in range(8):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"trusted-after-{idx}",
+                        trader_address="0xabc",
+                        skipped=False,
+                        resolved_pnl_usd=0.3,
+                        placed_at=1_700_000_100 + idx,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
+                    },
+                    clear=False,
+                ):
+                    state = get_wallet_trust_state("0xabc")
+
+                self.assertEqual(state.tier, "trusted")
+                self.assertAlmostEqual(state.size_multiplier, 1.0, places=6)
+                self.assertEqual(state.post_promotion_resolved_copied_buy_count, 8)
+                self.assertTrue(state.post_promotion_evidence_ready)
+                self.assertIn("ready", state.tier_note or "")
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_auto_promoted_wallet_stays_in_promotion_probation_when_post_promotion_skip_rate_is_too_high(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                for idx in range(17):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"trusted-before-skip-rate-{idx}",
+                        trader_address="0xabc",
+                        skipped=False,
+                        resolved_pnl_usd=0.4,
+                    )
+                _insert_promotion_event(conn, wallet_address="0xabc", promoted_at=1_700_000_050)
+                for idx in range(3):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"post-copyable-{idx}",
+                        trader_address="0xabc",
+                        skipped=False,
+                        resolved_pnl_usd=0.3,
+                        placed_at=1_700_000_100 + idx,
+                    )
+                for idx in range(5):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"post-uncopyable-{idx}",
+                        trader_address="0xabc",
+                        skipped=True,
+                        resolved_pnl_usd=None,
+                        placed_at=1_700_000_200 + idx,
+                    )
+                conn.execute(
+                    """
+                    UPDATE trade_log
+                    SET market_veto='beyond max horizon 6h',
+                        skip_reason='market resolves too far out, beyond the 6h maximum horizon'
+                    WHERE trade_id LIKE 'post-uncopyable-%'
+                    """
+                )
+                conn.commit()
+                conn.close()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
+                        "WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE": "0.50",
+                    },
+                    clear=False,
+                ):
+                    state = get_wallet_trust_state("0xabc")
+
+                self.assertEqual(state.tier, "promotion_probation")
+                self.assertAlmostEqual(state.size_multiplier, 0.05, places=6)
+                self.assertEqual(state.post_promotion_total_buy_signals, 8)
+                self.assertEqual(state.post_promotion_uncopyable_skips, 5)
+                self.assertAlmostEqual(state.post_promotion_uncopyable_skip_rate, 0.625, places=6)
+                self.assertFalse(state.post_promotion_evidence_ready)
+                self.assertIn("62%>50%", state.tier_note or "")
             finally:
                 db.DB_PATH = original_db_path
 

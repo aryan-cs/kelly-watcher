@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import math
@@ -18,7 +19,143 @@ from dataclasses import dataclass
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
+
+_RUNTIME_STDIO_LOG_PATH_ENV = "KELLY_RUNTIME_STDIO_LOG_PATH"
+_RUNTIME_STDIO_LOG_MAX_BYTES_ENV = "KELLY_RUNTIME_STDIO_LOG_MAX_BYTES"
+_RUNTIME_STDIO_LOG_BACKUPS_ENV = "KELLY_RUNTIME_STDIO_LOG_BACKUPS"
+
+
+def _parse_env_positive_int(name: str, default: int) -> int:
+    raw_value = str(os.getenv(name, "") or "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+class _RotatingTextStream:
+    def __init__(self, path: Path, *, max_bytes: int, backup_count: int) -> None:
+        self._path = Path(path)
+        self._max_bytes = max(int(max_bytes or 0), 0)
+        self._backup_count = max(int(backup_count or 0), 0)
+        self._handle: Any | None = None
+        self._open()
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+    def _open(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self._path.open("a", encoding="utf-8", buffering=1)
+
+    def _size_on_disk(self) -> int:
+        try:
+            return self._path.stat().st_size
+        except OSError:
+            return 0
+
+    def _rotate(self) -> None:
+        if self._handle is not None:
+            try:
+                self._handle.flush()
+            except OSError:
+                pass
+            try:
+                self._handle.close()
+            except OSError:
+                pass
+            self._handle = None
+
+        if self._backup_count > 0:
+            for index in range(self._backup_count - 1, 0, -1):
+                source = self._path.with_name(f"{self._path.name}.{index}")
+                target = self._path.with_name(f"{self._path.name}.{index + 1}")
+                if target.exists():
+                    try:
+                        target.unlink()
+                    except OSError:
+                        continue
+                if source.exists():
+                    try:
+                        source.replace(target)
+                    except OSError:
+                        continue
+
+            first_backup = self._path.with_name(f"{self._path.name}.1")
+            if first_backup.exists():
+                try:
+                    first_backup.unlink()
+                except OSError:
+                    pass
+            if self._path.exists():
+                try:
+                    self._path.replace(first_backup)
+                except OSError:
+                    pass
+        elif self._path.exists():
+            try:
+                self._path.unlink()
+            except OSError:
+                pass
+
+        self._open()
+
+    def write(self, data: str) -> int:
+        text = str(data or "")
+        if not text:
+            return 0
+        encoded_size = len(text.encode(self.encoding, errors="replace"))
+        if self._max_bytes > 0 and self._size_on_disk() + encoded_size > self._max_bytes:
+            self._rotate()
+        if self._handle is None:
+            self._open()
+        written = self._handle.write(text)
+        self._handle.flush()
+        return int(written or 0)
+
+    def flush(self) -> None:
+        if self._handle is not None:
+            self._handle.flush()
+
+    def close(self) -> None:
+        if self._handle is not None:
+            try:
+                self._handle.flush()
+            except OSError:
+                pass
+            try:
+                self._handle.close()
+            except OSError:
+                pass
+            self._handle = None
+
+    def isatty(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+
+def _install_rotating_stdio_stream_from_env() -> None:
+    raw_path = str(os.getenv(_RUNTIME_STDIO_LOG_PATH_ENV, "") or "").strip()
+    if not raw_path:
+        return
+    stream = _RotatingTextStream(
+        Path(raw_path),
+        max_bytes=_parse_env_positive_int(_RUNTIME_STDIO_LOG_MAX_BYTES_ENV, 10 * 1024 * 1024),
+        backup_count=_parse_env_positive_int(_RUNTIME_STDIO_LOG_BACKUPS_ENV, 5),
+    )
+    sys.stdout = stream
+    sys.stderr = stream
+    atexit.register(stream.close)
+
+
+_install_rotating_stdio_stream_from_env()
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -135,9 +272,14 @@ from kelly_watcher.data.db import (
     get_conn_for_path,
     get_trade_log_read_conn,
     init_db,
+    import_managed_wallets_from_env,
+    load_managed_wallets,
     recover_db_from_verified_backup,
+    trade_log_archive_db_path,
     trade_log_archive_state,
+    managed_wallet_registry_state,
 )
+from kelly_watcher.data.identity_cache import load_identity_cache
 from kelly_watcher.engine.dedup import DedupeCache
 from kelly_watcher.engine.economics import EntryEconomics
 from kelly_watcher.runtime.evaluator import (
@@ -153,7 +295,9 @@ from kelly_watcher.shadow_reset import (
     apply_wallet_mode_for_reset,
     exec_restarted_bot,
     reset_shadow_runtime,
+    restore_managed_wallet_registry_snapshot,
     restore_watched_wallets,
+    wallet_registry_clear_all_requested,
 )
 from kelly_watcher.engine.market_scorer import MarketScorer, build_market_features
 from kelly_watcher.data.market_urls import market_url_from_metadata
@@ -168,15 +312,18 @@ from kelly_watcher.runtime.tracker import PolymarketTracker, TradeEvent
 from kelly_watcher.runtime.wallet_discovery import refresh_wallet_discovery_candidates
 from kelly_watcher.engine.trader_scorer import get_trader_features, refresh_trader_cache
 from kelly_watcher.runtime_paths import (
+    BACKGROUND_LOG_PATH,
     BOT_PID_FILE,
     BOT_STATE_FILE,
     DATA_DIR,
     DB_RECOVERY_REQUEST_FILE,
     EVENT_FILE,
+    IDENTITY_CACHE_PATH,
     LOG_DIR,
     MANUAL_RETRAIN_REQUEST_FILE,
     MANUAL_TRADE_REQUEST_FILE,
     REPO_ROOT,
+    SAVE_DIR,
     SHADOW_EVIDENCE_EPOCH_FILE,
     SHADOW_RESET_REQUEST_FILE,
     TRADE_LOG_ARCHIVE_REQUEST_FILE,
@@ -202,6 +349,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 _emit_count = 0
 _event_lock = threading.Lock()
+# Legacy one-time bootstrap only. The runtime watch universe should come from the
+# DB-backed managed wallet registry after startup import/restore runs.
 WATCHED_WALLETS = watched_wallets()
 _MANUAL_REQUEST_RETRY_BACKOFF_SECONDS = 30
 _HEURISTIC_CONF_RE = re.compile(r"heuristic conf ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
@@ -215,6 +364,41 @@ _HEURISTIC_ENTRY_PRICE_RE = re.compile(r"heuristic entry price ([0-9.]+) < min (
 _INVALID_PRICE_RE = re.compile(r"invalid price ([0-9.]+)", re.IGNORECASE)
 _EXPIRES_RE = re.compile(r"expires in <([0-9]+)s", re.IGNORECASE)
 _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECASE)
+
+
+def _runtime_managed_wallets() -> list[str]:
+    try:
+        wallets = load_managed_wallets()
+    except Exception:
+        wallets = []
+    return list(wallets)
+
+
+def _managed_wallet_registry_total_count() -> int:
+    try:
+        state = managed_wallet_registry_state()
+    except Exception:
+        return 0
+    try:
+        total_count = int(state.get("managed_wallet_total_count") or 0)
+    except (TypeError, ValueError):
+        total_count = 0
+    if total_count > 0:
+        return total_count
+    wallets = state.get("managed_wallets") or []
+    if isinstance(wallets, list):
+        return len(wallets)
+    return 0
+
+
+def _should_import_bootstrap_watched_wallets(clear_all_snapshot_requested: bool) -> bool:
+    if clear_all_snapshot_requested or not WATCHED_WALLETS:
+        return False
+    return _managed_wallet_registry_total_count() <= 0
+
+
+def _managed_wallet_count() -> int:
+    return len(_runtime_managed_wallets())
 
 
 class ShadowResetRequested(Exception):
@@ -545,6 +729,9 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
     return {
         "session_id": session_id,
         "started_at": int(started_at),
+        "configured_mode": "shadow",
+        "mode": "shadow",
+        "mode_block_reason": "",
         "last_loop_started_at": 0,
         "last_activity_at": int(started_at),
         "loop_in_progress": False,
@@ -742,7 +929,9 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "trade_log_archive_archive_path": "",
         "trade_log_archive_archive_exists": False,
         "trade_log_archive_active_db_size_bytes": 0,
+        "trade_log_archive_active_db_allocated_bytes": 0,
         "trade_log_archive_archive_db_size_bytes": 0,
+        "trade_log_archive_archive_db_allocated_bytes": 0,
         "trade_log_archive_active_row_count": 0,
         "trade_log_archive_archive_row_count": 0,
         "trade_log_archive_eligible_row_count": 0,
@@ -756,6 +945,23 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "trade_log_archive_last_vacuumed": False,
         "trade_log_archive_last_message": "",
         "trade_log_archive_block_reason": "",
+        "storage_state_known": False,
+        "storage_save_dir_size_bytes": 0,
+        "storage_data_dir_size_bytes": 0,
+        "storage_log_dir_size_bytes": 0,
+        "storage_trading_db_size_bytes": 0,
+        "storage_trading_db_allocated_bytes": 0,
+        "storage_trade_log_archive_db_size_bytes": 0,
+        "storage_trade_log_archive_db_allocated_bytes": 0,
+        "storage_identity_cache_size_bytes": 0,
+        "storage_events_file_size_bytes": 0,
+        "storage_background_log_size_bytes": 0,
+        "storage_model_artifact_size_bytes": 0,
+        "storage_artifact_quarantine_file_count": 0,
+        "storage_artifact_quarantine_size_bytes": 0,
+        "storage_db_recovery_quarantine_file_count": 0,
+        "storage_db_recovery_quarantine_size_bytes": 0,
+        "storage_message": "",
         "loaded_scorer": "heuristic",
         "loaded_model_backend": "heuristic",
         "model_artifact_exists": False,
@@ -778,6 +984,29 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
     }
 
 
+def _normalize_trading_mode(value: object, fallback: str = "shadow") -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"shadow", "live"}:
+        return normalized
+    return fallback
+
+
+def _effective_runtime_mode(configured_mode: str, state: Mapping[str, object]) -> tuple[str, str]:
+    configured = _normalize_trading_mode(configured_mode)
+    if configured != "live":
+        return "shadow", ""
+    if bool(state.get("startup_blocked")) or bool(state.get("startup_recovery_only")):
+        reason = str(state.get("startup_block_reason") or "").strip() or "startup blocked"
+        return "shadow", f"configured live but forced shadow: {reason}"
+    if bool(state.get("shadow_restart_pending")):
+        reason = str(state.get("shadow_restart_message") or "").strip() or "shadow restart pending"
+        return "shadow", f"configured live but forced shadow: {reason}"
+    if bool(state.get("db_integrity_known")) and not bool(state.get("db_integrity_ok")):
+        detail = str(state.get("db_integrity_message") or "").splitlines()[0].strip() or "unknown integrity failure"
+        return "shadow", f"configured live but forced shadow: SQLite integrity check failed: {detail}"
+    return "live", ""
+
+
 def _write_bot_state(*, replace: bool = False, **extra) -> None:
     existing: dict[str, object] = {}
     if not replace and BOT_STATE_FILE.exists():
@@ -790,15 +1019,17 @@ def _write_bot_state(*, replace: bool = False, **extra) -> None:
 
     state = dict(existing)
     try:
-        mode = "live" if use_real_money() else "shadow"
+        configured_mode = "live" if use_real_money() else "shadow"
     except Exception:
         raw_live_mode = str(os.environ.get("USE_REAL_MONEY") or "").strip().lower()
         if raw_live_mode in {"1", "true", "yes", "on"}:
-            mode = "live"
+            configured_mode = "live"
         elif raw_live_mode in {"0", "false", "no", "off"}:
-            mode = "shadow"
+            configured_mode = "shadow"
         else:
-            mode = str(existing.get("mode") or "shadow")
+            configured_mode = _normalize_trading_mode(
+                existing.get("configured_mode") or existing.get("mode") or "shadow"
+            )
     try:
         interval = poll_interval()
     except Exception:
@@ -809,12 +1040,19 @@ def _write_bot_state(*, replace: bool = False, **extra) -> None:
     state.update(
         {
             "started_at": int(extra.pop("started_at", state.get("started_at") or time.time())),
-            "mode": mode,
-            "n_wallets": len(WATCHED_WALLETS),
+            "n_wallets": _managed_wallet_count(),
             "poll_interval": interval,
         }
     )
     state.update(extra)
+    mode, mode_block_reason = _effective_runtime_mode(configured_mode, state)
+    state.update(
+        {
+            "configured_mode": configured_mode,
+            "mode": mode,
+            "mode_block_reason": mode_block_reason,
+        }
+    )
     BOT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
@@ -1518,6 +1756,18 @@ def _configured_model_artifact_path() -> Path:
     return (REPO_ROOT / artifact_path).resolve()
 
 
+def _prune_artifact_quarantine(*, quarantine_dir: Path, retain_count: int = 5) -> None:
+    if retain_count <= 0 or not quarantine_dir.exists():
+        return
+    candidates = [path for path in quarantine_dir.iterdir() if path.is_file()]
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for stale_path in candidates[retain_count:]:
+        try:
+            stale_path.unlink()
+        except OSError:
+            continue
+
+
 def _quarantine_runtime_model_artifact(*, reason: str) -> str:
     artifact_path = _configured_model_artifact_path()
     if not artifact_path.exists():
@@ -1540,6 +1790,7 @@ def _quarantine_runtime_model_artifact(*, reason: str) -> str:
         candidate,
         normalized_reason,
     )
+    _prune_artifact_quarantine(quarantine_dir=quarantine_dir)
     return str(candidate)
 
 
@@ -2937,6 +3188,105 @@ def _trade_log_archive_state_payload(
             trade_log_archive_last_message=str(last_result.get("message") or "").strip(),
         )
     return payload
+
+
+def _path_size_bytes(path: Path) -> int:
+    try:
+        if not path.exists():
+            return 0
+        if path.is_file():
+            return int(path.stat().st_size)
+        total = 0
+        for child in path.rglob("*"):
+            try:
+                if child.is_file():
+                    total += int(child.stat().st_size)
+            except OSError:
+                continue
+        return total
+    except OSError:
+        return 0
+
+
+def _file_size_metrics(path: Path) -> tuple[int, int]:
+    try:
+        if not path.exists() or not path.is_file():
+            return 0, 0
+        stat_result = path.stat()
+        logical_size = int(stat_result.st_size)
+        allocated_blocks = int(getattr(stat_result, "st_blocks", 0) or 0)
+        allocated_size = allocated_blocks * 512 if allocated_blocks > 0 else logical_size
+        return logical_size, max(allocated_size, logical_size)
+    except OSError:
+        return 0, 0
+
+
+def _directory_file_count(path: Path) -> int:
+    try:
+        if not path.exists() or not path.is_dir():
+            return 0
+        return sum(1 for child in path.rglob("*") if child.is_file())
+    except OSError:
+        return 0
+
+
+def _storage_health_state_payload() -> dict[str, object]:
+    trading_db_path = DB_PATH
+    archive_db_path = trade_log_archive_db_path(trading_db_path)
+    identity_cache_path = IDENTITY_CACHE_PATH
+    background_log_path = BACKGROUND_LOG_PATH
+    model_artifact_path = _configured_model_artifact_path()
+    artifact_quarantine_dir = model_artifact_path.parent / "artifact_quarantine"
+    db_recovery_quarantine_dir = trading_db_path.parent / "db_recovery_quarantine"
+    integrity = database_integrity_state()
+
+    save_dir_size = _path_size_bytes(SAVE_DIR)
+    data_dir_size = _path_size_bytes(DATA_DIR)
+    log_dir_size = _path_size_bytes(LOG_DIR)
+    trading_db_size, trading_db_allocated = _file_size_metrics(trading_db_path)
+    archive_db_size, archive_db_allocated = _file_size_metrics(archive_db_path)
+    identity_cache_size = _path_size_bytes(identity_cache_path)
+    events_file_size = _path_size_bytes(EVENT_FILE)
+    background_log_size = _path_size_bytes(background_log_path)
+    model_artifact_size = _path_size_bytes(model_artifact_path)
+    artifact_quarantine_size = _path_size_bytes(artifact_quarantine_dir)
+    artifact_quarantine_count = _directory_file_count(artifact_quarantine_dir)
+    db_recovery_quarantine_size = _path_size_bytes(db_recovery_quarantine_dir)
+    db_recovery_quarantine_count = _directory_file_count(db_recovery_quarantine_dir)
+
+    message_parts: list[str] = []
+    if integrity.get("db_integrity_known") and not integrity.get("db_integrity_ok"):
+        message_parts.append("SQLite integrity check failed; hot-DB cleanup remains partially blocked")
+    if trading_db_size >= 512 * 1024 * 1024:
+        message_parts.append("active trading.db is oversized")
+    if trading_db_allocated > max(trading_db_size, 1) * 1.25:
+        message_parts.append("trading.db consumes materially more disk than its logical size")
+    if save_dir_size >= 1024 * 1024 * 1024:
+        message_parts.append("save/ is above 1 GB")
+    if artifact_quarantine_count > 0:
+        message_parts.append(f"artifact quarantine holds {artifact_quarantine_count} file(s)")
+    if db_recovery_quarantine_count > 0:
+        message_parts.append(f"DB recovery quarantine holds {db_recovery_quarantine_count} file(s)")
+
+    return {
+        "storage_state_known": True,
+        "storage_save_dir_size_bytes": save_dir_size,
+        "storage_data_dir_size_bytes": data_dir_size,
+        "storage_log_dir_size_bytes": log_dir_size,
+        "storage_trading_db_size_bytes": trading_db_size,
+        "storage_trading_db_allocated_bytes": trading_db_allocated,
+        "storage_trade_log_archive_db_size_bytes": archive_db_size,
+        "storage_trade_log_archive_db_allocated_bytes": archive_db_allocated,
+        "storage_identity_cache_size_bytes": identity_cache_size,
+        "storage_events_file_size_bytes": events_file_size,
+        "storage_background_log_size_bytes": background_log_size,
+        "storage_model_artifact_size_bytes": model_artifact_size,
+        "storage_artifact_quarantine_file_count": artifact_quarantine_count,
+        "storage_artifact_quarantine_size_bytes": artifact_quarantine_size,
+        "storage_db_recovery_quarantine_file_count": db_recovery_quarantine_count,
+        "storage_db_recovery_quarantine_size_bytes": db_recovery_quarantine_size,
+        "storage_message": "; ".join(message_parts),
+    }
 
 
 def _archive_old_trade_log_batch() -> dict[str, object]:
@@ -5375,8 +5725,9 @@ def _validate_startup() -> None:
             errors.append(str(exc))
             return None
 
-    if not WATCHED_WALLETS:
-        errors.append("WATCHED_WALLETS is empty")
+    runtime_wallets = _runtime_managed_wallets()
+    if not runtime_wallets:
+        errors.append("managed wallet registry is empty")
 
     confidence = _capture_config(min_confidence)
     if confidence is not None and not (0.0 < confidence < 1.0):
@@ -5605,8 +5956,10 @@ def _validate_startup() -> None:
             errors.append("POLYGON_PRIVATE_KEY is missing or still set to a placeholder")
         if _looks_like_placeholder(our_wallet):
             errors.append("POLYGON_WALLET_ADDRESS is missing or still set to a placeholder")
-        if our_wallet and our_wallet in WATCHED_WALLETS:
-            errors.append("POLYGON_WALLET_ADDRESS is also in WATCHED_WALLETS, which can create a self-copy loop")
+        if our_wallet and our_wallet in runtime_wallets:
+            errors.append(
+                "POLYGON_WALLET_ADDRESS is also in the managed wallet registry, which can create a self-copy loop"
+            )
         if max_fraction is not None and max_fraction > 0.10:
             warnings.append(
                 f"MAX_BET_FRACTION is {max_fraction:.2f}; consider keeping live single-trade risk at 10% or below"
@@ -5898,7 +6251,32 @@ def main() -> None:
     startup_validation_error = ""
 
     init_db()
+    clear_all_snapshot_requested = False
+    try:
+        snapshot_result = restore_managed_wallet_registry_snapshot()
+        clear_all_snapshot_requested = bool(snapshot_result.get("clear_all"))
+        restored_wallets = list(snapshot_result.get("wallets") or [])
+        if restored_wallets:
+            logger.info("Restored %s managed wallet(s) from shadow-reset snapshot", len(restored_wallets))
+    except Exception:
+        logger.warning("Managed wallet registry snapshot restore failed", exc_info=True)
+    try:
+        if _should_import_bootstrap_watched_wallets(clear_all_snapshot_requested):
+            imported_count = import_managed_wallets_from_env(WATCHED_WALLETS)
+            if imported_count > 0:
+                logger.info("Imported %s managed wallet(s) from WATCHED_WALLETS bootstrap", imported_count)
+    except Exception:
+        logger.warning("Managed wallet bootstrap from WATCHED_WALLETS failed", exc_info=True)
     startup_trade_log_archive_result = _archive_old_trade_log_batch()
+    try:
+        load_identity_cache()
+    except Exception:
+        logger.warning("Identity-cache maintenance skipped during startup", exc_info=True)
+    try:
+        _prune_artifact_quarantine(quarantine_dir=_configured_model_artifact_path().parent / "artifact_quarantine")
+    except Exception:
+        logger.warning("Artifact-quarantine pruning skipped during startup", exc_info=True)
+    startup_storage_state = _storage_health_state_payload()
     try:
         _validate_startup()
     except RuntimeError as exc:
@@ -5911,7 +6289,8 @@ def main() -> None:
     _repair_event_file_market_urls()
     start_ts = int(time.time())
     session_id = uuid.uuid4().hex
-    watchlist = WatchlistManager(WATCHED_WALLETS)
+    runtime_wallets = _runtime_managed_wallets()
+    watchlist = WatchlistManager(runtime_wallets)
     bot_state_snapshot: dict[str, object] = _base_bot_state_snapshot(session_id=session_id, started_at=start_ts)
     latest_retrain = _latest_retrain_run()
     latest_replay_search = _latest_replay_search_run()
@@ -5927,6 +6306,8 @@ def main() -> None:
         bot_state_snapshot.update(_applied_replay_promotion_state_payload(latest_promotion))
     bot_state_snapshot.update(_shadow_evidence_epoch_state_payload())
     bot_state_snapshot.update(_trade_log_archive_state_payload(last_result=startup_trade_log_archive_result))
+    bot_state_snapshot.update(startup_storage_state)
+    bot_state_snapshot.update(managed_wallet_registry_state())
     last_activity_write_at = 0.0
     current_loop_started_at = 0
     bot_state_lock = threading.Lock()
@@ -6051,6 +6432,22 @@ def main() -> None:
 
     def _refresh_trade_log_archive_state(*, last_result: dict[str, Any] | None = None) -> None:
         _persist_bot_state(**_trade_log_archive_state_payload(last_result=last_result))
+
+    def _refresh_storage_health_state() -> None:
+        _persist_bot_state(**_storage_health_state_payload())
+
+    def _run_storage_maintenance() -> None:
+        try:
+            load_identity_cache()
+        except Exception:
+            logger.warning("Identity-cache maintenance failed", exc_info=True)
+        try:
+            _prune_artifact_quarantine(
+                quarantine_dir=_configured_model_artifact_path().parent / "artifact_quarantine"
+            )
+        except Exception:
+            logger.warning("Artifact-quarantine pruning failed", exc_info=True)
+        _refresh_storage_health_state()
 
     def _run_trade_log_archive_maintenance() -> None:
         result = _archive_old_trade_log_batch()
@@ -6686,7 +7083,7 @@ def main() -> None:
             sync_belief_priors()
 
             _set_startup_detail("creating tracker")
-            tracker = PolymarketTracker(WATCHED_WALLETS, activity_callback=_heartbeat)
+            tracker = PolymarketTracker(runtime_wallets, activity_callback=_heartbeat)
             _set_startup_detail("connecting executor")
             executor = PolymarketExecutor()
             _set_startup_detail("checking wallet balance")
@@ -6731,8 +7128,25 @@ def main() -> None:
                 watchlist.refresh(run_auto_drop=True)
                 _persist_bot_state(**watchlist.state_fields())
 
+            def _refresh_managed_wallet_registry() -> None:
+                nonlocal runtime_wallets
+                managed_wallets = load_managed_wallets()
+                if not managed_wallets:
+                    return
+                if managed_wallets == runtime_wallets:
+                    return
+                runtime_wallets = managed_wallets
+                watchlist.replace_wallets(managed_wallets)
+                if tracker is not None:
+                    tracker.replace_wallets(managed_wallets)
+                refresh_trader_cache(managed_wallets)
+                _persist_bot_state(
+                    **watchlist.state_fields(),
+                    **managed_wallet_registry_state(),
+                )
+
             def _refresh_wallet_discovery() -> None:
-                summary = refresh_wallet_discovery_candidates(WATCHED_WALLETS)
+                summary = refresh_wallet_discovery_candidates(runtime_wallets)
                 message = str(summary.get("message") or "").strip()
                 if message:
                     if bool(summary.get("ok")):
@@ -6823,6 +7237,12 @@ def main() -> None:
                 minutes=10,
                 id="refresh_trader_cache",
             )
+            scheduler.add_job(
+                _refresh_managed_wallet_registry,
+                "interval",
+                minutes=5,
+                id="managed_wallet_registry_sync",
+            )
             if wallet_discovery_enabled():
                 scheduler.add_job(
                     _refresh_wallet_discovery,
@@ -6861,6 +7281,12 @@ def main() -> None:
                 "interval",
                 hours=1,
                 id="trade_log_archive_state_refresh",
+            )
+            scheduler.add_job(
+                _run_storage_maintenance,
+                "interval",
+                hours=1,
+                id="storage_health_refresh",
             )
             scheduler.add_job(
                 _refresh_db_recovery_shadow_state,

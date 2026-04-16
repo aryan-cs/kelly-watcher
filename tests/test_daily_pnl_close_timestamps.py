@@ -7,8 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import db
-import evaluator
+import kelly_watcher.data.db as db
+import kelly_watcher.runtime.evaluator as evaluator
 
 
 class DailyPnlCloseTimestampTest(unittest.TestCase):
@@ -146,7 +146,7 @@ class DailyPnlCloseTimestampTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("evaluator.time.time", return_value=fixed_now):
+                with patch("kelly_watcher.runtime.evaluator.time.time", return_value=fixed_now):
                     report = evaluator.compute_performance_report("shadow")
 
                 self.assertAlmostEqual(report["weekly_pnl_usd"], 12.0, places=6)
@@ -226,7 +226,7 @@ class DailyPnlCloseTimestampTest(unittest.TestCase):
                 conn.close()
 
                 with patch(
-                    "evaluator.read_shadow_evidence_epoch",
+                    "kelly_watcher.runtime.evaluator.read_shadow_evidence_epoch",
                     return_value={
                         "shadow_evidence_epoch_started_at": epoch_started_at,
                         "shadow_evidence_epoch_source": "shadow_reset",
@@ -318,13 +318,13 @@ class DailyPnlCloseTimestampTest(unittest.TestCase):
                 conn.close()
 
                 with patch(
-                    "evaluator.read_shadow_evidence_epoch",
+                    "kelly_watcher.runtime.evaluator.read_shadow_evidence_epoch",
                     return_value={
                         "shadow_evidence_epoch_started_at": epoch_started_at,
                         "shadow_evidence_epoch_source": "shadow_reset",
                     },
                 ), patch(
-                    "evaluator._latest_applied_replay_promotion_at",
+                    "kelly_watcher.runtime.evaluator._latest_applied_replay_promotion_at",
                     return_value=promotion_applied_at,
                 ):
                     report = evaluator.compute_performance_report(
@@ -411,12 +411,12 @@ class DailyPnlCloseTimestampTest(unittest.TestCase):
                 conn.close()
 
                 with patch(
-                    "evaluator.read_shadow_evidence_epoch",
+                    "kelly_watcher.runtime.evaluator.read_shadow_evidence_epoch",
                     return_value={
                         "shadow_evidence_epoch_started_at": epoch_started_at,
                         "shadow_evidence_epoch_source": "shadow_reset",
                     },
-                ), patch("evaluator.time.time", return_value=fixed_now):
+                ), patch("kelly_watcher.runtime.evaluator.time.time", return_value=fixed_now):
                     evaluator.persist_performance_snapshot("shadow")
 
                 conn = db.get_conn()

@@ -6,10 +6,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import auto_retrain
-import db
-import train
-from economic_model import COUNTERFACTUAL_SAMPLE_WEIGHT, EXECUTED_SAMPLE_WEIGHT, transform_return_target
+import kelly_watcher.research.auto_retrain as auto_retrain
+import kelly_watcher.data.db as db
+import kelly_watcher.research.train as train
+from kelly_watcher.engine.economic_model import COUNTERFACTUAL_SAMPLE_WEIGHT, EXECUTED_SAMPLE_WEIGHT, transform_return_target
 
 
 class TrainingDataContractTest(unittest.TestCase):
@@ -706,14 +706,14 @@ class TrainingDataContractTest(unittest.TestCase):
                 conn.close()
 
                 with patch(
-                    "auto_retrain.read_shadow_evidence_epoch",
+                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("auto_retrain.retrain_min_new_labels", return_value=1):
+                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=1):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
                 with patch(
-                    "auto_retrain.read_shadow_evidence_epoch",
+                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("auto_retrain.retrain_min_new_labels", return_value=2):
+                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=2):
                     self.assertFalse(auto_retrain.should_retrain_early(None))
             finally:
                 db.DB_PATH = original_db_path
@@ -835,32 +835,32 @@ class TrainingDataContractTest(unittest.TestCase):
                 conn.close()
 
                 with patch(
-                    "auto_retrain.read_shadow_evidence_epoch",
+                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("auto_retrain.retrain_min_new_labels", return_value=1):
+                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=1):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
                 with patch(
-                    "auto_retrain.read_shadow_evidence_epoch",
+                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("auto_retrain.retrain_min_new_labels", return_value=2):
+                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=2):
                     self.assertFalse(auto_retrain.should_retrain_early(None))
             finally:
                 db.DB_PATH = original_db_path
 
     def test_early_retrain_returns_false_without_active_epoch(self) -> None:
         with patch(
-            "auto_retrain.read_shadow_evidence_epoch",
+            "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 0},
-        ), patch("auto_retrain.load_training_data") as load_mock:
+        ), patch("kelly_watcher.research.auto_retrain.load_training_data") as load_mock:
             self.assertFalse(auto_retrain.should_retrain_early(None))
 
         load_mock.assert_not_called()
 
     def test_direct_train_skips_without_active_epoch(self) -> None:
         with patch(
-            "train.read_shadow_evidence_epoch",
+            "kelly_watcher.research.train.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 0},
-        ), patch("train.load_training_data") as load_mock:
+        ), patch("kelly_watcher.research.train.load_training_data") as load_mock:
             metrics = train.train()
 
         self.assertTrue(metrics["skipped"])
@@ -872,9 +872,9 @@ class TrainingDataContractTest(unittest.TestCase):
 
     def test_direct_train_scopes_default_load_to_active_epoch_and_routed_rows(self) -> None:
         with patch(
-            "train.read_shadow_evidence_epoch",
+            "kelly_watcher.research.train.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 3_000},
-        ), patch("train.load_training_data", return_value=[] ) as load_mock:
+        ), patch("kelly_watcher.research.train.load_training_data", return_value=[] ) as load_mock:
             metrics = train.train()
 
         self.assertTrue(metrics["skipped"])
@@ -886,12 +886,12 @@ class TrainingDataContractTest(unittest.TestCase):
 
     def test_direct_train_scopes_default_load_to_latest_promotion_within_epoch(self) -> None:
         with patch(
-            "train.read_shadow_evidence_epoch",
+            "kelly_watcher.research.train.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 3_000},
         ), patch(
-            "train._latest_applied_replay_promotion_at",
+            "kelly_watcher.research.train._latest_applied_replay_promotion_at",
             return_value=3_500,
-        ), patch("train.load_training_data", return_value=[] ) as load_mock:
+        ), patch("kelly_watcher.research.train.load_training_data", return_value=[] ) as load_mock:
             metrics = train.train()
 
         self.assertTrue(metrics["skipped"])

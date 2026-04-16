@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-import replay_runner
+import kelly_watcher.research.replay_runner as replay_runner
 
 
 class ReplayRunnerTest(unittest.TestCase):

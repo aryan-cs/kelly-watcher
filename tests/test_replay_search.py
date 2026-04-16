@@ -9,8 +9,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-import db
-import replay_search
+import kelly_watcher.data.db as db
+import kelly_watcher.research.replay_search as replay_search
 
 
 class ReplaySearchTest(unittest.TestCase):
@@ -14682,7 +14682,7 @@ class ReplaySearchTest(unittest.TestCase):
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "replay_search.db"
+            db_path = Path(tmpdir) / "kelly_watcher.research.replay_search.db"
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [

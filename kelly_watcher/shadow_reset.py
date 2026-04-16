@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from config import shadow_bankroll_usd, use_real_money
-import db
+import kelly_watcher.data.db as db
 from env_profile import (
     ENV_EXAMPLE_PATH,
     LEGACY_ENV_PATH,
@@ -32,7 +32,7 @@ from runtime_paths import (
     REPO_ROOT,
     SAVE_DIR,
 )
-from shadow_evidence import write_shadow_evidence_epoch
+from kelly_watcher.engine.shadow_evidence import write_shadow_evidence_epoch
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)

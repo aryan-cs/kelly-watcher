@@ -74,26 +74,26 @@ if "py_clob_client.clob_types" not in sys.modules:
     sys.modules["py_clob_client.order_builder.constants"] = constants_module
     sys.modules["py_clob_client.client"] = client_module
 
-import auto_retrain
-import alerter
-import beliefs
+import kelly_watcher.research.auto_retrain as auto_retrain
+import kelly_watcher.integrations.alerter as alerter
+import kelly_watcher.engine.beliefs as beliefs
 import config
-import dedup
-import db
+import kelly_watcher.engine.dedup as dedup
+import kelly_watcher.data.db as db
 import dashboard_api
-import evaluator
+import kelly_watcher.runtime.evaluator as evaluator
 import httpx
-import identity_cache
+import kelly_watcher.data.identity_cache as identity_cache
 import main
-import performance_preview
+import kelly_watcher.runtime.performance_preview as performance_preview
 from kelly_watcher import shadow_reset
-import shadow_evidence
-import tracker
-import trader_scorer
-from executor import ExecutionResult, PolymarketExecutor, SimulatedFill, TotalExposureDecision, log_trade
-from economics import build_entry_economics
-from market_scorer import MarketScorer, build_market_features
-from trader_scorer import TraderScorer
+import kelly_watcher.engine.shadow_evidence as shadow_evidence
+import kelly_watcher.runtime.tracker as tracker
+import kelly_watcher.engine.trader_scorer as trader_scorer
+from kelly_watcher.runtime.executor import ExecutionResult, PolymarketExecutor, SimulatedFill, TotalExposureDecision, log_trade
+from kelly_watcher.engine.economics import build_entry_economics
+from kelly_watcher.engine.market_scorer import MarketScorer, build_market_features
+from kelly_watcher.engine.trader_scorer import TraderScorer
 
 
 def _insert_open_position_for_stop_loss_test(
@@ -237,9 +237,9 @@ class RuntimeFixesTest(unittest.TestCase):
         client_context.__enter__ = Mock(return_value=client)
         client_context.__exit__ = Mock(return_value=False)
 
-        with patch("alerter.telegram_bot_token", return_value="token"), patch(
-            "alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("alerter.httpx.Client", return_value=client_context):
+        with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
+            "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
             alerter.send_alert("Bot started")
 
         client.post.assert_not_called()
@@ -250,9 +250,9 @@ class RuntimeFixesTest(unittest.TestCase):
         client_context.__enter__ = Mock(return_value=client)
         client_context.__exit__ = Mock(return_value=False)
 
-        with patch("alerter.telegram_bot_token", return_value="token"), patch(
-            "alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("alerter.httpx.Client", return_value=client_context):
+        with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
+            "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
             alerter.send_alert("Bought", kind="buy")
 
         client.post.assert_called_once()
@@ -264,9 +264,9 @@ class RuntimeFixesTest(unittest.TestCase):
         client_context.__enter__ = Mock(return_value=client)
         client_context.__exit__ = Mock(return_value=False)
 
-        with patch("alerter.telegram_bot_token", return_value="token"), patch(
-            "alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("alerter.httpx.Client", return_value=client_context):
+        with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
+            "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
             alerter.send_alert("Retrain accepted", kind="retrain")
 
         client.post.assert_called_once()
@@ -277,9 +277,9 @@ class RuntimeFixesTest(unittest.TestCase):
         client_context.__enter__ = Mock(return_value=client)
         client_context.__exit__ = Mock(return_value=False)
 
-        with patch("alerter.telegram_bot_token", return_value="token"), patch(
-            "alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("alerter.httpx.Client", return_value=client_context):
+        with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
+            "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
             alerter.send_alert("bot started", kind="status")
 
         client.post.assert_called_once()
@@ -344,9 +344,9 @@ class RuntimeFixesTest(unittest.TestCase):
         client_context.__enter__ = Mock(return_value=client)
         client_context.__exit__ = Mock(return_value=False)
 
-        with patch("alerter.telegram_bot_token", return_value="token"), patch(
-            "alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("alerter.httpx.Client", return_value=client_context):
+        with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
+            "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
             ok = alerter.send_telegram_message("Hello Trader\nWill BTC Win? https://polymarket.com/Event/ABC")
 
         self.assertTrue(ok)
@@ -393,7 +393,7 @@ class RuntimeFixesTest(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             original_cache_path = identity_cache.CACHE_PATH
             try:
-                identity_cache.CACHE_PATH = Path(tmpdir) / "identity_cache.json"
+                identity_cache.CACHE_PATH = Path(tmpdir) / "kelly_watcher.data.identity_cache.json"
                 client = _Client()
                 resolved = identity_cache.resolve_wallet_for_username("TraderName", client)
                 self.assertEqual(resolved, "0x1234567890abcdef1234567890abcdef12345678")
@@ -417,7 +417,7 @@ class RuntimeFixesTest(unittest.TestCase):
             {"totalBought": "10", "cashPnl": "2"},
         ]
 
-        with patch("executor.use_real_money", return_value=True):
+        with patch("kelly_watcher.runtime.executor.use_real_money", return_value=True):
             self.assertEqual(executor.get_account_equity_usd(), 117.5)
 
     def test_shadow_account_equity_uses_cost_basis_for_open_positions(self) -> None:
@@ -491,8 +491,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 conn.close()
 
                 executor = object.__new__(PolymarketExecutor)
-                with patch("executor.use_real_money", return_value=False), patch(
-                    "executor.shadow_bankroll_usd", return_value=100.0
+                with patch("kelly_watcher.runtime.executor.use_real_money", return_value=False), patch(
+                    "kelly_watcher.runtime.executor.shadow_bankroll_usd", return_value=100.0
                 ):
                     self.assertEqual(executor.get_usdc_balance(), 87.0)
                     self.assertEqual(executor.get_account_equity_usd(), 117.0)
@@ -2455,6 +2455,48 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("startup blocked", str(payload["message"]).lower())
         write_env_value.assert_not_called()
 
+    def test_blocked_query_response_blocks_while_shadow_restart_pending(self) -> None:
+        result = dashboard_api._blocked_query_response({"shadow_restart_pending": True})
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow restart is pending", str(result["message"]).lower())
+
+    def test_blocked_query_response_blocks_while_startup_is_blocked(self) -> None:
+        result = dashboard_api._blocked_query_response(
+            {
+                "startup_blocked": True,
+                "startup_block_reason": "startup blocked: waiting for Recover DB or Shadow Reset",
+            }
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("startup blocked", str(result["message"]).lower())
+
+    def test_blocked_query_response_blocks_when_db_integrity_fails(self) -> None:
+        result = dashboard_api._blocked_query_response(
+            {
+                "db_integrity_known": True,
+                "db_integrity_ok": False,
+                "db_integrity_message": "database disk image is malformed",
+            }
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("sqlite integrity check failed", str(result["message"]).lower())
+
+    def test_blocked_query_response_allows_healthy_runtime_state(self) -> None:
+        result = dashboard_api._blocked_query_response(
+            {
+                "shadow_restart_pending": False,
+                "startup_blocked": False,
+                "startup_recovery_only": False,
+                "db_integrity_known": True,
+                "db_integrity_ok": True,
+            }
+        )
+
+        self.assertIsNone(result)
+
     def test_config_value_response_still_delegates_live_mode_keys(self) -> None:
         with patch.object(
             dashboard_api,
@@ -3872,7 +3914,7 @@ class RuntimeFixesTest(unittest.TestCase):
         executor._consecutive_live_balance_failures = 3
         executor._consecutive_live_position_sync_failures = 0
 
-        with patch("executor.max_live_health_failures", return_value=3):
+        with patch("kelly_watcher.runtime.executor.max_live_health_failures", return_value=3):
             first_status = executor.live_entry_health_status()
             executor._consecutive_live_balance_failures = 5
             second_status = executor.live_entry_health_status()
@@ -3930,8 +3972,8 @@ class RuntimeFixesTest(unittest.TestCase):
                         {"outcome": "no", "winner": False},
                     ],
                 }
-                with patch("evaluator._fetch_market", return_value=market), patch(
-                    "evaluator.sync_belief_priors", return_value=0
+                with patch("kelly_watcher.runtime.evaluator._fetch_market", return_value=market), patch(
+                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
                 ):
                     resolved = evaluator.resolve_shadow_trades()
 
@@ -4097,8 +4139,8 @@ class RuntimeFixesTest(unittest.TestCase):
                         {"outcome": "No", "winner": False, "price": "0.006"},
                     ],
                 }
-                with patch("evaluator._fetch_market", return_value=market), patch(
-                    "evaluator.sync_belief_priors", return_value=0
+                with patch("kelly_watcher.runtime.evaluator._fetch_market", return_value=market), patch(
+                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
                 ):
                     resolved = evaluator.resolve_shadow_trades()
 
@@ -4163,9 +4205,9 @@ class RuntimeFixesTest(unittest.TestCase):
                         {"outcome": "No", "winner": False},
                     ],
                 }
-                with patch("evaluator._fetch_market", return_value=market), patch(
-                    "evaluator.sync_belief_priors", return_value=0
-                ), patch("evaluator.time.time", return_value=1_700_000_123):
+                with patch("kelly_watcher.runtime.evaluator._fetch_market", return_value=market), patch(
+                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
+                ), patch("kelly_watcher.runtime.evaluator.time.time", return_value=1_700_000_123):
                     resolved = evaluator.resolve_shadow_trades()
 
                 self.assertEqual(len(resolved), 1)
@@ -4238,8 +4280,8 @@ class RuntimeFixesTest(unittest.TestCase):
                         {"outcome": "no", "winner": False},
                     ],
                 }
-                with patch("evaluator._fetch_market", return_value=market), patch(
-                    "evaluator.sync_belief_priors", return_value=0
+                with patch("kelly_watcher.runtime.evaluator._fetch_market", return_value=market), patch(
+                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
                 ):
                     resolved = evaluator.resolve_shadow_trades()
 
@@ -4298,8 +4340,8 @@ class RuntimeFixesTest(unittest.TestCase):
                     ],
                     "events": [{"ended": True, "live": False}],
                 }
-                with patch("evaluator._fetch_market", return_value=market), patch(
-                    "evaluator.sync_belief_priors", return_value=0
+                with patch("kelly_watcher.runtime.evaluator._fetch_market", return_value=market), patch(
+                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
                 ):
                     resolved = evaluator.resolve_shadow_trades()
 
@@ -4379,9 +4421,9 @@ class RuntimeFixesTest(unittest.TestCase):
                         ],
                     },
                 }
-                with patch("evaluator._fetch_market", return_value=None) as fetch_market_mock, patch(
-                    "evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot
-                ), patch("evaluator.sync_belief_priors", return_value=0):
+                with patch("kelly_watcher.runtime.evaluator._fetch_market", return_value=None) as fetch_market_mock, patch(
+                    "kelly_watcher.runtime.evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot
+                ), patch("kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0):
                     resolved = evaluator.resolve_shadow_trades()
 
                 self.assertEqual(len(resolved), 1)
@@ -4464,7 +4506,7 @@ class RuntimeFixesTest(unittest.TestCase):
                     },
                 }
                 with patch(
-                    "evaluator._fetch_market",
+                    "kelly_watcher.runtime.evaluator._fetch_market",
                     return_value={
                         "closed": False,
                         "tokens": [
@@ -4472,8 +4514,8 @@ class RuntimeFixesTest(unittest.TestCase):
                             {"outcome": "No", "winner": False},
                         ],
                     },
-                ), patch("evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot), patch(
-                    "evaluator.sync_belief_priors", return_value=0
+                ), patch("kelly_watcher.runtime.evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot), patch(
+                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
                 ):
                     resolved = evaluator.resolve_shadow_trades()
 
@@ -4583,10 +4625,10 @@ class RuntimeFixesTest(unittest.TestCase):
                         ],
                     },
                 }
-                with patch("evaluator._fetch_market", return_value=None), patch(
-                    "evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot
-                ), patch("evaluator.sync_belief_priors", return_value=0), patch(
-                    "evaluator.time.time", return_value=1_700_000_123
+                with patch("kelly_watcher.runtime.evaluator._fetch_market", return_value=None), patch(
+                    "kelly_watcher.runtime.evaluator._fetch_sports_page_snapshot", return_value=sports_snapshot
+                ), patch("kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0), patch(
+                    "kelly_watcher.runtime.evaluator.time.time", return_value=1_700_000_123
                 ):
                     resolved = evaluator.resolve_shadow_trades(
                         question_contains="University War GC vs Olimpo Gold"
@@ -4660,8 +4702,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("evaluator.sync_belief_priors", return_value=0), patch(
-                    "evaluator.time.time", return_value=1_700_000_456
+                with patch("kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0), patch(
+                    "kelly_watcher.runtime.evaluator.time.time", return_value=1_700_000_456
                 ):
                     resolved = evaluator.resolve_shadow_trades(
                         question_contains="University War GC vs Olimpo Gold",
@@ -5044,9 +5086,9 @@ class RuntimeFixesTest(unittest.TestCase):
                 conn.close()
 
                 with patch(
-                    "auto_retrain.read_shadow_evidence_epoch",
+                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("auto_retrain.retrain_min_new_labels", return_value=1):
+                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=1):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
             finally:
                 db.DB_PATH = original_db_path
@@ -5059,18 +5101,18 @@ class RuntimeFixesTest(unittest.TestCase):
                 db.init_db()
 
                 with patch(
-                    "auto_retrain.read_shadow_evidence_epoch",
+                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
-                ), patch("auto_retrain.load_training_data", return_value=[object()] * 149), patch(
-                    "auto_retrain.min_samples_required", return_value=150
+                ), patch("kelly_watcher.research.auto_retrain.load_training_data", return_value=[object()] * 149), patch(
+                    "kelly_watcher.research.auto_retrain.min_samples_required", return_value=150
                 ):
                     self.assertFalse(auto_retrain.should_retrain_early(None))
 
                 with patch(
-                    "auto_retrain.read_shadow_evidence_epoch",
+                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
-                ), patch("auto_retrain.load_training_data", return_value=[object()] * 150), patch(
-                    "auto_retrain.min_samples_required", return_value=150
+                ), patch("kelly_watcher.research.auto_retrain.load_training_data", return_value=[object()] * 150), patch(
+                    "kelly_watcher.research.auto_retrain.min_samples_required", return_value=150
                 ):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
             finally:
@@ -5138,7 +5180,7 @@ class RuntimeFixesTest(unittest.TestCase):
         )
         captured: dict[str, float] = {}
 
-        with patch("executor.log_trade", side_effect=lambda **kwargs: captured.update(kwargs) or 1), patch("executor.send_alert"):
+        with patch("kelly_watcher.runtime.executor.log_trade", side_effect=lambda **kwargs: captured.update(kwargs) or 1), patch("kelly_watcher.runtime.executor.send_alert"):
             result = executor._execute_live(
                 "trade-1",
                 "market-1",
@@ -5312,8 +5354,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("evaluator.settlement_fixed_cost_usd", return_value=0.25), patch(
-                    "evaluator.entry_fixed_cost_usd", return_value=0.20
+                with patch("kelly_watcher.runtime.evaluator.settlement_fixed_cost_usd", return_value=0.25), patch(
+                    "kelly_watcher.runtime.evaluator.entry_fixed_cost_usd", return_value=0.20
                 ):
                     resolved = evaluator.resolve_shadow_trades(question_contains="winner", forced_outcome="yes")
 
@@ -6170,7 +6212,7 @@ class RuntimeFixesTest(unittest.TestCase):
         executor = object.__new__(PolymarketExecutor)
         executor._open_risk_snapshot = lambda **kwargs: (20.0, {"other-market": 5.0}, {"0xother": 5.0})
 
-        with patch("executor.use_real_money", return_value=True), patch("executor.max_total_open_exposure_fraction", return_value=0.60), patch("executor.max_market_exposure_fraction", return_value=0.20), patch("executor.max_trader_exposure_fraction", return_value=0.30):
+        with patch("kelly_watcher.runtime.executor.use_real_money", return_value=True), patch("kelly_watcher.runtime.executor.max_total_open_exposure_fraction", return_value=0.60), patch("kelly_watcher.runtime.executor.max_market_exposure_fraction", return_value=0.20), patch("kelly_watcher.runtime.executor.max_trader_exposure_fraction", return_value=0.30):
             reason = executor.entry_risk_block_reason(
                 market_id="market-1",
                 trader_address="0xabc",
@@ -6184,10 +6226,10 @@ class RuntimeFixesTest(unittest.TestCase):
         executor = object.__new__(PolymarketExecutor)
         executor._open_risk_snapshot = lambda **kwargs: (680.0, {"other-market": 120.0}, {"0xother": 120.0})
 
-        with patch("executor.use_real_money", return_value=True), patch(
-            "executor.max_total_open_exposure_fraction", return_value=0.30
-        ), patch("executor.max_market_exposure_fraction", return_value=0.20), patch(
-            "executor.max_trader_exposure_fraction", return_value=0.20
+        with patch("kelly_watcher.runtime.executor.use_real_money", return_value=True), patch(
+            "kelly_watcher.runtime.executor.max_total_open_exposure_fraction", return_value=0.30
+        ), patch("kelly_watcher.runtime.executor.max_market_exposure_fraction", return_value=0.20), patch(
+            "kelly_watcher.runtime.executor.max_trader_exposure_fraction", return_value=0.20
         ):
             reason = executor.entry_risk_block_reason(
                 market_id="market-1",
@@ -6202,9 +6244,9 @@ class RuntimeFixesTest(unittest.TestCase):
         executor = object.__new__(PolymarketExecutor)
         executor._open_risk_snapshot = lambda **kwargs: (50.0, {"market-1": 15.0}, {"0xother": 5.0})
 
-        with patch("executor.use_real_money", return_value=True), patch(
-            "executor.max_market_exposure_fraction", return_value=0.20
-        ), patch("executor.max_trader_exposure_fraction", return_value=0.30):
+        with patch("kelly_watcher.runtime.executor.use_real_money", return_value=True), patch(
+            "kelly_watcher.runtime.executor.max_market_exposure_fraction", return_value=0.20
+        ), patch("kelly_watcher.runtime.executor.max_trader_exposure_fraction", return_value=0.30):
             reason = executor.entry_risk_block_reason(
                 market_id="market-1",
                 trader_address="0xabc",
@@ -6218,9 +6260,9 @@ class RuntimeFixesTest(unittest.TestCase):
         executor = object.__new__(PolymarketExecutor)
         executor._open_risk_snapshot = lambda **kwargs: (50.0, {"other-market": 5.0}, {"0xabc": 25.0})
 
-        with patch("executor.use_real_money", return_value=True), patch(
-            "executor.max_market_exposure_fraction", return_value=0.40
-        ), patch("executor.max_trader_exposure_fraction", return_value=0.30):
+        with patch("kelly_watcher.runtime.executor.use_real_money", return_value=True), patch(
+            "kelly_watcher.runtime.executor.max_market_exposure_fraction", return_value=0.40
+        ), patch("kelly_watcher.runtime.executor.max_trader_exposure_fraction", return_value=0.30):
             reason = executor.entry_risk_block_reason(
                 market_id="market-1",
                 trader_address="0xabc",
@@ -6234,8 +6276,8 @@ class RuntimeFixesTest(unittest.TestCase):
         executor = object.__new__(PolymarketExecutor)
         executor._open_risk_snapshot = lambda **kwargs: (260.0, {}, {})
 
-        with patch("executor.use_real_money", return_value=True), patch(
-            "executor.max_total_open_exposure_fraction", return_value=0.30
+        with patch("kelly_watcher.runtime.executor.use_real_money", return_value=True), patch(
+            "kelly_watcher.runtime.executor.max_total_open_exposure_fraction", return_value=0.30
         ):
             decision = executor.total_open_exposure_decision(
                 proposed_size_usd=80.0,
@@ -6316,8 +6358,8 @@ class RuntimeFixesTest(unittest.TestCase):
         executor = object.__new__(PolymarketExecutor)
         executor._fee_rate_cache = {"token-1": (600.0, 17)}
 
-        with patch("executor.time.time", return_value=1_000.0), patch(
-            "executor.httpx.Client", side_effect=RuntimeError("boom")
+        with patch("kelly_watcher.runtime.executor.time.time", return_value=1_000.0), patch(
+            "kelly_watcher.runtime.executor.httpx.Client", side_effect=RuntimeError("boom")
         ):
             fee_rate_bps, fee_reason = executor.get_fee_rate_bps("token-1")
 
@@ -6328,7 +6370,7 @@ class RuntimeFixesTest(unittest.TestCase):
         executor = object.__new__(PolymarketExecutor)
         executor._fee_rate_cache = {}
 
-        with patch("executor.httpx.Client", side_effect=RuntimeError("boom")):
+        with patch("kelly_watcher.runtime.executor.httpx.Client", side_effect=RuntimeError("boom")):
             fee_rate_bps, fee_reason = executor.get_fee_rate_bps("token-1")
 
         self.assertIsNone(fee_rate_bps)
@@ -6340,7 +6382,7 @@ class RuntimeFixesTest(unittest.TestCase):
         original_cursor = trader_scorer._refresh_cursor
         try:
             trader_scorer._refresh_cursor = 0
-            with patch.object(trader_scorer, "TRADER_CACHE_REFRESH_BATCH_SIZE", 2), patch("trader_scorer._trader_cache_updated_at_map", return_value={}), patch("trader_scorer.get_trader_features", side_effect=lambda wallet, observed_size_usd, force_refresh=False: calls.append(wallet) or SimpleNamespace()):
+            with patch.object(trader_scorer, "TRADER_CACHE_REFRESH_BATCH_SIZE", 2), patch("kelly_watcher.engine.trader_scorer._trader_cache_updated_at_map", return_value={}), patch("kelly_watcher.engine.trader_scorer.get_trader_features", side_effect=lambda wallet, observed_size_usd, force_refresh=False: calls.append(wallet) or SimpleNamespace()):
                 trader_scorer.refresh_trader_cache(wallets)
                 trader_scorer.refresh_trader_cache(wallets)
         finally:
@@ -7137,7 +7179,7 @@ class RuntimeFixesTest(unittest.TestCase):
         try:
             with (
                 patch.object(tracker.PolymarketTracker, "_new_http_client", return_value=dummy_client),
-                patch("tracker.resolve_username_for_wallet") as resolve_username,
+                patch("kelly_watcher.runtime.tracker.resolve_username_for_wallet") as resolve_username,
             ):
                 poller.prime_identities([wallet])
 
@@ -7351,7 +7393,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertFalse(tracker_obj._is_new_for_wallet("0xabc", duplicate_event))
         self.assertTrue(tracker_obj._is_new_for_wallet("0xabc", new_same_ts))
-        with patch("tracker.max_source_trade_age_seconds", return_value=30):
+        with patch("kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=30):
             self.assertTrue(tracker_obj._is_stale_event(stale_event, poll_started_at=200))
             self.assertFalse(tracker_obj._is_stale_event(new_same_ts, poll_started_at=220))
 
@@ -7383,7 +7425,7 @@ class RuntimeFixesTest(unittest.TestCase):
             "timestamp": 1_700_000_000,
         }
 
-        with patch("tracker.hydrate_observed_identity", return_value="Trader"):
+        with patch("kelly_watcher.runtime.tracker.hydrate_observed_identity", return_value="Trader"):
             self.assertIsNone(tracker_obj._parse_raw_trade(raw_missing_timestamp, "0xabc", 1_700_000_010))
             self.assertIsNone(tracker_obj._parse_raw_trade(raw_missing_price, "0xabc", 1_700_000_010))
 
@@ -7409,7 +7451,7 @@ class RuntimeFixesTest(unittest.TestCase):
             "title": "Will it happen?",
         }
 
-        with patch("tracker.hydrate_observed_identity", return_value="Trader"):
+        with patch("kelly_watcher.runtime.tracker.hydrate_observed_identity", return_value="Trader"):
             event = tracker_obj._parse_raw_trade(raw, "0xabc", 1_700_000_010)
 
         self.assertIsNotNone(event)
@@ -7525,7 +7567,7 @@ class RuntimeFixesTest(unittest.TestCase):
         tracker_obj.get_price_history = lambda token_id, interval="1h": price_history_calls.append(token_id) or []
 
         try:
-            with patch("tracker.hydrate_observed_identity", return_value="Trader"):
+            with patch("kelly_watcher.runtime.tracker.hydrate_observed_identity", return_value="Trader"):
                 events = tracker_obj.poll(["0xabc"], trade_limit=50)
         finally:
             tracker_obj.close()
@@ -7556,8 +7598,8 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_hydrate_observed_identity_skips_network_when_disabled(self) -> None:
         wallet = "0x1111111111111111111111111111111111111111"
-        with patch("identity_cache.lookup_username", return_value=None), patch(
-            "identity_cache.resolve_username_for_wallet"
+        with patch("kelly_watcher.data.identity_cache.lookup_username", return_value=None), patch(
+            "kelly_watcher.data.identity_cache.resolve_username_for_wallet"
         ) as resolve_mock:
             resolved = identity_cache.hydrate_observed_identity(
                 wallet,
@@ -8029,7 +8071,7 @@ class RuntimeFixesTest(unittest.TestCase):
         )
         dedup_cache = Mock()
 
-        with patch("executor.build_trade_exit_alert", return_value="alert"), patch("executor.send_alert"):
+        with patch("kelly_watcher.runtime.executor.build_trade_exit_alert", return_value="alert"), patch("kelly_watcher.runtime.executor.send_alert"):
             result = executor_obj._execute_shadow_exit(
                 trade_id="stop-loss-test",
                 market_id="market-stop",

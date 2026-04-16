@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import db
-from replay import ReplayPolicy, run_replay
+import kelly_watcher.data.db as db
+from kelly_watcher.research.replay import ReplayPolicy, run_replay
 
 
 def _insert_trade(

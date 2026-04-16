@@ -6,8 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import db
-from wallet_trust import (
+import kelly_watcher.data.db as db
+from kelly_watcher.engine.wallet_trust import (
     WalletTrustState,
     allow_duplicate_side_override,
     apply_wallet_trust_sizing,

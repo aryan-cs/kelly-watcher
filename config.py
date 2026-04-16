@@ -4,8 +4,9 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from replay_search_contract import validate_replay_search_score_weight_payload
+from kelly_watcher.research.replay_search_contract import validate_replay_search_score_weight_payload
 
 from dotenv import dotenv_values
 
@@ -17,7 +18,7 @@ from env_profile import (
     repo_env_path_for_profile,
 )
 from runtime_paths import MODEL_ARTIFACT_PATH, REPO_ROOT
-from segment_policy import (
+from kelly_watcher.engine.segment_policy import (
     ENTRY_PRICE_BANDS,
     TIME_TO_CLOSE_BANDS,
     entry_price_band as _entry_price_band_label,
@@ -773,6 +774,56 @@ def replay_search_constraints_file() -> str:
 def replay_search_score_weights_file() -> str:
     raw = _get_env_file_value("REPLAY_SEARCH_SCORE_WEIGHTS_FILE") or _get("REPLAY_SEARCH_SCORE_WEIGHTS_FILE", "replay_search_specs/score_weights.json")
     return str(raw or "").strip()
+
+
+def _normalize_dashboard_web_url(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    text = text.rstrip("/")
+    if text.lower().endswith("/api"):
+        text = text[:-4].rstrip("/")
+    return text
+
+
+def _dashboard_web_url_is_local(raw: str | None) -> bool:
+    text = str(raw or "").strip()
+    if not text:
+        return True
+    if "://" not in text:
+        text = f"http://{text}"
+    try:
+        host = str(urlsplit(text).hostname or "").strip().lower()
+    except Exception:
+        return True
+    return host in {"", "127.0.0.1", "0.0.0.0", "localhost", "::1", "::"}
+
+
+def dashboard_web_url() -> str:
+    raw = _get_env_file_value("DASHBOARD_WEB_URL")
+    if raw is None:
+        raw = _get("DASHBOARD_WEB_URL")
+    normalized = _normalize_dashboard_web_url(raw)
+    if normalized:
+        return normalized
+
+    for name in ("VITE_KELLY_API_BASE_URL", "KELLY_API_BASE_URL"):
+        raw = _get_env_file_value(name)
+        if raw is None:
+            raw = _get(name)
+        normalized = _normalize_dashboard_web_url(raw)
+        if normalized and not _dashboard_web_url_is_local(normalized):
+            return normalized
+    return ""
+
+
+def dashboard_api_port() -> int:
+    raw = _get_env_file_value("DASHBOARD_API_PORT") or _get("DASHBOARD_API_PORT", "8765")
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return 8765
+
 
 def telegram_bot_token() -> str:
     return _get("TELEGRAM_BOT_TOKEN")

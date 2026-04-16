@@ -1,6 +1,6 @@
 # Kelly Watcher
 
-Kelly Watcher is a local, operator-driven Polymarket copy-trading system. It watches selected wallets, scores incoming trades, sizes positions with Kelly-style logic, executes in shadow or live mode, records everything to SQLite, and exposes a terminal dashboard for monitoring the bot in real time.
+Kelly Watcher is a local, operator-driven Polymarket copy-trading system. It watches selected wallets, scores incoming trades, sizes positions with Kelly-style logic, executes in shadow or live mode, records everything to SQLite, and exposes both a terminal dashboard and a web dashboard for monitoring the bot in real time.
 
 This repository is meant to be clonable by another developer without any private local state. Secrets, databases, logs, model artifacts, and other runtime files are intentionally excluded from git. A fresh clone should be able to install dependencies, create a `.env`, start in shadow mode, and begin operating from there.
 
@@ -10,6 +10,7 @@ This repository is meant to be clonable by another developer without any private
 - A shadow trading path that simulates fills from captured order books.
 - A live trading path guarded by readiness and risk checks.
 - A terminal dashboard built with Ink + React.
+- A responsive web dashboard that can be viewed from any device on the network.
 - Wallet discovery and identity resolution tools.
 - A training and auto-retraining pipeline for the model-based signal path.
 - Tests covering runtime behavior, training/search logic, market URL handling, CLI behavior, and retrain bookkeeping.
@@ -31,19 +32,31 @@ The bot creates its runtime directories automatically on startup.
 
 At a high level, the system works like this:
 
-1. `tracker.py` polls watched Polymarket wallets for recent trades and loads market metadata, order books, and price history.
-2. `watchlist_manager.py` keeps wallets in hot, warm, discovery, or dropped tiers so more promising wallets are polled more aggressively.
-3. `signal_engine.py` scores each buy signal using either:
+1. `kelly_watcher/runtime/tracker.py` polls watched Polymarket wallets for recent trades and loads market metadata, order books, and price history.
+2. `kelly_watcher/engine/watchlist_manager.py` keeps wallets in hot, warm, discovery, or dropped tiers so more promising wallets are polled more aggressively.
+3. `kelly_watcher/engine/signal_engine.py` scores each buy signal using either:
    - the heuristic pipeline, or
    - a deployed model artifact if a current compatible `model.joblib` exists.
-4. `kelly.py` sizes the trade, then wallet trust and exposure guards shrink or block it.
-5. `executor.py` either:
+4. `kelly_watcher/engine/kelly.py` sizes the trade, then wallet trust and exposure guards shrink or block it.
+5. `kelly_watcher/runtime/executor.py` either:
    - simulates a shadow order from the order book, or
    - posts a real Polymarket order in live mode.
-6. `db.py` writes the durable record into `data/trading.db`.
+6. `kelly_watcher/data/db.py` writes the durable record into `data/trading.db`.
 7. `main.py` also emits a lightweight JSON event stream, bot state file, and an HTTP API for the dashboard.
-8. `evaluator.py` resolves finished markets, computes PnL, and closes positions.
-9. `train.py` and `auto_retrain.py` periodically retrain and optionally deploy a new model.
+8. `kelly_watcher/runtime/evaluator.py` resolves finished markets, computes PnL, and closes positions.
+9. `kelly_watcher/research/train.py` and `kelly_watcher/research/auto_retrain.py` periodically retrain and optionally deploy a new model.
+
+## Repository Layout
+
+The codebase is organized so the Python package holds the internal runtime modules, while a small set of root entrypoints stay in place for operator convenience:
+
+- `kelly_watcher/engine/` contains scoring, Kelly sizing, trust, belief, and watchlist logic.
+- `kelly_watcher/data/` contains SQLite access and cached market or identity helpers.
+- `kelly_watcher/runtime/` contains polling, execution, evaluation, and live runtime support.
+- `kelly_watcher/research/` contains replay, search, training, and auto-retrain code.
+- `kelly_watcher/integrations/` contains alerting and Telegram integration code.
+- `kelly_watcher/tools/` contains operator utilities such as wallet ranking and setup helpers.
+- `main.py`, `dashboard_api.py`, and a few root `*.py` wrappers remain as stable entrypoints so existing commands still work on macOS and Windows.
 
 Important distinction:
 
@@ -56,7 +69,7 @@ You need:
 
 - Python 3.11+
 - `uv`
-- Node.js and `npm` for the dashboard
+- Node.js and `npm` for the dashboards
 - network access to Polymarket APIs
 
 Optional for live trading:
@@ -67,8 +80,8 @@ Optional for live trading:
 
 Notes:
 
-- The dashboard talks to the backend over HTTP, so it no longer needs direct SQLite access.
-- The repository includes `uv.lock` and `dashboard/package-lock.json` so installs are reproducible.
+- Both dashboards talk to the backend over HTTP, so they no longer need direct SQLite access.
+- The repository includes `uv.lock`, `dashboard-cli/package-lock.json`, and `dashboard-web/package-lock.json` so installs are reproducible.
 
 ## Quick Start
 
@@ -88,7 +101,13 @@ uv sync
 ### 3. Install dashboard dependencies
 
 ```bash
-cd dashboard
+cd dashboard-cli
+npm install
+cd ..
+```
+
+```bash
+cd dashboard-web
 npm install
 cd ..
 ```
@@ -160,33 +179,67 @@ The backend will automatically:
 - start the polling loop
 - emit `data/events.jsonl` and `data/bot_state.json`
 - start the dashboard API on `http://127.0.0.1:8765` by default
+- serve `dashboard-web/dist` at `/` when the web app has been built
 
 If you want to run the dashboard on another computer, set:
 
 - `DASHBOARD_API_HOST=0.0.0.0`
 - optionally `DASHBOARD_API_TOKEN=some-shared-secret`
+- set `DASHBOARD_WEB_URL=http://your-tailscale-magicdns-name:8765` if you want Telegram `/link` replies to return an explicit browser URL
 
-### 7. Start the dashboard
+### 7. Start a dashboard
 
-In a second terminal:
+In a second terminal, choose one of these:
+
+Terminal CLI:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 npm start
 ```
 
-To run the dashboard on another computer, point it at the backend API:
+Web dashboard for development:
 
 ```bash
-cd dashboard
+cd dashboard-web
+npm run dev
+```
+
+The Vite dev server runs on `http://127.0.0.1:5173` by default and proxies `/api` to the backend.
+
+Web dashboard for deployment:
+
+```bash
+cd dashboard-web
+npm run build
+cd ..
+uv run main
+```
+
+Then open `http://BACKEND_HOST:8765` from any phone or laptop that can reach the backend machine.
+
+To run either dashboard against a backend on another computer, point it at the backend API:
+
+```bash
+cd dashboard-cli
 KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm start
+```
+
+```bash
+cd dashboard-web
+VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm run dev
 ```
 
 If the backend sets `DASHBOARD_API_TOKEN`, also set:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 KELLY_API_BASE_URL=http://BACKEND_HOST:8765 KELLY_API_TOKEN=some-shared-secret npm start
+```
+
+```bash
+cd dashboard-web
+VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 VITE_KELLY_API_TOKEN=some-shared-secret npm run dev
 ```
 
 You can also put those in the dashboard machine's repo-level `.env` instead of exporting them every time:
@@ -196,19 +249,28 @@ KELLY_API_BASE_URL=http://windows-box.tailnet-name.ts.net:8765
 KELLY_API_TOKEN=some-shared-secret
 ```
 
-The dashboard now reads `KELLY_API_BASE_URL` and `KELLY_API_TOKEN` from `.env`, with shell environment variables taking precedence if you set both.
+```env
+VITE_KELLY_API_BASE_URL=http://windows-box.tailnet-name.ts.net:8765
+VITE_KELLY_API_TOKEN=some-shared-secret
+```
 
-For dashboard development from the TypeScript sources instead of the checked-in runtime JS:
+Both dashboards read their API base URL and token from `.env`, with shell environment variables taking precedence if you set both.
+
+For terminal dashboard development from the TypeScript sources instead of the checked-in runtime JS:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 npm run dev
 ```
 
-Windows helper:
+Windows helpers:
 
 ```bat
 start-dashboard.cmd
+```
+
+```bat
+start-dashboard-web.cmd
 ```
 
 ## Runtime Modes
@@ -392,16 +454,22 @@ Current model behavior:
 
 If a retrain passes deployment checks, the bot reloads the model automatically.
 
-### 9. Dashboard
+### 9. Dashboards
 
-The dashboard is a terminal app, not a web app. It reads local files directly:
+There are now two frontends:
 
-- `data/trading.db`
-- `data/events.jsonl`
-- `data/bot_state.json`
-- `data/identity_cache.json`
+- `dashboard-cli`: the Ink terminal operator UI
+- `dashboard-web`: the responsive browser UI
 
-This means the dashboard should be run on the same machine and from the same repository checkout as the backend.
+Both use the same HTTP API exposed by `dashboard_api.py`.
+
+Recommended approach:
+
+- develop the web app with Vite in `dashboard-web/`
+- build it with `npm run build`
+- let the Python backend serve the built files from `dashboard-web/dist`
+
+That keeps local development fast on macOS and keeps Windows deployment simple because production only needs the Python bot plus static files.
 
 ## Runtime Files
 
@@ -433,6 +501,8 @@ The most important tables in `data/trading.db` are:
 - `wallet_watch_state`: tracked/dropped wallet state
 
 ## Dashboard Guide
+
+The web dashboard is an early responsive surface for overview, incoming trade flow, scored signals, and operator runtime status.
 
 The terminal dashboard currently has six main pages.
 
@@ -522,11 +592,18 @@ Start the bot:
 uv run main
 ```
 
-Start the dashboard:
+Start the terminal dashboard:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 npm start
+```
+
+Start the web dashboard in development:
+
+```bash
+cd dashboard-web
+npm run dev
 ```
 
 Run the full test suite:
@@ -644,6 +721,7 @@ All env parsing lives in `config.py`. Duration values typically accept forms suc
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+- `DASHBOARD_WEB_URL`: public browser URL returned by Telegram `/link`; on Tailscale this should usually be your MagicDNS host like `http://windows-box.tailnet-name.ts.net:8765`
 
 ## Repository Layout
 
@@ -675,10 +753,12 @@ Watchlist and wallet tooling:
 
 Dashboard:
 
-- `dashboard/dashboard.tsx`: main terminal UI
-- `dashboard/pages/*.tsx`: page views
-- `dashboard/configEditor.ts`: env-backed editable settings
-- `dashboard/settingsDanger.ts`: live toggle and shadow reset actions
+- `dashboard-cli/dashboard.tsx`: main terminal UI
+- `dashboard-cli/pages/*.tsx`: page views
+- `dashboard-cli/configEditor.ts`: env-backed editable settings
+- `dashboard-cli/settingsDanger.ts`: live toggle and shadow reset actions
+- `dashboard-web/src/App.tsx`: responsive browser dashboard
+- `dashboard-web/src/api.ts`: browser API client and token handling
 
 Packaging and entrypoints:
 
@@ -689,7 +769,8 @@ Packaging and entrypoints:
 ## Operational Notes
 
 - This is an operator system, not a fire-and-forget hosted service.
-- The dashboard expects local filesystem access to the repo runtime files.
+- `dashboard-cli` is still a local terminal app.
+- `dashboard-web` can be reached from any device that can hit the backend host and port.
 - A fresh clone starts on heuristics unless you later train and deploy a model artifact.
 - Runtime backups and scheduled jobs are driven by `main.py`, not by external infra.
 - The bot will refuse unsafe live startup states rather than silently continuing.
@@ -731,6 +812,8 @@ Check that the backend is running and writing:
 - `data/trading.db`
 - `data/events.jsonl`
 - `data/bot_state.json`
+
+For the web dashboard, also confirm `dashboard-web/dist` exists if you are opening the backend root URL instead of using Vite dev mode.
 
 ### No trades are coming in
 

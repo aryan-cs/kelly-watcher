@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
 import re
 import sqlite3
@@ -14,9 +15,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from config import use_real_money
-from db import DB_PATH, db_recovery_state, get_conn
+from kelly_watcher.data.db import DB_PATH, db_recovery_state, get_conn
 from env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, repo_env_path_for_profile
-from trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
+from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 from runtime_paths import (
     BOT_STATE_FILE,
     DATA_DIR,
@@ -180,6 +181,56 @@ def _api_port() -> int:
 def _api_token() -> str | None:
     token = str(os.getenv("DASHBOARD_API_TOKEN", "") or "").strip()
     return token or None
+
+
+def _dashboard_web_dist_path() -> Path:
+    return REPO_ROOT / "dashboard-web" / "dist"
+
+
+def _resolve_dashboard_web_asset_path(request_path: str, dist_root: Path | None = None) -> Path | None:
+    root = (dist_root or _dashboard_web_dist_path()).resolve()
+    if not root.exists() or not root.is_dir():
+        return None
+
+    normalized = str(request_path or "/").split("?", 1)[0].strip()
+    relative_path = normalized.lstrip("/") or "index.html"
+    candidate = (root / relative_path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+
+    if candidate.is_file():
+        return candidate
+
+    if "." in Path(relative_path).name:
+        return None
+
+    index_file = (root / "index.html").resolve()
+    try:
+        index_file.relative_to(root)
+    except ValueError:
+        return None
+    return index_file if index_file.is_file() else None
+
+
+def _dashboard_web_content_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".html":
+        return "text/html; charset=utf-8"
+    if suffix == ".css":
+        return "text/css; charset=utf-8"
+    if suffix in {".js", ".mjs"}:
+        return "text/javascript; charset=utf-8"
+    if suffix == ".json":
+        return "application/json; charset=utf-8"
+    if suffix == ".svg":
+        return "image/svg+xml; charset=utf-8"
+
+    content_type = mimetypes.guess_type(str(path.name))[0] or "application/octet-stream"
+    if content_type.startswith("text/") or content_type in {"application/javascript", "image/svg+xml"}:
+        return f"{content_type}; charset=utf-8"
+    return content_type
 
 
 def _source_env_path() -> Path:
@@ -548,6 +599,33 @@ def _blocked_shadow_mutation_response(
         return {
             "ok": False,
             "message": f"{action_label} is unavailable because {startup_block}",
+        }
+    return None
+
+
+def _blocked_query_response(
+    bot_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    snapshot = dict(bot_state or _bot_state_snapshot())
+    if bool(snapshot.get("shadow_restart_pending")):
+        return {
+            "ok": False,
+            "message": "Dashboard queries are unavailable while shadow restart is pending. Wait for the restart to finish first.",
+        }
+    startup_block = _startup_block_reason(snapshot)
+    if startup_block:
+        return {
+            "ok": False,
+            "message": f"Dashboard queries are unavailable because {startup_block}",
+        }
+    db_integrity_known = bool(snapshot.get("db_integrity_known"))
+    db_integrity_ok = bool(snapshot.get("db_integrity_ok"))
+    if db_integrity_known and not db_integrity_ok:
+        db_integrity_message = str(snapshot.get("db_integrity_message") or "").strip()
+        detail = db_integrity_message.splitlines()[0].strip() if db_integrity_message else "unknown integrity failure"
+        return {
+            "ok": False,
+            "message": f"Dashboard queries are unavailable because SQLite integrity check failed: {detail}",
         }
     return None
 
@@ -1469,14 +1547,25 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
-    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload).encode("utf-8")
+    def _send_bytes(self, status: int, body: bytes, content_type: str, *, include_cors: bool = False) -> None:
         self.send_response(status)
-        self._set_cors_headers()
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        if include_cors:
+            self._set_cors_headers()
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self._send_bytes(status, body, "application/json; charset=utf-8", include_cors=True)
+
+    def _send_file(self, status: int, file_path: Path) -> None:
+        body = file_path.read_bytes()
+        self._send_bytes(status, body, _dashboard_web_content_type(file_path))
+
+    def _send_html(self, status: int, html: str) -> None:
+        self._send_bytes(status, html.encode("utf-8"), "text/html; charset=utf-8")
 
     def _read_json_body(self) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length") or 0)
@@ -1509,6 +1598,25 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if not path.startswith("/api/"):
+            asset_path = _resolve_dashboard_web_asset_path(path)
+            if asset_path:
+                self._send_file(200, asset_path)
+                return
+            self._send_html(
+                404,
+                (
+                    "<!doctype html><html><head><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                    "<title>Kelly Watcher Dashboard</title></head><body>"
+                    "<h1>dashboard-web build not found</h1>"
+                    "<p>Run <code>npm install</code> and <code>npm run build</code> in "
+                    "<code>dashboard-web</code>, then refresh this page.</p>"
+                    "</body></html>"
+                ),
+            )
+            return
 
         if path == "/api/health":
             self._send_json(
@@ -1563,6 +1671,10 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
 
         try:
             if path == "/api/query":
+                blocked = _blocked_query_response()
+                if blocked:
+                    self._send_json(409, blocked)
+                    return
                 sql = str(body.get("sql") or "")
                 params = body.get("params") or []
                 if not isinstance(params, list):

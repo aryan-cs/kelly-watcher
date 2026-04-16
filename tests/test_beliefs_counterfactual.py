@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import beliefs
-import db
+import kelly_watcher.engine.beliefs as beliefs
+import kelly_watcher.data.db as db
 
 
 def _insert_trade(

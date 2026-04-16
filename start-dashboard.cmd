@@ -1,10 +1,10 @@
 @echo off
 setlocal
 
-pushd "%~dp0dashboard" || exit /b 1
+pushd "%~dp0dashboard-cli" || exit /b 1
 
 if not exist node_modules\ink\package.json (
-  echo Installing or repairing dashboard dependencies...
+  echo Installing or repairing dashboard-cli dependencies...
   call npm install --omit=dev
   if errorlevel 1 goto :end
 )

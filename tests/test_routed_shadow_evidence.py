@@ -9,10 +9,10 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import db
-import evaluator
+import kelly_watcher.data.db as db
+import kelly_watcher.runtime.evaluator as evaluator
 import main
-import performance_preview
+import kelly_watcher.runtime.performance_preview as performance_preview
 from config import shadow_bankroll_usd
 
 
@@ -125,7 +125,7 @@ def _build_fixture(rows: list[tuple[str, str | None, float | None, int | None]])
 def _compute_segment_report(db_path: Path, *, min_resolved: int) -> dict[str, object]:
     signature = inspect.signature(evaluator.compute_segment_shadow_report)
     if "db_path" not in signature.parameters:
-        raise unittest.SkipTest("evaluator.compute_segment_shadow_report does not yet accept db_path.")
+        raise unittest.SkipTest("kelly_watcher.runtime.evaluator.compute_segment_shadow_report does not yet accept db_path.")
     result = evaluator.compute_segment_shadow_report(db_path=db_path, min_resolved=min_resolved)
     if isinstance(result, dict):
         return result
@@ -259,7 +259,7 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
         assert isinstance(db_path, Path)
 
         with patch(
-            "performance_preview.read_shadow_evidence_epoch",
+            "kelly_watcher.runtime.performance_preview.read_shadow_evidence_epoch",
             return_value={
                 "shadow_evidence_epoch_known": True,
                 "shadow_evidence_epoch_started_at": 1_700_001_000,
@@ -303,14 +303,14 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
         assert isinstance(db_path, Path)
 
         with patch(
-            "performance_preview.read_shadow_evidence_epoch",
+            "kelly_watcher.runtime.performance_preview.read_shadow_evidence_epoch",
             return_value={
                 "shadow_evidence_epoch_known": True,
                 "shadow_evidence_epoch_started_at": 1_700_001_000,
                 "shadow_evidence_epoch_source": "shadow_reset",
             },
         ), patch(
-            "performance_preview._latest_applied_replay_promotion_at",
+            "kelly_watcher.runtime.performance_preview._latest_applied_replay_promotion_at",
             return_value=1_700_001_500,
         ):
             summary = performance_preview.compute_tracker_preview_summary(

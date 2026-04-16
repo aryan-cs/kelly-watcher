@@ -21,15 +21,15 @@ from typing import Any, Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from alerter import (
+from kelly_watcher.integrations.alerter import (
     build_bullets,
     build_lines,
     build_market_error_alert,
     build_trade_resolution_alert,
     send_alert,
 )
-from auto_retrain import retrain_cycle_report, should_retrain_early
-from beliefs import sync_belief_priors
+from kelly_watcher.research.auto_retrain import retrain_cycle_report, should_retrain_early
+from kelly_watcher.engine.beliefs import sync_belief_priors
 from config import (
     ConfigError,
     duplicate_side_override_min_avg_return,
@@ -114,7 +114,7 @@ from config import (
     xgboost_allowed_entry_price_bands,
 )
 from dashboard_api import DashboardApiServer, ENV_PATH, _write_env_value, start_dashboard_api_server
-from db import (
+from kelly_watcher.data.db import (
     DB_PATH,
     create_verified_backup,
     database_integrity_state,
@@ -124,34 +124,34 @@ from db import (
     init_db,
     recover_db_from_verified_backup,
 )
-from dedup import DedupeCache
-from economics import EntryEconomics
-from evaluator import (
+from kelly_watcher.engine.dedup import DedupeCache
+from kelly_watcher.engine.economics import EntryEconomics
+from kelly_watcher.runtime.evaluator import (
     SEGMENT_SHADOW_MIN_RESOLVED,
     UNASSIGNED_SEGMENT_ID,
     compute_segment_shadow_report,
     daily_report,
     resolve_shadow_trades,
 )
-from executor import PolymarketExecutor
-from kelly import size_signal
+from kelly_watcher.runtime.executor import PolymarketExecutor
+from kelly_watcher.engine.kelly import size_signal
 from kelly_watcher.shadow_reset import (
     apply_wallet_mode_for_reset,
     exec_restarted_bot,
     reset_shadow_runtime,
     restore_watched_wallets,
 )
-from market_scorer import MarketScorer, build_market_features
-from market_urls import market_url_from_metadata
-from performance_preview import compute_tracker_preview_summary
-from replay import REPLAY_POLICY_CONFIG_KEY_MAP
-from segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
-from signal_engine import SignalEngine
-from shadow_evidence import read_shadow_evidence_epoch, write_shadow_evidence_epoch
-from telegram_runtime import service_telegram_commands
-from trade_contract import OPEN_EXECUTED_ENTRY_SQL, RESOLVED_EXECUTED_ENTRY_SQL
-from tracker import PolymarketTracker, TradeEvent
-from trader_scorer import get_trader_features, refresh_trader_cache
+from kelly_watcher.engine.market_scorer import MarketScorer, build_market_features
+from kelly_watcher.data.market_urls import market_url_from_metadata
+from kelly_watcher.runtime.performance_preview import compute_tracker_preview_summary
+from kelly_watcher.research.replay import REPLAY_POLICY_CONFIG_KEY_MAP
+from kelly_watcher.engine.segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
+from kelly_watcher.engine.signal_engine import SignalEngine
+from kelly_watcher.engine.shadow_evidence import read_shadow_evidence_epoch, write_shadow_evidence_epoch
+from kelly_watcher.integrations.telegram_runtime import service_telegram_commands
+from kelly_watcher.engine.trade_contract import OPEN_EXECUTED_ENTRY_SQL, RESOLVED_EXECUTED_ENTRY_SQL
+from kelly_watcher.runtime.tracker import PolymarketTracker, TradeEvent
+from kelly_watcher.engine.trader_scorer import get_trader_features, refresh_trader_cache
 from runtime_paths import (
     BOT_PID_FILE,
     BOT_STATE_FILE,
@@ -165,12 +165,12 @@ from runtime_paths import (
     SHADOW_EVIDENCE_EPOCH_FILE,
     SHADOW_RESET_REQUEST_FILE,
 )
-from wallet_trust import (
+from kelly_watcher.engine.wallet_trust import (
     allow_duplicate_side_override,
     apply_wallet_trust_sizing,
     get_wallet_trust_state,
 )
-from watchlist_manager import WatchlistManager
+from kelly_watcher.engine.watchlist_manager import WatchlistManager
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -2785,8 +2785,12 @@ def _shadow_history_trust_block_reason(action_label: str) -> str:
 
 
 def _segment_routed_history_trust_block_reason(action_label: str) -> str:
+    since_ts = None
     try:
         since_ts, _ = _current_shadow_segment_scope_since_ts()
+    except Exception:
+        since_ts = None
+    try:
         report = compute_segment_shadow_report(mode="shadow", since_ts=since_ts)
     except Exception as exc:
         return (
@@ -2882,8 +2886,9 @@ def _resolved_shadow_trade_count_filtered(
         )
         params.extend(_ROUTED_SHADOW_SEGMENT_IDS)
 
-    conn = get_conn()
+    conn = None
     try:
+        conn = get_conn()
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS n
@@ -2893,8 +2898,14 @@ def _resolved_shadow_trade_count_filtered(
             tuple(params),
         ).fetchone()
         return int(row["n"] or 0)
+    except sqlite3.DatabaseError as exc:
+        if _is_missing_schema_error(exc):
+            raise
+        logger.warning("Resolved shadow trade count unavailable: %s", exc)
+        return 0
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _resolved_shadow_trade_count() -> int:
@@ -3009,8 +3020,9 @@ def _latest_replay_search_state_payload(run_row: dict[str, Any] | None) -> dict[
 
 
 def _latest_replay_promotion() -> dict[str, Any] | None:
-    conn = get_conn()
+    conn = None
     try:
+        conn = get_conn()
         row = conn.execute(
             """
             SELECT *
@@ -3025,13 +3037,18 @@ def _latest_replay_promotion() -> dict[str, Any] | None:
             """
         ).fetchone()
         return dict(row) if row is not None else None
+    except sqlite3.DatabaseError as exc:
+        logger.warning("Replay promotion history unavailable: %s", exc)
+        return None
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _latest_applied_replay_promotion(*, db_path: Path | None = None) -> dict[str, Any] | None:
-    conn = get_conn_for_path(db_path, apply_runtime_pragmas=False) if db_path is not None else get_conn()
+    conn = None
     try:
+        conn = get_conn_for_path(db_path, apply_runtime_pragmas=False) if db_path is not None else get_conn()
         try:
             row = conn.execute(
                 """
@@ -3048,8 +3065,12 @@ def _latest_applied_replay_promotion(*, db_path: Path | None = None) -> dict[str
                 return None
             raise
         return dict(row) if row is not None else None
+    except sqlite3.DatabaseError as exc:
+        logger.warning("Applied replay promotion history unavailable: %s", exc)
+        return None
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _resolved_shadow_trade_count_since_last_promotion(
@@ -4009,26 +4030,37 @@ def _json_safe_value(value: Any) -> Any:
 
 
 def _latest_replay_search_run_id() -> int:
-    conn = get_conn()
+    conn = None
     try:
+        conn = get_conn()
         row = conn.execute("SELECT COALESCE(MAX(id), 0) AS id FROM replay_search_runs").fetchone()
         return int(row["id"] or 0)
+    except sqlite3.DatabaseError as exc:
+        logger.warning("Replay search run id unavailable: %s", exc)
+        return 0
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _latest_retrain_run_id() -> int:
-    conn = get_conn()
+    conn = None
     try:
+        conn = get_conn()
         row = conn.execute("SELECT COALESCE(MAX(id), 0) AS id FROM retrain_runs").fetchone()
         return int(row["id"] or 0)
+    except sqlite3.DatabaseError as exc:
+        logger.warning("Retrain run id unavailable: %s", exc)
+        return 0
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _latest_retrain_run() -> dict[str, Any] | None:
-    conn = get_conn()
+    conn = None
     try:
+        conn = get_conn()
         row = conn.execute(
             """
             SELECT *
@@ -4043,13 +4075,18 @@ def _latest_retrain_run() -> dict[str, Any] | None:
             """
         ).fetchone()
         return dict(row) if row is not None else None
+    except sqlite3.DatabaseError as exc:
+        logger.warning("Retrain history unavailable: %s", exc)
+        return None
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _latest_replay_search_run() -> dict[str, Any] | None:
-    conn = get_conn()
+    conn = None
     try:
+        conn = get_conn()
         row = conn.execute(
             """
             SELECT *
@@ -4064,8 +4101,12 @@ def _latest_replay_search_run() -> dict[str, Any] | None:
             """
         ).fetchone()
         return dict(row) if row is not None else None
+    except sqlite3.DatabaseError as exc:
+        logger.warning("Replay search history unavailable: %s", exc)
+        return None
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _load_retrain_run_after(after_id: int) -> dict[str, Any] | None:

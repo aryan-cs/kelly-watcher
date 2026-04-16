@@ -886,7 +886,8 @@ export function App() {
   }, [dbIntegrityBlocked, dbIntegrityMessage, shadowRestartMessage, shadowRestartPending, startupBlocked, startupBlockReason])
   const walletRegistryEmptyMessage = dataPanelsBlockedReason
     ? `Wallet registry queries are paused: ${dataPanelsBlockedReason}`
-    : 'No wallet registry rows available yet. Once the backend imports or stores managed wallets, they will appear here.'
+    : managedWalletsResource.data?.message?.trim() ||
+      'No wallet registry rows available yet. Once the backend imports or stores managed wallets, they will appear here.'
   const discoveryEmptyMessage = dataPanelsBlockedReason
     ? `Discovery queries are paused: ${dataPanelsBlockedReason}`
     : 'No discovery candidates have been cached yet.'

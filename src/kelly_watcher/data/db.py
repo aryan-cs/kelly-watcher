@@ -662,9 +662,11 @@ def managed_wallet_registry_state(conn: sqlite3.Connection | None = None) -> dic
         conn = get_conn()
     assert conn is not None
     try:
+        registry_available = _table_exists(conn, "managed_wallets")
         active_wallets = load_managed_wallets(conn=conn)
         all_wallets = load_managed_wallets(include_disabled=True, conn=conn)
         return {
+            "managed_wallet_registry_available": registry_available,
             "managed_wallets": active_wallets,
             "managed_wallet_count": len(active_wallets),
             "managed_wallet_total_count": len(all_wallets),

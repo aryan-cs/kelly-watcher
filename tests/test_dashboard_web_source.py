@@ -77,6 +77,7 @@ class DashboardWebSourceTests(unittest.TestCase):
         self.assertIn("Startup issue:", source)
         self.assertIn("Startup warning:", source)
         self.assertIn("Wallet registry queries are paused:", source)
+        self.assertIn("managedWalletsResource.data?.message?.trim()", source)
         self.assertIn("Discovery queries are paused:", source)
         self.assertIn("Wallet timeline queries are paused:", source)
         self.assertIn("Mode policy:", source)

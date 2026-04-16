@@ -1143,21 +1143,83 @@ class RuntimeFixesTest(unittest.TestCase):
     def test_should_import_bootstrap_watched_wallets_only_when_registry_is_empty(self) -> None:
         with patch.object(main, "WATCHED_WALLETS", ["0xenv"]), patch(
             "kelly_watcher.main.managed_wallet_registry_state",
-            return_value={"managed_wallet_total_count": 0, "managed_wallets": []},
+            return_value={
+                "managed_wallet_registry_available": True,
+                "managed_wallet_total_count": 0,
+                "managed_wallets": [],
+            },
         ):
             self.assertTrue(main._should_import_bootstrap_watched_wallets(False))
 
         with patch.object(main, "WATCHED_WALLETS", ["0xenv"]), patch(
             "kelly_watcher.main.managed_wallet_registry_state",
-            return_value={"managed_wallet_total_count": 2, "managed_wallets": ["0xdb1", "0xdb2"]},
+            return_value={
+                "managed_wallet_registry_available": True,
+                "managed_wallet_total_count": 2,
+                "managed_wallets": ["0xdb1", "0xdb2"],
+            },
         ):
             self.assertFalse(main._should_import_bootstrap_watched_wallets(False))
 
         with patch.object(main, "WATCHED_WALLETS", ["0xenv"]), patch(
             "kelly_watcher.main.managed_wallet_registry_state",
-            return_value={"managed_wallet_total_count": 0, "managed_wallets": []},
+            return_value={
+                "managed_wallet_registry_available": True,
+                "managed_wallet_total_count": 0,
+                "managed_wallets": [],
+            },
         ):
             self.assertFalse(main._should_import_bootstrap_watched_wallets(True))
+
+        with patch.object(main, "WATCHED_WALLETS", ["0xenv"]), patch(
+            "kelly_watcher.main.managed_wallet_registry_state",
+            return_value={
+                "managed_wallet_registry_available": False,
+                "managed_wallet_total_count": 0,
+                "managed_wallets": [],
+            },
+        ):
+            self.assertFalse(main._should_import_bootstrap_watched_wallets(False))
+
+        with patch.object(main, "WATCHED_WALLETS", ["0xenv"]), patch(
+            "kelly_watcher.main.managed_wallet_registry_state",
+            return_value={
+                "managed_wallet_registry_available": True,
+                "managed_wallet_total_count": 0,
+                "managed_wallets": [],
+            },
+        ):
+            self.assertFalse(main._should_import_bootstrap_watched_wallets(False, snapshot_restore_failed=True))
+
+    def test_wallet_registry_summary_fails_closed_without_managed_wallets_table(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute("DROP TABLE managed_wallets")
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, status_reason, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?, ?)
+                    """,
+                    ("0xlegacy", "legacy watch-state only", 1_700_000_000, 1_700_000_000),
+                )
+                conn.commit()
+                conn.close()
+
+                summary = dashboard_api._wallet_registry_summary(limit=10)
+
+                self.assertFalse(summary["ok"])
+                self.assertEqual(summary["source"], "unavailable")
+                self.assertEqual(summary["wallets"], [])
+                self.assertEqual(summary["count"], 0)
+                self.assertIn("canonical managed_wallets table", str(summary["message"] or ""))
+                self.assertEqual(summary["event_source"], "wallet_membership_events")
+            finally:
+                db.DB_PATH = original_db_path
 
     def test_build_replay_search_command_includes_file_backed_specs_and_inline_overrides(self) -> None:
         with TemporaryDirectory() as tmpdir:

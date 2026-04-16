@@ -378,11 +378,13 @@ def _runtime_managed_wallets() -> list[str]:
     return list(wallets)
 
 
-def _managed_wallet_registry_total_count() -> int:
+def _managed_wallet_registry_total_count() -> int | None:
     try:
         state = managed_wallet_registry_state()
     except Exception:
-        return 0
+        return None
+    if not bool(state.get("managed_wallet_registry_available", True)):
+        return None
     try:
         total_count = int(state.get("managed_wallet_total_count") or 0)
     except (TypeError, ValueError):
@@ -395,10 +397,17 @@ def _managed_wallet_registry_total_count() -> int:
     return 0
 
 
-def _should_import_bootstrap_watched_wallets(clear_all_snapshot_requested: bool) -> bool:
-    if clear_all_snapshot_requested or not WATCHED_WALLETS:
+def _should_import_bootstrap_watched_wallets(
+    clear_all_snapshot_requested: bool,
+    *,
+    snapshot_restore_failed: bool = False,
+) -> bool:
+    if clear_all_snapshot_requested or snapshot_restore_failed or not WATCHED_WALLETS:
         return False
-    return _managed_wallet_registry_total_count() <= 0
+    total_count = _managed_wallet_registry_total_count()
+    if total_count is None:
+        return False
+    return total_count <= 0
 
 
 def _managed_wallet_count() -> int:
@@ -6384,6 +6393,7 @@ def main() -> None:
 
     init_db()
     clear_all_snapshot_requested = False
+    snapshot_restore_failed = False
     try:
         snapshot_result = restore_managed_wallet_registry_snapshot()
         clear_all_snapshot_requested = bool(snapshot_result.get("clear_all"))
@@ -6391,9 +6401,13 @@ def main() -> None:
         if restored_wallets:
             logger.info("Restored %s managed wallet(s) from shadow-reset snapshot", len(restored_wallets))
     except Exception:
+        snapshot_restore_failed = True
         logger.warning("Managed wallet registry snapshot restore failed", exc_info=True)
     try:
-        if _should_import_bootstrap_watched_wallets(clear_all_snapshot_requested):
+        if _should_import_bootstrap_watched_wallets(
+            clear_all_snapshot_requested,
+            snapshot_restore_failed=snapshot_restore_failed,
+        ):
             imported_count = import_managed_wallets_from_env(WATCHED_WALLETS)
             if imported_count > 0:
                 logger.info("Imported %s managed wallet(s) from WATCHED_WALLETS bootstrap", imported_count)

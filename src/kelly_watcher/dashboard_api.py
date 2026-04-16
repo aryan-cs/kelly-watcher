@@ -385,8 +385,6 @@ def _wallet_registry_source() -> str:
     try:
         if _sqlite_table_exists(conn, "managed_wallets"):
             return "managed_wallets"
-        if _sqlite_table_exists(conn, "wallet_watch_state"):
-            return "wallet_watch_state"
         return "unavailable"
     finally:
         conn.close()
@@ -571,28 +569,6 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
             )
             rows = conn.execute(query, (max(int(limit or 250), 1),)).fetchall()
             registry_source = "managed_wallets"
-        elif _sqlite_table_exists(conn, "wallet_watch_state"):
-            rows = conn.execute(
-                """
-                SELECT
-                  wallet_address,
-                  status,
-                  status_reason,
-                  dropped_at,
-                  reactivated_at,
-                  tracking_started_at,
-                  last_source_ts_at_status,
-                  updated_at
-                FROM wallet_watch_state
-                ORDER BY
-                  CASE status WHEN 'active' THEN 0 WHEN 'dropped' THEN 1 ELSE 2 END,
-                  updated_at DESC,
-                  wallet_address ASC
-                LIMIT ?
-                """,
-                (max(int(limit or 250), 1),),
-            ).fetchall()
-            registry_source = "wallet_watch_state"
         else:
             return []
     finally:
@@ -798,9 +774,24 @@ def _wallet_membership_events(limit: int | None = None) -> tuple[list[dict[str, 
 def _wallet_registry_summary(limit: int | None = None) -> dict[str, Any]:
     wallets = _managed_wallet_rows(limit)
     event_rows, event_source = _wallet_membership_events(limit)
+    source = _wallet_registry_source()
+    if source != "managed_wallets":
+        return {
+            "ok": False,
+            "source": source,
+            "wallets": [],
+            "count": 0,
+            "events": event_rows,
+            "event_source": event_source,
+            "event_count": len(event_rows),
+            "message": (
+                "Managed wallet registry is unavailable because the canonical managed_wallets table is missing or unreadable. "
+                "Recover or reset the DB before trusting wallet inventory."
+            ),
+        }
     return {
         "ok": True,
-        "source": _wallet_registry_source(),
+        "source": source,
         "wallets": wallets,
         "count": len(wallets),
         "events": event_rows,

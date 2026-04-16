@@ -897,6 +897,8 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "db_recovery_candidate_class_reason": "",
         "db_recovery_latest_verified_backup_path": "",
         "db_recovery_latest_verified_backup_at": 0,
+        "db_recovery_inventory": [],
+        "db_recovery_inventory_count": 0,
         "db_recovery_shadow_state_known": False,
         "db_recovery_shadow_candidate_path": "",
         "db_recovery_shadow_status": "checking",
@@ -7131,8 +7133,6 @@ def main() -> None:
             def _refresh_managed_wallet_registry() -> None:
                 nonlocal runtime_wallets
                 managed_wallets = load_managed_wallets()
-                if not managed_wallets:
-                    return
                 if managed_wallets == runtime_wallets:
                     return
                 runtime_wallets = managed_wallets

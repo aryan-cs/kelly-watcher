@@ -251,6 +251,33 @@ Next: Continue with backend promotion-outcome reporting once the clean-ledger pa
 Decisions: The aggregate wallet promotion rows (`Auto-Promoted`, `Awaiting Proof`, `Evidence Ready`, `Probation Blockers`) now reuse the same blocked-state reason as the wallet registry panel itself. That prevents the browser from saying “no promoted wallets” when the real state is “wallet queries are paused because startup/recovery is unhealthy.”
 Tests: `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `npm run build` in `dashboard-web` -> passed
 
+[2026-04-16 15:25 CDT] codex-main
+Task: Extend the browser wallet registry from promotion status into promotion outcomes.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: Browser-only reporting slice; the hot SQLite ledger is still malformed, so these outcome metrics remain observational until recovery/reset succeeds and new clean evidence accumulates.
+Next: Continue with backend promotion outcome reporting and clean-ledger shadow evidence collection, or keep refining browser/operator reporting around post-promotion wallet performance if new payload fields land.
+Decisions: The wallet registry summary now includes `Ready Rate`, `Copy Quality`, and `Post-Promotion P&L` in addition to the earlier promotion/probation rows. These are derived entirely from the existing managed-wallet payload, weighted by resolved copied trades where appropriate, and they also fail closed under the same blocked-state reason as the wallet panel itself.
+Tests: `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 15:27 CDT] codex-main
+Task: Extend browser promotion outcomes with active-vs-dropped coverage and execution drag.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: Browser-only reporting slice; runtime DB corruption still means these outcome metrics are descriptive rather than investable evidence until recovery/reset succeeds.
+Next: If backend payload churn is acceptable later, split execution drag into timing vs liquidity causes using the already-persisted post-promotion skip counters; otherwise keep the next slice on clean-ledger recovery and fresh post-epoch routed evidence.
+Decisions: The wallet registry summary now adds `Active Promoted` and `Execution Drag` rows. `Active Promoted` shows how many promoted wallets are still active versus dropped, and `Execution Drag` shows weighted post-promotion uncopyable skip rate plus raw skipped/total buy counts. Both rows fail closed under the same blocked-state reason as the rest of the wallet promotion summary.
+Tests: `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 15:29 CDT] codex-main
+Task: Split post-promotion execution drag into timing vs liquidity causes in the browser wallet outcomes.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `tests/test_runtime_fixes.py`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: This is still operator visibility, not investable evidence; runtime DB corruption and startup failure remain the real blockers.
+Next: For the other agents: if you touch runtime summaries or wallet policy telemetry next, consider exposing the same timing/liquidity split beyond the web wallet registry so we can compare execution drag across browser and backend status surfaces without re-deriving it.
+Decisions: Managed-wallet API rows now expose `post_promotion_timing_skips` and `post_promotion_liquidity_skips`, and the browser wallet registry summary now adds a `Drag Causes` row showing timing vs liquidity counts and percentages across promoted wallets. The new row reuses the same blocked-state guard as the rest of the promotion summary, so it fails closed when wallet queries are paused.
+Tests: `python -m py_compile src/kelly_watcher/dashboard_api.py tests/test_runtime_fixes.py tests/test_dashboard_web_source.py` -> passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'managed_wallet_rows_include_post_promotion_shadow_evidence'` -> 1 passed; `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `npm run build` in `dashboard-web` -> passed
+
 [2026-04-16 15:24 CDT] codex-main
 Task: Harden post-promotion shadow evidence so auto-promoted wallets only clear probation on truly post-promotion, copyable behavior; fix a managed-wallet query regression; fail closed on unreadable wallet-registry resets.
 Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `src/kelly_watcher/engine/wallet_trust.py`, `src/kelly_watcher/engine/watchlist_manager.py`, `src/kelly_watcher/shadow_reset.py`, `tests/test_wallet_trust.py`, `tests/test_watchlist_manager.py`, `tests/test_shadow_reset.py`, `tests/test_runtime_fixes.py`
@@ -259,3 +286,21 @@ Blockers: Live runtime DB integrity is still unhealthy, so discovery/promotion r
 Next: Coordinate the `main.py` empty-registry fail-open fix with the agent owning that file, then keep tightening wallet-level shadow evidence/reporting once the runtime is on a clean ledger again.
 Decisions: Post-promotion evidence now uses trade placement time instead of resolution time, so pre-promotion trades that resolve later cannot count as post-promotion proof. Promotion probation now requires a composite gate, not just resolved copied fills: enough post-promotion buy opportunities, enough post-promotion copied fills, and an acceptable post-promotion uncopyable skip rate. The managed-wallet dashboard query bug in `_managed_wallet_rows()` is fixed. `shadow_reset.apply_wallet_mode_for_reset()` now fails closed when the DB-backed managed wallet registry cannot be read, instead of snapshotting an empty registry and risking destructive resets.
 Tests: `python -m py_compile src/kelly_watcher/dashboard_api.py src/kelly_watcher/engine/wallet_trust.py src/kelly_watcher/engine/watchlist_manager.py src/kelly_watcher/shadow_reset.py tests/test_wallet_trust.py tests/test_watchlist_manager.py tests/test_shadow_reset.py` -> passed; `uv run pytest tests/test_wallet_trust.py tests/test_watchlist_manager.py tests/test_shadow_reset.py tests/test_runtime_fixes.py -q` -> 283 passed; `uv run pytest tests/test_wallet_trust.py tests/test_watchlist_manager.py tests/test_wallet_discovery.py tests/test_runtime_fixes.py tests/test_dashboard_web_source.py tests/test_shadow_reset.py -q` -> 287 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 15:28 CDT] codex-main
+Task: Patch the remaining runtime fail-open gap so an empty DB-backed managed-wallet registry clears the in-memory tracker/watchlist instead of leaving stale wallets active.
+Claims: `JOURNAL.md`, `src/kelly_watcher/main.py`, `tests/test_runtime_fixes.py`
+Status: In progress
+Blockers: `src/kelly_watcher/main.py` is already dirty in the shared tree from another slice, so this patch must stay tightly scoped to `_refresh_managed_wallet_registry` and a focused test.
+Next: Inspect the existing refresh logic, make the empty-registry branch update runtime state instead of returning early, rerun focused runtime regression, and push another checkpoint if the patch is clean.
+Decisions: Narrowing the claim to one function in `main.py` to avoid trampling unrelated recovery/control-plane edits already in flight elsewhere.
+Tests: Pending
+
+[2026-04-16 15:32 CDT] codex-main
+Task: Complete the empty-registry runtime clear-on-sync fix.
+Claims: `JOURNAL.md`, `src/kelly_watcher/main.py`, `tests/test_runtime_fixes.py`
+Status: Completed
+Blockers: Live DB corruption still blocks trustworthy shadow evidence collection and discovery/promotion remain fail-closed. I intentionally kept `main.py` edits limited to `_refresh_managed_wallet_registry`; unrelated recovery inventory work already present in that file remains untouched.
+Next: The next highest-value wallet-tracking slice after this is a fresh post-promotion baseline regression for reactivated wallets so they do not inherit stale proof windows across drop/reactivate cycles.
+Decisions: `_refresh_managed_wallet_registry` no longer returns early on `[]`. If the DB-backed managed-wallet registry becomes empty after startup, the runtime now clears `runtime_wallets`, `watchlist.replace_wallets([])`, `tracker.replace_wallets([])`, refreshes trader cache for `[]`, and persists the new empty registry state. Added a `main.main()`-level regression that captures the `managed_wallet_registry_sync` scheduler callback and proves that an empty registry actively clears stale runtime wallets instead of leaving them polled.
+Tests: `python -m py_compile src/kelly_watcher/main.py tests/test_runtime_fixes.py` -> passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'registry_sync_clears_runtime_wallets_when_managed_registry_becomes_empty or managed_wallet_rows_include_post_promotion_shadow_evidence or runtime_managed_wallets_does_not_fallback_to_bootstrap_env'` -> 3 passed; `uv run pytest tests/test_runtime_fixes.py -q` -> 236 passed

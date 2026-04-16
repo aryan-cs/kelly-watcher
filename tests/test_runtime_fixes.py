@@ -844,6 +844,8 @@ class RuntimeFixesTest(unittest.TestCase):
                         post_promotion_reason,
                         post_promotion_total_buy_signals,
                         post_promotion_uncopyable_skips,
+                        post_promotion_timing_skips,
+                        post_promotion_liquidity_skips,
                         post_promotion_uncopyable_skip_rate,
                         post_promotion_resolved_copied_count,
                         post_promotion_resolved_copied_total_pnl_usd,
@@ -851,7 +853,7 @@ class RuntimeFixesTest(unittest.TestCase):
                         post_promotion_evidence_ready,
                         post_promotion_evidence_note,
                         updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         "0xpromo",
@@ -871,6 +873,8 @@ class RuntimeFixesTest(unittest.TestCase):
                         "ready wallet discovered in shadow scan",
                         5,
                         2,
+                        1,
+                        1,
                         0.4,
                         3,
                         -1.25,
@@ -903,6 +907,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertEqual(rows[0]["post_promotion_baseline_at"], 1_700_000_000)
                 self.assertEqual(rows[0]["post_promotion_total_buy_signals"], 5)
                 self.assertEqual(rows[0]["post_promotion_resolved_copied_count"], 3)
+                self.assertEqual(rows[0]["post_promotion_timing_skips"], 1)
+                self.assertEqual(rows[0]["post_promotion_liquidity_skips"], 1)
                 self.assertAlmostEqual(rows[0]["post_promotion_uncopyable_skip_rate"], 0.4, places=6)
                 self.assertEqual(rows[0]["post_promotion_evidence_ready"], False)
                 self.assertIn("awaiting post-promotion evidence", rows[0]["post_promotion_evidence_note"])
@@ -7448,6 +7454,180 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertEqual(payload["mode"], "shadow")
                 self.assertEqual(payload["poll_interval"], 5.0)
                 dashboard_server.stop.assert_called_once()
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+                main.EVENT_FILE = original_event_file
+
+    def test_main_registry_sync_clears_runtime_wallets_when_managed_registry_becomes_empty(self) -> None:
+        class _StopAfterRegistrySync(RuntimeError):
+            pass
+
+        class _FakeScheduler:
+            def __init__(self) -> None:
+                self.jobs: dict[str, object] = {}
+                self.shutdown = Mock()
+
+            def add_job(self, func, *args, **kwargs) -> None:
+                job_id = str(kwargs.get("id") or "")
+                if job_id:
+                    self.jobs[job_id] = func
+
+            def start(self) -> None:
+                callback = self.jobs.get("managed_wallet_registry_sync")
+                if callback is None:
+                    raise AssertionError("managed_wallet_registry_sync job was not registered")
+                callback()
+                raise _StopAfterRegistrySync("stop after managed wallet registry sync")
+
+        class _FakeThread:
+            def __init__(self, *args, **kwargs) -> None:
+                self.start = Mock()
+                self.join = Mock()
+
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            original_event_file = main.EVENT_FILE
+            dashboard_server = SimpleNamespace(stop=Mock())
+            watchlist_stub = SimpleNamespace(
+                state_fields=lambda: {
+                    "tracked_wallet_count": 1,
+                    "dropped_wallet_count": 0,
+                    "hot_wallet_count": 1,
+                    "warm_wallet_count": 0,
+                    "discovery_wallet_count": 0,
+                },
+                startup_wallets=lambda: [],
+                replace_wallets=Mock(),
+            )
+            tracker_stub = SimpleNamespace(
+                wallets=["0xold"],
+                seen_ids=set(),
+                replace_wallets=Mock(),
+                close=Mock(),
+            )
+            executor_stub = SimpleNamespace(
+                validate_live_wallet_ready=Mock(),
+                get_usdc_balance=Mock(return_value=100.0),
+            )
+            dedup_stub = SimpleNamespace(
+                seen_ids=set(),
+                open_positions=set(),
+                load_from_db=Mock(),
+                sync_positions_from_api=Mock(return_value=True),
+            )
+            engine_stub = SimpleNamespace(runtime_info=Mock(return_value={}))
+            scheduler_stub = _FakeScheduler()
+            load_calls = iter((["0xold"], []))
+
+            def _load_managed_wallets(*args, **kwargs):
+                try:
+                    return next(load_calls)
+                except StopIteration:
+                    return []
+
+            try:
+                main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
+                main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xbootstrap"]))
+                    stack.enter_context(patch("kelly_watcher.main.init_db"))
+                    stack.enter_context(
+                        patch(
+                            "kelly_watcher.main.restore_managed_wallet_registry_snapshot",
+                            return_value={"restored": False, "wallets": [], "clear_all": False},
+                        )
+                    )
+                    stack.enter_context(patch("kelly_watcher.main.import_managed_wallets_from_env", return_value=0))
+                    stack.enter_context(patch("kelly_watcher.main.load_managed_wallets", side_effect=_load_managed_wallets))
+                    stack.enter_context(
+                        patch(
+                            "kelly_watcher.main.managed_wallet_registry_state",
+                            return_value={
+                                "managed_wallets": [],
+                                "managed_wallet_count": 0,
+                                "managed_wallet_total_count": 0,
+                                "managed_wallet_registry_updated_at": 0,
+                            },
+                        )
+                    )
+                    stack.enter_context(patch("kelly_watcher.main._validate_startup"))
+                    stack.enter_context(patch("kelly_watcher.main._write_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._clear_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("kelly_watcher.main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("kelly_watcher.main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("kelly_watcher.main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main.start_dashboard_api_server", return_value=dashboard_server))
+                    stack.enter_context(patch("kelly_watcher.main.sync_belief_priors"))
+                    stack.enter_context(patch("kelly_watcher.main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("kelly_watcher.main.PolymarketTracker", return_value=tracker_stub))
+                    stack.enter_context(patch("kelly_watcher.main.PolymarketExecutor", return_value=executor_stub))
+                    stack.enter_context(patch("kelly_watcher.main.SignalEngine", return_value=engine_stub))
+                    stack.enter_context(patch("kelly_watcher.main.DedupeCache", return_value=dedup_stub))
+                    stack.enter_context(patch("kelly_watcher.main._init_live_entry_guard", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._init_daily_loss_guard", return_value=None))
+                    stack.enter_context(
+                        patch(
+                            "kelly_watcher.main._shadow_history_gate_metrics",
+                            return_value=(
+                                {
+                                    "current_window_resolved": 0,
+                                    "current_baseline_resolved": 0,
+                                    "all_time_resolved": 0,
+                                    "routed_current_window_resolved": 0,
+                                },
+                                None,
+                            ),
+                        )
+                    )
+                    stack.enter_context(patch("kelly_watcher.main.live_require_shadow_history", return_value=False))
+                    stack.enter_context(patch("kelly_watcher.main.live_min_shadow_resolved", return_value=0))
+                    stack.enter_context(
+                        patch("kelly_watcher.main.live_min_shadow_resolved_since_promotion", return_value=0)
+                    )
+                    stack.enter_context(
+                        patch("kelly_watcher.main.compute_segment_shadow_report", return_value={})
+                    )
+                    stack.enter_context(
+                        patch(
+                            "kelly_watcher.main.compute_tracker_preview_summary",
+                            return_value=SimpleNamespace(),
+                        )
+                    )
+                    stack.enter_context(patch("kelly_watcher.main._resolved_shadow_trade_count", return_value=0))
+                    stack.enter_context(
+                        patch(
+                            "kelly_watcher.main.database_integrity_state",
+                            return_value={
+                                "db_integrity_known": True,
+                                "db_integrity_ok": True,
+                                "db_integrity_message": "",
+                            },
+                        )
+                    )
+                    stack.enter_context(
+                        patch("kelly_watcher.main.db_recovery_state", return_value={"db_recovery_state_known": False})
+                    )
+                    stack.enter_context(patch("kelly_watcher.main._compute_db_recovery_shadow_state", return_value={}))
+                    refresh_cache = stack.enter_context(patch("kelly_watcher.main.refresh_trader_cache"))
+                    stack.enter_context(patch("kelly_watcher.main.BackgroundScheduler", return_value=scheduler_stub))
+                    stack.enter_context(patch("kelly_watcher.main.threading.Thread", side_effect=lambda *a, **k: _FakeThread()))
+                    stack.enter_context(patch("kelly_watcher.main.use_real_money", return_value=False))
+                    stack.enter_context(patch("kelly_watcher.main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("kelly_watcher.main.wallet_discovery_enabled", return_value=False))
+                    stack.enter_context(patch("kelly_watcher.main.send_alert"))
+                    with self.assertRaisesRegex(_StopAfterRegistrySync, "stop after managed wallet registry sync"):
+                        main.main()
+
+                watchlist_stub.replace_wallets.assert_called_once_with([])
+                tracker_stub.replace_wallets.assert_called_once_with([])
+                refresh_cache.assert_called_once_with([])
+                dashboard_server.stop.assert_called_once()
+                tracker_stub.close.assert_called_once()
+                scheduler_stub.shutdown.assert_called_once_with(wait=True)
             finally:
                 main.BOT_STATE_FILE = original_state_file
                 main.EVENT_FILE = original_event_file

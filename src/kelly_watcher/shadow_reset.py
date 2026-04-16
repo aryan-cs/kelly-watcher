@@ -470,10 +470,14 @@ def apply_wallet_mode_for_reset(wallet_mode: str) -> tuple[RestartWalletMode, st
     normalized_wallet_mode = _normalize_wallet_mode(wallet_mode)
     previous_wallets = ""
     wallets_updated = False
-    try:
-        current_wallets = db.load_managed_wallets(include_disabled=True)
-    except Exception:
+    current_wallets: list[str]
+    if normalized_wallet_mode == "clear_all":
         current_wallets = []
+    else:
+        try:
+            current_wallets = db.load_managed_wallets(include_disabled=True)
+        except Exception as exc:
+            raise RuntimeError("managed wallet registry is unavailable; refusing to reset wallets blindly") from exc
     if normalized_wallet_mode == "keep_active":
         current_wallets = _active_watched_wallets(current_wallets)
         previous_wallets = _write_wallet_registry_snapshot(current_wallets, mode=normalized_wallet_mode)

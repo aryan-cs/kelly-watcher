@@ -160,7 +160,7 @@ class ShadowResetTest(unittest.TestCase):
         self.assertIn("Reducing the managed wallet registry to currently active wallets", output)
         self.assertIn("Managed wallet registry reduced to active wallets.", output)
 
-    def test_apply_wallet_mode_for_reset_does_not_fallback_to_env_wallets_when_registry_load_fails(self) -> None:
+    def test_apply_wallet_mode_for_reset_fails_closed_when_registry_load_fails(self) -> None:
         with patch.object(
             shadow_reset.db,
             "load_managed_wallets",
@@ -174,12 +174,10 @@ class ShadowResetTest(unittest.TestCase):
             "_write_wallet_registry_snapshot",
             return_value='{"mode":"keep_all","wallets":[]}',
         ) as write_snapshot:
-            wallet_mode, previous_wallets, wallets_updated = shadow_reset.apply_wallet_mode_for_reset("keep_all")
+            with self.assertRaisesRegex(RuntimeError, "managed wallet registry is unavailable"):
+                shadow_reset.apply_wallet_mode_for_reset("keep_all")
 
-        self.assertEqual(wallet_mode, "keep_all")
-        self.assertTrue(wallets_updated)
-        self.assertEqual(previous_wallets, '{"mode":"keep_all","wallets":[]}')
-        write_snapshot.assert_called_once_with([], mode="keep_all")
+        write_snapshot.assert_not_called()
 
     def test_run_forwards_target_pids_to_stop_existing_bot(self) -> None:
         stdout = io.StringIO()

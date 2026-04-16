@@ -152,6 +152,24 @@ Next: Extend `db_recovery_state()` with checked-candidate inventory, persist the
 Decisions: The next useful operator feature is visibility, not another blind retry. Recovery should explain which retained backups were checked, which one is selected, and why the rest failed.
 Tests: Pending
 
+[2026-04-16 15:24 CDT] codex-main
+Task: Complete recovery inventory and make stale browser state fall back to a cached live recovery snapshot.
+Claims: `JOURNAL.md`, `src/kelly_watcher/data/db.py`, `src/kelly_watcher/main.py`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `tests/test_db_recovery.py`, `tests/test_runtime_fixes.py`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: The hot runtime ledger is still malformed, so this improves recovery visibility and candidate consistency only; it does not repair the DB or prove profitability.
+Next: Use the browser to inspect the now-published recovery inventory, then run `Recover DB` or `Shadow Reset` onto a clean base and continue with post-epoch routed evidence collection.
+Decisions: `db_recovery_state()` now publishes per-candidate recovery inventory and deterministic backup ordering based on the timestamp embedded in retained backup filenames instead of mutable filesystem `mtime`. `dashboard_api._bot_state_snapshot()` now backfills missing recovery inventory and selected-candidate fields from a short-lived cached recovery snapshot so the browser stays truthful even while startup is blocked.
+Tests: `uv run pytest tests/test_db_recovery.py -q` -> 10 passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'verified_backup_history_paths_prefer_filename_timestamp_over_mtime or recovery_state_ or base_bot_state_snapshot_clears_shadow_restart_state_by_default or dashboard_bot_state_snapshot_falls_back_to_cached_recovery_inventory_when_missing or dashboard_bot_state_snapshot_forces_shadow_mode_when_live_is_blocked_by_db_integrity'` -> 8 passed; `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit && uv run pytest tests/test_dashboard_web_source.py -q && npm run build` -> passed; direct snapshot probe now reports `candidate_ready=True`, `candidate_mode=integrity_only`, `inventory_count=1`.
+
+[2026-04-16 15:37 CDT] codex-main
+Task: Normalize startup validation failures into a first-class blocked state for the browser, and label them explicitly as startup failures instead of generic blocking.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `tests/test_runtime_fixes.py`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: This makes the unhealthy state more honest, but the hot SQLite ledger is still malformed and startup is still actually failing until DB recovery/reset and config cleanup happen.
+Next: Use the browser with the clearer startup-failure state to recover/reset the DB and fix invalid config, then continue on clean post-epoch routed evidence.
+Decisions: `dashboard_api._bot_state_snapshot()` now treats `startup_failed` / `startup_validation_failed` as blocked even when the persisted file forgot to set `startup_blocked=true`. The browser now types and surfaces `startup_failed`, `startup_validation_failed`, and `startup_failure_message`, and it labels the operational state as `Startup Failed` / `Validation Failed` instead of a generic `Blocked`.
+Tests: `uv run pytest tests/test_runtime_fixes.py -q -k 'dashboard_bot_state_snapshot_marks_startup_validation_failure_as_blocked or dashboard_bot_state_snapshot_forces_shadow_mode_when_live_is_blocked_by_db_integrity or dashboard_bot_state_snapshot_falls_back_to_cached_recovery_inventory_when_missing or base_bot_state_snapshot_clears_shadow_restart_state_by_default'` -> 4 passed; `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit && uv run pytest tests/test_dashboard_web_source.py -q && npm run build` -> passed; direct snapshot probe now reports `startup_blocked=True`, `startup_failed=True`, `startup_validation_failed=True`.
+
 [2026-04-16 17:33 CT] codex-main
 Task: Land the recovery control-plane cleanup and lock down remaining env-backed wallet fallbacks.
 Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `src/kelly_watcher/main.py`, `src/kelly_watcher/shadow_reset.py`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, `dashboard-web/src/styles.css`, `tests/test_runtime_fixes.py`, `tests/test_shadow_reset.py`, `tests/test_dashboard_web_source.py`
@@ -178,3 +196,66 @@ Blockers: Live DB corruption still blocks trustworthy discovery/promotion in the
 Next: Start the wallet post-promotion evidence/probation slice from commit `edb9fe9`.
 Decisions: Pushed `codex/shadow-wallet-registry` at commit `edb9fe9` after staging only the browser recovery controls, bootstrap-only wallet semantics, runtime env-fallback removal, and focused regression updates. Left unrelated `dashboard-cli/*`, `tests/test_db_recovery.py`, and `tests/test_trade_log_archive.py` changes untouched.
 Tests: Same verification as the prior entry; no new code changes after push
+
+[2026-04-16 17:47 CT] codex-main
+Task: Implement wallet-specific post-promotion shadow evidence and probation plumbing for auto-promoted wallets.
+Claims: `JOURNAL.md`, `src/kelly_watcher/data/db.py`, `src/kelly_watcher/runtime/wallet_discovery.py`, `src/kelly_watcher/engine/wallet_trust.py`, `src/kelly_watcher/engine/watchlist_manager.py`, `src/kelly_watcher/dashboard_api.py`, `tests/test_wallet_discovery.py`, `tests/test_watchlist_manager.py`, `tests/test_db_recovery_api.py`, `tests/test_runtime_fixes.py`
+Status: In progress
+Blockers: `src/kelly_watcher/main.py` is currently dirty in the shared worktree, so this slice should avoid adding more `main.py` churn unless absolutely necessary. Live DB corruption still means the feature must stay fail-closed and shadow-only.
+Next: Inspect promotion metadata/trade tables, design a DB-backed “since promoted” evidence snapshot, wire it into wallet/trust/watchlist APIs, then run focused regression tests and push a checkpoint.
+Decisions: Prefer DB/API/watchlist integration over more control-plane work. Keep this slice centered on “did auto-promoted wallets actually help in shadow mode?” rather than broad new discovery heuristics.
+Tests: Pending
+
+[2026-04-16 15:45 CDT] codex-main
+Task: Surface startup validation diagnostics in the web dashboard as actionable issue lines instead of one generic blocked/failure sentence.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `tests/test_dashboard_web_source.py`
+Status: In progress
+Blockers: Startup is still genuinely unhealthy until DB recovery/reset and config cleanup happen; this tranche improves visibility only.
+Next: Parse startup failure text into issue/warning lines, render them in the existing Operational Status panel, then rerun focused web verification.
+Decisions: Keep this slice browser-only. The API already carries enough startup failure text; the web needs to present it as actionable diagnostics rather than a single long reason string.
+Tests: Pending
+
+[2026-04-16 15:11 CDT] codex-main
+Task: Finish the browser-only blocked-state diagnostics pass so query-backed web panels stop looking like ordinary empty datasets during startup/recovery failures.
+Claims: `JOURNAL.md`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: This is a visibility-only improvement; the hot SQLite ledger is still malformed and startup is still genuinely blocked until DB recovery/reset and config cleanup happen.
+Next: Continue with the wallet post-promotion evidence/probation slice already in progress, or use the web dashboard to run `Recover DB` / `Shadow Reset` on a clean base.
+Decisions: Added `startup_detail` to the web bot-state contract so the browser can fall back to the full startup diagnostic payload if shorter message fields ever drift. Wallet Registry, Discovery, and Membership Timeline now fail closed with `...queries are paused:` copy during startup-blocked, recovery-only, pending-restart, or DB-integrity-failed states instead of rendering normal empty-state text.
+Tests: `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 15:18 CDT] codex-main
+Task: Surface wallet trust/probation state next to post-promotion evidence in the web-managed wallet view.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `tests/test_runtime_fixes.py`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: This improves operator visibility only; the hot SQLite ledger is still malformed, so recovery/reset and fresh post-epoch routed evidence are still the real blockers before any profitability claims.
+Next: Continue with the broader wallet post-promotion evidence/probation slice already in progress, ideally by adding aggregate wallet probation reporting and promotion outcomes once the clean-ledger path is available.
+Decisions: Managed-wallet rows now include cached trust snapshots (`trust_tier`, `trust_size_multiplier`, `trust_note`) so the browser can show whether an auto-promoted wallet is still in promotion probation versus genuinely trusted. The web wallet cards now display trust tier and current effective sizing alongside the existing post-promotion copied-trade evidence. While wiring that in, focused regression exposed a real bug in `_managed_wallet_rows()` where the `managed_wallets` branch built SQL without `SELECT`; fixed that query directly.
+Tests: `uv run pytest tests/test_runtime_fixes.py -q -k 'managed_wallet_rows_include_post_promotion_shadow_evidence'` -> 1 passed; `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 15:20 CDT] codex-main
+Task: Add aggregate promotion/probation reporting to the browser wallet registry so operators can see whether promoted wallets are actually clearing proof.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: Browser-only visibility slice; the hot SQLite ledger is still malformed, so these summaries help interpretation but do not create trustworthy evidence by themselves.
+Next: Continue with promotion outcomes and aggregate wallet probation reporting on the backend once the clean-ledger path is available, or use the browser to recover/reset and start a fresh evidence epoch.
+Decisions: The wallet registry panel now summarizes four operator-facing promotion metrics directly from the existing managed-wallet payload: total auto-promoted wallets, wallets still awaiting proof, wallets whose post-promotion evidence is ready, and a blocker summary with the leading probation notes. This keeps the browser aligned with the “is auto-promotion actually helping?” question without adding more backend contract churn.
+Tests: `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 15:23 CDT] codex-main
+Task: Make the new browser promotion/probation summary fail closed during startup/recovery/DB-integrity blocks.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: Visibility-only slice; runtime DB corruption still means the underlying evidence is not trustworthy until recovery/reset succeeds.
+Next: Continue with backend promotion-outcome reporting once the clean-ledger path is available, or keep tightening browser/operator honesty around blocked states as new summary panels are added.
+Decisions: The aggregate wallet promotion rows (`Auto-Promoted`, `Awaiting Proof`, `Evidence Ready`, `Probation Blockers`) now reuse the same blocked-state reason as the wallet registry panel itself. That prevents the browser from saying “no promoted wallets” when the real state is “wallet queries are paused because startup/recovery is unhealthy.”
+Tests: `./dashboard-web/node_modules/.bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 15:24 CDT] codex-main
+Task: Harden post-promotion shadow evidence so auto-promoted wallets only clear probation on truly post-promotion, copyable behavior; fix a managed-wallet query regression; fail closed on unreadable wallet-registry resets.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `src/kelly_watcher/engine/wallet_trust.py`, `src/kelly_watcher/engine/watchlist_manager.py`, `src/kelly_watcher/shadow_reset.py`, `tests/test_wallet_trust.py`, `tests/test_watchlist_manager.py`, `tests/test_shadow_reset.py`, `tests/test_runtime_fixes.py`
+Status: Completed
+Blockers: Live runtime DB integrity is still unhealthy, so discovery/promotion remain shadow-only and fail-closed. One additional runtime gap found by audit is still open in `src/kelly_watcher/main.py::_refresh_managed_wallet_registry`: an empty DB-backed registry does not yet clear the in-memory tracker/watchlist set, and I intentionally left `main.py` alone because it is already dirty in the shared tree.
+Next: Coordinate the `main.py` empty-registry fail-open fix with the agent owning that file, then keep tightening wallet-level shadow evidence/reporting once the runtime is on a clean ledger again.
+Decisions: Post-promotion evidence now uses trade placement time instead of resolution time, so pre-promotion trades that resolve later cannot count as post-promotion proof. Promotion probation now requires a composite gate, not just resolved copied fills: enough post-promotion buy opportunities, enough post-promotion copied fills, and an acceptable post-promotion uncopyable skip rate. The managed-wallet dashboard query bug in `_managed_wallet_rows()` is fixed. `shadow_reset.apply_wallet_mode_for_reset()` now fails closed when the DB-backed managed wallet registry cannot be read, instead of snapshotting an empty registry and risking destructive resets.
+Tests: `python -m py_compile src/kelly_watcher/dashboard_api.py src/kelly_watcher/engine/wallet_trust.py src/kelly_watcher/engine/watchlist_manager.py src/kelly_watcher/shadow_reset.py tests/test_wallet_trust.py tests/test_watchlist_manager.py tests/test_shadow_reset.py` -> passed; `uv run pytest tests/test_wallet_trust.py tests/test_watchlist_manager.py tests/test_shadow_reset.py tests/test_runtime_fixes.py -q` -> 283 passed; `uv run pytest tests/test_wallet_trust.py tests/test_watchlist_manager.py tests/test_wallet_discovery.py tests/test_runtime_fixes.py tests/test_dashboard_web_source.py tests/test_shadow_reset.py -q` -> 287 passed; `npm run build` in `dashboard-web` -> passed

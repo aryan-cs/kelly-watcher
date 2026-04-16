@@ -794,6 +794,124 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(payload["wallet_registry_source"], "unavailable")
         write_env_value.assert_not_called()
 
+    def test_managed_wallet_rows_include_post_promotion_shadow_evidence(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO managed_wallets (
+                        wallet_address, tracking_enabled, source, added_at, updated_at, metadata_json
+                    ) VALUES (?,?,?,?,?,?)
+                    """,
+                    ("0xpromo", 1, "auto_promoted", 1_700_000_000, 1_700_000_000, '{"promotion_source":"wallet_discovery"}'),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_membership_events (
+                        wallet_address, action, source, reason, payload_json, created_at
+                    ) VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        "0xpromo",
+                        "promote",
+                        "auto_promoted",
+                        "ready wallet discovered in shadow scan",
+                        '{"promotion_source":"wallet_discovery","promoted_at":1700000000}',
+                        1_700_000_000,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_policy_metrics (
+                        wallet_address,
+                        total_buy_signals,
+                        resolved_copied_count,
+                        resolved_copied_wins,
+                        resolved_copied_total_pnl_usd,
+                        recent_window_seconds,
+                        recent_resolved_copied_count,
+                        recent_resolved_copied_wins,
+                        recent_resolved_copied_total_pnl_usd,
+                        last_resolved_at,
+                        local_weight,
+                        local_drop_ready,
+                        post_promotion_baseline_at,
+                        post_promotion_source,
+                        post_promotion_reason,
+                        post_promotion_total_buy_signals,
+                        post_promotion_uncopyable_skips,
+                        post_promotion_uncopyable_skip_rate,
+                        post_promotion_resolved_copied_count,
+                        post_promotion_resolved_copied_total_pnl_usd,
+                        post_promotion_last_resolved_at,
+                        post_promotion_evidence_ready,
+                        post_promotion_evidence_note,
+                        updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "0xpromo",
+                        12,
+                        6,
+                        4,
+                        5.0,
+                        14 * 86400,
+                        3,
+                        2,
+                        1.5,
+                        1_700_000_200,
+                        0.5,
+                        0,
+                        1_700_000_000,
+                        "wallet_discovery",
+                        "ready wallet discovered in shadow scan",
+                        5,
+                        2,
+                        0.4,
+                        3,
+                        -1.25,
+                        1_700_000_200,
+                        0,
+                        "awaiting post-promotion evidence 3/4 resolved copied trades",
+                        1_700_000_300,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch.object(dashboard_api, "_identity_lookup", return_value={}), patch.object(
+                    dashboard_api, "_discover_candidate_map", return_value={}
+                ), patch.object(dashboard_api, "_wallet_watch_state_map", return_value={}), patch.object(
+                    dashboard_api,
+                    "_wallet_trust_snapshot_map",
+                    return_value={
+                        "0xpromo": {
+                            "trust_tier": "promotion_probation",
+                            "trust_size_multiplier": 0.5,
+                            "trust_note": "wallet is in post-promotion probation, resolved copied history since promotion is 3/4 trades",
+                        }
+                    },
+                ):
+                    rows = dashboard_api._managed_wallet_rows(limit=10)
+
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["wallet_address"], "0xpromo")
+                self.assertEqual(rows[0]["post_promotion_baseline_at"], 1_700_000_000)
+                self.assertEqual(rows[0]["post_promotion_total_buy_signals"], 5)
+                self.assertEqual(rows[0]["post_promotion_resolved_copied_count"], 3)
+                self.assertAlmostEqual(rows[0]["post_promotion_uncopyable_skip_rate"], 0.4, places=6)
+                self.assertEqual(rows[0]["post_promotion_evidence_ready"], False)
+                self.assertIn("awaiting post-promotion evidence", rows[0]["post_promotion_evidence_note"])
+                self.assertEqual(rows[0]["trust_tier"], "promotion_probation")
+                self.assertAlmostEqual(rows[0]["trust_size_multiplier"], 0.5, places=6)
+                self.assertIn("post-promotion probation", rows[0]["trust_note"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_runtime_managed_wallets_does_not_fallback_to_bootstrap_env(self) -> None:
         with patch("kelly_watcher.main.load_managed_wallets", return_value=[]), patch.object(
             main, "WATCHED_WALLETS", ["0xenv1", "0xenv2"]
@@ -1393,6 +1511,8 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["db_recovery_candidate_mode"], "unavailable")
         self.assertFalse(snapshot["db_recovery_candidate_evidence_ready"])
         self.assertEqual(snapshot["db_recovery_candidate_class_reason"], "")
+        self.assertEqual(snapshot["db_recovery_inventory"], [])
+        self.assertEqual(snapshot["db_recovery_inventory_count"], 0)
         self.assertFalse(snapshot["db_recovery_shadow_state_known"])
         self.assertEqual(snapshot["db_recovery_shadow_candidate_path"], "")
         self.assertEqual(snapshot["db_recovery_shadow_status"], "checking")
@@ -3087,6 +3207,88 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["mode"], "shadow")
         self.assertIn("configured live but forced shadow", snapshot["mode_block_reason"])
         self.assertIn("malformed", snapshot["mode_block_reason"])
+
+    def test_dashboard_bot_state_snapshot_marks_startup_validation_failure_as_blocked(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            bot_state_file.write_text(
+                json.dumps(
+                    {
+                        "session_id": "abc123",
+                        "started_at": 100,
+                        "last_activity_at": int(time.time()),
+                        "poll_interval": 5,
+                        "startup_failed": True,
+                        "startup_validation_failed": True,
+                        "startup_detail": "startup validation failed: 2 errors",
+                        "startup_failure_message": "startup validation failed\n- MAX_MARKET_EXPOSURE_FRACTION must be numeric, got 'abc'",
+                        "startup_validation_message": "startup validation failed\n- MAX_MARKET_EXPOSURE_FRACTION must be numeric, got 'abc'",
+                        "startup_blocked": False,
+                        "startup_block_reason": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertTrue(snapshot["startup_failed"])
+        self.assertTrue(snapshot["startup_validation_failed"])
+        self.assertTrue(snapshot["startup_blocked"])
+        self.assertIn("startup validation failed", snapshot["startup_block_reason"].lower())
+
+    def test_dashboard_bot_state_snapshot_falls_back_to_cached_recovery_inventory_when_missing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            bot_state_file.write_text(
+                json.dumps(
+                    {
+                        "session_id": "abc123",
+                        "started_at": 100,
+                        "last_activity_at": int(time.time()),
+                        "poll_interval": 5,
+                        "db_recovery_state_known": True,
+                        "db_recovery_candidate_ready": False,
+                        "db_recovery_candidate_message": "backup integrity check failed",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file), patch.object(
+                dashboard_api,
+                "_cached_db_recovery_state",
+                return_value={
+                    "db_recovery_state_known": True,
+                    "db_recovery_candidate_ready": True,
+                    "db_recovery_candidate_path": "/tmp/trading.db.bak",
+                    "db_recovery_candidate_source_path": "/tmp/trading.db",
+                    "db_recovery_candidate_message": "",
+                    "db_recovery_latest_verified_backup_path": "/tmp/trading.db.bak",
+                    "db_recovery_latest_verified_backup_at": 123,
+                    "db_recovery_inventory": [
+                        {
+                            "path": "/tmp/trading.db.bak",
+                            "kind": "primary_backup",
+                            "compressed": False,
+                            "ready": False,
+                            "selected": False,
+                            "mtime": 123,
+                            "message": "database disk image is malformed",
+                        }
+                    ],
+                    "db_recovery_inventory_count": 1,
+                },
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertTrue(snapshot["db_recovery_candidate_ready"])
+        self.assertEqual(snapshot["db_recovery_candidate_path"], "/tmp/trading.db.bak")
+        self.assertEqual(snapshot["db_recovery_candidate_mode"], "integrity_only")
+        self.assertEqual(snapshot["db_recovery_inventory_count"], 1)
+        self.assertEqual(snapshot["db_recovery_inventory"][0]["path"], "/tmp/trading.db.bak")
+        self.assertEqual(snapshot["db_recovery_inventory"][0]["kind"], "primary_backup")
 
     def test_dashboard_bot_state_snapshot_overlays_recent_manual_retrain_request(self) -> None:
         with TemporaryDirectory() as tmpdir:

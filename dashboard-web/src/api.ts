@@ -30,6 +30,11 @@ export interface BotState {
   mode?: 'shadow' | 'live'
   configured_mode?: 'shadow' | 'live'
   mode_block_reason?: string
+  startup_detail?: string
+  startup_failed?: boolean
+  startup_validation_failed?: boolean
+  startup_failure_message?: string
+  startup_validation_message?: string
   startup_blocked?: boolean
   startup_recovery_only?: boolean
   startup_block_reason?: string
@@ -83,6 +88,8 @@ export interface BotState {
   db_recovery_candidate_class_reason?: string
   db_recovery_latest_verified_backup_path?: string
   db_recovery_latest_verified_backup_at?: number
+  db_recovery_inventory?: DbRecoveryInventoryEntry[]
+  db_recovery_inventory_count?: number
   wallet_discovery_last_scan_at?: number
   wallet_discovery_last_scan_ok?: boolean
   wallet_discovery_scanned_count?: number
@@ -124,6 +131,16 @@ export interface BotState {
 
 export interface BotStateResponse {
   state?: BotState
+}
+
+export interface DbRecoveryInventoryEntry {
+  path?: string
+  kind?: string
+  compressed?: boolean
+  ready?: boolean
+  selected?: boolean
+  mtime?: number
+  message?: string
 }
 
 export interface LiveEvent {
@@ -206,6 +223,22 @@ export interface ManagedWallet {
   discovery_rank?: number
   discovery_sources?: string[]
   discovery_updated_at?: number
+  post_promotion_baseline_at?: number
+  post_promotion_source?: string
+  post_promotion_reason?: string
+  post_promotion_total_buy_signals?: number
+  post_promotion_uncopyable_skips?: number
+  post_promotion_uncopyable_skip_rate?: number
+  post_promotion_resolved_copied_count?: number
+  post_promotion_resolved_copied_win_rate?: number
+  post_promotion_resolved_copied_avg_return?: number
+  post_promotion_resolved_copied_total_pnl_usd?: number
+  post_promotion_last_resolved_at?: number
+  post_promotion_evidence_ready?: boolean
+  post_promotion_evidence_note?: string
+  trust_tier?: string
+  trust_size_multiplier?: number
+  trust_note?: string
 }
 
 export interface ManagedWalletsResponse {

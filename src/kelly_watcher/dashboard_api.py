@@ -28,10 +28,12 @@ from kelly_watcher.data.db import (
     db_recovery_state,
     get_conn,
     get_trade_log_read_conn,
+    load_wallet_promotion_state,
     trade_log_archive_state,
 )
 from kelly_watcher.env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, repo_env_path_for_profile
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
+from kelly_watcher.engine.wallet_trust import get_wallet_trust_state
 from kelly_watcher.runtime.wallet_discovery import (
     load_wallet_discovery_candidates,
     refresh_wallet_discovery_candidates,
@@ -50,6 +52,13 @@ from kelly_watcher.runtime_paths import (
 )
 
 logger = logging.getLogger(__name__)
+_DB_RECOVERY_STATE_CACHE: dict[str, Any] | None = None
+_DB_RECOVERY_STATE_CACHE_AT = 0.0
+_DB_RECOVERY_STATE_CACHE_TTL_SECONDS = 30.0
+_DB_RECOVERY_STATE_CACHE_LOCK = threading.Lock()
+_MANAGED_WALLET_TRUST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_MANAGED_WALLET_TRUST_CACHE_TTL_SECONDS = 10.0
+_MANAGED_WALLET_TRUST_CACHE_LOCK = threading.Lock()
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
@@ -295,6 +304,23 @@ def _read_safe_env_values() -> dict[str, str]:
     return safe_values
 
 
+def _cached_db_recovery_state(*, force: bool = False) -> dict[str, Any]:
+    global _DB_RECOVERY_STATE_CACHE, _DB_RECOVERY_STATE_CACHE_AT
+    now = time.time()
+    with _DB_RECOVERY_STATE_CACHE_LOCK:
+        if (
+            not force
+            and _DB_RECOVERY_STATE_CACHE is not None
+            and (now - _DB_RECOVERY_STATE_CACHE_AT) < _DB_RECOVERY_STATE_CACHE_TTL_SECONDS
+        ):
+            return dict(_DB_RECOVERY_STATE_CACHE)
+    state = dict(db_recovery_state())
+    with _DB_RECOVERY_STATE_CACHE_LOCK:
+        _DB_RECOVERY_STATE_CACHE = dict(state)
+        _DB_RECOVERY_STATE_CACHE_AT = now
+    return state
+
+
 def _config_snapshot() -> dict[str, Any]:
     safe_values = _read_safe_env_values()
     legacy_bootstrap_watched_wallets = [
@@ -429,6 +455,90 @@ def _discover_candidate_map(limit: int | None = None) -> dict[str, dict[str, Any
     }
 
 
+def _wallet_policy_metrics_rows(wallet_addresses: list[str]) -> dict[str, dict[str, Any]]:
+    wallets = [str(wallet or "").strip().lower() for wallet in wallet_addresses if str(wallet or "").strip()]
+    if not wallets:
+        return {}
+
+    placeholders = ",".join("?" for _ in wallets)
+    conn = get_conn()
+    try:
+        if not _sqlite_table_exists(conn, "wallet_policy_metrics"):
+            return {}
+        rows = conn.execute(
+            f"""
+            SELECT
+              wallet_address,
+              local_quality_score,
+              local_weight,
+              local_drop_ready,
+              local_drop_reason,
+              post_promotion_baseline_at,
+              post_promotion_source,
+              post_promotion_reason,
+              post_promotion_total_buy_signals,
+              post_promotion_uncopyable_skips,
+              post_promotion_uncopyable_skip_rate,
+              post_promotion_resolved_copied_count,
+              post_promotion_resolved_copied_win_rate,
+              post_promotion_resolved_copied_avg_return,
+              post_promotion_resolved_copied_total_pnl_usd,
+              post_promotion_last_resolved_at,
+              post_promotion_evidence_ready,
+              post_promotion_evidence_note,
+              updated_at
+            FROM wallet_policy_metrics
+            WHERE wallet_address IN ({placeholders})
+            """,
+            tuple(wallets),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        str(row["wallet_address"] or "").strip().lower(): dict(row)
+        for row in rows
+        if str(row["wallet_address"] or "").strip()
+    }
+
+
+def _wallet_trust_snapshot_map(wallet_addresses: list[str]) -> dict[str, dict[str, Any]]:
+    wallets = [str(wallet or "").strip().lower() for wallet in wallet_addresses if str(wallet or "").strip()]
+    if not wallets:
+        return {}
+
+    now = time.time()
+    snapshots: dict[str, dict[str, Any]] = {}
+    stale_wallets: list[str] = []
+    with _MANAGED_WALLET_TRUST_CACHE_LOCK:
+        for wallet in wallets:
+            cached = _MANAGED_WALLET_TRUST_CACHE.get(wallet)
+            if cached and now - float(cached[0]) <= _MANAGED_WALLET_TRUST_CACHE_TTL_SECONDS:
+                snapshots[wallet] = dict(cached[1])
+            else:
+                stale_wallets.append(wallet)
+
+    if stale_wallets:
+        refreshed_at = time.time()
+        refreshed: dict[str, dict[str, Any]] = {}
+        for wallet in stale_wallets:
+            try:
+                state = get_wallet_trust_state(wallet)
+                refreshed[wallet] = {
+                    "trust_tier": str(state.tier or "").strip(),
+                    "trust_size_multiplier": float(state.size_multiplier),
+                    "trust_note": str(state.tier_note or "").strip(),
+                }
+            except sqlite3.DatabaseError:
+                refreshed[wallet] = {}
+        with _MANAGED_WALLET_TRUST_CACHE_LOCK:
+            for wallet, snapshot in refreshed.items():
+                _MANAGED_WALLET_TRUST_CACHE[wallet] = (refreshed_at, dict(snapshot))
+        snapshots.update(refreshed)
+
+    return snapshots
+
+
 def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
     conn = get_conn()
     try:
@@ -444,13 +554,15 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
                 "disabled_reason" if "disabled_reason" in columns else "'' AS disabled_reason",
                 "metadata_json" if "metadata_json" in columns else "'{}' AS metadata_json",
             ]
-            rows = conn.execute(
-                """
-                {query}
-                """.format(query=", ".join(select_parts)
-                + "\n                FROM managed_wallets\n                ORDER BY COALESCE(tracking_enabled, 0) DESC, COALESCE(updated_at, added_at, 0) DESC, wallet_address ASC\n                LIMIT ?"),
-                (max(int(limit or 250), 1),),
-            ).fetchall()
+            query = (
+                "SELECT\n  "
+                + ", ".join(select_parts)
+                + "\nFROM managed_wallets\n"
+                + "ORDER BY COALESCE(tracking_enabled, 0) DESC, "
+                + "COALESCE(updated_at, added_at, 0) DESC, wallet_address ASC\n"
+                + "LIMIT ?"
+            )
+            rows = conn.execute(query, (max(int(limit or 250), 1),)).fetchall()
             registry_source = "managed_wallets"
         elif _sqlite_table_exists(conn, "wallet_watch_state"):
             rows = conn.execute(
@@ -482,6 +594,9 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
     identities = _identity_lookup()
     discovery_map = _discover_candidate_map(limit)
     watch_state_map = _wallet_watch_state_map([str(row["wallet_address"] or "") for row in rows])
+    policy_metrics_map = _wallet_policy_metrics_rows([str(row["wallet_address"] or "") for row in rows])
+    promotion_state_map = load_wallet_promotion_state([str(row["wallet_address"] or "") for row in rows])
+    trust_state_map = _wallet_trust_snapshot_map([str(row["wallet_address"] or "") for row in rows])
 
     payloads: list[dict[str, Any]] = []
     for row in rows:
@@ -492,6 +607,9 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
         identity = identities.get(wallet, "")
         discovery = discovery_map.get(wallet, {})
         watch_state = watch_state_map.get(wallet, {})
+        policy_metrics = policy_metrics_map.get(wallet, {})
+        promotion_state = promotion_state_map.get(wallet, {})
+        trust_state = trust_state_map.get(wallet, {})
         source = str(row_dict.get("source") or registry_source).strip()
         tracking_enabled = bool(row_dict.get("tracking_enabled")) if "tracking_enabled" in row_dict else str(row_dict.get("status") or "").strip().lower() != "dropped"
         payload: dict[str, Any] = {
@@ -508,6 +626,48 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
             "disabled_reason": str(row_dict.get("disabled_reason") or row_dict.get("status_reason") or "").strip(),
             "tracking_started_at": int(row_dict.get("tracking_started_at") or 0),
             "last_source_ts_at_status": int(row_dict.get("last_source_ts_at_status") or 0),
+            "post_promotion_baseline_at": int(
+                policy_metrics.get("post_promotion_baseline_at")
+                or promotion_state.get("baseline_at")
+                or 0
+            ),
+            "post_promotion_source": str(
+                policy_metrics.get("post_promotion_source")
+                or promotion_state.get("promotion_source")
+                or ""
+            ).strip(),
+            "post_promotion_reason": str(
+                policy_metrics.get("post_promotion_reason")
+                or promotion_state.get("promotion_reason")
+                or ""
+            ).strip(),
+            "post_promotion_total_buy_signals": int(policy_metrics.get("post_promotion_total_buy_signals") or 0),
+            "post_promotion_uncopyable_skips": int(policy_metrics.get("post_promotion_uncopyable_skips") or 0),
+            "post_promotion_uncopyable_skip_rate": float(policy_metrics.get("post_promotion_uncopyable_skip_rate") or 0.0),
+            "post_promotion_resolved_copied_count": int(policy_metrics.get("post_promotion_resolved_copied_count") or 0),
+            "post_promotion_resolved_copied_win_rate": (
+                float(policy_metrics.get("post_promotion_resolved_copied_win_rate"))
+                if policy_metrics.get("post_promotion_resolved_copied_win_rate") is not None
+                else None
+            ),
+            "post_promotion_resolved_copied_avg_return": (
+                float(policy_metrics.get("post_promotion_resolved_copied_avg_return"))
+                if policy_metrics.get("post_promotion_resolved_copied_avg_return") is not None
+                else None
+            ),
+            "post_promotion_resolved_copied_total_pnl_usd": float(
+                policy_metrics.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0
+            ),
+            "post_promotion_last_resolved_at": int(policy_metrics.get("post_promotion_last_resolved_at") or 0),
+            "post_promotion_evidence_ready": bool(policy_metrics.get("post_promotion_evidence_ready") or False),
+            "post_promotion_evidence_note": str(policy_metrics.get("post_promotion_evidence_note") or "").strip(),
+            "trust_tier": str(trust_state.get("trust_tier") or "").strip(),
+            "trust_size_multiplier": (
+                float(trust_state["trust_size_multiplier"])
+                if trust_state.get("trust_size_multiplier") is not None
+                else None
+            ),
+            "trust_note": str(trust_state.get("trust_note") or "").strip(),
         }
         if discovery:
             payload.update(
@@ -875,6 +1035,8 @@ def _persist_manual_request_cleared_state(
 def _bot_state_snapshot() -> dict[str, Any]:
     bot_state = _read_json_dict(BOT_STATE_FILE)
     bot_state.update(
+        startup_failed=bool(bot_state.get("startup_failed")),
+        startup_validation_failed=bool(bot_state.get("startup_validation_failed")),
         manual_retrain_pending=bool(bot_state.get("manual_retrain_pending")),
         manual_retrain_requested_at=int(bot_state.get("manual_retrain_requested_at") or 0),
         manual_retrain_message=str(bot_state.get("manual_retrain_message") or ""),
@@ -893,6 +1055,50 @@ def _bot_state_snapshot() -> dict[str, Any]:
         trade_log_archive_last_vacuumed=bool(bot_state.get("trade_log_archive_last_vacuumed")),
         trade_log_archive_block_reason=str(bot_state.get("trade_log_archive_block_reason") or ""),
     )
+    startup_failure_message = str(
+        bot_state.get("startup_failure_message")
+        or bot_state.get("startup_validation_message")
+        or ""
+    ).strip()
+    startup_detail = str(bot_state.get("startup_detail") or "").strip()
+    startup_failed = bool(bot_state.get("startup_failed"))
+    startup_validation_failed = bool(bot_state.get("startup_validation_failed"))
+    if (startup_failed or startup_validation_failed) and not bool(bot_state.get("startup_blocked")):
+        bot_state["startup_blocked"] = True
+        if not str(bot_state.get("startup_block_reason") or "").strip():
+            bot_state["startup_block_reason"] = startup_failure_message or startup_detail
+    if "db_recovery_inventory" not in bot_state or not isinstance(bot_state.get("db_recovery_inventory"), list):
+        bot_state["db_recovery_inventory"] = []
+    bot_state["db_recovery_inventory_count"] = max(int(bot_state.get("db_recovery_inventory_count") or 0), 0)
+    needs_recovery_fallback = (
+        not bot_state["db_recovery_inventory"]
+        or not bool(bot_state.get("db_recovery_candidate_ready"))
+        or not str(bot_state.get("db_recovery_candidate_path") or "").strip()
+    )
+    if needs_recovery_fallback:
+        try:
+            recovery_state = _cached_db_recovery_state()
+        except Exception:
+            recovery_state = {}
+        for key in (
+            "db_recovery_state_known",
+            "db_recovery_candidate_ready",
+            "db_recovery_candidate_path",
+            "db_recovery_candidate_source_path",
+            "db_recovery_candidate_message",
+            "db_recovery_latest_verified_backup_path",
+            "db_recovery_latest_verified_backup_at",
+        ):
+            if key in recovery_state:
+                bot_state[key] = recovery_state[key]
+        inventory = recovery_state.get("db_recovery_inventory")
+        if isinstance(inventory, list):
+            bot_state["db_recovery_inventory"] = inventory
+            bot_state["db_recovery_inventory_count"] = max(
+                int(recovery_state.get("db_recovery_inventory_count") or len(inventory)),
+                0,
+            )
+    bot_state.update(_db_recovery_candidate_snapshot(bot_state))
     request_payload = _request_payload_if_fresh(MANUAL_RETRAIN_REQUEST_FILE, 900)
     if request_payload is not None:
         bot_state.update(
@@ -998,13 +1204,15 @@ def _heartbeat_window_seconds(bot_state: dict[str, Any]) -> int:
 
 def _startup_block_reason(bot_state: dict[str, Any]) -> str:
     startup_blocked = bool(bot_state.get("startup_blocked"))
+    startup_failed = bool(bot_state.get("startup_failed"))
+    startup_validation_failed = bool(bot_state.get("startup_validation_failed"))
     startup_detail = str(bot_state.get("startup_detail") or "").strip()
     startup_failure_message = str(
         bot_state.get("startup_failure_message")
         or bot_state.get("startup_validation_message")
         or ""
     ).strip()
-    if not startup_blocked and "startup blocked" not in startup_detail.lower():
+    if not startup_blocked and not startup_failed and not startup_validation_failed and "startup blocked" not in startup_detail.lower():
         return ""
     detail = str(
         bot_state.get("startup_block_reason")

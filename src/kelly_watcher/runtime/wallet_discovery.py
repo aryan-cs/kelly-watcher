@@ -354,9 +354,11 @@ def _auto_promote_ready_wallets(
     if not wallets:
         return 0
 
+    now_ts = finished_at
     promotion_payload = {
         "promotion_source": "wallet_discovery",
         "promotion_reason": "ready wallet discovered in shadow scan",
+        "promoted_at": now_ts,
         "scan_started_at": started_at,
         "scan_finished_at": finished_at,
         "scan_wallet_count": len(rows),
@@ -374,7 +376,6 @@ def _auto_promote_ready_wallets(
             for row in ready_rows
         ],
     }
-    now_ts = finished_at
     metadata_json = json.dumps(promotion_payload, separators=(",", ":"), sort_keys=True)
     event_rows = [
         (

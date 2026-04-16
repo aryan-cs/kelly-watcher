@@ -21,8 +21,9 @@ from kelly_watcher.config import (
     wallet_quality_size_min_multiplier,
     wallet_probation_size_multiplier,
     wallet_trusted_min_resolved_copied_buys,
+    wallet_uncopyable_drop_max_skip_rate,
 )
-from kelly_watcher.data.db import get_conn, get_trade_log_read_conn
+from kelly_watcher.data.db import get_trade_log_read_conn, load_wallet_promotion_state
 from kelly_watcher.engine.trade_contract import (
     NON_CHALLENGER_EXPERIMENT_ARM_SQL,
     OBSERVED_BUY_SQL,
@@ -33,6 +34,24 @@ from kelly_watcher.engine.trade_contract import (
 
 OVERRIDE_CACHE_TTL_SECONDS = 60.0
 _override_cache: tuple[float, dict[str, "WalletSkipOverrideStats"]] | None = None
+_UNCOPYABLE_TIMING_SQL = """
+(
+    market_veto LIKE 'expires in <%'
+    OR market_veto LIKE 'beyond max horizon %'
+)
+"""
+_UNCOPYABLE_LIQUIDITY_SQL = """
+(
+    market_veto='missing order book'
+    OR market_veto='no visible order book depth'
+    OR skip_reason LIKE 'shadow simulation rejected the buy because the order book had no asks%'
+    OR skip_reason LIKE 'shadow simulation rejected the buy because there was not enough ask depth%'
+)
+"""
+_UNCOPYABLE_SKIP_SQL = f"""(
+    {_UNCOPYABLE_TIMING_SQL}
+    OR {_UNCOPYABLE_LIQUIDITY_SQL}
+)"""
 
 
 @dataclass(frozen=True)
@@ -51,6 +70,17 @@ class WalletTrustState:
     min_resolved_copied_buy_count: int
     local_performance_penalty_multiplier: float | None = None
     local_performance_penalty_reason: str | None = None
+    post_promotion_baseline_at: int = 0
+    post_promotion_source: str | None = None
+    post_promotion_reason: str | None = None
+    post_promotion_total_buy_signals: int = 0
+    post_promotion_uncopyable_skips: int = 0
+    post_promotion_uncopyable_skip_rate: float = 0.0
+    post_promotion_resolved_copied_buy_count: int = 0
+    post_promotion_resolved_copied_win_rate: float | None = None
+    post_promotion_resolved_copied_avg_return: float | None = None
+    post_promotion_evidence_ready: bool = False
+    post_promotion_evidence_note: str | None = None
 
     @property
     def cold_start_ready(self) -> bool:
@@ -91,6 +121,17 @@ class WalletTrustState:
                 f"local copied history is {self.resolved_copied_buy_count}/{self.min_resolved_copied_buy_count} "
                 "resolved trades"
             )
+        elif self.tier == "promotion_probation":
+            notes.append(
+                self.post_promotion_evidence_note
+                or (
+                    "wallet is in post-promotion probation, "
+                    f"resolved copied history since promotion is "
+                    f"{self.post_promotion_resolved_copied_buy_count}/{max(self.min_resolved_observed_buy_count, 1)} trades"
+                )
+            )
+        elif self.post_promotion_evidence_note:
+            notes.append(self.post_promotion_evidence_note)
         if self.local_performance_penalty_reason:
             notes.append(self.local_performance_penalty_reason)
         return ", ".join(notes) if notes else None
@@ -110,6 +151,17 @@ class WalletTrustState:
             "min_resolved_copied_buy_count": self.min_resolved_copied_buy_count,
             "local_performance_penalty_multiplier": self.local_performance_penalty_multiplier,
             "local_performance_penalty_reason": self.local_performance_penalty_reason,
+            "post_promotion_baseline_at": self.post_promotion_baseline_at,
+            "post_promotion_source": self.post_promotion_source,
+            "post_promotion_reason": self.post_promotion_reason,
+            "post_promotion_total_buy_signals": self.post_promotion_total_buy_signals,
+            "post_promotion_uncopyable_skips": self.post_promotion_uncopyable_skips,
+            "post_promotion_uncopyable_skip_rate": self.post_promotion_uncopyable_skip_rate,
+            "post_promotion_resolved_copied_buy_count": self.post_promotion_resolved_copied_buy_count,
+            "post_promotion_resolved_copied_win_rate": self.post_promotion_resolved_copied_win_rate,
+            "post_promotion_resolved_copied_avg_return": self.post_promotion_resolved_copied_avg_return,
+            "post_promotion_evidence_ready": self.post_promotion_evidence_ready,
+            "post_promotion_evidence_note": self.post_promotion_evidence_note,
         }
 
 
@@ -119,6 +171,47 @@ class WalletSkipOverrideStats:
     duplicate_avg_return: float | None = None
     exposure_skip_count: int = 0
     exposure_avg_return: float | None = None
+
+
+def _post_promotion_evidence_min_resolved_copied_buys() -> int:
+    return max(wallet_discovery_min_resolved_buys(), 1)
+
+
+def _post_promotion_evidence_min_buy_signals() -> int:
+    return max(wallet_discovery_min_observed_buys(), _post_promotion_evidence_min_resolved_copied_buys() * 2, 1)
+
+
+def _post_promotion_evidence_max_uncopyable_skip_rate() -> float:
+    return min(max(wallet_uncopyable_drop_max_skip_rate(), 0.0), 0.5)
+
+
+def _post_promotion_evidence_state(
+    *,
+    total_buy_signals: int,
+    uncopyable_skip_rate: float,
+    resolved_copied_buy_count: int,
+) -> tuple[bool, str]:
+    minimum_resolved = _post_promotion_evidence_min_resolved_copied_buys()
+    minimum_buy_signals = _post_promotion_evidence_min_buy_signals()
+    max_skip_rate = _post_promotion_evidence_max_uncopyable_skip_rate()
+    reasons: list[str] = []
+    if resolved_copied_buy_count < minimum_resolved:
+        reasons.append(f"{resolved_copied_buy_count}/{minimum_resolved} resolved copied trades")
+    if total_buy_signals < minimum_buy_signals:
+        reasons.append(f"{total_buy_signals}/{minimum_buy_signals} buy signals")
+    if total_buy_signals > 0 and uncopyable_skip_rate > max_skip_rate:
+        reasons.append(
+            f"{uncopyable_skip_rate * 100.0:.0f}%>{max_skip_rate * 100.0:.0f}% uncopyable skip rate"
+        )
+    if reasons:
+        return False, "awaiting post-promotion evidence " + ", ".join(reasons)
+    return (
+        True,
+        "post-promotion evidence ready "
+        f"{resolved_copied_buy_count}/{minimum_resolved} resolved copied trades, "
+        f"{total_buy_signals}/{minimum_buy_signals} buy signals, "
+        f"{uncopyable_skip_rate * 100.0:.0f}% uncopyable skip rate",
+    )
 
 
 def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
@@ -146,10 +239,23 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
             min_resolved_copied_buy_count=trusted_min_resolved_copied,
             local_performance_penalty_multiplier=None,
             local_performance_penalty_reason=None,
+            post_promotion_baseline_at=0,
+            post_promotion_source=None,
+            post_promotion_reason=None,
+            post_promotion_total_buy_signals=0,
+            post_promotion_uncopyable_skips=0,
+            post_promotion_uncopyable_skip_rate=0.0,
+            post_promotion_resolved_copied_buy_count=0,
+            post_promotion_resolved_copied_win_rate=None,
+            post_promotion_resolved_copied_avg_return=None,
+            post_promotion_evidence_ready=True,
+            post_promotion_evidence_note=None,
         )
 
     conn = get_trade_log_read_conn()
     try:
+        promotion_state = load_wallet_promotion_state([wallet_key]).get(wallet_key, {})
+        post_promotion_baseline_at = int(promotion_state.get("baseline_at") or 0)
         row = conn.execute(
             f"""
             SELECT
@@ -175,6 +281,66 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
             """,
             (wallet_key,),
         ).fetchone()
+
+        post_promotion_row = None
+        if post_promotion_baseline_at > 0:
+            post_promotion_row = conn.execute(
+                f"""
+                SELECT
+                    SUM(
+                        CASE
+                            WHEN {OBSERVED_BUY_SQL}
+                             AND COALESCE(placed_at, 0) >= ?
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_total_buy_signals,
+                    SUM(
+                        CASE
+                            WHEN {OBSERVED_BUY_SQL}
+                             AND COALESCE(placed_at, 0) >= ?
+                             AND {_UNCOPYABLE_SKIP_SQL}
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_uncopyable_skips,
+                    SUM(
+                        CASE
+                            WHEN {RESOLVED_EXECUTED_ENTRY_SQL}
+                             AND COALESCE(placed_at, 0) >= ?
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_resolved_copied_buy_count,
+                    SUM(
+                        CASE
+                            WHEN {RESOLVED_EXECUTED_ENTRY_SQL}
+                             AND COALESCE(placed_at, 0) >= ?
+                             AND {resolved_pnl_expr()} > 0
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_resolved_copied_wins,
+                    AVG(
+                        CASE
+                            WHEN {RESOLVED_EXECUTED_ENTRY_SQL}
+                             AND COALESCE(placed_at, 0) >= ?
+                                THEN {resolved_pnl_expr()} / NULLIF(COALESCE(actual_entry_size_usd, signal_size_usd, 0), 0)
+                            ELSE NULL
+                        END
+                    ) AS post_promotion_resolved_copied_avg_return
+                FROM trade_log
+                WHERE trader_address=?
+                """,
+                (
+                    post_promotion_baseline_at,
+                    post_promotion_baseline_at,
+                    post_promotion_baseline_at,
+                    post_promotion_baseline_at,
+                    post_promotion_baseline_at,
+                    wallet_key,
+                ),
+            ).fetchone()
     finally:
         conn.close()
 
@@ -192,6 +358,45 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
         if resolved_copied_buy_count > 0
         else None
     )
+    post_promotion_total_buy_signals = int((post_promotion_row["post_promotion_total_buy_signals"] or 0) if post_promotion_row else 0)
+    post_promotion_resolved_copied_buy_count = int(
+        (post_promotion_row["post_promotion_resolved_copied_buy_count"] or 0)
+        if post_promotion_row
+        else 0
+    )
+    post_promotion_uncopyable_skips = int(
+        (post_promotion_row["post_promotion_uncopyable_skips"] or 0)
+        if post_promotion_row
+        else 0
+    )
+    post_promotion_uncopyable_skip_rate = (
+        post_promotion_uncopyable_skips / post_promotion_total_buy_signals
+        if post_promotion_total_buy_signals > 0
+        else 0.0
+    )
+    post_promotion_resolved_copied_wins = int(
+        (post_promotion_row["post_promotion_resolved_copied_wins"] or 0)
+        if post_promotion_row
+        else 0
+    )
+    post_promotion_resolved_copied_avg_return = (
+        float(post_promotion_row["post_promotion_resolved_copied_avg_return"])
+        if post_promotion_row and post_promotion_row["post_promotion_resolved_copied_avg_return"] is not None
+        else None
+    )
+    post_promotion_resolved_copied_win_rate = (
+        post_promotion_resolved_copied_wins / post_promotion_resolved_copied_buy_count
+        if post_promotion_resolved_copied_buy_count > 0
+        else None
+    )
+    post_promotion_evidence_ready = True
+    post_promotion_evidence_note = None
+    if post_promotion_baseline_at > 0:
+        post_promotion_evidence_ready, post_promotion_evidence_note = _post_promotion_evidence_state(
+            total_buy_signals=post_promotion_total_buy_signals,
+            uncopyable_skip_rate=post_promotion_uncopyable_skip_rate,
+            resolved_copied_buy_count=post_promotion_resolved_copied_buy_count,
+        )
 
     if observed_buy_count < cold_start_min_observed:
         tier = "cold_start"
@@ -208,6 +413,19 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
     else:
         tier = "trusted"
         size_multiplier = 1.0
+
+    if post_promotion_baseline_at > 0 and not post_promotion_evidence_ready:
+        tier = "promotion_probation"
+        size_multiplier = min(
+            size_multiplier,
+            discovery_multiplier
+            if (
+                post_promotion_resolved_copied_buy_count <= 0
+                or post_promotion_total_buy_signals < _post_promotion_evidence_min_buy_signals()
+                or post_promotion_uncopyable_skip_rate > _post_promotion_evidence_max_uncopyable_skip_rate()
+            )
+            else probation_multiplier,
+        )
 
     local_penalty_multiplier, local_penalty_reason = _local_performance_penalty(
         resolved_copied_buy_count=resolved_copied_buy_count,
@@ -231,6 +449,17 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
         min_resolved_copied_buy_count=trusted_min_resolved_copied,
         local_performance_penalty_multiplier=local_penalty_multiplier,
         local_performance_penalty_reason=local_penalty_reason,
+        post_promotion_baseline_at=post_promotion_baseline_at,
+        post_promotion_source=str(promotion_state.get("promotion_source") or "").strip() or None,
+        post_promotion_reason=str(promotion_state.get("promotion_reason") or "").strip() or None,
+        post_promotion_total_buy_signals=post_promotion_total_buy_signals,
+        post_promotion_uncopyable_skips=post_promotion_uncopyable_skips,
+        post_promotion_uncopyable_skip_rate=post_promotion_uncopyable_skip_rate,
+        post_promotion_resolved_copied_buy_count=post_promotion_resolved_copied_buy_count,
+        post_promotion_resolved_copied_win_rate=post_promotion_resolved_copied_win_rate,
+        post_promotion_resolved_copied_avg_return=post_promotion_resolved_copied_avg_return,
+        post_promotion_evidence_ready=post_promotion_evidence_ready,
+        post_promotion_evidence_note=post_promotion_evidence_note,
     )
 
 

@@ -9,6 +9,8 @@ from kelly_watcher.config import (
     discovery_poll_interval_multiplier,
     hot_wallet_count,
     wallet_inactivity_limit_seconds,
+    wallet_discovery_min_observed_buys,
+    wallet_discovery_min_resolved_buys,
     wallet_local_drop_max_avg_return,
     wallet_local_drop_max_total_pnl_usd,
     wallet_local_drop_min_resolved_copied_buys,
@@ -24,7 +26,7 @@ from kelly_watcher.config import (
     warm_poll_interval_multiplier,
     warm_wallet_count,
 )
-from kelly_watcher.data.db import get_conn, get_trade_log_read_conn
+from kelly_watcher.data.db import get_conn, get_trade_log_read_conn, load_wallet_promotion_state
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 
 
@@ -70,6 +72,22 @@ class WalletPolicyMetrics:
     local_weight: float = 0.0
     local_drop_ready: bool = False
     local_drop_reason: str | None = None
+    post_promotion_baseline_at: int = 0
+    post_promotion_source: str = ""
+    post_promotion_reason: str = ""
+    post_promotion_total_buy_signals: int = 0
+    post_promotion_uncopyable_skips: int = 0
+    post_promotion_timing_skips: int = 0
+    post_promotion_liquidity_skips: int = 0
+    post_promotion_uncopyable_skip_rate: float = 0.0
+    post_promotion_resolved_copied_count: int = 0
+    post_promotion_resolved_copied_wins: int = 0
+    post_promotion_resolved_copied_win_rate: float | None = None
+    post_promotion_resolved_copied_avg_return: float | None = None
+    post_promotion_resolved_copied_total_pnl_usd: float = 0.0
+    post_promotion_last_resolved_at: int = 0
+    post_promotion_evidence_ready: bool = False
+    post_promotion_evidence_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +143,49 @@ _RESOLVED_PNL_SQL = "COALESCE(actual_pnl_usd, shadow_pnl_usd)"
 
 def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
+
+
+def _post_promotion_evidence_min_resolved_copied_buys() -> int:
+    return max(wallet_discovery_min_resolved_buys(), 1)
+
+
+def _post_promotion_evidence_min_buy_signals() -> int:
+    return max(wallet_discovery_min_observed_buys(), _post_promotion_evidence_min_resolved_copied_buys() * 2, 1)
+
+
+def _post_promotion_evidence_max_uncopyable_skip_rate() -> float:
+    return min(max(wallet_uncopyable_drop_max_skip_rate(), 0.0), 0.5)
+
+
+def _post_promotion_evidence_state(metrics: WalletPolicyMetrics) -> tuple[bool, str | None]:
+    baseline_at = int(metrics.post_promotion_baseline_at or 0)
+    if baseline_at <= 0:
+        return True, None
+    minimum_resolved = _post_promotion_evidence_min_resolved_copied_buys()
+    minimum_buy_signals = _post_promotion_evidence_min_buy_signals()
+    max_skip_rate = _post_promotion_evidence_max_uncopyable_skip_rate()
+    resolved_count = max(int(metrics.post_promotion_resolved_copied_count or 0), 0)
+    reasons: list[str] = []
+    if resolved_count < minimum_resolved:
+        reasons.append(f"{resolved_count}/{minimum_resolved} resolved copied trades")
+    if metrics.post_promotion_total_buy_signals < minimum_buy_signals:
+        reasons.append(f"{metrics.post_promotion_total_buy_signals}/{minimum_buy_signals} buy signals")
+    if metrics.post_promotion_total_buy_signals > 0 and metrics.post_promotion_uncopyable_skip_rate > max_skip_rate:
+        reasons.append(
+            f"{metrics.post_promotion_uncopyable_skip_rate * 100.0:.0f}%>{max_skip_rate * 100.0:.0f}% uncopyable skip rate"
+        )
+    if not reasons:
+        return (
+            True,
+            "post-promotion evidence ready "
+            f"{resolved_count}/{minimum_resolved} resolved copied trades, "
+            f"{metrics.post_promotion_total_buy_signals}/{minimum_buy_signals} buy signals, "
+            f"{metrics.post_promotion_uncopyable_skip_rate * 100.0:.0f}% uncopyable skip rate",
+        )
+    return (
+        False,
+        "awaiting post-promotion evidence " + ", ".join(reasons),
+    )
 
 
 def _normalize_wallets(wallet_addresses: list[str]) -> list[str]:
@@ -415,6 +476,27 @@ def _local_drop_decision(metrics: WalletPolicyMetrics) -> tuple[bool, str | None
     max_total_pnl_usd = wallet_local_drop_max_total_pnl_usd()
     recent_minimum = max(5, minimum_trades // 2)
 
+    if int(metrics.post_promotion_baseline_at or 0) > 0:
+        evidence_ready, _ = _post_promotion_evidence_state(metrics)
+        if not evidence_ready:
+            return False, None
+
+        post_avg_return = metrics.post_promotion_resolved_copied_avg_return
+        post_count = max(metrics.post_promotion_resolved_copied_count, 0)
+        if (
+            post_count >= _post_promotion_evidence_min_resolved_copied_buys()
+            and post_avg_return is not None
+            and post_avg_return <= max_avg_return
+            and metrics.post_promotion_resolved_copied_total_pnl_usd <= max_total_pnl_usd
+        ):
+            reason = (
+                f"post_promotion {post_count}r "
+                f"{post_avg_return * 100.0:.1f}%ret "
+                f"${metrics.post_promotion_resolved_copied_total_pnl_usd:.2f} pnl"
+            )
+            return True, reason
+        return False, None
+
     if metrics.recent_resolved_copied_count >= recent_minimum:
         recent_avg_return = metrics.recent_resolved_copied_avg_return
         if (
@@ -466,6 +548,12 @@ def _wallet_policy_metrics_from_row(row) -> WalletPolicyMetrics:
     local_weight = _row_optional_value(row, "local_weight")
     local_drop_ready = _row_optional_value(row, "local_drop_ready")
     local_drop_reason = _row_optional_value(row, "local_drop_reason")
+    post_promotion_resolved_copied_count = int(_row_optional_value(row, "post_promotion_resolved_copied_count") or 0)
+    post_promotion_resolved_copied_wins = int(_row_optional_value(row, "post_promotion_resolved_copied_wins") or 0)
+    post_promotion_resolved_copied_win_rate = _row_optional_value(row, "post_promotion_resolved_copied_win_rate")
+    post_promotion_resolved_copied_avg_return = _row_optional_value(row, "post_promotion_resolved_copied_avg_return")
+    post_promotion_evidence_ready = _row_optional_value(row, "post_promotion_evidence_ready")
+    post_promotion_evidence_note = _row_optional_value(row, "post_promotion_evidence_note")
     return WalletPolicyMetrics(
         total_buy_signals=int(row["total_buy_signals"] or 0),
         resolved_copied_count=resolved_copied_count,
@@ -500,6 +588,36 @@ def _wallet_policy_metrics_from_row(row) -> WalletPolicyMetrics:
         local_weight=float(local_weight or 0.0),
         local_drop_ready=bool(local_drop_ready or 0),
         local_drop_reason=str(local_drop_reason or "").strip() or None,
+        post_promotion_baseline_at=int(_row_optional_value(row, "post_promotion_baseline_at") or 0),
+        post_promotion_source=str(_row_optional_value(row, "post_promotion_source") or "").strip(),
+        post_promotion_reason=str(_row_optional_value(row, "post_promotion_reason") or "").strip(),
+        post_promotion_total_buy_signals=int(_row_optional_value(row, "post_promotion_total_buy_signals") or 0),
+        post_promotion_uncopyable_skips=int(_row_optional_value(row, "post_promotion_uncopyable_skips") or 0),
+        post_promotion_timing_skips=int(_row_optional_value(row, "post_promotion_timing_skips") or 0),
+        post_promotion_liquidity_skips=int(_row_optional_value(row, "post_promotion_liquidity_skips") or 0),
+        post_promotion_uncopyable_skip_rate=float(_row_optional_value(row, "post_promotion_uncopyable_skip_rate") or 0.0),
+        post_promotion_resolved_copied_count=post_promotion_resolved_copied_count,
+        post_promotion_resolved_copied_wins=post_promotion_resolved_copied_wins,
+        post_promotion_resolved_copied_win_rate=(
+            float(post_promotion_resolved_copied_win_rate)
+            if post_promotion_resolved_copied_win_rate is not None
+            else (
+                post_promotion_resolved_copied_wins / post_promotion_resolved_copied_count
+                if post_promotion_resolved_copied_count > 0
+                else None
+            )
+        ),
+        post_promotion_resolved_copied_avg_return=(
+            float(post_promotion_resolved_copied_avg_return)
+            if post_promotion_resolved_copied_avg_return is not None
+            else None
+        ),
+        post_promotion_resolved_copied_total_pnl_usd=float(
+            _row_optional_value(row, "post_promotion_resolved_copied_total_pnl_usd") or 0.0
+        ),
+        post_promotion_last_resolved_at=int(_row_optional_value(row, "post_promotion_last_resolved_at") or 0),
+        post_promotion_evidence_ready=bool(post_promotion_evidence_ready or 0),
+        post_promotion_evidence_note=str(post_promotion_evidence_note or "").strip() or None,
     )
 
 
@@ -531,7 +649,23 @@ def _wallet_policy_metrics_map(wallet_addresses: list[str]) -> dict[str, WalletP
                 local_quality_score,
                 local_weight,
                 local_drop_ready,
-                local_drop_reason
+                local_drop_reason,
+                post_promotion_baseline_at,
+                post_promotion_source,
+                post_promotion_reason,
+                post_promotion_total_buy_signals,
+                post_promotion_uncopyable_skips,
+                post_promotion_timing_skips,
+                post_promotion_liquidity_skips,
+                post_promotion_uncopyable_skip_rate,
+                post_promotion_resolved_copied_count,
+                post_promotion_resolved_copied_wins,
+                post_promotion_resolved_copied_win_rate,
+                post_promotion_resolved_copied_avg_return,
+                post_promotion_resolved_copied_total_pnl_usd,
+                post_promotion_last_resolved_at,
+                post_promotion_evidence_ready,
+                post_promotion_evidence_note
             FROM wallet_policy_metrics
             WHERE wallet_address IN ({placeholders})
             """,
@@ -558,6 +692,7 @@ def _refresh_wallet_policy_metrics(wallet_addresses: list[str]) -> dict[str, Wal
     recent_cutoff = now_ts - _RECENT_LOCAL_POLICY_WINDOW_SECONDS
     conn = get_conn()
     try:
+        promotion_state_map = load_wallet_promotion_state(wallets, conn=conn)
         rows = conn.execute(
             f"""
             SELECT
@@ -626,11 +761,138 @@ def _refresh_wallet_policy_metrics(wallet_addresses: list[str]) -> dict[str, Wal
             (recent_cutoff, recent_cutoff, recent_cutoff, recent_cutoff, *wallets),
         ).fetchall()
 
+        post_promotion_rows: dict[str, dict[str, float | int | str | None]] = {}
+        promotion_wallets = [
+            wallet
+            for wallet, state in promotion_state_map.items()
+            if int(state.get("baseline_at") or 0) > 0
+        ]
+        if promotion_wallets:
+            values_sql = ",".join("(?, ?, ?, ?)" for _ in promotion_wallets)
+            promotion_params: list[object] = []
+            for wallet in promotion_wallets:
+                state = promotion_state_map.get(wallet, {})
+                promotion_params.extend(
+                    [
+                        wallet,
+                        int(state.get("baseline_at") or 0),
+                        str(state.get("promotion_source") or "").strip(),
+                        str(state.get("promotion_reason") or "").strip(),
+                    ]
+                )
+            promotion_query_rows = conn.execute(
+                f"""
+                WITH promotion_state(wallet_address, baseline_at, promotion_source, promotion_reason) AS (
+                    VALUES {values_sql}
+                )
+                SELECT
+                    p.wallet_address AS trader_address,
+                    p.baseline_at AS post_promotion_baseline_at,
+                    p.promotion_source AS post_promotion_source,
+                    p.promotion_reason AS post_promotion_reason,
+                    SUM(
+                        CASE
+                            WHEN COALESCE(t.source_action, 'buy')='buy'
+                             AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
+                             AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_total_buy_signals,
+                    SUM(
+                        CASE
+                            WHEN COALESCE(t.source_action, 'buy')='buy'
+                             AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
+                             AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                             AND {_UNCOPYABLE_TIMING_SQL}
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_timing_skips,
+                    SUM(
+                        CASE
+                            WHEN COALESCE(t.source_action, 'buy')='buy'
+                             AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
+                             AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                             AND {_UNCOPYABLE_LIQUIDITY_SQL}
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_liquidity_skips,
+                    SUM(
+                        CASE
+                            WHEN COALESCE(t.source_action, 'buy')='buy'
+                             AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
+                             AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                             AND {_UNCOPYABLE_SKIP_SQL}
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_uncopyable_skips,
+                    SUM(
+                        CASE
+                            WHEN {_RESOLVED_COPIED_BUY_SQL}
+                             AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_resolved_copied_count,
+                    SUM(
+                        CASE
+                            WHEN {_RESOLVED_COPIED_BUY_SQL}
+                             AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                             AND {_RESOLVED_PNL_SQL} > 0
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_resolved_copied_wins,
+                    AVG(
+                        CASE
+                            WHEN {_RESOLVED_COPIED_BUY_SQL}
+                             AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                                THEN {_RESOLVED_PNL_SQL} / NULLIF(COALESCE(t.actual_entry_size_usd, t.signal_size_usd, 0), 0)
+                            ELSE NULL
+                        END
+                    ) AS post_promotion_resolved_copied_avg_return,
+                    ROUND(
+                        SUM(
+                            CASE
+                                WHEN {_RESOLVED_COPIED_BUY_SQL}
+                                 AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                                    THEN COALESCE({_RESOLVED_PNL_SQL}, 0)
+                                ELSE 0
+                            END
+                        ),
+                        6
+                    ) AS post_promotion_resolved_copied_total_pnl_usd,
+                    MAX(
+                        CASE
+                            WHEN {_RESOLVED_COPIED_BUY_SQL}
+                             AND COALESCE(t.placed_at, 0) >= p.baseline_at
+                                THEN COALESCE(t.exited_at, t.resolved_at, t.placed_at, 0)
+                            ELSE 0
+                        END
+                    ) AS post_promotion_last_resolved_at
+                FROM promotion_state p
+                LEFT JOIN trade_log AS t
+                  ON LOWER(t.trader_address)=p.wallet_address
+                GROUP BY p.wallet_address, p.baseline_at, p.promotion_source, p.promotion_reason
+                """,
+                tuple(promotion_params),
+            ).fetchall()
+            post_promotion_rows = {
+                str(row["trader_address"] or "").strip().lower(): dict(row)
+                for row in promotion_query_rows
+                if str(row["trader_address"] or "").strip()
+            }
+
         metrics_map: dict[str, WalletPolicyMetrics] = {}
         for row in rows:
             wallet = str(row["trader_address"] or "").strip().lower()
             if not wallet:
                 continue
+            promotion_row = post_promotion_rows.get(wallet, {})
+            promotion_state = promotion_state_map.get(wallet, {})
             metrics = _wallet_policy_metrics_from_row(
                 {
                     **dict(row),
@@ -639,9 +901,35 @@ def _refresh_wallet_policy_metrics(wallet_addresses: list[str]) -> dict[str, Wal
                     "local_weight": 0.0,
                     "local_drop_ready": 0,
                     "local_drop_reason": None,
+                    "post_promotion_baseline_at": int(promotion_row.get("post_promotion_baseline_at") or promotion_state.get("baseline_at") or 0),
+                    "post_promotion_source": str(promotion_row.get("post_promotion_source") or promotion_state.get("promotion_source") or "").strip(),
+                    "post_promotion_reason": str(promotion_row.get("post_promotion_reason") or promotion_state.get("promotion_reason") or "").strip(),
+                    "post_promotion_total_buy_signals": int(promotion_row.get("post_promotion_total_buy_signals") or 0),
+                    "post_promotion_uncopyable_skips": int(promotion_row.get("post_promotion_uncopyable_skips") or 0),
+                    "post_promotion_timing_skips": int(promotion_row.get("post_promotion_timing_skips") or 0),
+                    "post_promotion_liquidity_skips": int(promotion_row.get("post_promotion_liquidity_skips") or 0),
+                    "post_promotion_uncopyable_skip_rate": 0.0,
+                    "post_promotion_resolved_copied_count": int(promotion_row.get("post_promotion_resolved_copied_count") or 0),
+                    "post_promotion_resolved_copied_wins": int(promotion_row.get("post_promotion_resolved_copied_wins") or 0),
+                    "post_promotion_resolved_copied_win_rate": None,
+                    "post_promotion_resolved_copied_avg_return": promotion_row.get("post_promotion_resolved_copied_avg_return"),
+                    "post_promotion_resolved_copied_total_pnl_usd": float(promotion_row.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0),
+                    "post_promotion_last_resolved_at": int(promotion_row.get("post_promotion_last_resolved_at") or 0),
+                    "post_promotion_evidence_ready": 0,
+                    "post_promotion_evidence_note": None,
                 }
             )
+            if metrics.post_promotion_total_buy_signals > 0:
+                object.__setattr__(
+                    metrics,
+                    "post_promotion_uncopyable_skip_rate",
+                    round(
+                        metrics.post_promotion_uncopyable_skips / metrics.post_promotion_total_buy_signals,
+                        4,
+                    ),
+                )
             local_quality_score, local_weight = _score_local_copied_performance(metrics)
+            post_promotion_evidence_ready, post_promotion_evidence_note = _post_promotion_evidence_state(metrics)
             local_drop_ready, local_drop_reason = _local_drop_decision(metrics)
             metrics_map[wallet] = WalletPolicyMetrics(
                 total_buy_signals=metrics.total_buy_signals,
@@ -661,10 +949,42 @@ def _refresh_wallet_policy_metrics(wallet_addresses: list[str]) -> dict[str, Wal
                 local_weight=local_weight,
                 local_drop_ready=local_drop_ready,
                 local_drop_reason=local_drop_reason,
+                post_promotion_baseline_at=metrics.post_promotion_baseline_at,
+                post_promotion_source=metrics.post_promotion_source or "",
+                post_promotion_reason=metrics.post_promotion_reason or "",
+                post_promotion_total_buy_signals=metrics.post_promotion_total_buy_signals,
+                post_promotion_uncopyable_skips=metrics.post_promotion_uncopyable_skips,
+                post_promotion_timing_skips=metrics.post_promotion_timing_skips,
+                post_promotion_liquidity_skips=metrics.post_promotion_liquidity_skips,
+                post_promotion_uncopyable_skip_rate=metrics.post_promotion_uncopyable_skip_rate,
+                post_promotion_resolved_copied_count=metrics.post_promotion_resolved_copied_count,
+                post_promotion_resolved_copied_wins=metrics.post_promotion_resolved_copied_wins,
+                post_promotion_resolved_copied_win_rate=metrics.post_promotion_resolved_copied_win_rate,
+                post_promotion_resolved_copied_avg_return=metrics.post_promotion_resolved_copied_avg_return,
+                post_promotion_resolved_copied_total_pnl_usd=metrics.post_promotion_resolved_copied_total_pnl_usd,
+                post_promotion_last_resolved_at=metrics.post_promotion_last_resolved_at,
+                post_promotion_evidence_ready=post_promotion_evidence_ready,
+                post_promotion_evidence_note=post_promotion_evidence_note,
             )
 
         for wallet in wallets:
-            metrics_map.setdefault(wallet, WalletPolicyMetrics())
+            if wallet in metrics_map:
+                continue
+            promotion_state = promotion_state_map.get(wallet, {})
+            baseline_at = int(promotion_state.get("baseline_at") or 0)
+            empty_metrics = WalletPolicyMetrics(
+                post_promotion_baseline_at=baseline_at,
+                post_promotion_source=str(promotion_state.get("promotion_source") or "").strip(),
+                post_promotion_reason=str(promotion_state.get("promotion_reason") or "").strip(),
+            )
+            post_promotion_evidence_ready, post_promotion_evidence_note = _post_promotion_evidence_state(empty_metrics)
+            metrics_map[wallet] = WalletPolicyMetrics(
+                post_promotion_baseline_at=empty_metrics.post_promotion_baseline_at,
+                post_promotion_source=empty_metrics.post_promotion_source,
+                post_promotion_reason=empty_metrics.post_promotion_reason,
+                post_promotion_evidence_ready=post_promotion_evidence_ready,
+                post_promotion_evidence_note=post_promotion_evidence_note,
+            )
 
         conn.executemany(
             """
@@ -687,8 +1007,24 @@ def _refresh_wallet_policy_metrics(wallet_addresses: list[str]) -> dict[str, Wal
                 local_weight,
                 local_drop_ready,
                 local_drop_reason,
+                post_promotion_baseline_at,
+                post_promotion_source,
+                post_promotion_reason,
+                post_promotion_total_buy_signals,
+                post_promotion_uncopyable_skips,
+                post_promotion_timing_skips,
+                post_promotion_liquidity_skips,
+                post_promotion_uncopyable_skip_rate,
+                post_promotion_resolved_copied_count,
+                post_promotion_resolved_copied_wins,
+                post_promotion_resolved_copied_win_rate,
+                post_promotion_resolved_copied_avg_return,
+                post_promotion_resolved_copied_total_pnl_usd,
+                post_promotion_last_resolved_at,
+                post_promotion_evidence_ready,
+                post_promotion_evidence_note,
                 updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(wallet_address) DO UPDATE SET
                 total_buy_signals=excluded.total_buy_signals,
                 resolved_copied_count=excluded.resolved_copied_count,
@@ -707,6 +1043,22 @@ def _refresh_wallet_policy_metrics(wallet_addresses: list[str]) -> dict[str, Wal
                 local_weight=excluded.local_weight,
                 local_drop_ready=excluded.local_drop_ready,
                 local_drop_reason=excluded.local_drop_reason,
+                post_promotion_baseline_at=excluded.post_promotion_baseline_at,
+                post_promotion_source=excluded.post_promotion_source,
+                post_promotion_reason=excluded.post_promotion_reason,
+                post_promotion_total_buy_signals=excluded.post_promotion_total_buy_signals,
+                post_promotion_uncopyable_skips=excluded.post_promotion_uncopyable_skips,
+                post_promotion_timing_skips=excluded.post_promotion_timing_skips,
+                post_promotion_liquidity_skips=excluded.post_promotion_liquidity_skips,
+                post_promotion_uncopyable_skip_rate=excluded.post_promotion_uncopyable_skip_rate,
+                post_promotion_resolved_copied_count=excluded.post_promotion_resolved_copied_count,
+                post_promotion_resolved_copied_wins=excluded.post_promotion_resolved_copied_wins,
+                post_promotion_resolved_copied_win_rate=excluded.post_promotion_resolved_copied_win_rate,
+                post_promotion_resolved_copied_avg_return=excluded.post_promotion_resolved_copied_avg_return,
+                post_promotion_resolved_copied_total_pnl_usd=excluded.post_promotion_resolved_copied_total_pnl_usd,
+                post_promotion_last_resolved_at=excluded.post_promotion_last_resolved_at,
+                post_promotion_evidence_ready=excluded.post_promotion_evidence_ready,
+                post_promotion_evidence_note=excluded.post_promotion_evidence_note,
                 updated_at=excluded.updated_at
             """,
             [
@@ -729,6 +1081,22 @@ def _refresh_wallet_policy_metrics(wallet_addresses: list[str]) -> dict[str, Wal
                     metrics.local_weight,
                     1 if metrics.local_drop_ready else 0,
                     metrics.local_drop_reason,
+                    metrics.post_promotion_baseline_at,
+                    metrics.post_promotion_source or "",
+                    metrics.post_promotion_reason or "",
+                    metrics.post_promotion_total_buy_signals,
+                    metrics.post_promotion_uncopyable_skips,
+                    metrics.post_promotion_timing_skips,
+                    metrics.post_promotion_liquidity_skips,
+                    metrics.post_promotion_uncopyable_skip_rate,
+                    metrics.post_promotion_resolved_copied_count,
+                    metrics.post_promotion_resolved_copied_wins,
+                    metrics.post_promotion_resolved_copied_win_rate,
+                    metrics.post_promotion_resolved_copied_avg_return,
+                    metrics.post_promotion_resolved_copied_total_pnl_usd,
+                    metrics.post_promotion_last_resolved_at,
+                    1 if metrics.post_promotion_evidence_ready else 0,
+                    metrics.post_promotion_evidence_note,
                     now_ts,
                 )
                 for wallet, metrics in metrics_map.items()
@@ -1025,6 +1393,7 @@ def _auto_drop_uncopyable_wallets(wallet_addresses: list[str], protected_wallets
     status_rows = _wallet_status_rows(wallets)
     logged_activity_map = _wallet_logged_activity_map(wallets)
     skip_metrics = _wallet_skip_metrics_map(wallets)
+    policy_metrics_map = _wallet_policy_metrics_map(wallets)
     now_ts = int(time.time())
     to_drop: list[tuple[str, str, int, int]] = []
 
@@ -1036,13 +1405,25 @@ def _auto_drop_uncopyable_wallets(wallet_addresses: list[str], protected_wallets
             continue
 
         metrics = skip_metrics.get(wallet)
-        if metrics is None:
+        policy_metrics = policy_metrics_map.get(wallet)
+        total_buy_signals = metrics.total_buy_signals if metrics is not None else 0
+        uncopyable_skip_rate = metrics.uncopyable_skip_rate if metrics is not None else 0.0
+        resolved_copied_count = metrics.resolved_copied_count if metrics is not None else 0
+        uncopyable_skips = metrics.uncopyable_skips if metrics is not None else 0
+        reason_prefix = "uncopyable"
+
+        if policy_metrics is not None and int(policy_metrics.post_promotion_baseline_at or 0) > 0:
+            total_buy_signals = policy_metrics.post_promotion_total_buy_signals
+            uncopyable_skip_rate = policy_metrics.post_promotion_uncopyable_skip_rate
+            resolved_copied_count = policy_metrics.post_promotion_resolved_copied_count
+            uncopyable_skips = policy_metrics.post_promotion_uncopyable_skips
+            reason_prefix = "post_promotion_uncopyable"
+
+        if total_buy_signals < minimum_buys:
             continue
-        if metrics.total_buy_signals < minimum_buys:
+        if uncopyable_skip_rate < max_skip_rate:
             continue
-        if metrics.uncopyable_skip_rate < max_skip_rate:
-            continue
-        if metrics.resolved_copied_count > max_resolved_copied:
+        if resolved_copied_count > max_resolved_copied:
             continue
 
         reactivated_at = int(status_row.get("reactivated_at") or 0)
@@ -1051,8 +1432,8 @@ def _auto_drop_uncopyable_wallets(wallet_addresses: list[str], protected_wallets
             continue
 
         reason = (
-            f"uncopyable {metrics.uncopyable_skip_rate * 100.0:.0f}% "
-            f"{metrics.uncopyable_skips}/{metrics.total_buy_signals} buys"
+            f"{reason_prefix} {uncopyable_skip_rate * 100.0:.0f}% "
+            f"{uncopyable_skips}/{total_buy_signals} buys"
         )
         to_drop.append((wallet, reason, now_ts, last_logged_ts))
 
@@ -1287,9 +1668,16 @@ class WatchlistManager:
 
     def _build_snapshot(self, *, run_auto_drop: bool = True) -> WatchTierSnapshot:
         _ensure_tracking_started(self.wallets)
-        _refresh_wallet_policy_metrics(self.wallets)
+        policy_metrics_map = _refresh_wallet_policy_metrics(self.wallets)
         profitable_local_wallets = _profitable_local_wallets(self.wallets)
-        inactivity_protected_wallets = _protected_best_wallets(self.wallets) | profitable_local_wallets
+        promotion_protected_wallets = {
+            wallet
+            for wallet, metrics in policy_metrics_map.items()
+            if int(metrics.post_promotion_baseline_at or 0) > 0 and not metrics.post_promotion_evidence_ready
+        }
+        inactivity_protected_wallets = (
+            _protected_best_wallets(self.wallets) | profitable_local_wallets | promotion_protected_wallets
+        )
         quality_protected_wallets = inactivity_protected_wallets
         if run_auto_drop:
             _auto_drop_inactive_wallets(self.wallets, inactivity_protected_wallets)

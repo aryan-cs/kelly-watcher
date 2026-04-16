@@ -10,6 +10,7 @@ import {
   type ApiHealth,
   type BotState,
   type BotStateResponse,
+  type DbRecoveryInventoryEntry,
   type DiscoveryCandidate,
   type DiscoveryCandidatesResponse,
   type EventsResponse,
@@ -204,6 +205,41 @@ function firstLine(value: string | undefined | null, fallback = ''): string {
   return line.trim() || fallback
 }
 
+function parseStartupDiagnostics(
+  value: string | undefined | null
+): {issues: string[]; warnings: string[]} {
+  const normalized = String(value || '').trim()
+  if (!normalized) {
+    return {issues: [], warnings: []}
+  }
+  const issues: string[] = []
+  const warnings: string[] = []
+  let section: 'issues' | 'warnings' = 'issues'
+  for (const rawLine of normalized.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) {
+      continue
+    }
+    if (/^warnings$/i.test(line)) {
+      section = 'warnings'
+      continue
+    }
+    if (!line.startsWith('-')) {
+      continue
+    }
+    const detail = line.replace(/^-+\s*/, '').trim()
+    if (!detail) {
+      continue
+    }
+    if (section === 'warnings') {
+      warnings.push(detail)
+    } else {
+      issues.push(detail)
+    }
+  }
+  return {issues, warnings}
+}
+
 function usePolledJson<T>(
   load: (signal: AbortSignal) => Promise<T>,
   intervalMs: number,
@@ -382,6 +418,21 @@ function ManagedWalletCard({wallet, onDrop, onReactivate, busyWallet}: ManagedWa
   const actionLabel = trackingEnabled && !isDropped ? 'Drop' : 'Reactivate'
   const actionHandler = trackingEnabled && !isDropped ? onDrop : onReactivate
   const statusLabel = isDropped ? 'dropped' : trackingEnabled ? 'tracked' : 'disabled'
+  const postPromotionActive = Boolean(wallet.post_promotion_baseline_at)
+  const trustTierLabel = humanizeStatus(wallet.trust_tier, 'Trust pending')
+  const trustSizeLabel =
+    wallet.trust_size_multiplier === undefined || wallet.trust_size_multiplier === null
+      ? 'N/A'
+      : formatPercent(wallet.trust_size_multiplier * 100)
+  const postPromotionSummary = postPromotionActive
+    ? `${
+        wallet.post_promotion_evidence_ready ? 'evidence ready' : 'awaiting proof'
+      } • copied ${formatNumber(wallet.post_promotion_resolved_copied_count)} • buys ${formatNumber(
+        wallet.post_promotion_total_buy_signals
+      )} • skip ${formatPercent((wallet.post_promotion_uncopyable_skip_rate || 0) * 100)} • pnl ${formatCurrency(
+        wallet.post_promotion_resolved_copied_total_pnl_usd
+      )}`
+    : ''
 
   return (
     <article className="event-card">
@@ -389,6 +440,7 @@ function ManagedWalletCard({wallet, onDrop, onReactivate, busyWallet}: ManagedWa
         <span className={`pill ${trackingEnabled && !isDropped ? 'pill--decision-accepted' : 'pill--decision-blocked'}`}>
           {statusLabel}
         </span>
+        <span className="pill">{trustTierLabel}</span>
         <span className="pill">{humanizeStatus(wallet.registry_source || wallet.source, 'wallet snapshot')}</span>
         <span className="event-card__time">{formatRelativeSeconds(wallet.updated_at || wallet.added_at || wallet.tracking_started_at)}</span>
       </div>
@@ -397,9 +449,16 @@ function ManagedWalletCard({wallet, onDrop, onReactivate, busyWallet}: ManagedWa
         <span>{walletAddress || 'N/A'}</span>
         <span>{wallet.discovery_score !== undefined ? `score ${wallet.discovery_score.toFixed(3)}` : 'no discovery score'}</span>
         <span>{wallet.discovery_accepted ? 'ready' : wallet.discovery_reason || 'snapshot only'}</span>
+        {postPromotionActive ? <span>promoted {formatRelativeSeconds(wallet.post_promotion_baseline_at)}</span> : null}
       </div>
       <div className="event-card__footer">
-        <span>{wallet.status_reason || wallet.disabled_reason || 'No lifecycle note recorded.'}</span>
+        <span>
+          {`Trust: ${trustTierLabel} • size ${trustSizeLabel}${wallet.trust_note ? ` • ${wallet.trust_note}` : ''}`}
+        </span>
+        <span>
+          {wallet.post_promotion_evidence_note || wallet.status_reason || wallet.disabled_reason || 'No lifecycle note recorded.'}
+        </span>
+        {postPromotionActive ? <span>{postPromotionSummary}</span> : null}
         <button
           type="button"
           className="button button--ghost"
@@ -532,12 +591,94 @@ export function App() {
   const [dashboardActionMessage, setDashboardActionMessage] = useState('')
   const [busyAction, setBusyAction] = useState<string | null>(null)
 
+  const promotedManagedWallets = useMemo(
+    () => managedWallets.filter((wallet) => Boolean(wallet.post_promotion_baseline_at)),
+    [managedWallets]
+  )
+  const promotionProbationWallets = useMemo(
+    () => promotedManagedWallets.filter((wallet) => String(wallet.trust_tier || '').trim().toLowerCase() === 'promotion_probation'),
+    [promotedManagedWallets]
+  )
+  const promotionReadyWallets = useMemo(
+    () => promotedManagedWallets.filter((wallet) => Boolean(wallet.post_promotion_evidence_ready)),
+    [promotedManagedWallets]
+  )
+  const promotionProbationWeight = useMemo(
+    () =>
+      promotionProbationWallets.reduce((total, wallet) => {
+        const multiplier = Number(wallet.trust_size_multiplier)
+        return total + (Number.isFinite(multiplier) ? multiplier : 0)
+      }, 0),
+    [promotionProbationWallets]
+  )
+  const promotedResolvedCopiedCount = useMemo(
+    () =>
+      promotedManagedWallets.reduce((total, wallet) => {
+        const count = Number(wallet.post_promotion_resolved_copied_count)
+        return total + (Number.isFinite(count) ? count : 0)
+      }, 0),
+    [promotedManagedWallets]
+  )
+  const promotedResolvedCopiedPnl = useMemo(
+    () =>
+      promotedManagedWallets.reduce((total, wallet) => {
+        const pnl = Number(wallet.post_promotion_resolved_copied_total_pnl_usd)
+        return total + (Number.isFinite(pnl) ? pnl : 0)
+      }, 0),
+    [promotedManagedWallets]
+  )
+  const promotedWeightedWinRate = useMemo(() => {
+    let winsWeight = 0
+    let totalWeight = 0
+    for (const wallet of promotedManagedWallets) {
+      const count = Number(wallet.post_promotion_resolved_copied_count)
+      const winRate = Number(wallet.post_promotion_resolved_copied_win_rate)
+      if (!Number.isFinite(count) || count <= 0 || !Number.isFinite(winRate)) {
+        continue
+      }
+      winsWeight += count * winRate
+      totalWeight += count
+    }
+    return totalWeight > 0 ? winsWeight / totalWeight : null
+  }, [promotedManagedWallets])
+  const promotionPositiveReadyCount = useMemo(
+    () =>
+      promotionReadyWallets.filter((wallet) => Number(wallet.post_promotion_resolved_copied_total_pnl_usd || 0) > 0).length,
+    [promotionReadyWallets]
+  )
+  const promotionReadyRate = useMemo(
+    () => (promotedManagedWallets.length > 0 ? promotionReadyWallets.length / promotedManagedWallets.length : null),
+    [promotedManagedWallets.length, promotionReadyWallets.length]
+  )
+  const promotionBlockerPreview = useMemo(() => {
+    const notes = promotionProbationWallets
+      .map((wallet) => firstLine(wallet.post_promotion_evidence_note || wallet.trust_note || ''))
+      .filter(Boolean)
+    if (!notes.length) {
+      return 'No promoted wallets are currently blocked on post-promotion proof.'
+    }
+    const unique = Array.from(new Set(notes))
+    const preview = unique.slice(0, 2).join(' • ')
+    return unique.length > 2 ? `${preview} • +${unique.length - 2} more` : preview
+  }, [promotionProbationWallets])
+
+  const startupFailed = Boolean(botState?.startup_failed || botState?.startup_validation_failed)
+  const startupValidationFailed = Boolean(botState?.startup_validation_failed)
   const startupBlocked = Boolean(botState?.startup_blocked || botState?.startup_recovery_only)
   const startupRecoveryOnly = Boolean(botState?.startup_recovery_only)
   const startupBlockReason = firstLine(
     botState?.startup_block_reason,
     startupRecoveryOnly ? 'Startup is blocked in recovery-only mode.' : 'Startup is currently blocked.'
   )
+  const startupFailureMessage = firstLine(botState?.startup_failure_message, startupBlockReason)
+  const startupDiagnosticsSource =
+    botState?.startup_failure_message || botState?.startup_validation_message || botState?.startup_detail || ''
+  const startupDiagnostics = useMemo(
+    () => parseStartupDiagnostics(startupDiagnosticsSource),
+    [startupDiagnosticsSource]
+  )
+  const startupIssuePreview = startupDiagnostics.issues.slice(0, 3)
+  const startupWarningPreview = startupDiagnostics.warnings.slice(0, 2)
   const dbIntegrityBlocked = Boolean(botState?.db_integrity_known) && botState?.db_integrity_ok === false
   const dbIntegrityMessage = firstLine(botState?.db_integrity_message, 'SQLite integrity check failed.')
   const shadowRestartPending = Boolean(botState?.shadow_restart_pending)
@@ -576,6 +717,19 @@ export function App() {
     botState?.db_recovery_latest_verified_backup_path,
     latestVerifiedBackupFile || 'Unavailable'
   )
+  const recoveryInventory = Array.isArray(botState?.db_recovery_inventory)
+    ? (botState?.db_recovery_inventory as DbRecoveryInventoryEntry[])
+    : []
+  const recoveryInventorySummary = recoveryInventory.length
+    ? `${formatNumber(botState?.db_recovery_inventory_count ?? recoveryInventory.length)} checked`
+    : 'No retained verified backups checked yet.'
+  const recoveryInventoryPreview = recoveryInventory.slice(0, 4).map((entry) => {
+    const label = humanizeStatus(entry.kind, 'Backup')
+    const fileName = basename(entry.path)
+    const status = entry.ready ? (entry.selected ? 'selected' : 'ready') : 'failed'
+    const detail = firstLine(entry.message, entry.ready ? 'integrity OK' : 'integrity check failed')
+    return `${label}: ${fileName} — ${status}${detail ? ` • ${detail}` : ''}`
+  })
   const archiveWindowDetail =
     botState?.trade_log_archive_state_known
       ? `cutoff ${formatTimestamp(botState?.trade_log_archive_cutoff_ts)} • preserve since ${formatTimestamp(
@@ -645,6 +799,107 @@ export function App() {
     }
     return ''
   }, [dbIntegrityBlocked, dbIntegrityMessage, shadowRestartMessage, shadowRestartPending, startupBlocked, startupBlockReason])
+  const dataPanelsBlockedReason = useMemo(() => {
+    if (shadowRestartPending) {
+      return shadowRestartMessage
+    }
+    if (startupBlocked) {
+      return startupBlockReason
+    }
+    if (dbIntegrityBlocked) {
+      return dbIntegrityMessage
+    }
+    return ''
+  }, [dbIntegrityBlocked, dbIntegrityMessage, shadowRestartMessage, shadowRestartPending, startupBlocked, startupBlockReason])
+  const walletRegistryEmptyMessage = dataPanelsBlockedReason
+    ? `Wallet registry queries are paused: ${dataPanelsBlockedReason}`
+    : 'No wallet registry rows available yet. Once the backend imports or stores managed wallets, they will appear here.'
+  const discoveryEmptyMessage = dataPanelsBlockedReason
+    ? `Discovery queries are paused: ${dataPanelsBlockedReason}`
+    : 'No discovery candidates have been cached yet.'
+  const walletTimelineEmptyMessage = dataPanelsBlockedReason
+    ? `Wallet timeline queries are paused: ${dataPanelsBlockedReason}`
+    : 'No lifecycle events are available yet.'
+  const walletPromotionSummaryBlockedMessage = dataPanelsBlockedReason
+    ? `Queries paused • ${dataPanelsBlockedReason}`
+    : ''
+  const walletPromotionRows = useMemo(
+    () => [
+      {
+        label: 'Auto-Promoted',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotedManagedWallets.length
+            ? `${formatNumber(promotedManagedWallets.length)} wallet(s)`
+            : 'No promoted wallets tracked yet'
+      },
+      {
+        label: 'Awaiting Proof',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotionProbationWallets.length
+            ? `${formatNumber(promotionProbationWallets.length)} wallet(s) • size ${formatPercent(
+                promotionProbationWeight * 100
+              )}`
+            : 'No promoted wallets are currently in probation'
+      },
+      {
+        label: 'Evidence Ready',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotionReadyWallets.length
+            ? `${formatNumber(promotionReadyWallets.length)} wallet(s) • ${formatNumber(
+                promotionPositiveReadyCount
+              )} positive P&L`
+            : 'No promoted wallets have cleared post-promotion proof yet'
+      },
+      {
+        label: 'Ready Rate',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotionReadyRate !== null
+            ? `${formatPercent(promotionReadyRate * 100)} • ${formatNumber(
+                promotionReadyWallets.length
+              )}/${formatNumber(promotedManagedWallets.length)} promoted wallets`
+            : 'No promoted wallets tracked yet'
+      },
+      {
+        label: 'Copy Quality',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotedResolvedCopiedCount > 0
+            ? `${formatPercent((promotedWeightedWinRate || 0) * 100)} weighted win rate • ${formatNumber(
+                promotedResolvedCopiedCount
+              )} resolved copied trades`
+            : 'No resolved copied post-promotion trades yet'
+      },
+      {
+        label: 'Post-Promotion P&L',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotedResolvedCopiedCount > 0
+            ? `${formatCurrency(promotedResolvedCopiedPnl)} total copied P&L`
+            : 'No post-promotion copied P&L yet'
+      },
+      {
+        label: 'Probation Blockers',
+        value: walletPromotionSummaryBlockedMessage || promotionBlockerPreview
+      }
+    ],
+    [
+      promotedManagedWallets.length,
+      promotedResolvedCopiedCount,
+      promotedResolvedCopiedPnl,
+      promotedWeightedWinRate,
+      promotionBlockerPreview,
+      promotionPositiveReadyCount,
+      promotionReadyRate,
+      promotionProbationWallets.length,
+      promotionProbationWeight,
+      promotionReadyWallets.length,
+      walletPromotionSummaryBlockedMessage
+    ]
+  )
 
   const refreshDashboardData = () => {
     startTransition(() => {
@@ -789,8 +1044,18 @@ export function App() {
     const warnings: string[] = []
     if (startupBlocked) {
       warnings.push(
-        startupRecoveryOnly ? `Recovery-only startup: ${startupBlockReason}` : `Startup blocked: ${startupBlockReason}`
+        startupRecoveryOnly
+          ? `Recovery-only startup: ${startupBlockReason}`
+          : startupFailed
+            ? `${startupValidationFailed ? 'Startup validation failed' : 'Startup failed'}: ${startupFailureMessage}`
+            : `Startup blocked: ${startupBlockReason}`
       )
+      for (const issue of startupIssuePreview) {
+        warnings.push(`Startup issue: ${issue}`)
+      }
+      for (const warning of startupWarningPreview) {
+        warnings.push(`Startup warning: ${warning}`)
+      }
     }
     if (dbIntegrityBlocked) {
       warnings.push(`DB integrity failure: ${dbIntegrityMessage}`)
@@ -809,7 +1074,12 @@ export function App() {
     shadowRestartPending,
     startupBlocked,
     startupBlockReason,
+    startupIssuePreview,
+    startupWarningPreview,
+    startupFailed,
+    startupFailureMessage,
     startupRecoveryOnly,
+    startupValidationFailed,
     tradeLogArchiveMessage,
     tradeLogArchivePending
   ])
@@ -825,7 +1095,7 @@ export function App() {
       return {label: 'Recovery Only', tone: 'warning' as const}
     }
     if (startupBlocked) {
-      return {label: 'Startup Blocked', tone: 'warning' as const}
+      return {label: startupFailed ? 'Startup Failed' : 'Startup Blocked', tone: 'warning' as const}
     }
     if (dbIntegrityBlocked) {
       return {label: 'Integrity Failed', tone: 'warning' as const}
@@ -852,6 +1122,7 @@ export function App() {
     savedToken,
     shadowRestartPending,
     startupBlocked,
+    startupFailed,
     startupRecoveryOnly,
     tradeLogArchivePending
   ])
@@ -936,6 +1207,14 @@ export function App() {
           ? `DB ${formatLogicalAllocated(state?.storage_trading_db_size_bytes, state?.storage_trading_db_allocated_bytes)}`
           : 'Storage snapshot pending',
         tone: dbIntegrityBlocked ? 'warning' : 'default'
+      },
+      {
+        label: 'Recovery Inventory',
+        value: recoveryInventorySummary,
+        meta: recoveryInventory.length
+          ? recoveryInventoryPreview[0] || 'Retained backup candidates checked'
+          : recoveryCandidateMessage,
+        tone: recoveryInventory.some((entry) => entry.ready) ? 'shadow' : 'warning'
       }
     ] satisfies MetricCardProps[]
   }, [
@@ -957,7 +1236,11 @@ export function App() {
     modeCardTone,
     modeCardValue,
     tradeLogArchiveMessage,
-    tradeLogArchivePending
+    tradeLogArchivePending,
+    recoveryCandidateMessage,
+    recoveryInventory,
+    recoveryInventoryPreview,
+    recoveryInventorySummary
   ])
 
   const operationsRows = useMemo(
@@ -971,8 +1254,16 @@ export function App() {
         value: startupBlocked
           ? startupRecoveryOnly
             ? `Recovery-only • ${startupBlockReason}`
-            : `Blocked • ${startupBlockReason}`
+            : startupFailed
+              ? `${startupValidationFailed ? 'Validation failed' : 'Startup failed'} • ${startupFailureMessage}`
+              : `Blocked • ${startupBlockReason}`
           : 'Normal startup'
+      },
+      {
+        label: 'Startup Issues',
+        value: startupFailed
+          ? `${formatNumber(startupDiagnostics.issues.length)} issue(s) • ${formatNumber(startupDiagnostics.warnings.length)} warning(s)`
+          : 'None reported'
       },
       {
         label: 'DB Integrity',
@@ -1061,7 +1352,12 @@ export function App() {
       shadowSnapshotDetail,
       startupBlocked,
       startupBlockReason,
+      startupDiagnostics.issues.length,
+      startupDiagnostics.warnings.length,
       startupRecoveryOnly,
+      startupFailed,
+      startupFailureMessage,
+      startupValidationFailed,
       discoveryScanMessage,
       discoveryScanStatus,
       effectiveModeLabel,
@@ -1340,6 +1636,12 @@ export function App() {
           <p className="panel__subtle">Mode override: {modeOverrideDetail}</p>
           <p className="panel__subtle">Recovery path: {recoveryPathDetail}</p>
           <p className="panel__subtle">Latest verified backup: {latestVerifiedBackupDetail}</p>
+          <p className="panel__subtle">Recovery Inventory: {recoveryInventorySummary}</p>
+          {recoveryInventoryPreview.map((line) => (
+            <p key={line} className="panel__subtle">
+              Recovery Candidate: {line}
+            </p>
+          ))}
         </div>
         <dl className="detail-list">
           {operationsRows.map((row) => (
@@ -1456,6 +1758,14 @@ export function App() {
           </p>
         </div>
         {managedWalletsResource.error ? <p className="panel__warning">{managedWalletsResource.error.message}</p> : null}
+        <dl className="detail-list">
+          {walletPromotionRows.map((row) => (
+            <div key={row.label} className="detail-list__row">
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
         <div className="stack">
           {managedWallets.length ? (
             managedWallets.map((wallet) => (
@@ -1468,9 +1778,7 @@ export function App() {
               />
             ))
           ) : (
-            <p className="empty-state">
-              No wallet registry rows available yet. Once the backend imports or stores managed wallets, they will appear here.
-            </p>
+            <p className="empty-state">{walletRegistryEmptyMessage}</p>
           )}
         </div>
       </section>
@@ -1508,7 +1816,7 @@ export function App() {
               />
             ))
           ) : (
-            <p className="empty-state">No discovery candidates have been cached yet.</p>
+            <p className="empty-state">{discoveryEmptyMessage}</p>
           )}
         </div>
       </section>
@@ -1536,7 +1844,7 @@ export function App() {
               />
             ))
           ) : (
-            <p className="empty-state">No lifecycle events are available yet.</p>
+            <p className="empty-state">{walletTimelineEmptyMessage}</p>
           )}
         </div>
       </section>

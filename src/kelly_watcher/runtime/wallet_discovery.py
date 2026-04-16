@@ -21,8 +21,10 @@ from kelly_watcher.data.db import (
     get_conn,
     init_db,
     load_managed_wallets,
+    managed_wallet_registry_state,
 )
 from kelly_watcher.tools.rank_copytrade_wallets import (
+    DISCOVERY_SOURCE_SPECS,
     REQUEST_TIMEOUT_SECONDS,
     LeaderboardEntry,
     RankedWallet,
@@ -37,12 +39,7 @@ from kelly_watcher.tools.rank_copytrade_wallets import (
 
 logger = logging.getLogger(__name__)
 
-_DISCOVERY_SOURCES: tuple[tuple[str, str, str, str], ...] = (
-    ("week-pnl", "OVERALL", "WEEK", "PNL"),
-    ("week-vol", "OVERALL", "WEEK", "VOL"),
-    ("month-pnl", "OVERALL", "MONTH", "PNL"),
-    ("month-vol", "OVERALL", "MONTH", "VOL"),
-)
+_DISCOVERY_SOURCES: tuple[tuple[str, str, str, str], ...] = DISCOVERY_SOURCE_SPECS
 _DISCOVERY_SCAN_LOCK = threading.Lock()
 
 _TRADE_LIMIT = 40
@@ -67,6 +64,9 @@ _MIN_CONVICTION_BUY_RATIO = 0.30
 _MIN_AVG_BUY_SIZE_USD = 125.0
 _MIN_LOCAL_RESOLVED_COPIES = 3
 _MIN_LOCAL_COPY_AVG_RETURN = 0.0
+_ADJACENCY_ANCHOR_WALLET_LIMIT = 8
+_DISCOVERED_ADJACENCY_ANCHOR_LIMIT = 8
+_DEFAULT_RANK_FALLBACK = 1_000_000
 
 
 def _normalize_wallets(wallet_addresses: list[str] | tuple[str, ...] | set[str]) -> list[str]:
@@ -95,6 +95,62 @@ def _merge_leaderboard_entry(existing: LeaderboardEntry, incoming: LeaderboardEn
         volume_usd=max(existing.volume_usd, incoming.volume_usd),
         verified=existing.verified or incoming.verified,
     )
+
+
+def _source_priority(label: str) -> tuple[int, int, int]:
+    normalized = str(label or "").strip().lower()
+    if normalized.startswith("leaderboard:"):
+        normalized = normalized.split(":", 1)[1]
+    horizon_order = {"day": 0, "week": 1, "month": 2, "all": 3}
+    metric_order = {"pnl": 0, "vol": 1}
+    pieces = normalized.split("-", 1)
+    horizon = pieces[0] if pieces else ""
+    metric = pieces[1] if len(pieces) > 1 else ""
+    return (
+        horizon_order.get(horizon, len(horizon_order)),
+        metric_order.get(metric, len(metric_order)),
+        len(normalized),
+    )
+
+
+def _entry_sort_key(
+    wallet: str,
+    entry: LeaderboardEntry,
+    source_labels: dict[str, list[str]],
+    source_order: dict[str, int],
+) -> tuple[int, int, tuple[int, int, int], int, str]:
+    labels = list(source_labels.get(wallet, ()))
+    best_label = min((_source_priority(label) for label in labels), default=(99, 99, 99))
+    rank = entry.rank if entry.rank is not None and entry.rank > 0 else _DEFAULT_RANK_FALLBACK
+    return (-len(labels), rank, best_label, source_order.get(wallet, _DEFAULT_RANK_FALLBACK), wallet)
+
+
+def _trade_condition_ids(trades: list[dict[str, Any]]) -> set[str]:
+    condition_ids: set[str] = set()
+    for row in trades:
+        condition_id = str(row.get("conditionId") or row.get("condition_id") or "").strip().lower()
+        if condition_id:
+            condition_ids.add(condition_id)
+    return condition_ids
+
+
+def _candidate_gate_status(row: RankedWallet) -> str:
+    if bool(row.accepted):
+        return "ready"
+    reason = str(row.reject_reason or "").strip().lower()
+    if not reason:
+        return "review_error"
+    if reason.startswith("analysis_failed"):
+        return "review_error"
+    if "local_copy" in reason or "local performance" in reason:
+        return "review_local_performance"
+    if "conviction" in reason:
+        return "review_conviction"
+    if any(token in reason for token in ("avg_buy_size", "large_buy", "buy_size")):
+        return "review_size"
+    if any(token in reason for token in ("lead", "late_buy", "last_trade_age")):
+        return "review_timing"
+    return "review_sample"
 
 
 def _dropped_wallets() -> list[str]:
@@ -138,8 +194,8 @@ def _candidate_entries(
     per_page: int,
     analyze_limit: int,
 ) -> tuple[list[LeaderboardEntry], dict[str, tuple[str, ...]]]:
-    gather_limit = max(analyze_limit * 3, analyze_limit)
     ordered_wallets: list[str] = []
+    source_order: dict[str, int] = {}
     entries_by_wallet: dict[str, LeaderboardEntry] = {}
     source_labels: dict[str, list[str]] = {}
 
@@ -174,15 +230,18 @@ def _candidate_entries(
             if existing is None:
                 entries_by_wallet[wallet] = entry
                 ordered_wallets.append(wallet)
+                source_order[wallet] = len(source_order)
             else:
                 entries_by_wallet[wallet] = _merge_leaderboard_entry(existing, entry)
-
-            if len(ordered_wallets) >= gather_limit:
-                break
-        if len(ordered_wallets) >= gather_limit:
-            break
-
-    selected_wallets = ordered_wallets[:analyze_limit]
+    selected_wallets = sorted(
+        ordered_wallets,
+        key=lambda wallet: _entry_sort_key(
+            wallet,
+            entries_by_wallet[wallet],
+            source_labels,
+            source_order,
+        ),
+    )[:analyze_limit]
     return (
         [entries_by_wallet[wallet] for wallet in selected_wallets],
         {wallet: tuple(source_labels.get(wallet, ())) for wallet in selected_wallets},
@@ -220,15 +279,16 @@ def _analysis_failed_wallet(entry: LeaderboardEntry, reason: str) -> RankedWalle
     )
 
 
-def _analyze_wallet_entry(
+def _analyze_wallet_candidate(
     entry: LeaderboardEntry,
     *,
     client: httpx.Client,
     market_close_cache: dict[str, int],
     local_copy_metrics_map: dict[str, Any],
-) -> RankedWallet:
+) -> tuple[RankedWallet, set[str]]:
     now_ts = int(time.time())
     trades = fetch_recent_trades(client, entry.address, limit=_TRADE_LIMIT)
+    condition_ids = _trade_condition_ids(trades)
     closed_positions = fetch_closed_positions(
         client,
         entry.address,
@@ -247,7 +307,8 @@ def _analyze_wallet_entry(
         buy_sample_limit=_BUY_SAMPLE_LIMIT,
         market_close_cache=market_close_cache,
     )
-    return build_ranked_wallet(
+    return (
+        build_ranked_wallet(
         entry,
         performance,
         timing,
@@ -269,7 +330,66 @@ def _analyze_wallet_entry(
         local_copy_metrics=local_copy_metrics_map.get(entry.address.lower()),
         min_local_resolved_copies=_MIN_LOCAL_RESOLVED_COPIES,
         min_local_copy_avg_return=_MIN_LOCAL_COPY_AVG_RETURN,
+        ),
+        condition_ids,
     )
+
+
+def _adjacent_anchor_condition_ids(
+    client: httpx.Client,
+    wallet_addresses: list[str] | None,
+    *,
+    limit: int,
+) -> set[str]:
+    anchor_wallets = _normalize_wallets(wallet_addresses or [])[:limit]
+    if not anchor_wallets:
+        return set()
+    condition_ids: set[str] = set()
+    for wallet in anchor_wallets:
+        try:
+            trades = fetch_recent_trades(client, wallet, limit=_TRADE_LIMIT)
+        except Exception:
+            continue
+        condition_ids.update(_trade_condition_ids(trades))
+    return condition_ids
+
+
+def _apply_activity_adjacency_labels(
+    source_labels_map: dict[str, tuple[str, ...]],
+    condition_ids_by_wallet: dict[str, set[str]],
+    *,
+    managed_anchor_condition_ids: set[str],
+    discovered_anchor_wallets: list[str],
+) -> dict[str, tuple[str, ...]]:
+    mutable = {wallet: list(labels) for wallet, labels in source_labels_map.items()}
+
+    for wallet, condition_ids in condition_ids_by_wallet.items():
+        if not condition_ids:
+            continue
+        labels = mutable.setdefault(wallet, [])
+        if managed_anchor_condition_ids and condition_ids.intersection(managed_anchor_condition_ids):
+            if "adjacent:managed-wallet" not in labels:
+                labels.append("adjacent:managed-wallet")
+
+    discovered_condition_counts: dict[str, int] = {}
+    anchor_wallet_set = {wallet.strip().lower() for wallet in discovered_anchor_wallets if wallet}
+    for wallet in anchor_wallet_set:
+        for condition_id in condition_ids_by_wallet.get(wallet, set()):
+            discovered_condition_counts[condition_id] = discovered_condition_counts.get(condition_id, 0) + 1
+
+    if discovered_condition_counts:
+        for wallet, condition_ids in condition_ids_by_wallet.items():
+            if not condition_ids:
+                continue
+            labels = mutable.setdefault(wallet, [])
+            if wallet in anchor_wallet_set:
+                overlap = any(discovered_condition_counts.get(condition_id, 0) > 1 for condition_id in condition_ids)
+            else:
+                overlap = any(condition_id in discovered_condition_counts for condition_id in condition_ids)
+            if overlap and "adjacent:discovered-wallet" not in labels:
+                labels.append("adjacent:discovered-wallet")
+
+    return {wallet: tuple(labels) for wallet, labels in mutable.items()}
 
 
 def _persist_wallet_discovery_candidates(
@@ -329,7 +449,14 @@ def _persist_wallet_discovery_candidates(
                         row.style,
                         row.leaderboard_rank,
                         updated_at,
-                        json.dumps(asdict(row), separators=(",", ":"), sort_keys=True),
+                        json.dumps(
+                            {
+                                **asdict(row),
+                                "copyability_gate_status": _candidate_gate_status(row),
+                            },
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
                     )
                     for row in rows
                 ],
@@ -505,6 +632,27 @@ def refresh_wallet_discovery_candidates(wallet_addresses: list[str] | None = Non
                 "message": f"wallet discovery scan is unavailable because SQLite integrity check failed{suffix}.",
             }
 
+        registry_state = managed_wallet_registry_state()
+        registry_status = str(registry_state.get("managed_wallet_registry_status") or "").strip().lower()
+        if registry_status in {"missing", "unreadable"}:
+            detail = str(registry_state.get("managed_wallet_registry_error") or "").strip()
+            suffix = f": {detail}" if detail else ""
+            return {
+                "ok": False,
+                "started_at": started_at,
+                "finished_at": started_at,
+                "scanned_count": 0,
+                "accepted_count": 0,
+                "promoted_count": 0,
+                "stored_count": 0,
+                "message": (
+                    "wallet discovery scan is unavailable because the managed wallet registry is "
+                    + ("unreadable" if registry_status == "unreadable" else "missing")
+                    + suffix
+                    + "."
+                ),
+            }
+
         init_db()
         excluded = _excluded_wallets(wallet_addresses)
         local_copy_metrics_map = load_local_copy_metrics(str(DB_PATH))
@@ -522,26 +670,44 @@ def refresh_wallet_discovery_candidates(wallet_addresses: list[str] | None = Non
                 analyze_limit=analyze_limit,
             )
             market_close_cache: dict[str, int] = {}
+            managed_anchor_condition_ids = _adjacent_anchor_condition_ids(
+                client,
+                wallet_addresses,
+                limit=_ADJACENCY_ANCHOR_WALLET_LIMIT,
+            )
             ranked_rows: list[RankedWallet] = []
+            condition_ids_by_wallet: dict[str, set[str]] = {}
             for entry in entries:
                 try:
-                    ranked_rows.append(
-                        _analyze_wallet_entry(
+                    ranked_row, condition_ids = _analyze_wallet_candidate(
                             entry,
                             client=client,
                             market_close_cache=market_close_cache,
                             local_copy_metrics_map=local_copy_metrics_map,
                         )
-                    )
+                    ranked_rows.append(ranked_row)
+                    condition_ids_by_wallet[str(entry.address or "").strip().lower()] = set(condition_ids)
                 except Exception as exc:
                     ranked_rows.append(
                         _analysis_failed_wallet(entry, f"analysis_failed: {exc}")
                     )
+                    condition_ids_by_wallet[str(entry.address or "").strip().lower()] = set()
 
         accepted = sorted(
             [row for row in ranked_rows if row.accepted],
             key=lambda row: row.follow_score,
             reverse=True,
+        )
+        discovered_anchor_wallets = [
+            row.address.lower()
+            for row in (accepted[:_DISCOVERED_ADJACENCY_ANCHOR_LIMIT] or ranked_rows[:_DISCOVERED_ADJACENCY_ANCHOR_LIMIT])
+            if str(row.address or "").strip()
+        ]
+        source_labels_map = _apply_activity_adjacency_labels(
+            source_labels_map,
+            condition_ids_by_wallet,
+            managed_anchor_condition_ids=managed_anchor_condition_ids,
+            discovered_anchor_wallets=discovered_anchor_wallets,
         )
         stored_rows = sorted(
             ranked_rows,

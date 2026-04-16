@@ -135,6 +135,52 @@ def _with_training_provenance(metrics: dict[str, Any], provenance: dict[str, Any
     return payload
 
 
+def _validate_training_provenance_contract(
+    *,
+    since_ts: int | None,
+    routed_only: bool,
+) -> tuple[dict[str, Any], str]:
+    provenance = _training_provenance_payload(
+        since_ts=since_ts,
+        routed_only=routed_only,
+    )
+    active_since_ts, epoch_ready = _standalone_training_scope()
+    if not epoch_ready:
+        reason = "current evidence window is not active yet; train.py must wait for fresh post-reset routed shadow history"
+        provenance["training_provenance_trusted"] = False
+        provenance["training_provenance_block_reason"] = reason
+        return (
+            provenance,
+            reason,
+        )
+
+    effective_since_ts = max(int(since_ts or 0), 0)
+    if not routed_only:
+        reason = "training provenance must be routed-only within the current evidence window"
+        provenance["training_provenance_trusted"] = False
+        provenance["training_provenance_block_reason"] = reason
+        return (
+            provenance,
+            reason,
+        )
+    if effective_since_ts != active_since_ts:
+        reason = (
+            f"training provenance since_ts={effective_since_ts} does not match active evidence window {active_since_ts}"
+        )
+        provenance["training_provenance_trusted"] = False
+        provenance["training_provenance_block_reason"] = reason
+        return (
+            provenance,
+            reason,
+        )
+    if not provenance["training_provenance_trusted"]:
+        return (
+            provenance,
+            str(provenance["training_provenance_block_reason"] or "training provenance is not trusted"),
+        )
+    return provenance, ""
+
+
 def load_training_data(
     *,
     since_ts: int | None = None,
@@ -209,28 +255,32 @@ def train(
 ) -> dict:
     import joblib
 
-    provenance = _training_provenance_payload(
-        since_ts=training_since_ts,
-        routed_only=training_routed_only,
-    )
     if df is None:
-        since_ts, epoch_ready = _standalone_training_scope()
-        if not epoch_ready:
+        since_ts, routed_only = _standalone_training_scope()
+        provenance, scope_block_reason = _validate_training_provenance_contract(
+            since_ts=since_ts,
+            routed_only=routed_only,
+        )
+        if scope_block_reason:
             return _with_training_provenance({
                 "skipped": True,
                 "n_samples": 0,
-                "reason": (
-                    "current evidence window is not active yet; "
-                    "train.py must wait for fresh post-reset routed shadow history"
-                ),
+                "reason": scope_block_reason,
             }, provenance)
         training_since_ts = since_ts
-        training_routed_only = True
-        provenance = _training_provenance_payload(
+        training_routed_only = routed_only
+        df = load_training_data(since_ts=since_ts, routed_only=routed_only)
+    else:
+        provenance, scope_block_reason = _validate_training_provenance_contract(
             since_ts=training_since_ts,
             routed_only=training_routed_only,
         )
-        df = load_training_data(since_ts=since_ts, routed_only=True)
+        if scope_block_reason:
+            return _with_training_provenance({
+                "skipped": True,
+                "n_samples": len(df),
+                "reason": scope_block_reason,
+            }, provenance)
 
     min_samples = min_samples_required()
     if len(df) < min_samples:

@@ -132,11 +132,11 @@ At minimum for shadow mode, set:
 
 - `USE_REAL_MONEY=false`
 
-If this is the first time you are bootstrapping the bot, you can seed `WATCHED_WALLETS` once. After the first import, manage wallets from the web dashboard instead of editing the env file by hand.
+If this is the first time you are bootstrapping the bot, you can seed `WATCHED_WALLETS` once. After the first import, wallet membership lives in SQLite-backed runtime state and `WATCHED_WALLETS` should be treated as bootstrap-only.
 
 ### 5. Populate a watchlist
 
-If you already know the wallets, you may paste them into `save/.env.dev` for the one-time bootstrap import. After that, the web dashboard is the supported place to review and manage the wallet registry.
+If you already know the wallets, you may paste them into `save/.env.dev` for the one-time bootstrap import. After that, the backend runs from the DB-backed managed wallet registry instead of the env file.
 
 If you only know Polymarket handles or profile URLs, use:
 
@@ -145,19 +145,21 @@ uv run resolve-wallet @some_user
 uv run resolve-wallet https://polymarket.com/@some_user
 ```
 
-If you want to discover candidate wallets from leaderboard data, use:
+The normal workflow is to let the backend run its scheduled wallet-discovery scan and auto-promote fully copyable wallets into the managed registry while staying in shadow mode.
+
+If you want to inspect or debug discovery from the terminal, you can still use:
 
 ```bash
 uv run rank-copytrade-wallets --top 20
 ```
 
-If you want the backend-compatible discovery scan that excludes already tracked or dropped wallets and fills the local candidate cache, use:
+For a manual one-shot refresh of the backend candidate cache, you can still use:
 
 ```bash
 uv run discover-copytrade-wallets
 ```
 
-These tools are still useful for diagnostics, but the browser discovery panel is the primary operator workflow and the dashboard can trigger scans directly.
+These commands are diagnostics only. The canonical wallet-finding workflow is the backend scheduler plus the DB-backed managed wallet registry.
 
 ### 6. Start the backend
 
@@ -191,6 +193,8 @@ If you want to run the dashboard on another computer, set:
 - optionally `DASHBOARD_API_TOKEN=some-shared-secret`
 - set `DASHBOARD_WEB_URL=http://your-tailscale-magicdns-name:8765` if you want Telegram `/link` replies to return an explicit browser URL
 
+If your real shadow runtime lives on a Windows machine and you are developing on a Mac, treat the Windows backend as the integration target. The Mac is for local development and testing; the Windows shadow runtime is the source of truth for live shadow evidence.
+
 ### 7. Start the web dashboard
 
 In a second terminal, use one of these browser workflows.
@@ -202,7 +206,16 @@ cd dashboard-web
 npm run dev
 ```
 
-The Vite dev server runs on `http://127.0.0.1:5173` by default and proxies `/api` to the backend.
+The Vite dev server runs on `http://127.0.0.1:5173` by default.
+
+For UI work, `npm run dev` now defaults to a local mock/template data mode so you can iterate on layout without touching the backend or pushing every change to Windows.
+
+If you want the dev server to talk to a real backend instead, opt into API mode:
+
+```bash
+cd dashboard-web
+VITE_DASHBOARD_DATA_MODE=api VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm run dev
+```
 
 Web dashboard for deployment:
 
@@ -219,19 +232,20 @@ To run the web dashboard against a backend on another computer during developmen
 
 ```bash
 cd dashboard-web
-VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm run dev
+VITE_DASHBOARD_DATA_MODE=api VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm run dev
 ```
 
 If the backend sets `DASHBOARD_API_TOKEN`, also set:
 
 ```bash
 cd dashboard-web
-VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 VITE_KELLY_API_TOKEN=some-shared-secret npm run dev
+VITE_DASHBOARD_DATA_MODE=api VITE_KELLY_API_BASE_URL=http://BACKEND_HOST:8765 VITE_KELLY_API_TOKEN=some-shared-secret npm run dev
 ```
 
 You can also put those in `dashboard-web/.env.local` instead of exporting them every time:
 
 ```env
+VITE_DASHBOARD_DATA_MODE=api
 VITE_KELLY_API_BASE_URL=http://windows-box.tailnet-name.ts.net:8765
 VITE_KELLY_API_TOKEN=some-shared-secret
 ```
@@ -566,7 +580,7 @@ Rank candidate wallets:
 uv run rank-copytrade-wallets --top 20
 ```
 
-Refresh the backend-style candidate cache:
+Refresh the backend-style candidate cache for diagnostics:
 
 ```bash
 uv run discover-copytrade-wallets
@@ -662,7 +676,7 @@ All env parsing lives in `src/kelly_watcher/config.py`. Duration values typicall
 - `WALLET_QUALITY_SIZE_MIN_MULTIPLIER`
 - `WALLET_QUALITY_SIZE_MAX_MULTIPLIER`
 
-Wallet membership itself is expected to live in SQLite-backed runtime state, with `WATCHED_WALLETS` acting as a first-run import source rather than the steady-state registry.
+Wallet membership lives in SQLite-backed runtime state. `WATCHED_WALLETS` is only a first-run import source.
 
 ### Retraining and logging
 

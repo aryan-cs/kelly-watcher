@@ -81,6 +81,9 @@ class WalletTrustState:
     post_promotion_resolved_copied_avg_return: float | None = None
     post_promotion_evidence_ready: bool = False
     post_promotion_evidence_note: str | None = None
+    family: str = "emerging"
+    family_multiplier: float = 1.0
+    family_note: str | None = None
 
     @property
     def cold_start_ready(self) -> bool:
@@ -162,6 +165,9 @@ class WalletTrustState:
             "post_promotion_resolved_copied_avg_return": self.post_promotion_resolved_copied_avg_return,
             "post_promotion_evidence_ready": self.post_promotion_evidence_ready,
             "post_promotion_evidence_note": self.post_promotion_evidence_note,
+            "family": self.family,
+            "family_multiplier": self.family_multiplier,
+            "family_note": self.family_note,
         }
 
 
@@ -171,6 +177,33 @@ class WalletSkipOverrideStats:
     duplicate_avg_return: float | None = None
     exposure_skip_count: int = 0
     exposure_avg_return: float | None = None
+
+
+@dataclass(frozen=True)
+class WalletFamilyState:
+    family: str
+    multiplier: float
+    note: str | None = None
+
+
+def wallet_family_edge_threshold_uplift(family: str | None) -> float:
+    normalized = str(family or "").strip().lower()
+    if normalized == "liquidity_sensitive":
+        return 0.020
+    if normalized == "timing_sensitive":
+        return 0.015
+    if normalized in {"thin_edge", "promotion_proof"}:
+        return 0.010
+    return 0.0
+
+
+def wallet_family_confidence_floor_uplift(family: str | None) -> float:
+    normalized = str(family or "").strip().lower()
+    if normalized == "liquidity_sensitive":
+        return 0.010
+    if normalized in {"timing_sensitive", "thin_edge", "promotion_proof"}:
+        return 0.005
+    return 0.0
 
 
 def _post_promotion_evidence_min_resolved_copied_buys() -> int:
@@ -214,6 +247,99 @@ def _post_promotion_evidence_state(
     )
 
 
+def _wallet_family_state(
+    *,
+    tier: str,
+    resolved_copied_buy_count: int,
+    resolved_copied_avg_return: float | None,
+    post_promotion_baseline_at: int,
+    post_promotion_total_buy_signals: int,
+    post_promotion_uncopyable_skip_rate: float,
+    post_promotion_timing_skips: int,
+    post_promotion_liquidity_skips: int,
+    post_promotion_resolved_copied_avg_return: float | None,
+    post_promotion_evidence_ready: bool,
+) -> WalletFamilyState:
+    trusted_minimum = max(wallet_trusted_min_resolved_copied_buys(), 1)
+    post_minimum_signals = max(_post_promotion_evidence_min_buy_signals(), 1)
+    elevated_skip_threshold = max(_post_promotion_evidence_max_uncopyable_skip_rate() * 0.75, 0.20)
+    effective_avg_return = (
+        post_promotion_resolved_copied_avg_return
+        if post_promotion_baseline_at > 0 and post_promotion_resolved_copied_avg_return is not None
+        else resolved_copied_avg_return
+    )
+    has_meaningful_drag = (
+        post_promotion_total_buy_signals >= max(4, post_minimum_signals // 2)
+        and post_promotion_uncopyable_skip_rate >= elevated_skip_threshold
+    )
+    timing_dominant = post_promotion_timing_skips > 0 and post_promotion_timing_skips >= post_promotion_liquidity_skips
+    liquidity_dominant = post_promotion_liquidity_skips > 0 and post_promotion_liquidity_skips > post_promotion_timing_skips
+
+    if tier == "cold_start":
+        return WalletFamilyState("emerging", 1.0, "wallet family emerging from cold-start history")
+    if tier == "discovery":
+        return WalletFamilyState("emerging", 1.0, "wallet family still in discovery")
+    if tier == "probation":
+        return WalletFamilyState("developing", 1.0, "wallet family still building copied-trade proof")
+    if tier == "promotion_probation":
+        if has_meaningful_drag and timing_dominant:
+            return WalletFamilyState(
+                "timing_sensitive",
+                1.0,
+                "wallet family is still proving itself and post-promotion drag is mostly timing-driven",
+            )
+        if has_meaningful_drag and liquidity_dominant:
+            return WalletFamilyState(
+                "liquidity_sensitive",
+                1.0,
+                "wallet family is still proving itself and post-promotion drag is mostly liquidity-driven",
+            )
+        return WalletFamilyState("promotion_proof", 1.0, "wallet family is still proving itself after promotion")
+
+    if has_meaningful_drag and liquidity_dominant:
+        return WalletFamilyState(
+            "liquidity_sensitive",
+            0.85,
+            "wallet family shows liquidity-driven execution drag, capping size to 85%",
+        )
+    if has_meaningful_drag and timing_dominant:
+        return WalletFamilyState(
+            "timing_sensitive",
+            0.9,
+            "wallet family shows timing-driven execution drag, capping size to 90%",
+        )
+
+    scalable_minimum = max(trusted_minimum * 2, trusted_minimum + 5, 10)
+    if (
+        resolved_copied_buy_count >= scalable_minimum
+        and effective_avg_return is not None
+        and effective_avg_return >= 0.03
+        and (post_promotion_baseline_at <= 0 or post_promotion_evidence_ready)
+        and (
+            post_promotion_total_buy_signals <= 0
+            or post_promotion_uncopyable_skip_rate <= max(_post_promotion_evidence_max_uncopyable_skip_rate() * 0.5, 0.10)
+        )
+    ):
+        return WalletFamilyState(
+            "scalable",
+            1.1,
+            "wallet family has strong copied returns with low execution drag, allowing a 110% size cap",
+        )
+
+    if (
+        resolved_copied_buy_count >= trusted_minimum
+        and effective_avg_return is not None
+        and effective_avg_return <= 0.01
+    ):
+        return WalletFamilyState(
+            "thin_edge",
+            0.9,
+            "wallet family is trusted but the copied edge is thin, capping size to 90%",
+        )
+
+    return WalletFamilyState("core", 1.0, "wallet family fits the core trusted profile")
+
+
 def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
     wallet_key = str(wallet_address or "").strip().lower()
     cold_start_min_observed = wallet_cold_start_min_observed_buys()
@@ -250,6 +376,9 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
             post_promotion_resolved_copied_avg_return=None,
             post_promotion_evidence_ready=True,
             post_promotion_evidence_note=None,
+            family="emerging",
+            family_multiplier=1.0,
+            family_note="wallet family emerging from cold-start history",
         )
 
     conn = get_trade_log_read_conn()
@@ -306,6 +435,24 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
                     ) AS post_promotion_uncopyable_skips,
                     SUM(
                         CASE
+                            WHEN {OBSERVED_BUY_SQL}
+                             AND COALESCE(placed_at, 0) >= ?
+                             AND {_UNCOPYABLE_TIMING_SQL}
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_timing_skips,
+                    SUM(
+                        CASE
+                            WHEN {OBSERVED_BUY_SQL}
+                             AND COALESCE(placed_at, 0) >= ?
+                             AND {_UNCOPYABLE_LIQUIDITY_SQL}
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS post_promotion_liquidity_skips,
+                    SUM(
+                        CASE
                             WHEN {RESOLVED_EXECUTED_ENTRY_SQL}
                              AND COALESCE(placed_at, 0) >= ?
                                 THEN 1
@@ -333,6 +480,8 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
                 WHERE trader_address=?
                 """,
                 (
+                    post_promotion_baseline_at,
+                    post_promotion_baseline_at,
                     post_promotion_baseline_at,
                     post_promotion_baseline_at,
                     post_promotion_baseline_at,
@@ -367,6 +516,16 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
     post_promotion_uncopyable_skips = int(
         (post_promotion_row["post_promotion_uncopyable_skips"] or 0)
         if post_promotion_row
+        else 0
+    )
+    post_promotion_timing_skips = int(
+        (post_promotion_row["post_promotion_timing_skips"] or 0)
+        if post_promotion_row and "post_promotion_timing_skips" in post_promotion_row.keys()
+        else 0
+    )
+    post_promotion_liquidity_skips = int(
+        (post_promotion_row["post_promotion_liquidity_skips"] or 0)
+        if post_promotion_row and "post_promotion_liquidity_skips" in post_promotion_row.keys()
         else 0
     )
     post_promotion_uncopyable_skip_rate = (
@@ -434,6 +593,19 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
     if local_penalty_multiplier is not None:
         size_multiplier = min(size_multiplier, local_penalty_multiplier)
 
+    family_state = _wallet_family_state(
+        tier=tier,
+        resolved_copied_buy_count=resolved_copied_buy_count,
+        resolved_copied_avg_return=resolved_copied_avg_return,
+        post_promotion_baseline_at=post_promotion_baseline_at,
+        post_promotion_total_buy_signals=post_promotion_total_buy_signals,
+        post_promotion_uncopyable_skip_rate=post_promotion_uncopyable_skip_rate,
+        post_promotion_timing_skips=post_promotion_timing_skips,
+        post_promotion_liquidity_skips=post_promotion_liquidity_skips,
+        post_promotion_resolved_copied_avg_return=post_promotion_resolved_copied_avg_return,
+        post_promotion_evidence_ready=post_promotion_evidence_ready,
+    )
+
     return WalletTrustState(
         wallet_address=wallet_key,
         tier=tier,
@@ -460,6 +632,9 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
         post_promotion_resolved_copied_avg_return=post_promotion_resolved_copied_avg_return,
         post_promotion_evidence_ready=post_promotion_evidence_ready,
         post_promotion_evidence_note=post_promotion_evidence_note,
+        family=family_state.family,
+        family_multiplier=family_state.multiplier,
+        family_note=family_state.note,
     )
 
 
@@ -597,12 +772,26 @@ def apply_wallet_trust_sizing(
     adjusted["wallet_quality_score"] = (
         round(float(quality_score), 4) if quality_score is not None else None
     )
+    adjusted["wallet_family"] = trust_state.family
+    adjusted["wallet_family_multiplier"] = round(float(trust_state.family_multiplier), 5)
+    adjusted["wallet_family_note"] = trust_state.family_note
 
     base_size = float(adjusted.get("dollar_size", 0.0) or 0.0)
     quality_multiplier = wallet_quality_multiplier(quality_score) if base_size > 0 else 1.0
+    family_multiplier = float(trust_state.family_multiplier)
+    promotion_probation_caps_quality_uplift = (
+        trust_state.post_promotion_baseline_at > 0
+        and not trust_state.post_promotion_evidence_ready
+    )
+    if promotion_probation_caps_quality_uplift:
+        quality_multiplier = min(quality_multiplier, 1.0)
+        family_multiplier = min(family_multiplier, 1.0)
     adjusted["wallet_quality_multiplier"] = round(quality_multiplier, 5)
     adjusted["wallet_quality_effective_multiplier"] = (
         round(quality_multiplier, 5) if base_size > 0 and trust_state.size_multiplier > 0 else 0.0
+    )
+    adjusted["wallet_family_effective_multiplier"] = (
+        round(family_multiplier, 5) if base_size > 0 and trust_state.size_multiplier > 0 else 0.0
     )
 
     if base_size <= 0 or trust_state.size_multiplier <= 0:
@@ -613,7 +802,7 @@ def apply_wallet_trust_sizing(
         )
         return adjusted
 
-    combined_multiplier = trust_state.size_multiplier * quality_multiplier
+    combined_multiplier = trust_state.size_multiplier * quality_multiplier * family_multiplier
     scaled_size = round(base_size * combined_multiplier, 2)
     if max_size_usd is not None and max_size_usd > 0:
         scaled_size = round(min(scaled_size, max_size_usd), 2)
@@ -634,11 +823,21 @@ def apply_wallet_trust_sizing(
         if quality_score is not None
         else "wallet quality neutral"
     )
+    family_note = (
+        f"wallet family {trust_state.family.replace('_', ' ')} -> {family_multiplier * 100:.0f}%"
+        if abs(family_multiplier - 1.0) > 1e-9
+        else trust_state.family_note
+    )
+    probation_uplift_note = (
+        "post-promotion evidence not ready, quality and family uplifts capped at 100%"
+        if promotion_probation_caps_quality_uplift and quality_score is not None
+        else None
+    )
     scaling_note = (
         f"size scaled to {effective_multiplier * 100:.0f}%"
         if abs(effective_multiplier - 1.0) > 1e-9
         else "size unchanged after wallet adjustments"
     )
-    note_parts = [part for part in (trust_prefix, quality_note, scaling_note) if part]
+    note_parts = [part for part in (trust_prefix, family_note, quality_note, probation_uplift_note, scaling_note) if part]
     adjusted["wallet_trust_note"] = ", ".join(note_parts)
     return adjusted

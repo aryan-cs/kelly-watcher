@@ -46,6 +46,7 @@ SEGMENT_SHADOW_MAX_CALIBRATION_GAP = 0.10
 SEGMENT_SHADOW_MAX_FILL_COST_SLIPPAGE_USD = 0.05
 SEGMENT_SHADOW_MAX_FILL_COST_OVERSHOOT_RATIO = 0.50
 UNASSIGNED_SEGMENT_ID = "unassigned"
+UNASSIGNED_WALLET_FAMILY = "unassigned"
 
 CLOB_API = "https://clob.polymarket.com"
 SPORTS_PAGE_BASE = "https://polymarket.com/sports"
@@ -172,6 +173,68 @@ def _profit_factor_text(profit_factor: float | None) -> str:
     return f"{profit_factor:.2f}"
 
 
+def _normalize_wallet_family(raw: Any) -> str:
+    normalized = str(raw or "").strip().lower().replace(" ", "_")
+    return normalized or UNASSIGNED_WALLET_FAMILY
+
+
+def _extract_wallet_family(decision_context_json: Any) -> str:
+    if not decision_context_json:
+        return UNASSIGNED_WALLET_FAMILY
+    payload = decision_context_json
+    if isinstance(decision_context_json, str):
+        try:
+            payload = json.loads(decision_context_json)
+        except Exception:
+            return UNASSIGNED_WALLET_FAMILY
+    if not isinstance(payload, dict):
+        return UNASSIGNED_WALLET_FAMILY
+    signal_payload = payload.get("signal")
+    if not isinstance(signal_payload, dict):
+        signal_payload = {}
+    payload_wallet_trust = payload.get("wallet_trust")
+    if not isinstance(payload_wallet_trust, dict):
+        payload_wallet_trust = {}
+    signal_wallet_trust = signal_payload.get("wallet_trust")
+    if not isinstance(signal_wallet_trust, dict):
+        signal_wallet_trust = {}
+    for candidate in (
+        payload.get("wallet_family"),
+        payload_wallet_trust.get("family"),
+        signal_payload.get("wallet_family"),
+        signal_wallet_trust.get("family"),
+    ):
+        normalized = _normalize_wallet_family(candidate)
+        if normalized != UNASSIGNED_WALLET_FAMILY:
+            return normalized
+    return UNASSIGNED_WALLET_FAMILY
+
+
+def _wallet_family_summary(
+    *,
+    classified_families: list[dict[str, Any]],
+    classified_resolved: int,
+    unassigned_resolved: int,
+) -> str:
+    if classified_resolved <= 0 and unassigned_resolved <= 0:
+        return "no wallet-family shadow data yet"
+
+    parts: list[str] = []
+    if classified_resolved > 0:
+        parts.append(f"{classified_resolved} classified resolved")
+    if unassigned_resolved > 0:
+        parts.append(f"{unassigned_resolved} unassigned resolved")
+    if classified_families:
+        leaders = ", ".join(
+            f"{row['wallet_family']} ({row['resolved']} resolved, pnl ${float(row['total_pnl_usd'] or 0.0):.2f})"
+            for row in classified_families[:3]
+        )
+        parts.append(f"top families: {leaders}")
+    elif unassigned_resolved > 0:
+        parts.append("all resolved rows predate wallet-family attribution")
+    return " | ".join(parts)
+
+
 def _segment_shadow_health(
     *,
     resolved: int,
@@ -273,35 +336,59 @@ def compute_segment_shadow_report(
         params.append(int(since_ts or 0))
 
     conn = get_trade_log_read_conn(db_path, apply_runtime_pragmas=False) if db_path is not None else get_trade_log_read_conn()
-    rows = conn.execute(
-        f"""
-        SELECT
-            COALESCE(NULLIF(TRIM(segment_id), ''), ?) AS segment_id,
-            COUNT(*) AS signals,
-            SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS acted,
-            SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS resolved,
-            SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
-            ROUND(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN COALESCE({pnl_column}, 0) ELSE 0 END), 6) AS total_pnl_usd,
-            ROUND(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND COALESCE({pnl_column}, 0) > 0 THEN COALESCE({pnl_column}, 0) ELSE 0 END), 6) AS gross_profit_usd,
-            ROUND(ABS(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND COALESCE({pnl_column}, 0) < 0 THEN COALESCE({pnl_column}, 0) ELSE 0 END)), 6) AS gross_loss_usd,
-            ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN confidence END), 6) AS avg_confidence,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_edge END), 6) AS avg_expected_edge,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_fill_cost_usd END), 6) AS avg_expected_fill_cost_usd,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_exit_fee_usd END), 6) AS avg_expected_exit_fee_usd,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_close_fixed_cost_usd END), 6) AS avg_expected_close_fixed_cost_usd,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN COALESCE(entry_fee_usd, 0) + COALESCE(entry_fixed_cost_usd, 0) END), 6) AS avg_realized_fill_cost_usd,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} AND expected_fill_cost_usd IS NOT NULL THEN (COALESCE(entry_fee_usd, 0) + COALESCE(entry_fixed_cost_usd, 0)) - expected_fill_cost_usd END), 6) AS avg_fill_cost_slippage_usd,
-            ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN {pnl_column} END), 6) AS expectancy_usd,
-            ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN {pnl_column} / NULLIF(actual_entry_size_usd, 0) END), 6) AS expectancy_pct,
-            ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND outcome IS NOT NULL THEN ((confidence - CAST(outcome AS REAL)) * (confidence - CAST(outcome AS REAL))) END), 6) AS brier_score
-        FROM trade_log
-        WHERE {" AND ".join(where_clauses)}
-        GROUP BY COALESCE(NULLIF(TRIM(segment_id), ''), ?)
-        ORDER BY segment_id ASC
-        """,
-        (UNASSIGNED_SEGMENT_ID, *params, UNASSIGNED_SEGMENT_ID),
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                COALESCE(NULLIF(TRIM(segment_id), ''), ?) AS segment_id,
+                COUNT(*) AS signals,
+                SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS acted,
+                SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS resolved,
+                SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
+                ROUND(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN COALESCE({pnl_column}, 0) ELSE 0 END), 6) AS total_pnl_usd,
+                ROUND(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND COALESCE({pnl_column}, 0) > 0 THEN COALESCE({pnl_column}, 0) ELSE 0 END), 6) AS gross_profit_usd,
+                ROUND(ABS(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND COALESCE({pnl_column}, 0) < 0 THEN COALESCE({pnl_column}, 0) ELSE 0 END)), 6) AS gross_loss_usd,
+                ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN confidence END), 6) AS avg_confidence,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_edge END), 6) AS avg_expected_edge,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_fill_cost_usd END), 6) AS avg_expected_fill_cost_usd,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_exit_fee_usd END), 6) AS avg_expected_exit_fee_usd,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_close_fixed_cost_usd END), 6) AS avg_expected_close_fixed_cost_usd,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN COALESCE(entry_fee_usd, 0) + COALESCE(entry_fixed_cost_usd, 0) END), 6) AS avg_realized_fill_cost_usd,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} AND expected_fill_cost_usd IS NOT NULL THEN (COALESCE(entry_fee_usd, 0) + COALESCE(entry_fixed_cost_usd, 0)) - expected_fill_cost_usd END), 6) AS avg_fill_cost_slippage_usd,
+                ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN {pnl_column} END), 6) AS expectancy_usd,
+                ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN {pnl_column} / NULLIF(actual_entry_size_usd, 0) END), 6) AS expectancy_pct,
+                ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND outcome IS NOT NULL THEN ((confidence - CAST(outcome AS REAL)) * (confidence - CAST(outcome AS REAL))) END), 6) AS brier_score
+            FROM trade_log
+            WHERE {" AND ".join(where_clauses)}
+            GROUP BY COALESCE(NULLIF(TRIM(segment_id), ''), ?)
+            ORDER BY segment_id ASC
+            """,
+            (UNASSIGNED_SEGMENT_ID, *params, UNASSIGNED_SEGMENT_ID),
+        ).fetchall()
+        wallet_family_metric_rows = conn.execute(
+            f"""
+            SELECT
+                decision_context_json,
+                confidence,
+                expected_edge,
+                expected_fill_cost_usd,
+                expected_exit_fee_usd,
+                expected_close_fixed_cost_usd,
+                entry_fee_usd,
+                entry_fixed_cost_usd,
+                actual_entry_size_usd,
+                outcome,
+                {pnl_column} AS pnl_usd,
+                CASE WHEN {EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END AS acted,
+                CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END AS resolved
+            FROM trade_log
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY placed_at ASC, id ASC
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
 
     raw_rows = {
         str(row["segment_id"] or "").strip() or UNASSIGNED_SEGMENT_ID: dict(row)
@@ -314,6 +401,88 @@ def compute_segment_shadow_report(
     negative_count = 0
     ready_count = 0
     blocked_segments: list[dict[str, Any]] = []
+    wallet_family_buckets: dict[str, dict[str, float | int]] = {}
+
+    def _wallet_family_bucket(wallet_family: str) -> dict[str, float | int]:
+        bucket = wallet_family_buckets.get(wallet_family)
+        if bucket is None:
+            bucket = {
+                "signals": 0,
+                "acted": 0,
+                "resolved": 0,
+                "wins": 0,
+                "total_pnl_usd": 0.0,
+                "gross_profit_usd": 0.0,
+                "gross_loss_usd": 0.0,
+                "resolved_confidence_sum": 0.0,
+                "resolved_confidence_count": 0,
+                "acted_expected_edge_sum": 0.0,
+                "acted_expected_edge_count": 0,
+                "acted_expected_fill_cost_sum": 0.0,
+                "acted_expected_fill_cost_count": 0,
+                "acted_expected_exit_fee_sum": 0.0,
+                "acted_expected_exit_fee_count": 0,
+                "acted_expected_close_fixed_cost_sum": 0.0,
+                "acted_expected_close_fixed_cost_count": 0,
+                "acted_realized_fill_cost_sum": 0.0,
+                "acted_realized_fill_cost_count": 0,
+                "acted_fill_cost_slippage_sum": 0.0,
+                "acted_fill_cost_slippage_count": 0,
+                "resolved_return_sum": 0.0,
+                "resolved_return_count": 0,
+                "brier_sum": 0.0,
+                "brier_count": 0,
+            }
+            wallet_family_buckets[wallet_family] = bucket
+        return bucket
+
+    for raw_row in wallet_family_metric_rows:
+        row = dict(raw_row)
+        wallet_family = _extract_wallet_family(row.get("decision_context_json"))
+        bucket = _wallet_family_bucket(wallet_family)
+        bucket["signals"] += 1
+        acted = int(row.get("acted") or 0) > 0
+        resolved = int(row.get("resolved") or 0) > 0
+        pnl_usd = float(row.get("pnl_usd") or 0.0)
+        if acted:
+            bucket["acted"] += 1
+            if row.get("expected_edge") is not None:
+                bucket["acted_expected_edge_sum"] += float(row["expected_edge"])
+                bucket["acted_expected_edge_count"] += 1
+            if row.get("expected_fill_cost_usd") is not None:
+                bucket["acted_expected_fill_cost_sum"] += float(row["expected_fill_cost_usd"])
+                bucket["acted_expected_fill_cost_count"] += 1
+            if row.get("expected_exit_fee_usd") is not None:
+                bucket["acted_expected_exit_fee_sum"] += float(row["expected_exit_fee_usd"])
+                bucket["acted_expected_exit_fee_count"] += 1
+            if row.get("expected_close_fixed_cost_usd") is not None:
+                bucket["acted_expected_close_fixed_cost_sum"] += float(row["expected_close_fixed_cost_usd"])
+                bucket["acted_expected_close_fixed_cost_count"] += 1
+            realized_fill_cost = float(row.get("entry_fee_usd") or 0.0) + float(row.get("entry_fixed_cost_usd") or 0.0)
+            bucket["acted_realized_fill_cost_sum"] += realized_fill_cost
+            bucket["acted_realized_fill_cost_count"] += 1
+            if row.get("expected_fill_cost_usd") is not None:
+                bucket["acted_fill_cost_slippage_sum"] += realized_fill_cost - float(row["expected_fill_cost_usd"])
+                bucket["acted_fill_cost_slippage_count"] += 1
+        if resolved:
+            bucket["resolved"] += 1
+            bucket["total_pnl_usd"] += pnl_usd
+            if pnl_usd > 0:
+                bucket["wins"] += 1
+                bucket["gross_profit_usd"] += pnl_usd
+            elif pnl_usd < 0:
+                bucket["gross_loss_usd"] += abs(pnl_usd)
+            if row.get("confidence") is not None:
+                bucket["resolved_confidence_sum"] += float(row["confidence"])
+                bucket["resolved_confidence_count"] += 1
+            if row.get("actual_entry_size_usd") is not None and float(row.get("actual_entry_size_usd") or 0.0) > 0:
+                bucket["resolved_return_sum"] += pnl_usd / float(row["actual_entry_size_usd"])
+                bucket["resolved_return_count"] += 1
+            if row.get("confidence") is not None and row.get("outcome") is not None:
+                confidence = float(row["confidence"])
+                outcome = float(row["outcome"])
+                bucket["brier_sum"] += (confidence - outcome) * (confidence - outcome)
+                bucket["brier_count"] += 1
 
     def _segment_row(raw: dict[str, Any] | None, *, segment_id: str, health: str | None = None, failure_reasons: list[str] | None = None) -> dict[str, Any]:
         row = raw or {}
@@ -471,6 +640,91 @@ def compute_segment_shadow_report(
         )
     )
 
+    wallet_families: list[dict[str, Any]] = []
+    for wallet_family, metrics in wallet_family_buckets.items():
+        resolved = int(metrics["resolved"] or 0)
+        wins = int(metrics["wins"] or 0)
+        gross_profit_usd = float(metrics["gross_profit_usd"] or 0.0)
+        gross_loss_usd = float(metrics["gross_loss_usd"] or 0.0)
+        profit_factor = _profit_factor_from_totals(gross_profit_usd, gross_loss_usd)
+        wallet_families.append(
+            {
+                "wallet_family": wallet_family,
+                "signals": int(metrics["signals"] or 0),
+                "acted": int(metrics["acted"] or 0),
+                "resolved": resolved,
+                "wins": wins,
+                "win_rate": round(wins / resolved, 6) if resolved else None,
+                "total_pnl_usd": round(float(metrics["total_pnl_usd"] or 0.0), 6),
+                "gross_profit_usd": round(gross_profit_usd, 6),
+                "gross_loss_usd": round(gross_loss_usd, 6),
+                "profit_factor": (
+                    round(float(profit_factor), 6)
+                    if profit_factor is not None and profit_factor != float("inf")
+                    else None
+                ),
+                "profit_factor_text": _profit_factor_text(profit_factor),
+                "expectancy_usd": (
+                    round(float(metrics["total_pnl_usd"] or 0.0) / resolved, 6)
+                    if resolved
+                    else None
+                ),
+                "expectancy_pct": (
+                    round(float(metrics["resolved_return_sum"] or 0.0) / int(metrics["resolved_return_count"] or 0), 6)
+                    if int(metrics["resolved_return_count"] or 0) > 0
+                    else None
+                ),
+                "avg_confidence": (
+                    round(float(metrics["resolved_confidence_sum"] or 0.0) / int(metrics["resolved_confidence_count"] or 0), 6)
+                    if int(metrics["resolved_confidence_count"] or 0) > 0
+                    else None
+                ),
+                "avg_expected_edge": (
+                    round(float(metrics["acted_expected_edge_sum"] or 0.0) / int(metrics["acted_expected_edge_count"] or 0), 6)
+                    if int(metrics["acted_expected_edge_count"] or 0) > 0
+                    else None
+                ),
+                "avg_expected_fill_cost_usd": (
+                    round(float(metrics["acted_expected_fill_cost_sum"] or 0.0) / int(metrics["acted_expected_fill_cost_count"] or 0), 6)
+                    if int(metrics["acted_expected_fill_cost_count"] or 0) > 0
+                    else None
+                ),
+                "avg_realized_fill_cost_usd": (
+                    round(float(metrics["acted_realized_fill_cost_sum"] or 0.0) / int(metrics["acted_realized_fill_cost_count"] or 0), 6)
+                    if int(metrics["acted_realized_fill_cost_count"] or 0) > 0
+                    else None
+                ),
+                "avg_fill_cost_slippage_usd": (
+                    round(float(metrics["acted_fill_cost_slippage_sum"] or 0.0) / int(metrics["acted_fill_cost_slippage_count"] or 0), 6)
+                    if int(metrics["acted_fill_cost_slippage_count"] or 0) > 0
+                    else None
+                ),
+                "avg_expected_exit_fee_usd": (
+                    round(float(metrics["acted_expected_exit_fee_sum"] or 0.0) / int(metrics["acted_expected_exit_fee_count"] or 0), 6)
+                    if int(metrics["acted_expected_exit_fee_count"] or 0) > 0
+                    else None
+                ),
+                "avg_expected_close_fixed_cost_usd": (
+                    round(float(metrics["acted_expected_close_fixed_cost_sum"] or 0.0) / int(metrics["acted_expected_close_fixed_cost_count"] or 0), 6)
+                    if int(metrics["acted_expected_close_fixed_cost_count"] or 0) > 0
+                    else None
+                ),
+                "brier_score": (
+                    round(float(metrics["brier_sum"] or 0.0) / int(metrics["brier_count"] or 0), 6)
+                    if int(metrics["brier_count"] or 0) > 0
+                    else None
+                ),
+            }
+        )
+    wallet_families.sort(
+        key=lambda row: (
+            0 if str(row.get("wallet_family") or "") != UNASSIGNED_WALLET_FAMILY else 1,
+            -int(row.get("resolved") or 0),
+            -float(row.get("total_pnl_usd") or 0.0),
+            str(row.get("wallet_family") or ""),
+        )
+    )
+
     segments = list(fixed_segments)
     if legacy_unassigned_segment is not None:
         segments.append(legacy_unassigned_segment)
@@ -513,6 +767,32 @@ def compute_segment_shadow_report(
         if total_resolved_history > 0
         else None
     )
+    unassigned_wallet_family = next(
+        (row for row in wallet_families if str(row.get("wallet_family") or "") == UNASSIGNED_WALLET_FAMILY),
+        None,
+    )
+    classified_wallet_families = [
+        row for row in wallet_families if str(row.get("wallet_family") or "") != UNASSIGNED_WALLET_FAMILY
+    ]
+    wallet_family_classified_signals = sum(int(row.get("signals") or 0) for row in classified_wallet_families)
+    wallet_family_classified_acted = sum(int(row.get("acted") or 0) for row in classified_wallet_families)
+    wallet_family_classified_resolved = sum(int(row.get("resolved") or 0) for row in classified_wallet_families)
+    wallet_family_unassigned_signals = int((unassigned_wallet_family or {}).get("signals") or 0)
+    wallet_family_unassigned_acted = int((unassigned_wallet_family or {}).get("acted") or 0)
+    wallet_family_unassigned_resolved = int((unassigned_wallet_family or {}).get("resolved") or 0)
+    total_wallet_family_resolved = wallet_family_classified_resolved + wallet_family_unassigned_resolved
+    wallet_family_history_status = "empty"
+    if wallet_family_classified_resolved <= 0 and wallet_family_unassigned_resolved > 0:
+        wallet_family_history_status = "unassigned_only"
+    elif wallet_family_classified_resolved > 0 and wallet_family_unassigned_resolved > 0:
+        wallet_family_history_status = "mixed"
+    elif wallet_family_classified_resolved > 0:
+        wallet_family_history_status = "classified_only"
+    wallet_family_coverage_pct = (
+        round(wallet_family_classified_resolved / total_wallet_family_resolved, 6)
+        if total_wallet_family_resolved > 0
+        else None
+    )
     return {
         "mode": mode,
         "min_resolved": minimum_resolved,
@@ -533,6 +813,20 @@ def compute_segment_shadow_report(
         "legacy_unassigned_acted": legacy_unassigned_acted,
         "legacy_unassigned_resolved": legacy_unassigned_resolved,
         "routed_coverage_pct": routed_coverage_pct,
+        "wallet_family_history_status": wallet_family_history_status,
+        "wallet_family_classified_signals": wallet_family_classified_signals,
+        "wallet_family_classified_acted": wallet_family_classified_acted,
+        "wallet_family_classified_resolved": wallet_family_classified_resolved,
+        "wallet_family_unassigned_signals": wallet_family_unassigned_signals,
+        "wallet_family_unassigned_acted": wallet_family_unassigned_acted,
+        "wallet_family_unassigned_resolved": wallet_family_unassigned_resolved,
+        "wallet_family_coverage_pct": wallet_family_coverage_pct,
+        "wallet_families": classified_wallet_families,
+        "wallet_family_summary": _wallet_family_summary(
+            classified_families=classified_wallet_families,
+            classified_resolved=wallet_family_classified_resolved,
+            unassigned_resolved=wallet_family_unassigned_resolved,
+        ),
         "segments": segments,
         "summary": _segment_shadow_summary(
             status=status,
@@ -1223,6 +1517,13 @@ def daily_report() -> None:
         lines.append(
             "shadow segments: "
             f"{shadow_segments['status']} | {shadow_segments['summary']}"
+        )
+    if str(shadow_segments.get("wallet_family_history_status") or "").strip() != "empty":
+        lines.append(
+            "wallet families: "
+            f"{shadow_segments['wallet_family_history_status']} | "
+            f"coverage {_fmt_pct(shadow_segments.get('wallet_family_coverage_pct'))} | "
+            f"{shadow_segments['wallet_family_summary']}"
         )
 
     send_alert("\n".join(lines), kind="report")

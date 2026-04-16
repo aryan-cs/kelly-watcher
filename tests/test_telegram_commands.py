@@ -510,6 +510,10 @@ class TelegramCommandTest(unittest.TestCase):
             routed_expectancy_usd=0.5,
             routed_expectancy_pct=0.05,
             routed_coverage_pct=1 / 3,
+            wallet_family_history_status="mixed",
+            wallet_family_classified_resolved=1,
+            wallet_family_unassigned_resolved=2,
+            wallet_family_coverage_pct=1 / 3,
         )
 
         message = performance_preview.render_tracker_preview_message(summary)
@@ -524,6 +528,8 @@ class TelegramCommandTest(unittest.TestCase):
         self.assertIn("Routed fixed-segment shadow only", message)
         self.assertIn("Routed coverage: 33.333% (1 routed resolved, 2 legacy/unassigned resolved excluded)", message)
         self.assertIn("Routed history: mixed", message)
+        self.assertIn("Wallet-family coverage: 33.333% (1 classified resolved, 2 unassigned resolved excluded)", message)
+        self.assertIn("Wallet-family history: mixed", message)
 
 
 if __name__ == "__main__":

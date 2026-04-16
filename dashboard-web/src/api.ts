@@ -133,6 +133,24 @@ export interface BotStateResponse {
   state?: BotState
 }
 
+export interface ConfigRow {
+  key?: string
+  value?: string
+  source?: string
+}
+
+export interface ConfigSnapshot {
+  safe_values?: Record<string, string>
+  watched_wallets?: string[]
+  live_wallets?: string[]
+  live_wallet_count?: number
+  wallet_registry_source?: string
+  legacy_bootstrap_watched_wallets?: string[]
+  rows?: ConfigRow[]
+  ok?: boolean
+  message?: string
+}
+
 export interface DbRecoveryInventoryEntry {
   path?: string
   kind?: string
@@ -245,6 +263,9 @@ export interface ManagedWallet {
   trust_tier?: string
   trust_size_multiplier?: number
   trust_note?: string
+  wallet_family?: string
+  wallet_family_multiplier?: number
+  wallet_family_note?: string
 }
 
 export interface ManagedWalletsResponse {

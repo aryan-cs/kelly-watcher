@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from kelly_watcher.tools.rank_copytrade_wallets import (
+    DISCOVERY_SOURCE_SPECS,
     LeaderboardEntry,
     LocalCopyMetrics,
     PerformanceMetrics,
@@ -12,6 +13,21 @@ from kelly_watcher.tools.rank_copytrade_wallets import (
 
 
 class RankCopytradeWalletsTest(unittest.TestCase):
+    def test_discovery_source_specs_cover_expected_leaderboard_windows(self) -> None:
+        self.assertEqual(
+            DISCOVERY_SOURCE_SPECS,
+            (
+                ("leaderboard:day-pnl", "OVERALL", "DAY", "PNL"),
+                ("leaderboard:day-vol", "OVERALL", "DAY", "VOL"),
+                ("leaderboard:week-pnl", "OVERALL", "WEEK", "PNL"),
+                ("leaderboard:week-vol", "OVERALL", "WEEK", "VOL"),
+                ("leaderboard:month-pnl", "OVERALL", "MONTH", "PNL"),
+                ("leaderboard:month-vol", "OVERALL", "MONTH", "VOL"),
+                ("leaderboard:all-pnl", "OVERALL", "ALL", "PNL"),
+                ("leaderboard:all-vol", "OVERALL", "ALL", "VOL"),
+            ),
+        )
+
     def rank_wallet(
         self,
         entry: LeaderboardEntry,

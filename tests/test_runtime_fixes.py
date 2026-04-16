@@ -926,6 +926,9 @@ class RuntimeFixesTest(unittest.TestCase):
                             "trust_tier": "promotion_probation",
                             "trust_size_multiplier": 0.5,
                             "trust_note": "wallet is in post-promotion probation, resolved copied history since promotion is 3/4 trades",
+                            "wallet_family": "timing_sensitive",
+                            "wallet_family_multiplier": 1.0,
+                            "wallet_family_note": "wallet family is still proving itself and post-promotion drag is mostly timing-driven",
                         }
                     },
                 ):
@@ -948,6 +951,9 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertEqual(rows[0]["trust_tier"], "promotion_probation")
                 self.assertAlmostEqual(rows[0]["trust_size_multiplier"], 0.5, places=6)
                 self.assertIn("post-promotion probation", rows[0]["trust_note"])
+                self.assertEqual(rows[0]["wallet_family"], "timing_sensitive")
+                self.assertAlmostEqual(rows[0]["wallet_family_multiplier"], 1.0, places=6)
+                self.assertIn("timing-driven", rows[0]["wallet_family_note"])
             finally:
                 db.DB_PATH = original_db_path
 
@@ -3232,7 +3238,7 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("saved as off", str(result["message"]).lower())
         write_env_value.assert_called_once_with("USE_REAL_MONEY", "false")
 
-    def test_config_value_response_blocks_while_shadow_restart_pending(self) -> None:
+    def test_config_value_response_allows_repair_while_shadow_restart_pending(self) -> None:
         with patch.object(
             dashboard_api,
             "_bot_state_snapshot",
@@ -3240,12 +3246,10 @@ class RuntimeFixesTest(unittest.TestCase):
         ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
             status_code, payload = dashboard_api._config_value_response("MAX_MARKET_HORIZON", "7d")
 
-        self.assertEqual(status_code, 409)
-        self.assertFalse(payload["ok"])
-        self.assertIn("shadow restart", str(payload["message"]).lower())
-        write_env_value.assert_not_called()
+        self.assertEqual(status_code, 200)
+        write_env_value.assert_called_once_with("MAX_MARKET_HORIZON", "7d")
 
-    def test_config_value_response_blocks_while_startup_is_blocked(self) -> None:
+    def test_config_value_response_allows_repair_while_startup_is_blocked(self) -> None:
         with patch.object(
             dashboard_api,
             "_bot_state_snapshot",
@@ -3256,10 +3260,34 @@ class RuntimeFixesTest(unittest.TestCase):
         ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
             status_code, payload = dashboard_api._config_value_response("MAX_MARKET_HORIZON", "7d")
 
-        self.assertEqual(status_code, 409)
-        self.assertFalse(payload["ok"])
-        self.assertIn("startup blocked", str(payload["message"]).lower())
-        write_env_value.assert_not_called()
+        self.assertEqual(status_code, 200)
+        write_env_value.assert_called_once_with("MAX_MARKET_HORIZON", "7d")
+
+    def test_config_clear_response_deletes_runtime_setting_while_startup_is_blocked(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={
+                "startup_blocked": True,
+                "startup_block_reason": "startup validation failed",
+            },
+        ), patch.object(dashboard_api, "_clear_env_value") as clear_env_value:
+            status_code, _payload = dashboard_api._config_clear_response("MAX_MARKET_EXPOSURE_FRACTION")
+
+        self.assertEqual(status_code, 200)
+        clear_env_value.assert_called_once_with("MAX_MARKET_EXPOSURE_FRACTION")
+
+    def test_config_clear_response_still_delegates_live_mode_keys(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_set_live_mode_response",
+            return_value={"ok": True, "message": "Live Trading saved as OFF. Restart the bot to apply it safely."},
+        ) as set_live_mode_response:
+            status_code, payload = dashboard_api._config_clear_response("USE_REAL_MONEY")
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        set_live_mode_response.assert_called_once_with({"enabled": False})
 
     def test_blocked_query_response_blocks_while_shadow_restart_pending(self) -> None:
         result = dashboard_api._blocked_query_response({"shadow_restart_pending": True})
@@ -6205,6 +6233,35 @@ class RuntimeFixesTest(unittest.TestCase):
             "source trade was 6.4s old at execution time, above the 5.0s latency limit (observation 2.0s, processing 4.4s)",
         )
 
+    def test_model_fill_edge_block_reason_uses_wallet_family_edge_uplift(self) -> None:
+        signal = {
+            "mode": "xgboost",
+            "confidence": 0.56,
+            "edge_threshold": 0.01,
+            "wallet_trust": {"family": "timing_sensitive"},
+        }
+        fill_economics = SimpleNamespace(sizing_effective_price=0.54)
+
+        reason = main._model_fill_edge_block_reason(signal, fill_economics)
+
+        self.assertEqual(
+            reason,
+            "estimated fill edge 0.020 < threshold 0.025 after slippage for wallet family timing sensitive",
+        )
+
+    def test_model_fill_edge_block_reason_allows_stronger_edge_for_draggy_wallet_family(self) -> None:
+        signal = {
+            "mode": "xgboost",
+            "confidence": 0.57,
+            "edge_threshold": 0.01,
+            "wallet_trust": {"family": "timing_sensitive"},
+        }
+        fill_economics = SimpleNamespace(sizing_effective_price=0.54)
+
+        reason = main._model_fill_edge_block_reason(signal, fill_economics)
+
+        self.assertIsNone(reason)
+
     def test_log_trade_persists_entry_fee_breakdown(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -7033,7 +7090,7 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(latest_attempt_state["last_replay_promotion_at"], 1_700_000_220)
 
     def test_apply_env_config_payload_only_writes_promotable_replay_keys(self) -> None:
-        with patch.dict(os.environ, {}, clear=False), patch.object(main, "_write_env_value") as write_env_value:
+        with patch.dict(os.environ, {}, clear=False), patch.object(main, "set_runtime_setting") as set_runtime_setting:
             result = main._apply_env_config_payload(
                 {
                     "MIN_CONFIDENCE": 0.66,
@@ -7046,7 +7103,7 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(result["ignored_keys"], ["UNSAFE_EXTRA_KEY"])
         self.assertEqual(result["config"], {"ALLOW_XGBOOST": False, "MIN_CONFIDENCE": 0.66})
         self.assertEqual(
-            write_env_value.call_args_list,
+            set_runtime_setting.call_args_list,
             [
                 unittest.mock.call("ALLOW_XGBOOST", "false"),
                 unittest.mock.call("MIN_CONFIDENCE", "0.66"),
@@ -7057,29 +7114,27 @@ class RuntimeFixesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "did not contain any promotable config keys"):
             main._apply_env_config_payload({"UNSAFE_EXTRA_KEY": "ignored"})
 
-    def test_restore_env_config_payload_rolls_back_env_file_and_process_env(self) -> None:
+    def test_restore_env_config_payload_rolls_back_runtime_settings_and_process_env(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            env_path = Path(tmpdir) / ".env"
-            env_path.write_text("MIN_CONFIDENCE=0.55\n", encoding="utf-8")
             original_value = os.environ.get("MIN_CONFIDENCE")
             os.environ["MIN_CONFIDENCE"] = "0.55"
-
-            def fake_write_env_value(key: str, value: str) -> None:
-                env_path.write_text(f"{key}={value}\n", encoding="utf-8")
+            original_db_path = db.DB_PATH
+            db.DB_PATH = Path(tmpdir) / "trading.db"
+            db._invalidate_runtime_settings_cache()
+            db.init_db()
+            db.set_runtime_setting("MIN_CONFIDENCE", "0.55")
 
             try:
-                with (
-                    patch.object(main, "ENV_PATH", env_path),
-                    patch.object(main, "_write_env_value", side_effect=fake_write_env_value),
-                ):
-                    result = main._apply_env_config_payload({"MIN_CONFIDENCE": 0.61})
-                    self.assertEqual(env_path.read_text(encoding="utf-8"), "MIN_CONFIDENCE=0.61\n")
-                    self.assertEqual(os.environ.get("MIN_CONFIDENCE"), "0.61")
-                    main._restore_env_config_payload(result["snapshot"])
+                result = main._apply_env_config_payload({"MIN_CONFIDENCE": 0.61})
+                self.assertEqual(db.get_runtime_setting("MIN_CONFIDENCE"), "0.61")
+                self.assertEqual(os.environ.get("MIN_CONFIDENCE"), "0.61")
+                main._restore_env_config_payload(result["snapshot"])
 
-                self.assertEqual(env_path.read_text(encoding="utf-8"), "MIN_CONFIDENCE=0.55\n")
+                self.assertEqual(db.get_runtime_setting("MIN_CONFIDENCE"), "0.55")
                 self.assertEqual(os.environ.get("MIN_CONFIDENCE"), "0.55")
             finally:
+                db.DB_PATH = original_db_path
+                db._invalidate_runtime_settings_cache()
                 if original_value is None:
                     os.environ.pop("MIN_CONFIDENCE", None)
                 else:

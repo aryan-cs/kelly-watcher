@@ -336,6 +336,7 @@ from kelly_watcher.engine.wallet_trust import (
     allow_duplicate_side_override,
     apply_wallet_trust_sizing,
     get_wallet_trust_state,
+    wallet_family_edge_threshold_uplift,
 )
 from kelly_watcher.engine.watchlist_manager import WatchlistManager
 
@@ -2637,13 +2638,24 @@ def _model_fill_edge_block_reason(signal: Mapping[str, Any] | None, fill_economi
         edge_threshold = float(signal.get("edge_threshold") or 0.0)
     except (TypeError, ValueError):
         return None
+    wallet_trust = signal.get("wallet_trust")
+    wallet_family = ""
+    if isinstance(wallet_trust, Mapping):
+        wallet_family = str(wallet_trust.get("family") or "").strip().lower()
+    family_edge_uplift = wallet_family_edge_threshold_uplift(wallet_family)
+    required_edge_threshold = edge_threshold + family_edge_uplift
     if confidence <= 0 or effective_price <= 0:
         return None
     estimated_edge = confidence - effective_price
-    if estimated_edge + 1e-9 >= edge_threshold:
+    if estimated_edge + 1e-9 >= required_edge_threshold:
         return None
+    if family_edge_uplift > 0 and wallet_family:
+        return (
+            f"estimated fill edge {estimated_edge:.3f} < threshold {required_edge_threshold:.3f} "
+            f"after slippage for wallet family {wallet_family.replace('_', ' ')}"
+        )
     return (
-        f"estimated fill edge {estimated_edge:.3f} < threshold {edge_threshold:.3f} after slippage"
+        f"estimated fill edge {estimated_edge:.3f} < threshold {required_edge_threshold:.3f} after slippage"
     )
 
 
@@ -4176,6 +4188,7 @@ def _shadow_history_state_payload(
 
 def _segment_shadow_state_payload(report: dict[str, Any]) -> dict[str, object]:
     segments = report.get("segments") or []
+    wallet_families = report.get("wallet_families") or []
     routed_resolved, legacy_resolved, history_status, routed_coverage_pct = _segment_history_metrics_from_report(report)
     routed_state = _routed_shadow_gate_state(report)
     return {
@@ -4198,6 +4211,13 @@ def _segment_shadow_state_payload(report: dict[str, Any]) -> dict[str, object]:
         "shadow_segment_routing_coverage_pct": routed_coverage_pct,
         "shadow_segment_summary_json": json.dumps(_json_safe_value(segments), separators=(",", ":")),
         "shadow_segment_block_reason": str(report.get("summary") or "").strip(),
+        "shadow_wallet_family_state_known": True,
+        "shadow_wallet_family_history_status": str(report.get("wallet_family_history_status") or "empty"),
+        "shadow_wallet_family_classified_resolved": max(int(report.get("wallet_family_classified_resolved") or 0), 0),
+        "shadow_wallet_family_unassigned_resolved": max(int(report.get("wallet_family_unassigned_resolved") or 0), 0),
+        "shadow_wallet_family_coverage_pct": report.get("wallet_family_coverage_pct"),
+        "shadow_wallet_family_summary_json": json.dumps(_json_safe_value(wallet_families), separators=(",", ":")),
+        "shadow_wallet_family_block_reason": str(report.get("wallet_family_summary") or "").strip(),
         **routed_state,
     }
 
@@ -4223,6 +4243,13 @@ def _segment_shadow_error_payload(message: str) -> dict[str, object]:
         "shadow_segment_routing_coverage_pct": None,
         "shadow_segment_summary_json": "[]",
         "shadow_segment_block_reason": str(message or "").strip(),
+        "shadow_wallet_family_state_known": True,
+        "shadow_wallet_family_history_status": "empty",
+        "shadow_wallet_family_classified_resolved": 0,
+        "shadow_wallet_family_unassigned_resolved": 0,
+        "shadow_wallet_family_coverage_pct": None,
+        "shadow_wallet_family_summary_json": "[]",
+        "shadow_wallet_family_block_reason": str(message or "").strip(),
         "routed_shadow_state_known": True,
         "routed_shadow_status": "error",
         "routed_shadow_min_resolved": max(int(SEGMENT_SHADOW_MIN_RESOLVED or 0), 0),

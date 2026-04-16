@@ -85,6 +85,10 @@ class WalletDiscoveryTest(unittest.TestCase):
                     ],
                     [],
                     [],
+                    [],
+                    [],
+                    [],
+                    [],
                 ]
 
                 analyzed = {
@@ -118,8 +122,8 @@ class WalletDiscoveryTest(unittest.TestCase):
                     "kelly_watcher.runtime.wallet_discovery.load_local_copy_metrics",
                     return_value={},
                 ), patch(
-                    "kelly_watcher.runtime.wallet_discovery._analyze_wallet_entry",
-                    side_effect=lambda entry, **kwargs: analyzed[entry.address],
+                    "kelly_watcher.runtime.wallet_discovery._analyze_wallet_candidate",
+                    side_effect=lambda entry, **kwargs: (analyzed[entry.address], set()),
                 ):
                     summary = wallet_discovery.refresh_wallet_discovery_candidates(["0xtracked"])
 
@@ -130,8 +134,10 @@ class WalletDiscoveryTest(unittest.TestCase):
 
                 rows = wallet_discovery.load_wallet_discovery_candidates(limit=10)
                 self.assertEqual([row["wallet_address"] for row in rows], ["0xalpha", "0xbeta", "0xgamma"])
-                self.assertEqual(rows[0]["source_labels"], ["week-pnl"])
-                self.assertEqual(rows[1]["source_labels"], ["week-pnl", "week-vol"])
+                self.assertEqual(rows[0]["source_labels"], ["leaderboard:day-pnl"])
+                self.assertEqual(rows[1]["source_labels"], ["leaderboard:day-pnl", "leaderboard:day-vol"])
+                self.assertEqual(rows[0]["copyability_gate_status"], "ready")
+                self.assertEqual(rows[2]["copyability_gate_status"], "review_timing")
                 self.assertFalse(bool(rows[2]["accepted"]))
                 self.assertEqual(rows[2]["reject_reason"], "late_buy_ratio>20%")
             finally:
@@ -198,18 +204,25 @@ class WalletDiscoveryTest(unittest.TestCase):
                         [],
                         [],
                         [],
+                        [],
+                        [],
+                        [],
+                        [],
                     ],
                 ), patch(
                     "kelly_watcher.runtime.wallet_discovery.load_local_copy_metrics",
                     return_value={},
                 ), patch(
-                    "kelly_watcher.runtime.wallet_discovery._analyze_wallet_entry",
-                    return_value=ranked_wallet(
-                        "0xreject",
-                        score=0.25,
-                        accepted=False,
-                        reject_reason="recent_buys<4",
-                        username="reject",
+                    "kelly_watcher.runtime.wallet_discovery._analyze_wallet_candidate",
+                    return_value=(
+                        ranked_wallet(
+                            "0xreject",
+                            score=0.25,
+                            accepted=False,
+                            reject_reason="recent_buys<4",
+                            username="reject",
+                        ),
+                        set(),
                     ),
                 ):
                     summary = wallet_discovery.refresh_wallet_discovery_candidates([])
@@ -220,9 +233,94 @@ class WalletDiscoveryTest(unittest.TestCase):
                 rows = wallet_discovery.load_wallet_discovery_candidates(limit=10)
                 self.assertEqual([row["wallet_address"] for row in rows], ["0xreject"])
                 self.assertFalse(bool(rows[0]["accepted"]))
+                self.assertEqual(rows[0]["copyability_gate_status"], "review_sample")
             finally:
                 wallet_discovery.DB_PATH = original_runtime_db_path
                 db.DB_PATH = original_db_path
+
+    def test_candidate_entries_prioritize_multi_source_wallets_and_keep_later_windows(self) -> None:
+        with patch(
+            "kelly_watcher.runtime.wallet_discovery.fetch_leaderboard",
+            side_effect=[
+                [LeaderboardEntry("0xa", "a", 3, 100.0, 100.0, False)],
+                [LeaderboardEntry("0xb", "b", 4, 100.0, 100.0, False)],
+                [LeaderboardEntry("0xc", "c", 5, 100.0, 100.0, False)],
+                [LeaderboardEntry("0xa", "a", 1, 150.0, 100.0, False)],
+                [LeaderboardEntry("0xd", "d", 1, 500.0, 500.0, False)],
+                [LeaderboardEntry("0xb", "b", 2, 120.0, 220.0, False)],
+                [],
+                [],
+            ],
+        ):
+            with patch(
+                "kelly_watcher.runtime.wallet_discovery._DISCOVERY_SOURCES",
+                (
+                    ("leaderboard:day-pnl", "OVERALL", "DAY", "PNL"),
+                    ("leaderboard:day-vol", "OVERALL", "DAY", "VOL"),
+                    ("leaderboard:week-pnl", "OVERALL", "WEEK", "PNL"),
+                    ("leaderboard:week-vol", "OVERALL", "WEEK", "VOL"),
+                    ("leaderboard:month-pnl", "OVERALL", "MONTH", "PNL"),
+                    ("leaderboard:month-vol", "OVERALL", "MONTH", "VOL"),
+                    ("leaderboard:all-pnl", "OVERALL", "ALL", "PNL"),
+                    ("leaderboard:all-vol", "OVERALL", "ALL", "VOL"),
+                ),
+            ):
+                entries, source_labels = wallet_discovery._candidate_entries(
+                    client=object(),  # fetch_leaderboard is patched
+                    excluded_wallets=set(),
+                    pages=1,
+                    per_page=25,
+                    analyze_limit=3,
+                )
+
+        self.assertEqual([entry.address for entry in entries], ["0xa", "0xb", "0xd"])
+        self.assertEqual(
+            list(source_labels["0xa"]),
+            ["leaderboard:day-pnl", "leaderboard:week-vol"],
+        )
+        self.assertEqual(
+            list(source_labels["0xb"]),
+            ["leaderboard:day-vol", "leaderboard:month-vol"],
+        )
+        self.assertEqual(list(source_labels["0xd"]), ["leaderboard:month-pnl"])
+
+    def test_refresh_wallet_discovery_candidates_blocks_when_registry_is_unavailable(self) -> None:
+        with patch(
+            "kelly_watcher.runtime.wallet_discovery.database_integrity_state",
+            return_value={"db_integrity_known": True, "db_integrity_ok": True, "db_integrity_message": ""},
+        ), patch(
+            "kelly_watcher.runtime.wallet_discovery.managed_wallet_registry_state",
+            return_value={
+                "managed_wallet_registry_available": False,
+                "managed_wallet_registry_status": "unreadable",
+                "managed_wallet_registry_error": "database disk image is malformed",
+            },
+        ):
+            summary = wallet_discovery.refresh_wallet_discovery_candidates([])
+
+        self.assertFalse(summary["ok"])
+        self.assertEqual(summary["scanned_count"], 0)
+        self.assertIn("managed wallet registry is unreadable", str(summary["message"]).lower())
+
+    def test_activity_adjacency_labels_are_added_for_managed_and_discovered_overlap(self) -> None:
+        labels = wallet_discovery._apply_activity_adjacency_labels(
+            {
+                "0xa": ("leaderboard:day-pnl",),
+                "0xb": ("leaderboard:week-pnl",),
+                "0xc": ("leaderboard:month-pnl",),
+            },
+            {
+                "0xa": {"cond-1", "cond-2"},
+                "0xb": {"cond-2"},
+                "0xc": {"cond-managed"},
+            },
+            managed_anchor_condition_ids={"cond-managed"},
+            discovered_anchor_wallets=["0xa", "0xb"],
+        )
+
+        self.assertIn("adjacent:discovered-wallet", labels["0xa"])
+        self.assertIn("adjacent:discovered-wallet", labels["0xb"])
+        self.assertIn("adjacent:managed-wallet", labels["0xc"])
 
 
 if __name__ == "__main__":

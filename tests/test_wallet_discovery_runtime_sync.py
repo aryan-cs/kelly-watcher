@@ -77,7 +77,8 @@ class WalletDiscoveryRuntimeSyncTests(unittest.TestCase):
         self,
         *,
         discovery_summary: dict[str, object],
-        load_wallets_sequence: list[list[str]],
+        initial_wallets: list[str],
+        promoted_wallets: list[str] | None = None,
     ) -> tuple[SimpleNamespace, SimpleNamespace, Mock, SimpleNamespace]:
         class _StopAfterWalletDiscovery(RuntimeError):
             pass
@@ -138,13 +139,26 @@ class WalletDiscoveryRuntimeSyncTests(unittest.TestCase):
             )
             engine_stub = SimpleNamespace(runtime_info=Mock(return_value={}))
             scheduler_stub = _FakeScheduler()
-            load_calls = iter(load_wallets_sequence)
+            registry_wallets = list(initial_wallets)
 
             def _load_managed_wallets(*args, **kwargs):
-                try:
-                    return next(load_calls)
-                except StopIteration:
-                    return list(load_wallets_sequence[-1]) if load_wallets_sequence else []
+                return list(registry_wallets)
+
+            def _managed_wallet_registry_state(*args, **kwargs):
+                return {
+                    "managed_wallet_registry_available": True,
+                    "managed_wallet_registry_status": "ready" if registry_wallets else "empty",
+                    "managed_wallet_registry_error": "",
+                    "managed_wallets": list(registry_wallets),
+                    "managed_wallet_count": len(registry_wallets),
+                    "managed_wallet_total_count": len(registry_wallets),
+                    "managed_wallet_registry_updated_at": 0,
+                }
+
+            def _refresh_wallet_discovery_candidates(*args, **kwargs):
+                if int(discovery_summary.get("promoted_count") or 0) > 0 and promoted_wallets is not None:
+                    registry_wallets[:] = list(promoted_wallets)
+                return dict(discovery_summary)
 
             try:
                 main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
@@ -163,13 +177,7 @@ class WalletDiscoveryRuntimeSyncTests(unittest.TestCase):
                     stack.enter_context(
                         patch(
                             "kelly_watcher.main.managed_wallet_registry_state",
-                            return_value={
-                                "managed_wallet_registry_available": True,
-                                "managed_wallets": load_wallets_sequence[-1] if load_wallets_sequence else [],
-                                "managed_wallet_count": len(load_wallets_sequence[-1]) if load_wallets_sequence else 0,
-                                "managed_wallet_total_count": len(load_wallets_sequence[-1]) if load_wallets_sequence else 0,
-                                "managed_wallet_registry_updated_at": 0,
-                            },
+                            side_effect=_managed_wallet_registry_state,
                         )
                     )
                     stack.enter_context(patch("kelly_watcher.main._validate_startup"))
@@ -238,7 +246,7 @@ class WalletDiscoveryRuntimeSyncTests(unittest.TestCase):
                     stack.enter_context(
                         patch(
                             "kelly_watcher.main.refresh_wallet_discovery_candidates",
-                            return_value=discovery_summary,
+                            side_effect=_refresh_wallet_discovery_candidates,
                         )
                     )
                     stack.enter_context(patch("kelly_watcher.main.BackgroundScheduler", return_value=scheduler_stub))
@@ -270,7 +278,8 @@ class WalletDiscoveryRuntimeSyncTests(unittest.TestCase):
                 "promoted_count": 1,
                 "message": "stored 5 discovery candidate(s) (1 fully accepted, 1 promoted) from 10 analyzed wallets",
             },
-            load_wallets_sequence=[["0xold"], ["0xold", "0xnew"]],
+            initial_wallets=["0xold"],
+            promoted_wallets=["0xold", "0xnew"],
         )
 
         watchlist_stub.replace_wallets.assert_called_once_with(["0xold", "0xnew"])
@@ -289,7 +298,7 @@ class WalletDiscoveryRuntimeSyncTests(unittest.TestCase):
                 "promoted_count": 0,
                 "message": "stored 5 discovery candidate(s) (1 fully accepted, 0 promoted) from 10 analyzed wallets",
             },
-            load_wallets_sequence=[["0xold"]],
+            initial_wallets=["0xold"],
         )
 
         watchlist_stub.replace_wallets.assert_not_called()

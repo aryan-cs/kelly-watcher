@@ -954,6 +954,55 @@ class TrainingDataContractTest(unittest.TestCase):
         self.assertTrue(metrics["training_provenance_trusted"])
         load_mock.assert_called_once_with(since_ts=3_500, routed_only=True)
 
+    def test_direct_train_with_prefetched_df_skips_without_explicit_trusted_provenance(self) -> None:
+        with patch(
+            "kelly_watcher.research.train.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 3_000},
+        ):
+            metrics = train.train(df=[object()])
+
+        self.assertTrue(metrics["skipped"])
+        self.assertEqual(metrics["n_samples"], 1)
+        self.assertEqual(metrics["training_scope"], "all_history")
+        self.assertFalse(metrics["training_provenance_trusted"])
+        self.assertIn("routed-only", metrics["reason"])
+
+    def test_direct_train_with_prefetched_df_skips_when_provenance_mismatches_active_epoch(self) -> None:
+        with patch(
+            "kelly_watcher.research.train.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 3_000},
+        ):
+            metrics = train.train(
+                df=[object(), object()],
+                training_since_ts=2_500,
+                training_routed_only=True,
+            )
+
+        self.assertTrue(metrics["skipped"])
+        self.assertEqual(metrics["n_samples"], 2)
+        self.assertEqual(metrics["training_since_ts"], 2_500)
+        self.assertTrue(metrics["training_routed_only"])
+        self.assertFalse(metrics["training_provenance_trusted"])
+        self.assertIn("does not match active evidence window 3000", metrics["reason"])
+
+    def test_direct_train_with_prefetched_df_accepts_matching_provenance_contract(self) -> None:
+        with patch(
+            "kelly_watcher.research.train.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 3_000},
+        ):
+            metrics = train.train(
+                df=[object()],
+                training_since_ts=3_000,
+                training_routed_only=True,
+            )
+
+        self.assertTrue(metrics["skipped"])
+        self.assertEqual(metrics["n_samples"], 1)
+        self.assertEqual(metrics["training_scope"], "current_evidence_window")
+        self.assertEqual(metrics["training_since_ts"], 3_000)
+        self.assertTrue(metrics["training_routed_only"])
+        self.assertTrue(metrics["training_provenance_trusted"])
+
 
 if __name__ == "__main__":
     unittest.main()

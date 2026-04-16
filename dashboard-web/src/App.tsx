@@ -518,7 +518,7 @@ export function App() {
   const discoveryCandidates = discoveryCandidatesResource.data?.candidates || []
   const walletMembershipEvents = walletEventsResource.data?.events || []
   const [dashboardActionMessage, setDashboardActionMessage] = useState('')
-  const [busyWallet, setBusyWallet] = useState<string | null>(null)
+  const [busyAction, setBusyAction] = useState<string | null>(null)
 
   const startupBlocked = Boolean(botState?.startup_blocked || botState?.startup_recovery_only)
   const startupRecoveryOnly = Boolean(botState?.startup_recovery_only)
@@ -612,10 +612,10 @@ export function App() {
   }
 
   const runDashboardAction = async (label: string, action: () => Promise<string>) => {
-    if (busyWallet) {
+    if (busyAction) {
       return
     }
-    setBusyWallet(label)
+    setBusyAction(label)
     setDashboardActionMessage('')
     try {
       const message = await action()
@@ -624,7 +624,7 @@ export function App() {
     } catch (error) {
       setDashboardActionMessage(error instanceof Error ? error.message : 'Unknown dashboard action error')
     } finally {
-      setBusyWallet(null)
+      setBusyAction(null)
     }
   }
 
@@ -649,6 +649,30 @@ export function App() {
         walletAddress
       })
       return result.message || 'Wallet reactivated.'
+    })
+
+  const requestShadowRestart = async () =>
+    runDashboardAction('shadow-restart', async () => {
+      const result = await postApiJson<{ok?: boolean; message?: string}>('/api/shadow/restart', {
+        wallet_mode: 'keep_active'
+      })
+      return result.message || 'Shadow restart requested.'
+    })
+
+  const requestDbRecovery = async () =>
+    runDashboardAction('db-recovery', async () => {
+      const result = await postApiJson<{ok?: boolean; message?: string}>('/api/shadow/recover-db', {
+        source: 'dashboard-web'
+      })
+      return result.message || 'DB recovery requested.'
+    })
+
+  const requestTradeLogArchive = async () =>
+    runDashboardAction('trade-log-archive', async () => {
+      const result = await postApiJson<{ok?: boolean; message?: string}>('/api/shadow/archive-trade-log', {
+        source: 'dashboard-web'
+      })
+      return result.message || 'Trade log archive requested.'
     })
 
   const operationalWarnings = useMemo(() => {
@@ -1092,11 +1116,37 @@ export function App() {
             <p className="panel__eyebrow">Operational Status</p>
             <h2>Recovery, integrity, and storage truth</h2>
           </div>
-          <p className="panel__subtle">
-            {botState?.storage_state_known
-              ? `${formatBytes(botState?.storage_save_dir_size_bytes)} in save/`
-              : 'Waiting for storage snapshot'}
-          </p>
+          <div className="hero__controls">
+            <p className="panel__subtle">
+              {botState?.storage_state_known
+                ? `${formatBytes(botState?.storage_save_dir_size_bytes)} in save/`
+                : 'Waiting for storage snapshot'}
+            </p>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={requestShadowRestart}
+              disabled={busyAction !== null}
+            >
+              {busyAction === 'shadow-restart' ? 'Restarting...' : 'Restart Shadow'}
+            </button>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={requestDbRecovery}
+              disabled={busyAction !== null}
+            >
+              {busyAction === 'db-recovery' ? 'Recovering...' : 'Recover DB'}
+            </button>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={requestTradeLogArchive}
+              disabled={busyAction !== null}
+            >
+              {busyAction === 'trade-log-archive' ? 'Archiving...' : 'Archive Trade Log'}
+            </button>
+          </div>
         </div>
         {operationalWarnings.length ? (
           <div className="stack">
@@ -1230,7 +1280,7 @@ export function App() {
                 wallet={wallet}
                 onDrop={dropWallet}
                 onReactivate={reactivateWallet}
-                busyWallet={busyWallet}
+                busyWallet={busyAction}
               />
             ))
           ) : (
@@ -1255,9 +1305,9 @@ export function App() {
               type="button"
               className="button button--ghost"
               onClick={triggerDiscoveryScan}
-              disabled={busyWallet === 'scan'}
+              disabled={busyAction !== null}
             >
-              {busyWallet === 'scan' ? 'Scanning...' : 'Scan now'}
+              {busyAction === 'scan' ? 'Scanning...' : 'Scan now'}
             </button>
           </div>
         </div>

@@ -169,3 +169,12 @@ Blockers: None
 Next: Use these findings to scope the next shadow-safety pass after the current checkpoint push.
 Decisions: Galileo found one remaining class of env fallback that is now fixed locally in `main.py`/`dashboard_api.py`. Linnaeus confirmed the next highest-value gap is wallet-specific post-promotion evidence: per-wallet since-promotion copied trades/PnL/skip-rate, a promotion-aware probation ramp in trust/watchlist logic, and dashboard visibility into whether auto-promoted wallets are actually proving themselves in shadow mode.
 Tests: Audit only; no direct tests
+
+[2026-04-16 17:38 CT] codex-main
+Task: Publish the recovery-control-plane checkpoint for the rest of the team.
+Claims: `JOURNAL.md`
+Status: Pushed
+Blockers: Live DB corruption still blocks trustworthy discovery/promotion in the real environment until recovery succeeds.
+Next: Start the wallet post-promotion evidence/probation slice from commit `edb9fe9`.
+Decisions: Pushed `codex/shadow-wallet-registry` at commit `edb9fe9` after staging only the browser recovery controls, bootstrap-only wallet semantics, runtime env-fallback removal, and focused regression updates. Left unrelated `dashboard-cli/*`, `tests/test_db_recovery.py`, and `tests/test_trade_log_archive.py` changes untouched.
+Tests: Same verification as the prior entry; no new code changes after push

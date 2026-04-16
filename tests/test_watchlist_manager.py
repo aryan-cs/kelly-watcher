@@ -308,6 +308,14 @@ class WatchlistManagerTest(unittest.TestCase):
                     """,
                     ("0xpromo", 0.64, 45, 0.3, 1_500.0, 40.0, 10, 10, 29, 0, 300.0, 0.04, 0, 0.0, 0.0, 1_700_000_000),
                 )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    ("0xpromo", 1_700_001_000, 1_700_001_000),
+                )
                 for index in range(18):
                     insert_logged_trade(
                         conn,
@@ -418,6 +426,122 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_auto_promoted_wallet_reactivation_resets_post_promotion_evidence_window(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    ("0xpromo", 0.64, 45, 0.3, 1_500.0, 40.0, 10, 10, 29, 0, 300.0, 0.04, 0, 0.0, 0.0, 1_700_000_000),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    ("0xpromo", 1_700_000_100, 1_700_000_100),
+                )
+                insert_promotion_event(conn, "0xpromo", 1_700_000_100)
+                for index in range(8):
+                    insert_logged_trade(
+                        conn,
+                        "0xpromo",
+                        1_700_000_200 + index,
+                        actual_entry_price=0.5,
+                        actual_entry_shares=2.0,
+                        actual_entry_size_usd=1.0,
+                        shadow_pnl_usd=0.25,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=12
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_350
+                ):
+                    manager = WatchlistManager(["0xpromo"])
+                    manager.refresh()
+
+                conn = db.get_conn()
+                before_row = conn.execute(
+                    """
+                    SELECT post_promotion_baseline_at,
+                           post_promotion_total_buy_signals,
+                           post_promotion_resolved_copied_count,
+                           post_promotion_evidence_ready
+                    FROM wallet_policy_metrics
+                    WHERE wallet_address='0xpromo'
+                    """
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(int(before_row["post_promotion_baseline_at"] or 0), 1_700_000_100)
+                self.assertEqual(int(before_row["post_promotion_total_buy_signals"] or 0), 8)
+                self.assertEqual(int(before_row["post_promotion_resolved_copied_count"] or 0), 8)
+                self.assertEqual(int(before_row["post_promotion_evidence_ready"] or 0), 1)
+
+                with patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_500):
+                    self.assertTrue(reactivate_wallet("0xpromo"))
+
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=12
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_550
+                ):
+                    manager.refresh()
+
+                conn = db.get_conn()
+                after_row = conn.execute(
+                    """
+                    SELECT post_promotion_baseline_at,
+                           post_promotion_total_buy_signals,
+                           post_promotion_resolved_copied_count,
+                           post_promotion_evidence_ready
+                    FROM wallet_policy_metrics
+                    WHERE wallet_address='0xpromo'
+                    """
+                ).fetchone()
+                event_row = conn.execute(
+                    """
+                    SELECT action, source, payload_json, created_at
+                    FROM wallet_membership_events
+                    WHERE wallet_address='0xpromo'
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(int(after_row["post_promotion_baseline_at"] or 0), 1_700_000_500)
+                self.assertEqual(int(after_row["post_promotion_total_buy_signals"] or 0), 0)
+                self.assertEqual(int(after_row["post_promotion_resolved_copied_count"] or 0), 0)
+                self.assertEqual(int(after_row["post_promotion_evidence_ready"] or 0), 0)
+                self.assertEqual(str(event_row["action"] or ""), "reactivate")
+                self.assertEqual(str(event_row["source"] or ""), "watchlist_manager")
+                self.assertEqual(str(event_row["payload_json"] or ""), '{"baseline_at":1700000500,"boundary_kind":"reactivate","reactivated_at":1700000500}')
+                self.assertEqual(int(event_row["created_at"] or 0), 1_700_000_500)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_auto_promoted_wallet_can_drop_on_bad_post_promotion_local_results(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -434,6 +558,14 @@ class WatchlistManagerTest(unittest.TestCase):
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     ("0xpromo", 0.64, 45, 0.3, 1_500.0, 40.0, 10, 10, 29, 0, 300.0, 0.04, 0, 0.0, 0.0, 1_700_000_000),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, updated_at
+                    ) VALUES (?, 'active', ?, ?)
+                    """,
+                    ("0xpromo", 1_700_001_000, 1_700_001_000),
                 )
                 for index in range(12):
                     insert_logged_trade(

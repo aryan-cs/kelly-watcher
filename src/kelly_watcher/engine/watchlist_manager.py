@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time
@@ -1448,28 +1449,56 @@ def reactivate_wallet(wallet_address: str) -> bool:
     now_ts = int(time.time())
     conn = get_conn()
     try:
-        conn.execute(
-            """
-            INSERT INTO wallet_watch_state (
-                wallet_address,
-                status,
-                status_reason,
-                dropped_at,
-                reactivated_at,
-                tracking_started_at,
-                updated_at
-            ) VALUES (?, 'active', NULL, NULL, ?, ?, ?)
-            ON CONFLICT(wallet_address) DO UPDATE SET
-                status='active',
-                status_reason=NULL,
-                dropped_at=NULL,
-                reactivated_at=excluded.reactivated_at,
-                tracking_started_at=excluded.tracking_started_at,
-                updated_at=excluded.updated_at
-            """,
-            (wallet, now_ts, now_ts, now_ts),
-        )
-        conn.commit()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO wallet_watch_state (
+                    wallet_address,
+                    status,
+                    status_reason,
+                    dropped_at,
+                    reactivated_at,
+                    tracking_started_at,
+                    updated_at
+                ) VALUES (?, 'active', NULL, NULL, ?, ?, ?)
+                ON CONFLICT(wallet_address) DO UPDATE SET
+                    status='active',
+                    status_reason=NULL,
+                    dropped_at=NULL,
+                    reactivated_at=excluded.reactivated_at,
+                    tracking_started_at=excluded.tracking_started_at,
+                    updated_at=excluded.updated_at
+                """,
+                (wallet, now_ts, now_ts, now_ts),
+            )
+            conn.execute(
+                """
+                INSERT INTO wallet_membership_events (
+                    wallet_address,
+                    action,
+                    source,
+                    reason,
+                    payload_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    wallet,
+                    "reactivate",
+                    "watchlist_manager",
+                    "wallet manually reactivated",
+                    json.dumps(
+                        {
+                            "baseline_at": now_ts,
+                            "reactivated_at": now_ts,
+                            "boundary_kind": "reactivate",
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    now_ts,
+                ),
+            )
         return True
     finally:
         conn.close()

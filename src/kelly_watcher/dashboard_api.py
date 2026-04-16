@@ -1636,6 +1636,34 @@ def _reactivate_wallet(wallet_address: str) -> dict[str, Any]:
                 """,
                 (wallet, now_ts, now_ts, now_ts),
             )
+            conn.execute(
+                """
+                INSERT INTO wallet_membership_events (
+                  wallet_address,
+                  action,
+                  source,
+                  reason,
+                  payload_json,
+                  created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    wallet,
+                    "reactivate",
+                    "manual_web",
+                    "wallet reactivated from web dashboard",
+                    json.dumps(
+                        {
+                            "baseline_at": now_ts,
+                            "reactivated_at": now_ts,
+                            "boundary_kind": "reactivate",
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    now_ts,
+                ),
+            )
     finally:
         conn.close()
     return {"ok": True, "message": "Wallet reactivated."}

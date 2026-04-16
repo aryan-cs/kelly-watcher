@@ -918,6 +918,93 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_dashboard_reactivate_wallet_records_membership_boundary_event(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO managed_wallets (
+                        wallet_address, tracking_enabled, source, added_at, updated_at, metadata_json
+                    ) VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        "0xpromo",
+                        1,
+                        "auto_promoted",
+                        1_700_000_000,
+                        1_700_000_000,
+                        '{"promotion_source":"wallet_discovery","promoted_at":1700000000}',
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_membership_events (
+                        wallet_address, action, source, reason, payload_json, created_at
+                    ) VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        "0xpromo",
+                        "promote",
+                        "auto_promoted",
+                        "ready wallet discovered in shadow scan",
+                        '{"promotion_source":"wallet_discovery","promoted_at":1700000000}',
+                        1_700_000_000,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("kelly_watcher.dashboard_api.time.time", return_value=1_700_000_500):
+                    result = dashboard_api._reactivate_wallet("0xpromo")
+
+                self.assertTrue(result["ok"])
+
+                conn = db.get_conn()
+                status_row = conn.execute(
+                    """
+                    SELECT status, reactivated_at, tracking_started_at
+                    FROM wallet_watch_state
+                    WHERE wallet_address='0xpromo'
+                    """
+                ).fetchone()
+                event_row = conn.execute(
+                    """
+                    SELECT action, source, reason, payload_json, created_at
+                    FROM wallet_membership_events
+                    WHERE wallet_address='0xpromo'
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(str(status_row["status"] or ""), "active")
+                self.assertEqual(int(status_row["reactivated_at"] or 0), 1_700_000_500)
+                self.assertEqual(int(status_row["tracking_started_at"] or 0), 1_700_000_500)
+                self.assertEqual(str(event_row["action"] or ""), "reactivate")
+                self.assertEqual(str(event_row["source"] or ""), "manual_web")
+                self.assertIn("web dashboard", str(event_row["reason"] or ""))
+                self.assertEqual(
+                    json.loads(str(event_row["payload_json"] or "{}")),
+                    {
+                        "baseline_at": 1_700_000_500,
+                        "boundary_kind": "reactivate",
+                        "reactivated_at": 1_700_000_500,
+                    },
+                )
+                self.assertEqual(int(event_row["created_at"] or 0), 1_700_000_500)
+
+                promotion_state = db.load_wallet_promotion_state(["0xpromo"])
+                self.assertEqual(int(promotion_state["0xpromo"]["baseline_at"] or 0), 1_700_000_500)
+                self.assertEqual(str(promotion_state["0xpromo"]["boundary_action"] or ""), "reactivate")
+                self.assertEqual(str(promotion_state["0xpromo"]["boundary_source"] or ""), "manual_web")
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_runtime_managed_wallets_does_not_fallback_to_bootstrap_env(self) -> None:
         with patch("kelly_watcher.main.load_managed_wallets", return_value=[]), patch.object(
             main, "WATCHED_WALLETS", ["0xenv1", "0xenv2"]

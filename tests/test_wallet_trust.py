@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import kelly_watcher.data.db as db
+from kelly_watcher.engine.watchlist_manager import reactivate_wallet
 from kelly_watcher.engine.wallet_trust import (
     WalletTrustState,
     allow_duplicate_side_override,
@@ -480,6 +481,80 @@ class WalletTrustTest(unittest.TestCase):
                 self.assertAlmostEqual(state.post_promotion_uncopyable_skip_rate, 0.625, places=6)
                 self.assertFalse(state.post_promotion_evidence_ready)
                 self.assertIn("62%>50%", state.tier_note or "")
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_auto_promoted_wallet_reactivation_resets_post_promotion_trust_window(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                for idx in range(17):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"trusted-before-reactivation-{idx}",
+                        trader_address="0xabc",
+                        skipped=False,
+                        resolved_pnl_usd=0.4,
+                    )
+                _insert_promotion_event(conn, wallet_address="0xabc", promoted_at=1_700_000_050)
+                for idx in range(8):
+                    _insert_trade(
+                        conn,
+                        trade_id=f"trusted-after-reactivation-{idx}",
+                        trader_address="0xabc",
+                        skipped=False,
+                        resolved_pnl_usd=0.3,
+                        placed_at=1_700_000_100 + idx,
+                    )
+                conn.commit()
+                conn.close()
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
+                    },
+                    clear=False,
+                ):
+                    trusted_before = get_wallet_trust_state("0xabc")
+
+                self.assertEqual(trusted_before.tier, "trusted")
+                self.assertEqual(trusted_before.post_promotion_resolved_copied_buy_count, 8)
+                self.assertTrue(trusted_before.post_promotion_evidence_ready)
+
+                with patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400):
+                    self.assertTrue(reactivate_wallet("0xabc"))
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "WALLET_COLD_START_MIN_OBSERVED_BUYS": "3",
+                        "WALLET_DISCOVERY_MIN_OBSERVED_BUYS": "8",
+                        "WALLET_DISCOVERY_MIN_RESOLVED_BUYS": "3",
+                        "WALLET_DISCOVERY_SIZE_MULTIPLIER": "0.05",
+                        "WALLET_TRUSTED_MIN_RESOLVED_COPIED_BUYS": "15",
+                        "WALLET_PROBATION_SIZE_MULTIPLIER": "0.20",
+                    },
+                    clear=False,
+                ):
+                    state = get_wallet_trust_state("0xabc")
+
+                self.assertEqual(state.tier, "promotion_probation")
+                self.assertAlmostEqual(state.size_multiplier, 0.05, places=6)
+                self.assertEqual(state.post_promotion_baseline_at, 1_700_000_400)
+                self.assertEqual(state.post_promotion_total_buy_signals, 0)
+                self.assertEqual(state.post_promotion_resolved_copied_buy_count, 0)
+                self.assertFalse(state.post_promotion_evidence_ready)
+                self.assertIn("0/3", state.tier_note or "")
+                self.assertIn("0/8", state.tier_note or "")
             finally:
                 db.DB_PATH = original_db_path
 

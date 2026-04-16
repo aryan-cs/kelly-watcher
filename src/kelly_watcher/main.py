@@ -7291,6 +7291,9 @@ def main() -> None:
 
             def _refresh_wallet_discovery() -> None:
                 summary = refresh_wallet_discovery_candidates(runtime_wallets)
+                promoted_count = max(int(summary.get("promoted_count") or 0), 0)
+                if promoted_count > 0:
+                    _refresh_managed_wallet_registry()
                 message = str(summary.get("message") or "").strip()
                 if message:
                     if bool(summary.get("ok")):

@@ -403,3 +403,30 @@ Blockers: Live DB integrity is still the larger operational blocker; this slice 
 Next: Highest-value follow-up is a tighter distinction between “managed_wallets table missing” and “managed_wallets table exists but registry contents are empty/corrupt,” ideally surfaced in bot-state so the browser can show canonical-registry health without inferring from endpoint payloads.
 Decisions: `managed_wallet_registry_state()` now exposes `managed_wallet_registry_available`. Startup bootstrap from `WATCHED_WALLETS` now fails closed when the registry is unreadable/missing or when shadow-reset snapshot restore threw an exception. The dashboard wallet-registry endpoint no longer synthesizes wallet inventory from `wallet_watch_state`; it returns an unavailable-state message instead, and the web UI now prefers that backend message over a generic empty-state string.
 Tests: `python -m py_compile src/kelly_watcher/data/db.py src/kelly_watcher/main.py src/kelly_watcher/dashboard_api.py tests/test_runtime_fixes.py tests/test_dashboard_web_source.py` -> passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'should_import_bootstrap_watched_wallets_only_when_registry_is_empty or wallet_registry_summary_fails_closed_without_managed_wallets_table'` -> 2 passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `node ./dashboard-web/node_modules/typescript/bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed
+
+[2026-04-16 21:00 CDT] codex-main
+Task: Publish explicit canonical managed-wallet registry health instead of forcing callers to infer from counts or fallbacks.
+Claims: `JOURNAL.md`, `src/kelly_watcher/data/db.py`, `src/kelly_watcher/main.py`, `src/kelly_watcher/dashboard_api.py`, `tests/test_runtime_fixes.py`
+Status: In progress
+Blockers: `src/kelly_watcher/dashboard_api.py` and `tests/test_runtime_fixes.py` are already dirty from another in-flight browser/config slice, so edits and staging must stay surgical.
+Next: Add `managed_wallet_registry_status` / `managed_wallet_registry_error`, gate bootstrap import on `empty` only, remove any remaining canonical-registry address fallback from `wallet_watch_state`, and cover missing/empty/unreadable states with focused regressions.
+Decisions: Backend should own the distinction between `missing`, `empty`, `ready`, and `unreadable` once, then both startup and browser/API code can consume that explicit truth instead of inferring from payload shape.
+Tests: Pending
+
+[2026-04-16 21:06 CDT] codex-main
+Task: Make auto-promoted discovery wallets hot-load into the runtime immediately instead of waiting for the 5-minute registry sync.
+Claims: `JOURNAL.md`, `src/kelly_watcher/main.py`, `tests/test_wallet_discovery_runtime_sync.py`
+Status: In progress
+Blockers: `tests/test_runtime_fixes.py` is shared and dirty, so the regression should live in a new focused test file instead of piling more patch-scoping into that file.
+Next: Hook `_refresh_wallet_discovery()` so a positive `promoted_count` triggers `_refresh_managed_wallet_registry()` right away, then add a focused scheduler-callback regression for the positive and zero-promotion cases.
+Decisions: This is a realism fix, not just latency polish. In shadow mode, missing the first few trades after auto-promotion can overstate discovery usefulness because the DB says “promoted” while the tracker is still not polling the wallet.
+Tests: Pending
+
+[2026-04-16 21:12 CDT] codex-main
+Task: Complete the discovery runtime hot-load fix.
+Claims: `JOURNAL.md`, `src/kelly_watcher/main.py`, `tests/test_wallet_discovery_runtime_sync.py`
+Status: Completed
+Blockers: Live DB integrity is still the broader blocker before the wallet-finding tool can be judged from real shadow evidence, but this removes a concrete runtime lag that was understating newly promoted wallets.
+Next: Return to the explicit canonical-registry health slice once the shared browser/config edits settle, or move on to wallet-discovery cohort reporting if the web surface becomes available again.
+Decisions: `_refresh_wallet_discovery()` now immediately calls `_refresh_managed_wallet_registry()` whenever a scan reports `promoted_count > 0`, so newly auto-promoted wallets become part of the in-memory watchlist/tracker in the same scheduler pass instead of waiting for the periodic 5-minute registry sync. Added a dedicated regression file to keep this slice isolated from the already-dirty omnibus runtime tests.
+Tests: `python -m py_compile src/kelly_watcher/main.py tests/test_wallet_discovery_runtime_sync.py` -> passed; `uv run pytest tests/test_wallet_discovery_runtime_sync.py -q` -> 2 passed; `uv run pytest tests/test_wallet_discovery.py tests/test_wallet_discovery_runtime_sync.py -q` -> 4 passed

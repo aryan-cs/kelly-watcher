@@ -658,23 +658,47 @@ def managed_wallet_registry_updated_at(conn: sqlite3.Connection | None = None) -
 
 def managed_wallet_registry_state(conn: sqlite3.Connection | None = None) -> dict[str, object]:
     owns_conn = conn is None
-    if owns_conn:
-        conn = get_conn()
-    assert conn is not None
+    local_conn: sqlite3.Connection | None = conn
     try:
-        registry_available = _table_exists(conn, "managed_wallets")
-        active_wallets = load_managed_wallets(conn=conn)
-        all_wallets = load_managed_wallets(include_disabled=True, conn=conn)
+        if owns_conn:
+            local_conn = get_conn()
+        assert local_conn is not None
+        registry_available = _table_exists(local_conn, "managed_wallets")
+        if not registry_available:
+            return {
+                "managed_wallet_registry_available": False,
+                "managed_wallet_registry_status": "missing",
+                "managed_wallet_registry_error": "",
+                "managed_wallets": [],
+                "managed_wallet_count": 0,
+                "managed_wallet_total_count": 0,
+                "managed_wallet_registry_updated_at": 0,
+            }
+        active_wallets = load_managed_wallets(conn=local_conn)
+        all_wallets = load_managed_wallets(include_disabled=True, conn=local_conn)
+        total_count = len(all_wallets)
         return {
-            "managed_wallet_registry_available": registry_available,
+            "managed_wallet_registry_available": True,
+            "managed_wallet_registry_status": "ready" if total_count > 0 else "empty",
+            "managed_wallet_registry_error": "",
             "managed_wallets": active_wallets,
             "managed_wallet_count": len(active_wallets),
-            "managed_wallet_total_count": len(all_wallets),
-            "managed_wallet_registry_updated_at": managed_wallet_registry_updated_at(conn=conn),
+            "managed_wallet_total_count": total_count,
+            "managed_wallet_registry_updated_at": managed_wallet_registry_updated_at(conn=local_conn),
+        }
+    except sqlite3.DatabaseError as exc:
+        return {
+            "managed_wallet_registry_available": False,
+            "managed_wallet_registry_status": "unreadable",
+            "managed_wallet_registry_error": str(exc).splitlines()[0].strip(),
+            "managed_wallets": [],
+            "managed_wallet_count": 0,
+            "managed_wallet_total_count": 0,
+            "managed_wallet_registry_updated_at": 0,
         }
     finally:
-        if owns_conn:
-            conn.close()
+        if owns_conn and local_conn is not None:
+            local_conn.close()
 
 
 def load_wallet_promotion_state(

@@ -371,11 +371,43 @@ _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECA
 
 
 def _runtime_managed_wallets() -> list[str]:
+    wallets = _managed_wallet_registry_runtime_wallets()
+    return list(wallets or [])
+
+
+def _managed_wallet_registry_status(state: dict[str, object] | None = None) -> str:
+    if state is None:
+        state = managed_wallet_registry_state()
+    status = str(state.get("managed_wallet_registry_status") or "").strip().lower()
+    if status in {"ready", "empty", "missing", "unreadable"}:
+        return status
+    if not bool(state.get("managed_wallet_registry_available", True)):
+        return "missing"
     try:
-        wallets = load_managed_wallets()
+        total_count = int(state.get("managed_wallet_total_count") or 0)
+    except (TypeError, ValueError):
+        total_count = 0
+    if total_count > 0:
+        return "ready"
+    wallets = state.get("managed_wallets") or []
+    if isinstance(wallets, list) and wallets:
+        return "ready"
+    return "empty"
+
+
+def _managed_wallet_registry_runtime_wallets(state: dict[str, object] | None = None) -> list[str] | None:
+    if state is None:
+        state = managed_wallet_registry_state()
+    status = _managed_wallet_registry_status(state)
+    if status in {"missing", "unreadable"}:
+        return None
+    wallets = state.get("managed_wallets")
+    if isinstance(wallets, list):
+        return [str(wallet).strip().lower() for wallet in wallets if str(wallet).strip()]
+    try:
+        return list(load_managed_wallets())
     except Exception:
-        wallets = []
-    return list(wallets)
+        return [] if status == "empty" else None
 
 
 def _managed_wallet_registry_total_count() -> int | None:
@@ -383,7 +415,10 @@ def _managed_wallet_registry_total_count() -> int | None:
         state = managed_wallet_registry_state()
     except Exception:
         return None
-    if not bool(state.get("managed_wallet_registry_available", True)):
+    status = _managed_wallet_registry_status(state)
+    if status == "empty":
+        return 0
+    if status in {"missing", "unreadable"}:
         return None
     try:
         total_count = int(state.get("managed_wallet_total_count") or 0)
@@ -404,10 +439,11 @@ def _should_import_bootstrap_watched_wallets(
 ) -> bool:
     if clear_all_snapshot_requested or snapshot_restore_failed or not WATCHED_WALLETS:
         return False
-    total_count = _managed_wallet_registry_total_count()
-    if total_count is None:
+    try:
+        state = managed_wallet_registry_state()
+    except Exception:
         return False
-    return total_count <= 0
+    return _managed_wallet_registry_status(state) == "empty"
 
 
 def _managed_wallet_count() -> int:
@@ -761,6 +797,12 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "bankroll_usd": None,
         "last_event_count": 0,
         "polled_wallet_count": 0,
+        "managed_wallet_registry_available": False,
+        "managed_wallet_registry_status": "unknown",
+        "managed_wallet_registry_error": "",
+        "managed_wallet_count": 0,
+        "managed_wallet_total_count": 0,
+        "managed_wallet_registry_updated_at": 0,
         "retrain_in_progress": False,
         "retrain_started_at": 0,
         "last_retrain_started_at": 0,
@@ -1203,6 +1245,10 @@ def _persist_startup_failure_state(
     except Exception as exc:
         state.update(_shadow_snapshot_error_payload(str(exc)))
         state.update(_routed_shadow_performance_error_payload(str(exc)))
+    try:
+        state.update(managed_wallet_registry_state())
+    except Exception:
+        pass
     try:
         state.update(database_integrity_state())
     except Exception:
@@ -5866,8 +5912,15 @@ def _validate_startup() -> None:
             errors.append(str(exc))
             return None
 
-    runtime_wallets = _runtime_managed_wallets()
-    if not runtime_wallets:
+    registry_state = managed_wallet_registry_state()
+    registry_status = _managed_wallet_registry_status(registry_state)
+    runtime_wallets = _managed_wallet_registry_runtime_wallets(registry_state) or []
+    if registry_status == "missing":
+        errors.append("managed wallet registry table is missing")
+    elif registry_status == "unreadable":
+        detail = str(registry_state.get("managed_wallet_registry_error") or "").strip()
+        errors.append("managed wallet registry is unreadable" + (f": {detail}" if detail else ""))
+    elif not runtime_wallets:
         errors.append("managed wallet registry is empty")
 
     confidence = _capture_config(min_confidence)
@@ -7276,8 +7329,13 @@ def main() -> None:
 
             def _refresh_managed_wallet_registry() -> None:
                 nonlocal runtime_wallets
-                managed_wallets = load_managed_wallets()
+                registry_state = managed_wallet_registry_state()
+                managed_wallets = _managed_wallet_registry_runtime_wallets(registry_state)
+                if managed_wallets is None:
+                    _persist_bot_state(**registry_state)
+                    return
                 if managed_wallets == runtime_wallets:
+                    _persist_bot_state(**registry_state)
                     return
                 runtime_wallets = managed_wallets
                 watchlist.replace_wallets(managed_wallets)
@@ -7286,7 +7344,7 @@ def main() -> None:
                 refresh_trader_cache(managed_wallets)
                 _persist_bot_state(
                     **watchlist.state_fields(),
-                    **managed_wallet_registry_state(),
+                    **registry_state,
                 )
 
             def _refresh_wallet_discovery() -> None:

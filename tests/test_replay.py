@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import kelly_watcher.data.db as db
+from kelly_watcher.research import replay
 from kelly_watcher.research.replay import ReplayPolicy, run_replay
 
 
@@ -300,6 +301,13 @@ class ReplayTest(unittest.TestCase):
                 self.assertAlmostEqual(result["final_bankroll_usd"], 1015.075, places=3)
             finally:
                 db.DB_PATH = original_db_path
+
+    def test_replay_effective_entry_price_uses_snapshot_fee_rate_when_actual_entry_is_missing(self) -> None:
+        adjusted = replay._replay_effective_entry_price(0.60, json.dumps({"fee_rate_bps": 50}))
+
+        self.assertIsNotNone(adjusted)
+        self.assertGreater(adjusted, 0.60)
+        self.assertAlmostEqual(adjusted, 0.601202, places=6)
 
     def test_run_replay_keeps_unresolved_accepts_as_open_exposure(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -754,6 +762,118 @@ class ReplayTest(unittest.TestCase):
                     trade_rows,
                     [("blocked-by-carry", "reject", "total_exposure_cap")],
                 )
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_keeps_quote_gating_and_heuristic_drag_separate(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                policy = ReplayPolicy.from_payload(
+                    {
+                        "initial_bankroll_usd": 1000.0,
+                        "min_confidence": 0.55,
+                        "min_bet_usd": 1.0,
+                        "heuristic_min_entry_price": 0.60,
+                        "heuristic_max_entry_price": 0.80,
+                        "model_edge_mid_confidence": 0.55,
+                        "model_edge_high_confidence": 0.65,
+                        "model_edge_mid_threshold": 0.05,
+                        "model_edge_high_threshold": 0.05,
+                        "max_bet_fraction": 0.10,
+                        "max_total_open_exposure_fraction": 1.0,
+                        "max_market_exposure_fraction": 1.0,
+                        "max_trader_exposure_fraction": 1.0,
+                    }
+                )
+
+                def run_single_trade(
+                    *,
+                    trade_id: str,
+                    signal_mode: str,
+                    price_at_signal: float,
+                    actual_entry_price: float,
+                ) -> dict[str, float | int | str | None]:
+                    trade_db_path = Path(tmpdir) / f"{trade_id}.db"
+                    db.DB_PATH = trade_db_path
+                    db.init_db()
+                    conn = db.get_conn()
+                    _insert_trade(
+                        conn,
+                        trade_id=trade_id,
+                        market_id=f"market-{trade_id}",
+                        trader_address="0xaaa",
+                        signal_mode=signal_mode,
+                        confidence=0.74,
+                        price_at_signal=price_at_signal,
+                        actual_entry_price=actual_entry_price,
+                        actual_entry_size_usd=100.0,
+                        shadow_pnl_usd=12.0,
+                        placed_at=1_700_030_000,
+                        resolved_at=1_700_030_100,
+                        signal_payload=(
+                            {"mode": "xgboost", "edge": 0.10}
+                            if signal_mode == "xgboost"
+                            else {"mode": "heuristic", "market": {"score": 0.86}, "min_confidence": 0.55}
+                        ),
+                    )
+                    conn.commit()
+                    conn.close()
+                    result = run_replay(
+                        policy=policy,
+                        db_path=trade_db_path,
+                        label=trade_id,
+                    )
+                    conn = sqlite3.connect(str(trade_db_path))
+                    conn.row_factory = sqlite3.Row
+                    row = conn.execute(
+                        """
+                        SELECT entry_price, requested_size_usd, simulated_size_usd
+                        FROM replay_trades
+                        ORDER BY trade_log_id ASC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    conn.close()
+                    self.assertEqual(result["accepted_count"], 1)
+                    return {
+                        "entry_price": float(row["entry_price"]),
+                        "requested_size_usd": float(row["requested_size_usd"]),
+                        "simulated_size_usd": float(row["simulated_size_usd"]),
+                    }
+
+                xgboost_quoted = run_single_trade(
+                    trade_id="xgboost-quoted",
+                    signal_mode="xgboost",
+                    price_at_signal=0.62,
+                    actual_entry_price=0.62,
+                )
+                xgboost_dragged = run_single_trade(
+                    trade_id="xgboost-dragged",
+                    signal_mode="xgboost",
+                    price_at_signal=0.62,
+                    actual_entry_price=0.90,
+                )
+                heuristic_quoted = run_single_trade(
+                    trade_id="heuristic-quoted",
+                    signal_mode="heuristic",
+                    price_at_signal=0.62,
+                    actual_entry_price=0.62,
+                )
+                heuristic_dragged = run_single_trade(
+                    trade_id="heuristic-dragged",
+                    signal_mode="heuristic",
+                    price_at_signal=0.62,
+                    actual_entry_price=0.90,
+                )
+
+                self.assertAlmostEqual(xgboost_quoted["requested_size_usd"], xgboost_dragged["requested_size_usd"], places=6)
+                self.assertAlmostEqual(xgboost_quoted["simulated_size_usd"], xgboost_dragged["simulated_size_usd"], places=6)
+                self.assertLess(heuristic_dragged["requested_size_usd"], heuristic_quoted["requested_size_usd"])
+                self.assertAlmostEqual(xgboost_quoted["entry_price"], 0.62, places=6)
+                self.assertAlmostEqual(xgboost_dragged["entry_price"], 0.62, places=6)
+                self.assertAlmostEqual(heuristic_quoted["entry_price"], 0.62, places=6)
+                self.assertAlmostEqual(heuristic_dragged["entry_price"], 0.62, places=6)
             finally:
                 db.DB_PATH = original_db_path
 

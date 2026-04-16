@@ -8,6 +8,42 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-16 16:06 CDT] codex-main
+Task: Make persisted startup failure state honest on disk so `bot_state.json` no longer says `startup_failed=true` while `startup_blocked=false`.
+Claims: `JOURNAL.md`, `src/kelly_watcher/main.py`, `tests/test_runtime_fixes.py`
+Status: Completed
+Blockers: This fixes observability/control-plane truthfulness only. The runtime ledger is still corrupt and the recovery candidate is still only `integrity_only`, so the project remains non-investable.
+Next: Keep the web dashboard and persisted bot state aligned, then focus on actual clean-ledger recovery / shadow reset and fresh post-epoch routed evidence. Browser paused-query copy already exists for wallet/discovery/timeline panels, so avoid more `dashboard-web/src/App.tsx` churn on that front.
+Decisions: `_write_bot_state()` now normalizes any startup failure or validation failure into `startup_blocked=true` before computing effective mode, and it backfills `startup_block_reason` from the failure/validation message or detail if needed. `_effective_runtime_mode()` now also treats startup failure/validation failure as a live-blocking condition directly, so a stale `configured_mode=live` cannot leak through if startup has already failed. `_persist_startup_failure_state()` now persists blocked startup state directly instead of relying on `dashboard_api._bot_state_snapshot()` to repair it on read.
+Tests: `uv run python -m py_compile src/kelly_watcher/main.py tests/test_runtime_fixes.py` -> passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'write_bot_state_marks_startup_failure_as_blocked_on_disk or write_bot_state_forces_shadow_mode_when_configured_live_is_blocked or persist_startup_validation_failure_writes_state_even_when_runtime_getters_are_broken or persist_startup_validation_failure_clears_stale_prior_session_state or persist_startup_failure_rehydrates_durable_persisted_history or validate_startup_persists_failure_state_before_raising or main_persists_late_startup_failure_after_dashboard_server_starts or dashboard_bot_state_snapshot_marks_startup_validation_failure_as_blocked'` -> 8 passed
+
+[2026-04-16 16:03 CDT] codex-main
+Task: Audit and clean incorrect filesystem junk after concern about a nested `kelly-watcher` folder inside the repo root.
+Claims: `JOURNAL.md`
+Status: Completed
+Blockers: None for this cleanup slice. The package layout itself remains intentional and should not be deleted.
+Next: Leave `src/kelly_watcher` alone unless we explicitly choose a repo-wide Python package refactor; continue on runtime/recovery/evidence work instead.
+Decisions: Audited the tree and confirmed there is no literal `src/kelly-watcher` directory in this checkout. The only package directory under `src/` is `src/kelly_watcher`, which matches `pyproject.toml` (`packages = ["src/kelly_watcher"]`) and all Python import paths, so deleting or renaming it would be a breaking refactor rather than cleanup. Removed actual junk/generated filesystem artifacts instead: `.DS_Store`, `__pycache__`, and stale `dashboard-web/dist`.
+Tests: Tree verification only: `find src tests dashboard-web dashboard-cli -type d -name '__pycache__' -o -name '.DS_Store'` -> empty; `test -d dashboard-web/dist && echo exists || echo missing` -> `missing`; `python - <<'PY' ... Path('src').iterdir()` -> only `kelly_watcher`
+
+[2026-04-16 16:00 CDT] codex-main
+Task: Split quote-price decisioning from fill-price economics in the entry/replay/training path, and fix the managed-wallet bootstrap crash seen in startup logs.
+Claims: `JOURNAL.md`, `src/kelly_watcher/data/db.py`, `src/kelly_watcher/env_profile.py`, `src/kelly_watcher/engine/kelly.py`, `src/kelly_watcher/main.py`, `src/kelly_watcher/research/replay.py`, `src/kelly_watcher/research/train.py`, `src/kelly_watcher/runtime/executor.py`, `tests/test_kelly.py`, `tests/test_replay.py`, `tests/test_training_data_contract.py`, `tests/test_runtime_fixes.py`, `tests/test_managed_wallet_bootstrap.py`
+Status: Completed
+Blockers: Live SQLite ledger is still malformed, recovery is still only `integrity_only`, and GitHub push is still blocked locally because `gh auth status` reports no logged-in host.
+Next: Use the web dashboard to recover/reset onto a clean ledger, then collect fresh post-epoch routed shadow evidence. Follow-up backend work should split execution drag further into timing vs liquidity causes and keep browser recovery state honest.
+Decisions: XGBoost sizing is now quote-anchored while fill economics stay as a post-sizing feasibility/slippage check; replay now keeps quote price separate from effective fill price; training `effective_price` now uses `price_at_signal` instead of falling back to actual fill; logged `expected_edge` stays on the quote side while fill costs remain in the dedicated fill-cost fields. Also restored `src/kelly_watcher/env_profile.py` because the file had been deleted in the shared worktree while imports still depended on it, which was breaking test collection unrelated to this tranche. The screenshot-reported startup crash came from `upsert_managed_wallets()` supplying 4 values to a 5-placeholder `wallet_watch_state` insert; that path is now fixed and covered.
+Tests: `uv run python -m py_compile src/kelly_watcher/env_profile.py src/kelly_watcher/data/db.py src/kelly_watcher/engine/kelly.py src/kelly_watcher/main.py src/kelly_watcher/research/replay.py src/kelly_watcher/research/train.py src/kelly_watcher/runtime/executor.py tests/test_kelly.py tests/test_replay.py tests/test_training_data_contract.py tests/test_runtime_fixes.py tests/test_managed_wallet_bootstrap.py` -> passed; `uv run pytest tests/test_kelly.py tests/test_replay.py tests/test_training_data_contract.py tests/test_runtime_fixes.py tests/test_managed_wallet_bootstrap.py -q` -> 274 passed
+
+[2026-04-16 15:58 CDT] codex-config
+Task: Collapse env profiles into one `.env` and move non-secret operator settings to SQLite-backed runtime settings.
+Claims: `JOURNAL.md`, `src/kelly_watcher/env_profile.py`, `src/kelly_watcher/config.py`, `src/kelly_watcher/data/db.py`, `src/kelly_watcher/dashboard_api.py`, `src/kelly_watcher/main.py`, `src/kelly_watcher/shadow_reset.py`, `src/kelly_watcher/cli.py`, `.env.example`, `README.md`, `tests/test_env_profile_and_save_layout.py`, `tests/test_runtime_fixes.py`
+Status: In progress
+Blockers: Shared worktree is already dirty and `main.py` / `dashboard_api.py` are active integration points, so changes must stay scoped to config persistence rather than wallet-discovery logic.
+Next: Add a `runtime_settings` table + migration helper, strip non-secret values out of the persistent env file, make config reads prefer DB for non-secret keys, and update docs/tests for the single-env workflow.
+Decisions: Keep `.env` for secrets/deployment knobs only; treat operator/runtime tuning as DB-backed; migrate legacy `WATCHED_WALLETS` into the managed-wallet registry instead of keeping it in `.env`.
+Tests: Pending
+
 [2026-04-16 14:34 CDT] codex-docs
 Task: Update README to reflect web-dashboard-only operator workflow.
 Claims: `README.md`, `JOURNAL.md`
@@ -331,3 +367,21 @@ Blockers: Unrelated browser and dashboard-cli work is still dirty in the shared 
 Next: Highest-value follow-up is wallet-level post-restore / post-reactivation evidence reporting in the browser so operators can see exactly which promoted wallets are still in a fresh proof window after reset/reactivation.
 Decisions: Reactivation is now a durable lifecycle boundary, not just a watch-state toggle. Both `watchlist_manager.reactivate_wallet()` and `dashboard_api._reactivate_wallet()` now write `wallet_membership_events` entries with explicit `baseline_at`. Shadow-reset wallet snapshots now preserve registry provenance, promotion metadata, and disabled state instead of only wallet addresses, and restore replays that metadata back into `managed_wallets` while still forcing a fresh restore boundary for auto-promoted wallets.
 Tests: `python -m py_compile src/kelly_watcher/data/db.py src/kelly_watcher/shadow_reset.py src/kelly_watcher/engine/watchlist_manager.py src/kelly_watcher/dashboard_api.py tests/test_watchlist_manager.py tests/test_wallet_trust.py tests/test_runtime_fixes.py tests/test_shadow_reset.py` -> passed; `uv run pytest tests/test_watchlist_manager.py -q -k 'recently_auto_promoted_wallet_is_protected_from_stale_uncopyable_drop_history or auto_promoted_wallet_can_drop_on_bad_post_promotion_local_results or reactivation_resets_post_promotion_evidence_window'` -> 3 passed; `uv run pytest tests/test_wallet_trust.py -q -k 'reactivation_resets_post_promotion_trust_window or auto_promoted_wallet_stays_in_promotion_probation_until_post_promotion_history_exists'` -> 2 passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'dashboard_reactivate_wallet_records_membership_boundary_event'` -> 1 passed; `uv run pytest tests/test_shadow_reset.py -q -k 'restore_managed_wallet_registry_snapshot_preserves_provenance_and_disabled_state or run_keep_active_wallets_writes_snapshot_before_restart or apply_wallet_mode_for_reset_fails_closed_when_registry_load_fails'` -> 3 passed; `uv run pytest tests/test_watchlist_manager.py tests/test_wallet_trust.py tests/test_runtime_fixes.py tests/test_shadow_reset.py -q` -> 290 passed
+
+[2026-04-16 20:02 CDT] codex-main
+Task: Surface fresh-proof-window provenance in the managed-wallet browser flow.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `tests/test_runtime_fixes.py`, `tests/test_dashboard_web_source.py`
+Status: In progress
+Blockers: `dashboard_api.py`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, and `tests/test_runtime_fixes.py` are already dirty in the shared tree from other slices, so edits and staging need to stay surgical.
+Next: Add boundary provenance fields (`promote` / `reactivate` / `restore`) to managed-wallet payloads, render them on wallet cards, and lock the contract with focused backend/browser source tests.
+Decisions: Keep the slice small and high-signal. Operators mainly need to know why a wallet is in a fresh proof window and when that window started, not a full new dashboard section.
+Tests: Pending
+
+[2026-04-16 20:15 CDT] codex-main
+Task: Complete the fresh-proof-window provenance UI slice for managed wallets.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `tests/test_runtime_fixes.py`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: Shared worktree is still dirty in these files from unrelated slices, so commit/staging must remain patch-scoped. Live DB corruption remains the main operational blocker before shadow returns are meaningful enough to discuss live switching.
+Next: Highest-value follow-up is richer browser reporting for post-restore/post-reactivation cohorts: counts and filters for wallets whose proof windows were reset by shadow reset versus manual/operator reactivation.
+Decisions: Managed-wallet rows now surface both the original auto-promotion time (`post_promotion_promoted_at`) and the current proof-window provenance (`post_promotion_boundary_action/source/reason`). Wallet cards now distinguish `promoted`, `proof reset by reactivation`, and `proof reset by shadow reset`, and when a wallet has been reset after its original promotion they also show the original `auto-promoted ...` age so operators can see both facts at once.
+Tests: `python -m py_compile src/kelly_watcher/dashboard_api.py tests/test_runtime_fixes.py tests/test_dashboard_web_source.py` -> passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'managed_wallet_rows_include_post_promotion_shadow_evidence or dashboard_reactivate_wallet_records_membership_boundary_event or managed_wallet_rows_surface_restore_proof_window_boundary'` -> 3 passed; `node ./dashboard-web/node_modules/typescript/bin/tsc -p dashboard-web/tsconfig.app.json --noEmit && uv run pytest tests/test_dashboard_web_source.py -q` -> 2 passed; `node ./node_modules/typescript/bin/tsc -p tsconfig.app.json --noEmit && node ./node_modules/typescript/bin/tsc -p tsconfig.node.json --noEmit && node ./node_modules/vite/bin/vite.js build` in `dashboard-web` -> passed

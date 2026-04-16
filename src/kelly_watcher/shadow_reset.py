@@ -18,11 +18,7 @@ import kelly_watcher.data.db as db
 from kelly_watcher.env_profile import (
     ENV_EXAMPLE_PATH,
     LEGACY_ENV_PATH,
-    active_env_flag,
-    active_env_profile,
-    add_env_profile_flags,
-    env_path_for_profile,
-    repo_env_path_for_profile,
+    active_env_path,
 )
 from kelly_watcher.runtime_paths import (
     BACKGROUND_LOG_PATH,
@@ -34,8 +30,8 @@ from kelly_watcher.runtime_paths import (
 )
 from kelly_watcher.engine.shadow_evidence import write_shadow_evidence_epoch
 
-ENV_PROFILE = active_env_profile()
-ENV_PATH = env_path_for_profile(ENV_PROFILE)
+ENV_PROFILE = "default"
+ENV_PATH = active_env_path()
 PID_FILE = BOT_PID_FILE
 BACKGROUND_LOG = BACKGROUND_LOG_PATH
 RestartWalletMode = Literal["keep_active", "keep_all", "clear_all"]
@@ -51,13 +47,10 @@ WALLET_REGISTRY_CLEAR_ALL_MARKER_PATH = REPO_ROOT / ".shadow_wallet_registry_cle
 def _source_env_path() -> Path:
     if ENV_PATH.exists():
         return ENV_PATH
-    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
-    if ENV_PATH != expected_env_path:
-        return ENV_PATH
-    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    repo_env_path = REPO_ROOT / ".env"
     if repo_env_path.exists():
         return repo_env_path
-    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
+    if LEGACY_ENV_PATH.exists():
         return LEGACY_ENV_PATH
     return ENV_EXAMPLE_PATH
 
@@ -649,7 +642,7 @@ def preferred_python_executable() -> str:
 
 
 def _bot_command() -> list[str]:
-    return [preferred_python_executable(), "-m", "kelly_watcher.main", active_env_flag()]
+    return [preferred_python_executable(), "-m", "kelly_watcher.main"]
 
 
 def exec_restarted_bot() -> None:
@@ -773,7 +766,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Reset shadow trading runtime state and restart the bot."
     )
-    add_env_profile_flags(parser)
     start_mode = parser.add_mutually_exclusive_group()
     start_mode.add_argument(
         "--foreground",

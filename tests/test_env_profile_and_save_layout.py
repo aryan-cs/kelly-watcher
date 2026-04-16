@@ -6,70 +6,71 @@ import unittest
 import kelly_watcher.env_profile as env_profile
 import kelly_watcher.runtime_paths as runtime_paths
 class EnvProfileTests(unittest.TestCase):
-    def test_env_path_for_profile_points_into_save_folder(self) -> None:
+    def test_env_path_for_profile_points_to_single_save_env_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
             self.assertEqual(
                 env_profile.env_path_for_profile("prod", repo_root=repo_root),
-                repo_root / "save" / ".env.prod",
+                repo_root / "save" / ".env",
             )
 
-    def test_no_flag_defaults_to_dev_even_if_env_requests_prod(self) -> None:
+    def test_active_env_profile_is_single_default_profile(self) -> None:
         self.assertEqual(
             env_profile.active_env_profile(argv=[], environ={env_profile.ENV_PROFILE_ENV_VAR: "prod"}),
-            "dev",
+            "default",
         )
 
-    def test_prod_flag_selects_dot_env_prod(self) -> None:
+    def test_flags_do_not_switch_env_files(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
-            env_prod = repo_root / ".env.prod"
-            env_prod.write_text("USE_REAL_MONEY=true\n", encoding="utf-8")
+            save_env = repo_root / "save" / ".env"
+            save_env.parent.mkdir(parents=True, exist_ok=True)
+            save_env.write_text("TELEGRAM_BOT_TOKEN=x\n", encoding="utf-8")
 
             self.assertEqual(
                 env_profile.active_env_profile(argv=["--prod"], environ={}),
-                "prod",
+                "default",
             )
             self.assertEqual(
                 env_profile.active_env_path(argv=["--prod"], environ={}, repo_root=repo_root),
-                env_prod,
+                save_env,
             )
 
-    def test_dev_profile_falls_back_to_legacy_dot_env(self) -> None:
+    def test_active_env_path_falls_back_to_repo_dot_env(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
-            legacy_env = repo_root / ".env"
-            legacy_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
+            repo_env = repo_root / ".env"
+            repo_env.write_text("TELEGRAM_BOT_TOKEN=x\n", encoding="utf-8")
 
             self.assertEqual(
-                env_profile.active_env_path(argv=["--dev"], environ={}, repo_root=repo_root),
-                legacy_env,
+                env_profile.active_env_path(argv=[], environ={}, repo_root=repo_root),
+                repo_env,
             )
 
     def test_save_folder_env_takes_precedence_over_repo_env(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
-            save_env = repo_root / "save" / ".env.dev"
-            repo_env = repo_root / ".env.dev"
+            save_env = repo_root / "save" / ".env"
+            repo_env = repo_root / ".env"
             save_env.parent.mkdir(parents=True, exist_ok=True)
-            save_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
-            repo_env.write_text("USE_REAL_MONEY=true\n", encoding="utf-8")
+            save_env.write_text("TELEGRAM_BOT_TOKEN=save\n", encoding="utf-8")
+            repo_env.write_text("TELEGRAM_BOT_TOKEN=repo\n", encoding="utf-8")
 
             self.assertEqual(
-                env_profile.active_env_path(argv=["--dev"], environ={}, repo_root=repo_root),
+                env_profile.active_env_path(argv=[], environ={}, repo_root=repo_root),
                 save_env,
             )
 
     def test_ensure_persistent_env_path_copies_repo_env_into_save_folder(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
-            repo_env = repo_root / ".env.dev"
-            repo_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
+            repo_env = repo_root / ".env"
+            repo_env.write_text("TELEGRAM_BOT_TOKEN=x\n", encoding="utf-8")
 
-            save_env = env_profile.ensure_persistent_env_path("dev", repo_root=repo_root)
+            save_env = env_profile.ensure_persistent_env_path("default", repo_root=repo_root)
 
-            self.assertEqual(save_env, repo_root / "save" / ".env.dev")
-            self.assertEqual(save_env.read_text(encoding="utf-8"), "USE_REAL_MONEY=false\n")
+            self.assertEqual(save_env, repo_root / "save" / ".env")
+            self.assertEqual(save_env.read_text(encoding="utf-8"), "TELEGRAM_BOT_TOKEN=x\n")
 
 
 class RuntimeSaveLayoutTests(unittest.TestCase):

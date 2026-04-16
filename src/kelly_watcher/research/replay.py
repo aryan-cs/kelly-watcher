@@ -31,11 +31,13 @@ from kelly_watcher.config import (
     shadow_bankroll_usd,
     xgboost_allowed_entry_price_bands,
 )
+from kelly_watcher.engine.economics import build_entry_economics
 from kelly_watcher.runtime_paths import TRADING_DB_PATH
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 
 HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
 HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
+_REPLAY_EFFECTIVE_PRICE_GROSS_SPEND_USD = 1.0
 
 REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "initial_bankroll_usd": "SHADOW_BANKROLL_USD",
@@ -300,6 +302,7 @@ def _simulate(
             exited_at,
             counterfactual_return,
             COALESCE(actual_pnl_usd, shadow_pnl_usd) AS resolved_pnl_usd,
+            snapshot_json,
             decision_context_json
         FROM trade_log
         WHERE COALESCE(source_action, 'buy')='buy'
@@ -476,17 +479,25 @@ def _simulate(
         close_ts = int(row["close_ts"] or placed_at)
         time_to_close_seconds = max(0, close_ts - placed_at)
         time_to_close_band = _time_to_close_band(time_to_close_seconds)
-        entry_price = _coalesce_float(
-            row["actual_entry_price"],
+        quoted_entry_price = _coalesce_float(
             signal.get("entry_price"),
             row["price_at_signal"],
         )
-        entry_price_band = _entry_price_band(entry_price)
+        effective_entry_price = _coalesce_float(
+            row["actual_entry_price"],
+            quoted_entry_price,
+        )
+        if row["actual_entry_price"] is None:
+            effective_entry_price = _replay_effective_entry_price(
+                effective_entry_price,
+                row["snapshot_json"],
+            )
+        entry_price_band = _entry_price_band(quoted_entry_price)
         confidence = _coalesce_float(signal.get("confidence"), row["confidence"]) or 0.0
         market_score = _coalesce_float(signal.get("market", {}).get("score"))
         edge = _coalesce_float(signal.get("edge"))
-        if edge is None and entry_price is not None:
-            edge = confidence - entry_price
+        if edge is None and quoted_entry_price is not None:
+            edge = confidence - quoted_entry_price
         effective_min_confidence = max(
             policy.min_confidence,
             _coalesce_float(signal.get("min_confidence")) or 0.0,
@@ -520,7 +531,7 @@ def _simulate(
                     decision="reject",
                     reason=segment_filter_reason,
                     source_status="filtered",
-                    entry_price=entry_price,
+                    entry_price=quoted_entry_price,
                     time_to_close_seconds=time_to_close_seconds,
                     time_to_close_band=time_to_close_band,
                     requested_size_usd=0.0,
@@ -542,7 +553,8 @@ def _simulate(
             signal_mode=signal_mode,
             confidence=confidence,
             effective_min_confidence=effective_min_confidence,
-            entry_price=entry_price,
+            quoted_entry_price=quoted_entry_price,
+            effective_entry_price=effective_entry_price,
             market_score=market_score,
             edge=edge,
             available_cash=free_cash(),
@@ -563,7 +575,7 @@ def _simulate(
                     decision="reject",
                     reason=reason,
                     source_status=source_status,
-                    entry_price=entry_price,
+                    entry_price=quoted_entry_price,
                     time_to_close_seconds=time_to_close_seconds,
                     time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
@@ -593,7 +605,7 @@ def _simulate(
                     decision="reject",
                     reason=entry_pause_reason,
                     source_status=source_status,
-                    entry_price=entry_price,
+                    entry_price=quoted_entry_price,
                     time_to_close_seconds=time_to_close_seconds,
                     time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
@@ -634,7 +646,7 @@ def _simulate(
                     decision="reject",
                     reason="total_exposure_cap",
                     source_status=source_status,
-                    entry_price=entry_price,
+                    entry_price=quoted_entry_price,
                     time_to_close_seconds=time_to_close_seconds,
                     time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
@@ -662,7 +674,7 @@ def _simulate(
                     decision="reject",
                     reason="market_exposure_cap",
                     source_status=source_status,
-                    entry_price=entry_price,
+                    entry_price=quoted_entry_price,
                     time_to_close_seconds=time_to_close_seconds,
                     time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
@@ -690,7 +702,7 @@ def _simulate(
                     decision="reject",
                     reason="trader_exposure_cap",
                     source_status=source_status,
-                    entry_price=entry_price,
+                    entry_price=quoted_entry_price,
                     time_to_close_seconds=time_to_close_seconds,
                     time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
@@ -714,7 +726,7 @@ def _simulate(
                     "size_usd": requested_size_usd,
                     "pnl_usd": 0.0,
                     "signal_mode": signal_mode,
-                    "entry_price": entry_price,
+                    "entry_price": quoted_entry_price,
                     "source_status": source_status,
                     "time_to_close_band": time_to_close_band,
                     "carry_resolution": False,
@@ -733,7 +745,7 @@ def _simulate(
                     decision="accept",
                     reason="accepted",
                     source_status=source_status,
-                    entry_price=entry_price,
+                    entry_price=quoted_entry_price,
                     time_to_close_seconds=time_to_close_seconds,
                     time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
@@ -768,7 +780,7 @@ def _simulate(
                     "size_usd": requested_size_usd,
                     "pnl_usd": pnl_usd,
                     "signal_mode": signal_mode,
-                    "entry_price": entry_price,
+                    "entry_price": quoted_entry_price,
                     "source_status": source_status,
                     "time_to_close_band": time_to_close_band,
                     "carry_resolution": False,
@@ -787,7 +799,7 @@ def _simulate(
                 decision="accept",
                 reason="accepted",
                 source_status=source_status,
-                entry_price=entry_price,
+                entry_price=quoted_entry_price,
                 time_to_close_seconds=time_to_close_seconds,
                 time_to_close_band=time_to_close_band,
                 requested_size_usd=requested_size_usd,
@@ -968,7 +980,8 @@ def _evaluate_trade(
     signal_mode: str,
     confidence: float,
     effective_min_confidence: float,
-    entry_price: float | None,
+    quoted_entry_price: float | None,
+    effective_entry_price: float | None,
     market_score: float | None,
     edge: float | None,
     available_cash: float,
@@ -979,7 +992,7 @@ def _evaluate_trade(
     time_to_close_seconds = int(metadata.get("time_to_close_seconds") or 0)
     if available_cash <= 0:
         return False, "bankroll_depleted", 0.0, metadata
-    if entry_price is None or not (0.0 < entry_price < 1.0):
+    if quoted_entry_price is None or not (0.0 < quoted_entry_price < 1.0):
         return False, "invalid_entry_price", 0.0, metadata
     if confidence < effective_min_confidence:
         return False, "confidence_below_floor", 0.0, metadata
@@ -1006,7 +1019,7 @@ def _evaluate_trade(
             return False, "model_edge_below_threshold", 0.0, metadata
         requested_size = _kelly_size(
             confidence=confidence,
-            market_price=entry_price,
+            market_price=quoted_entry_price,
             bankroll_usd=available_cash,
             min_confidence=effective_min_confidence,
             min_bet=policy.min_bet_usd,
@@ -1027,10 +1040,10 @@ def _evaluate_trade(
         and entry_price_band not in policy.heuristic_allowed_entry_price_bands
     ):
         return False, "heuristic_entry_price_band_filter", 0.0, metadata
-    if not (policy.heuristic_min_entry_price <= entry_price < policy.heuristic_max_entry_price):
+    if not (policy.heuristic_min_entry_price <= quoted_entry_price < policy.heuristic_max_entry_price):
         return False, "heuristic_entry_band", 0.0, metadata
     min_market_score = _heuristic_min_market_score(
-        entry_price=entry_price,
+        entry_price=quoted_entry_price,
         min_entry_price=policy.heuristic_min_entry_price,
         max_entry_price=policy.heuristic_max_entry_price,
     )
@@ -1043,8 +1056,8 @@ def _evaluate_trade(
         min_confidence=effective_min_confidence,
         min_bet=policy.min_bet_usd,
         max_fraction=policy.max_bet_fraction,
-        quoted_market_price=_coalesce_float(row["price_at_signal"], entry_price) or entry_price,
-        effective_market_price=entry_price,
+        quoted_market_price=quoted_entry_price,
+        effective_market_price=effective_entry_price or quoted_entry_price,
     )
     if requested_size <= 0:
         return False, "size_below_minimum", 0.0, metadata
@@ -1083,6 +1096,43 @@ def _kelly_size(
         return 0.0
     size = bankroll_usd * min(f_star * 0.5, max_fraction)
     return _apply_minimum_bet(size, bankroll_usd, min_bet, max_fraction)
+
+
+def _snapshot_fee_rate_bps(snapshot_json: Any) -> int:
+    if not snapshot_json:
+        return 0
+    snapshot = snapshot_json
+    if isinstance(snapshot_json, str):
+        try:
+            snapshot = json.loads(snapshot_json)
+        except Exception:
+            return 0
+    if not isinstance(snapshot, dict):
+        return 0
+    try:
+        return max(int(round(float(snapshot.get("fee_rate_bps") or 0))), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _replay_effective_entry_price(entry_price: float | None, snapshot_json: Any) -> float | None:
+    if entry_price is None or not (0.0 < entry_price < 1.0):
+        return entry_price
+    fee_rate_bps = _snapshot_fee_rate_bps(snapshot_json)
+    if fee_rate_bps <= 0:
+        return entry_price
+    economics = build_entry_economics(
+        gross_price=entry_price,
+        gross_shares=_REPLAY_EFFECTIVE_PRICE_GROSS_SPEND_USD / entry_price,
+        gross_spent_usd=_REPLAY_EFFECTIVE_PRICE_GROSS_SPEND_USD,
+        fee_rate_bps=fee_rate_bps,
+        fixed_cost_usd=0.0,
+        include_expected_exit_fee_in_sizing=False,
+        expected_close_fixed_cost_usd=0.0,
+    )
+    if economics.net_shares <= 0 or economics.effective_entry_price <= 0:
+        return entry_price
+    return economics.effective_entry_price
 
 
 def _heuristic_size(

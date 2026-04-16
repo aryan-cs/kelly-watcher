@@ -26,12 +26,16 @@ from kelly_watcher.data.db import (
     DB_PATH,
     database_integrity_state,
     db_recovery_state,
+    delete_runtime_setting,
     get_conn,
+    get_runtime_setting,
     get_trade_log_read_conn,
     load_wallet_promotion_state,
+    load_runtime_settings,
+    set_runtime_setting,
     trade_log_archive_state,
 )
-from kelly_watcher.env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, repo_env_path_for_profile
+from kelly_watcher.env_profile import ENV_ONLY_KEYS, LEGACY_ENV_PATH, active_env_path
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 from kelly_watcher.engine.wallet_trust import get_wallet_trust_state
 from kelly_watcher.runtime.wallet_discovery import (
@@ -60,8 +64,8 @@ _MANAGED_WALLET_TRUST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _MANAGED_WALLET_TRUST_CACHE_TTL_SECONDS = 10.0
 _MANAGED_WALLET_TRUST_CACHE_LOCK = threading.Lock()
 
-ENV_PROFILE = active_env_profile()
-ENV_PATH = env_path_for_profile(ENV_PROFILE)
+ENV_PROFILE = "default"
+ENV_PATH = active_env_path()
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 IDENTITY_FILE = IDENTITY_CACHE_PATH
 
@@ -268,13 +272,10 @@ def _dashboard_web_content_type(path: Path) -> str:
 def _source_env_path() -> Path:
     if ENV_PATH.exists():
         return ENV_PATH
-    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
-    if ENV_PATH != expected_env_path:
-        return ENV_PATH
-    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    repo_env_path = REPO_ROOT / ".env"
     if repo_env_path.exists():
         return repo_env_path
-    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
+    if LEGACY_ENV_PATH.exists():
         return LEGACY_ENV_PATH
     return ENV_EXAMPLE_PATH
 
@@ -298,7 +299,7 @@ def _read_env_items() -> list[tuple[str, str]]:
 
 def _read_safe_env_values() -> dict[str, str]:
     safe_values: dict[str, str] = {}
-    for key, value in _read_env_items():
+    for key, value in load_runtime_settings().items():
         if key in SAFE_ENV_KEYS:
             safe_values[key] = value
     return safe_values
@@ -330,12 +331,16 @@ def _config_snapshot() -> dict[str, Any]:
     ]
     wallet_registry_source = _wallet_registry_source()
     live_wallets = _wallet_registry_addresses()
+    runtime_settings = load_runtime_settings()
     rows: list[dict[str, str]] = []
+    for key, value in sorted(runtime_settings.items()):
+        redacted = "************" if SECRET_KEY_RE.search(key) else (value or "unset")
+        rows.append({"key": key, "value": redacted, "source": "runtime_settings"})
     for key, value in _read_env_items():
-        if key == "WATCHED_WALLETS":
+        if key == "WATCHED_WALLETS" or key in runtime_settings:
             continue
         redacted = "************" if SECRET_KEY_RE.search(key) else (value or "unset")
-        rows.append({"key": key, "value": redacted})
+        rows.append({"key": key, "value": redacted, "source": "env"})
     return {
         "safe_values": safe_values,
         "watched_wallets": live_wallets,
@@ -478,6 +483,8 @@ def _wallet_policy_metrics_rows(wallet_addresses: list[str]) -> dict[str, dict[s
               post_promotion_reason,
               post_promotion_total_buy_signals,
               post_promotion_uncopyable_skips,
+              post_promotion_timing_skips,
+              post_promotion_liquidity_skips,
               post_promotion_uncopyable_skip_rate,
               post_promotion_resolved_copied_count,
               post_promotion_resolved_copied_win_rate,
@@ -626,11 +633,29 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
             "disabled_reason": str(row_dict.get("disabled_reason") or row_dict.get("status_reason") or "").strip(),
             "tracking_started_at": int(row_dict.get("tracking_started_at") or 0),
             "last_source_ts_at_status": int(row_dict.get("last_source_ts_at_status") or 0),
+            "post_promotion_promoted_at": int(promotion_state.get("promoted_at") or 0),
             "post_promotion_baseline_at": int(
                 policy_metrics.get("post_promotion_baseline_at")
                 or promotion_state.get("baseline_at")
                 or 0
             ),
+            "post_promotion_boundary_action": str(
+                promotion_state.get("boundary_action")
+                or promotion_state.get("event_action")
+                or ("promote" if (policy_metrics.get("post_promotion_baseline_at") or promotion_state.get("baseline_at")) else "")
+            ).strip(),
+            "post_promotion_boundary_source": str(
+                promotion_state.get("boundary_source")
+                or promotion_state.get("event_source")
+                or promotion_state.get("promotion_source")
+                or ""
+            ).strip(),
+            "post_promotion_boundary_reason": str(
+                promotion_state.get("boundary_reason")
+                or promotion_state.get("event_reason")
+                or promotion_state.get("promotion_reason")
+                or ""
+            ).strip(),
             "post_promotion_source": str(
                 policy_metrics.get("post_promotion_source")
                 or promotion_state.get("promotion_source")
@@ -643,6 +668,8 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
             ).strip(),
             "post_promotion_total_buy_signals": int(policy_metrics.get("post_promotion_total_buy_signals") or 0),
             "post_promotion_uncopyable_skips": int(policy_metrics.get("post_promotion_uncopyable_skips") or 0),
+            "post_promotion_timing_skips": int(policy_metrics.get("post_promotion_timing_skips") or 0),
+            "post_promotion_liquidity_skips": int(policy_metrics.get("post_promotion_liquidity_skips") or 0),
             "post_promotion_uncopyable_skip_rate": float(policy_metrics.get("post_promotion_uncopyable_skip_rate") or 0.0),
             "post_promotion_resolved_copied_count": int(policy_metrics.get("post_promotion_resolved_copied_count") or 0),
             "post_promotion_resolved_copied_win_rate": (
@@ -821,6 +848,12 @@ def _write_env_value(key: str, value: str) -> None:
     if not VALID_ENV_KEY_RE.match(key):
         raise ValueError(f"Invalid config key: {key}")
 
+    normalized_key = str(key or "").strip().upper()
+    text_value = str(value or "").strip()
+    if normalized_key not in ENV_ONLY_KEYS:
+        set_runtime_setting(normalized_key, text_value)
+        return
+
     with _env_lock:
         source_path = _source_env_path()
         try:
@@ -832,8 +865,8 @@ def _write_env_value(key: str, value: str) -> None:
         found = False
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith(f"{key}="):
-                updated.append(f"{key}={value}")
+            if stripped.startswith(f"{normalized_key}="):
+                updated.append(f"{normalized_key}={text_value}")
                 found = True
             else:
                 updated.append(line)
@@ -841,7 +874,7 @@ def _write_env_value(key: str, value: str) -> None:
         if not found:
             if updated and updated[-1] != "":
                 updated.append("")
-            updated.append(f"{key}={value}")
+            updated.append(f"{normalized_key}={text_value}")
 
         ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
         ENV_PATH.write_text("\n".join(updated) + "\n", encoding="utf-8")

@@ -223,11 +223,17 @@ export interface ManagedWallet {
   discovery_rank?: number
   discovery_sources?: string[]
   discovery_updated_at?: number
+  post_promotion_promoted_at?: number
   post_promotion_baseline_at?: number
+  post_promotion_boundary_action?: string
+  post_promotion_boundary_source?: string
+  post_promotion_boundary_reason?: string
   post_promotion_source?: string
   post_promotion_reason?: string
   post_promotion_total_buy_signals?: number
   post_promotion_uncopyable_skips?: number
+  post_promotion_timing_skips?: number
+  post_promotion_liquidity_skips?: number
   post_promotion_uncopyable_skip_rate?: number
   post_promotion_resolved_copied_count?: number
   post_promotion_resolved_copied_win_rate?: number

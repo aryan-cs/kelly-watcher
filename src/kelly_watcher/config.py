@@ -10,12 +10,12 @@ from kelly_watcher.research.replay_search_contract import validate_replay_search
 
 from dotenv import dotenv_values
 
+from kelly_watcher.data.db import get_runtime_setting
 from kelly_watcher.env_profile import (
+    ENV_ONLY_KEYS,
     LEGACY_ENV_PATH,
-    active_env_profile,
-    env_path_for_profile,
+    active_env_path,
     init_env_profile,
-    repo_env_path_for_profile,
 )
 from kelly_watcher.runtime_paths import MODEL_ARTIFACT_PATH, REPO_ROOT
 from kelly_watcher.engine.segment_policy import (
@@ -26,8 +26,8 @@ from kelly_watcher.engine.segment_policy import (
     time_to_close_band as _time_to_close_band_label,
 )
 
-ENV_PROFILE = active_env_profile()
-ENV_PATH = env_path_for_profile(ENV_PROFILE)
+ENV_PROFILE = "default"
+ENV_PATH = active_env_path()
 init_env_profile(override=False)
 MIN_POLL_INTERVAL_SECONDS = 1.0
 _DURATION_UNITS = {
@@ -55,18 +55,31 @@ class ConfigError(ValueError):
 def _source_env_path() -> Path:
     if ENV_PATH.exists():
         return ENV_PATH
-    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
-    if ENV_PATH != expected_env_path:
-        return ENV_PATH
-    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    repo_env_path = REPO_ROOT / ".env"
     if repo_env_path.exists():
         return repo_env_path
-    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
+    if LEGACY_ENV_PATH.exists():
         return LEGACY_ENV_PATH
     return ENV_PATH
 
 
+def _is_env_only_key(name: str) -> bool:
+    return str(name or "").strip().upper() in ENV_ONLY_KEYS
+
+
+def _get_runtime_setting_value(name: str) -> str | None:
+    if _is_env_only_key(name):
+        return None
+    try:
+        return get_runtime_setting(name)
+    except Exception:
+        return None
+
+
 def _get(name: str, default: str = "") -> str:
+    runtime_value = _get_runtime_setting_value(name)
+    if runtime_value is not None:
+        return str(runtime_value).strip()
     return os.getenv(name, default).strip()
 
 
@@ -128,6 +141,10 @@ def _get_bounded_int(
 
 
 def _get_env_file_value(name: str) -> str | None:
+    runtime_value = _get_runtime_setting_value(name)
+    if runtime_value is not None:
+        return str(runtime_value).strip()
+
     source_path = _source_env_path()
     if not source_path.exists():
         return None
@@ -675,6 +692,14 @@ def max_source_trade_age_seconds() -> int:
     return max(int(seconds), 30)
 
 
+def max_source_latency_seconds() -> float:
+    raw = _get_env_file_value("MAX_SOURCE_LATENCY") or _get("MAX_SOURCE_LATENCY", "5s")
+    seconds = _parse_duration(raw, 5.0)
+    if seconds == float("inf"):
+        return 5.0
+    return max(float(seconds), 0.5)
+
+
 def max_feed_staleness_seconds() -> int:
     raw = _get_env_file_value("MAX_FEED_STALENESS") or _get("MAX_FEED_STALENESS", "3m")
     seconds = _parse_duration(raw, 3 * 60.0)
@@ -709,6 +734,10 @@ def wallet_address() -> str:
 
 def model_path() -> str:
     return _get("MODEL_PATH", str(MODEL_ARTIFACT_PATH.relative_to(REPO_ROOT)))
+
+
+def log_level() -> str:
+    return _get("LOG_LEVEL", "INFO").upper()
 
 
 def shadow_bankroll_usd() -> float:

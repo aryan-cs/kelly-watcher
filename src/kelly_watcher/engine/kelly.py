@@ -106,18 +106,18 @@ def size_signal(
     effective_market_price: float | None = None,
     min_confidence_override: float | None = None,
 ) -> dict:
+    if mode == "xgboost":
+        return kelly_size(
+            confidence,
+            float(quoted_market_price),
+            bankroll_usd,
+            min_confidence_override=min_confidence_override,
+        )
     market_price = (
         float(effective_market_price)
         if effective_market_price is not None
         else float(quoted_market_price)
     )
-    if mode == "xgboost":
-        return kelly_size(
-            confidence,
-            market_price,
-            bankroll_usd,
-            min_confidence_override=min_confidence_override,
-        )
     return heuristic_size(
         confidence,
         bankroll_usd,

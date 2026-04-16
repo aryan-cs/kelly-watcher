@@ -199,6 +199,7 @@ from kelly_watcher.config import (
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
     heuristic_min_entry_price,
+    log_level,
     min_execution_window_seconds,
     min_bet_usd,
     min_confidence,
@@ -261,19 +262,22 @@ from kelly_watcher.config import (
     watched_wallets,
     xgboost_allowed_entry_price_bands,
 )
-from kelly_watcher.dashboard_api import DashboardApiServer, ENV_PATH, _write_env_value, start_dashboard_api_server
+from kelly_watcher.dashboard_api import DashboardApiServer, start_dashboard_api_server
 from kelly_watcher.data.db import (
     archive_old_trade_log_rows,
     DB_PATH,
     create_verified_backup,
     database_integrity_state,
+    delete_runtime_setting,
     db_recovery_state,
     get_conn,
     get_conn_for_path,
+    get_runtime_setting,
     get_trade_log_read_conn,
     init_db,
     import_managed_wallets_from_env,
     load_managed_wallets,
+    set_runtime_setting,
     recover_db_from_verified_backup,
     trade_log_archive_db_path,
     trade_log_archive_state,
@@ -339,7 +343,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=log_level(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10 * 1024 * 1024, backupCount=5),
@@ -997,6 +1001,15 @@ def _effective_runtime_mode(configured_mode: str, state: Mapping[str, object]) -
     configured = _normalize_trading_mode(configured_mode)
     if configured != "live":
         return "shadow", ""
+    if bool(state.get("startup_failed")) or bool(state.get("startup_validation_failed")):
+        reason = (
+            str(state.get("startup_block_reason") or "").strip()
+            or str(state.get("startup_failure_message") or "").strip()
+            or str(state.get("startup_validation_message") or "").strip()
+            or str(state.get("startup_detail") or "").strip()
+            or "startup failed"
+        )
+        return "shadow", f"configured live but forced shadow: {reason}"
     if bool(state.get("startup_blocked")) or bool(state.get("startup_recovery_only")):
         reason = str(state.get("startup_block_reason") or "").strip() or "startup blocked"
         return "shadow", f"configured live but forced shadow: {reason}"
@@ -1047,6 +1060,16 @@ def _write_bot_state(*, replace: bool = False, **extra) -> None:
         }
     )
     state.update(extra)
+    startup_failed = bool(state.get("startup_failed"))
+    startup_validation_failed = bool(state.get("startup_validation_failed"))
+    if startup_failed or startup_validation_failed:
+        state["startup_blocked"] = True
+        if not str(state.get("startup_block_reason") or "").strip():
+            state["startup_block_reason"] = (
+                str(state.get("startup_failure_message") or "").strip()
+                or str(state.get("startup_validation_message") or "").strip()
+                or str(state.get("startup_detail") or "").strip()
+            )
     mode, mode_block_reason = _effective_runtime_mode(configured_mode, state)
     state.update(
         {
@@ -1101,9 +1124,9 @@ def _persist_startup_failure_state(
         startup_failure_message=str(message or "").strip(),
         startup_validation_failed=bool(validation_failed),
         startup_validation_message=str(message or "").strip() if validation_failed else "",
-        startup_blocked=False,
+        startup_blocked=True,
         startup_recovery_only=False,
-        startup_block_reason="",
+        startup_block_reason=str(message or "").strip() or str(detail or "").strip(),
     )
     for loader, payload_builder in (
         (_latest_retrain_run, _latest_retrain_state_payload),
@@ -2262,7 +2285,8 @@ def _process_manual_trade_request(
             _skip_event(event, amount_usd, exposure_block_reason, decision="MANUAL")
             return
 
-        market_f = build_market_features(snapshot, close_time, amount_usd, fill_estimate.avg_price)
+        quoted_price = _quoted_execution_price(snapshot, fill_estimate.avg_price)
+        market_f = build_market_features(snapshot, close_time, amount_usd, quoted_price)
         if market_f is None:
             event = _manual_trade_event(
                 request,
@@ -2295,6 +2319,31 @@ def _process_manual_trade_request(
             metadata_fetched_at=metadata_fetched_at,
             orderbook_fetched_at=orderbook_fetched_at,
         )
+        latency_reason = executor.entry_latency_block_reason(event)
+        if latency_reason:
+            manual_signal = {
+                "mode": "manual",
+                "manual": True,
+                "source": request.source,
+                "trader": {"score": None},
+                "market": {"score": None},
+            }
+            executor.log_skip(
+                trade_id=manual_trade_id,
+                market_id=request.market_id,
+                question=question,
+                trader_address="manual",
+                side=request.side,
+                price=fill_estimate.avg_price,
+                size_usd=amount_usd,
+                confidence=0.0,
+                kelly_f=0.0,
+                reason=latency_reason,
+                event=event,
+                signal=manual_signal,
+            )
+            _skip_event(event, amount_usd, latency_reason, decision="MANUAL")
+            return
         result = executor.execute(
             trade_id=manual_trade_id,
             market_id=request.market_id,
@@ -2508,6 +2557,41 @@ def _pause_event(event, amount_usd: float, reason: str) -> None:
     _skip_event(event, amount_usd, reason, decision="PAUSE")
 
 
+def _quoted_execution_price(snapshot: Mapping[str, Any] | None, fallback: float | None = None) -> float:
+    payload = snapshot if isinstance(snapshot, Mapping) else {}
+    best_ask = float(payload.get("best_ask") or 0.0)
+    if 0.0 < best_ask < 1.0:
+        return best_ask
+    mid = float(payload.get("mid") or 0.0)
+    if 0.0 < mid < 1.0:
+        return mid
+    fallback_price = float(fallback or 0.0)
+    return fallback_price if 0.0 < fallback_price < 1.0 else 0.0
+
+
+def _model_fill_edge_block_reason(signal: Mapping[str, Any] | None, fill_economics) -> str | None:
+    if not isinstance(signal, Mapping):
+        return None
+    if str(signal.get("mode") or "").strip().lower() != "xgboost":
+        return None
+    if fill_economics is None:
+        return None
+    try:
+        confidence = float(signal.get("confidence"))
+        effective_price = float(fill_economics.sizing_effective_price)
+        edge_threshold = float(signal.get("edge_threshold") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if confidence <= 0 or effective_price <= 0:
+        return None
+    estimated_edge = confidence - effective_price
+    if estimated_edge + 1e-9 >= edge_threshold:
+        return None
+    return (
+        f"estimated fill edge {estimated_edge:.3f} < threshold {edge_threshold:.3f} after slippage"
+    )
+
+
 def _is_non_actionable_exit_reason(reason: str) -> bool:
     return (reason or "").strip().lower() == "watched trader exited, but we had no matching position open to close"
 
@@ -2698,7 +2782,8 @@ def process_event(
         _reject_event(event, 0.0, rough_size, reason)
         return 0.0
 
-    market_f = build_market_features(event.snapshot, event.close_time, rough_size, rough_fill.avg_price)
+    quoted_market_price = _quoted_execution_price(event.snapshot, event.price)
+    market_f = build_market_features(event.snapshot, event.close_time, rough_size, quoted_market_price)
     if market_f is None:
         reason = _humanize_reason("failed to build market features")
         executor.log_skip(
@@ -2792,7 +2877,7 @@ def process_event(
     )
     preview_sizing = size_signal(
         signal["confidence"],
-        rough_fill.avg_price if rough_fill.avg_price > 0 else event.price,
+        quoted_market_price if quoted_market_price > 0 else event.price,
         bankroll,
         signal.get("mode", "heuristic"),
         effective_market_price=rough_entry_economics.sizing_effective_price,
@@ -2884,7 +2969,7 @@ def process_event(
             break
         next_sizing = size_signal(
             signal["confidence"],
-            fill_estimate.avg_price if fill_estimate.avg_price > 0 else event.price,
+            quoted_market_price if quoted_market_price > 0 else event.price,
             bankroll,
             signal.get("mode", "heuristic"),
             effective_market_price=fill_economics.sizing_effective_price,
@@ -3068,11 +3153,55 @@ def process_event(
         _skip_event(event, sizing["dollar_size"], exposure_block_reason)
         return 0.0
 
+    fill_edge_block_reason = _model_fill_edge_block_reason(signal, fill_economics)
+    if fill_edge_block_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal["confidence"],
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=fill_edge_block_reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _skip_event(event, sizing["dollar_size"], fill_edge_block_reason)
+        return 0.0
+
+    latency_reason = executor.entry_latency_block_reason(event)
+    if latency_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal["confidence"],
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=latency_reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _skip_event(event, sizing["dollar_size"], latency_reason)
+        return 0.0
+
     market_f_final = build_market_features(
         event.snapshot,
         event.close_time,
         sizing["dollar_size"],
-        fill_estimate.avg_price,
+        quoted_market_price if quoted_market_price > 0 else fill_estimate.avg_price,
     )
     result = executor.execute(
         trade_id=event.trade_id,
@@ -4994,13 +5123,11 @@ def _apply_env_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
     if not prepared:
         raise ValueError("Promotion config payload did not contain any promotable config keys")
     snapshot = {
-        "env_path": ENV_PATH,
-        "env_file_existed": ENV_PATH.exists(),
-        "env_file_text": ENV_PATH.read_text(encoding="utf-8") if ENV_PATH.exists() else None,
+        "runtime_settings": {key: get_runtime_setting(key) for key, _value in prepared},
         "env_values": {key: os.environ.get(key) for key, _value in prepared},
     }
     for key, value in prepared:
-        _write_env_value(key, value)
+        set_runtime_setting(key, value)
         os.environ[key] = value
     return {
         "applied_keys": [key for key, _value in prepared],
@@ -5011,14 +5138,17 @@ def _apply_env_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _restore_env_config_payload(snapshot: dict[str, Any]) -> None:
-    env_path = snapshot.get("env_path")
-    if not isinstance(env_path, Path):
-        raise ValueError("Invalid env snapshot path")
-    if bool(snapshot.get("env_file_existed")):
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text(str(snapshot.get("env_file_text") or ""), encoding="utf-8")
-    elif env_path.exists():
-        env_path.unlink()
+    runtime_settings = snapshot.get("runtime_settings") or {}
+    if not isinstance(runtime_settings, dict):
+        raise ValueError("Invalid runtime settings snapshot")
+    for raw_key, previous_value in runtime_settings.items():
+        key = str(raw_key or "").strip().upper()
+        if not key:
+            continue
+        if previous_value is None:
+            delete_runtime_setting(key)
+        else:
+            set_runtime_setting(key, str(previous_value))
 
     env_values = snapshot.get("env_values") or {}
     if isinstance(env_values, dict):

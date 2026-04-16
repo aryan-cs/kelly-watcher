@@ -9,6 +9,7 @@ import shutil
 import time
 import sqlite3
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,10 @@ RECOVERY_QUARANTINE_UNCOMPRESSED_RETENTION = 1
 TRADE_LOG_ARCHIVE_SCHEMA = "trade_log_archive"
 _ARCHIVE_OPEN_SIZE_EPSILON = 1e-9
 logger = logging.getLogger(__name__)
+_RUNTIME_SETTINGS_CACHE: dict[str, str] | None = None
+_RUNTIME_SETTINGS_CACHE_AT = 0.0
+_RUNTIME_SETTINGS_CACHE_TTL_SECONDS = 1.0
+_RUNTIME_SETTINGS_CACHE_LOCK = threading.Lock()
 _BACKUP_TIMESTAMP_RE = re.compile(r"(\d{8}_\d{6})")
 _SHARED_HOLDOUT_MESSAGE_RE = re.compile(
     r"shared holdout ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+).*?"
@@ -312,6 +317,233 @@ def _normalize_wallet_addresses(wallet_addresses: list[str] | tuple[str, ...] | 
         seen.add(address)
         normalized.append(address)
     return normalized
+
+
+def _read_env_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
+def _parse_env_items(path: Path) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    for raw_line in _read_env_lines(path):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        normalized_key = str(key or "").strip().upper()
+        if not normalized_key:
+            continue
+        items.append((normalized_key, str(value or "").strip()))
+    return items
+
+
+def _write_env_lines(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not lines:
+        path.write_text("", encoding="utf-8")
+        return
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _runtime_settings_table_exists(conn: sqlite3.Connection) -> bool:
+    return _table_exists(conn, "runtime_settings", schema="main")
+
+
+def _ensure_runtime_settings_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_settings (
+            key         TEXT PRIMARY KEY,
+            value       TEXT NOT NULL DEFAULT '',
+            updated_at  INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+
+def _invalidate_runtime_settings_cache() -> None:
+    global _RUNTIME_SETTINGS_CACHE, _RUNTIME_SETTINGS_CACHE_AT
+    with _RUNTIME_SETTINGS_CACHE_LOCK:
+        _RUNTIME_SETTINGS_CACHE = None
+        _RUNTIME_SETTINGS_CACHE_AT = 0.0
+
+
+def load_runtime_settings(
+    *,
+    force: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, str]:
+    global _RUNTIME_SETTINGS_CACHE, _RUNTIME_SETTINGS_CACHE_AT
+
+    if conn is None:
+        now = time.time()
+        with _RUNTIME_SETTINGS_CACHE_LOCK:
+            if (
+                not force
+                and _RUNTIME_SETTINGS_CACHE is not None
+                and (now - _RUNTIME_SETTINGS_CACHE_AT) < _RUNTIME_SETTINGS_CACHE_TTL_SECONDS
+            ):
+                return dict(_RUNTIME_SETTINGS_CACHE)
+
+    owns_conn = conn is None
+    if owns_conn:
+        conn = get_conn()
+    assert conn is not None
+    try:
+        _ensure_runtime_settings_table(conn)
+        rows = conn.execute(
+            "SELECT key, value FROM runtime_settings ORDER BY key ASC"
+        ).fetchall()
+        payload = {
+            str(row["key"] or "").strip().upper(): str(row["value"] or "").strip()
+            for row in rows
+            if str(row["key"] or "").strip()
+        }
+    finally:
+        if owns_conn:
+            conn.close()
+
+    if owns_conn:
+        with _RUNTIME_SETTINGS_CACHE_LOCK:
+            _RUNTIME_SETTINGS_CACHE = dict(payload)
+            _RUNTIME_SETTINGS_CACHE_AT = time.time()
+    return payload
+
+
+def get_runtime_setting(
+    key: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+    force: bool = False,
+) -> str | None:
+    normalized_key = str(key or "").strip().upper()
+    if not normalized_key:
+        return None
+    return load_runtime_settings(force=force, conn=conn).get(normalized_key)
+
+
+def set_runtime_setting(
+    key: str,
+    value: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    normalized_key = str(key or "").strip().upper()
+    if not normalized_key:
+        raise ValueError("Runtime setting key cannot be blank")
+    text_value = str(value or "").strip()
+
+    owns_conn = conn is None
+    if owns_conn:
+        conn = get_conn()
+    assert conn is not None
+    try:
+        _ensure_runtime_settings_table(conn)
+        conn.execute(
+            """
+            INSERT INTO runtime_settings(key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (normalized_key, text_value, int(time.time())),
+        )
+        conn.commit()
+    finally:
+        if owns_conn:
+            conn.close()
+    _invalidate_runtime_settings_cache()
+
+
+def delete_runtime_setting(
+    key: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    normalized_key = str(key or "").strip().upper()
+    if not normalized_key:
+        return
+    owns_conn = conn is None
+    if owns_conn:
+        conn = get_conn()
+    assert conn is not None
+    try:
+        _ensure_runtime_settings_table(conn)
+        conn.execute("DELETE FROM runtime_settings WHERE key=?", (normalized_key,))
+        conn.commit()
+    finally:
+        if owns_conn:
+            conn.close()
+    _invalidate_runtime_settings_cache()
+
+
+def bootstrap_runtime_settings_from_env(
+    env_path: Path,
+    *,
+    env_only_keys: set[str] | frozenset[str],
+    bootstrap_env_keys: set[str] | frozenset[str] | None = None,
+) -> dict[str, object]:
+    path = Path(env_path)
+    if not path.exists():
+        return {"imported_keys": [], "imported_wallets": 0, "stripped_keys": []}
+
+    bootstrap_keys = {str(key or "").strip().upper() for key in (bootstrap_env_keys or set()) if str(key or "").strip()}
+    env_only = {str(key or "").strip().upper() for key in env_only_keys if str(key or "").strip()}
+    original_lines = _read_env_lines(path)
+    if not original_lines:
+        return {"imported_keys": [], "imported_wallets": 0, "stripped_keys": []}
+
+    migratable: dict[str, str] = {}
+    bootstrap_wallets: list[str] = []
+    retained_lines: list[str] = []
+    stripped_keys: list[str] = []
+
+    for raw_line in original_lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            retained_lines.append(raw_line)
+            continue
+
+        raw_key, raw_value = raw_line.split("=", 1)
+        key = str(raw_key or "").strip().upper()
+        value = str(raw_value or "").strip()
+        if not key:
+            retained_lines.append(raw_line)
+            continue
+        if key in env_only:
+            retained_lines.append(raw_line)
+            continue
+        if key in bootstrap_keys:
+            bootstrap_wallets = _normalize_wallet_addresses(value.split(","))
+            stripped_keys.append(key)
+            continue
+        migratable[key] = value
+        stripped_keys.append(key)
+
+    imported_wallets = 0
+    imported_keys: list[str] = []
+    if migratable or bootstrap_wallets:
+        init_db()
+    for key, value in sorted(migratable.items()):
+        set_runtime_setting(key, value)
+        imported_keys.append(key)
+    if bootstrap_wallets:
+        imported_wallets = import_managed_wallets_from_env(bootstrap_wallets)
+
+    if stripped_keys:
+        while retained_lines and not retained_lines[-1].strip():
+            retained_lines.pop()
+        _write_env_lines(path, retained_lines)
+
+    return {
+        "imported_keys": imported_keys,
+        "imported_wallets": imported_wallets,
+        "stripped_keys": sorted(stripped_keys),
+    }
 
 
 def load_managed_wallets(
@@ -755,18 +987,19 @@ def upsert_managed_wallets(
                         END,
                         last_source_ts_at_status=excluded.last_source_ts_at_status,
                         updated_at=excluded.updated_at
-                    """,
-                    [
-                        (
-                            wallet,
-                            now_ts,
-                            now_ts,
-                            now_ts,
-                        )
-                        for wallet in wallets
-                        if tracking_enabled
-                    ],
-                )
+                """,
+                [
+                    (
+                        wallet,
+                        now_ts,
+                        now_ts,
+                        now_ts,
+                        now_ts,
+                    )
+                    for wallet in wallets
+                    if tracking_enabled
+                ],
+            )
         return len(wallets)
     finally:
         conn.close()
@@ -2631,6 +2864,12 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             status      TEXT,
             updated_at  INTEGER NOT NULL,
             PRIMARY KEY (market_id, token_id, side, real_money)
+        );
+
+        CREATE TABLE IF NOT EXISTS runtime_settings (
+            key         TEXT PRIMARY KEY,
+            value       TEXT NOT NULL DEFAULT '',
+            updated_at  INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_seen_trades_seen_at ON seen_trades(seen_at);

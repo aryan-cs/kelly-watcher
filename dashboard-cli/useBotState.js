@@ -1,7 +1,52 @@
 import { useEffect, useState } from 'react';
 import { ApiError, apiBaseUrl, fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
-let botStateCache = { api_base_url: apiBaseUrl, api_error: '' };
+let botStateCache = {
+    api_base_url: apiBaseUrl,
+    api_error: '',
+    trade_log_archive_state_known: false,
+    trade_log_archive_enabled: false,
+    trade_log_archive_status: 'checking',
+    trade_log_archive_pending: false,
+    trade_log_archive_requested_at: 0,
+    trade_log_archive_request_message: '',
+    trade_log_archive_db_path: '',
+    trade_log_archive_archive_path: '',
+    trade_log_archive_archive_exists: false,
+    trade_log_archive_active_db_size_bytes: 0,
+    trade_log_archive_active_db_allocated_bytes: 0,
+    trade_log_archive_archive_db_size_bytes: 0,
+    trade_log_archive_archive_db_allocated_bytes: 0,
+    trade_log_archive_active_row_count: 0,
+    trade_log_archive_archive_row_count: 0,
+    trade_log_archive_eligible_row_count: 0,
+    trade_log_archive_cutoff_ts: 0,
+    trade_log_archive_preserve_since_ts: 0,
+    trade_log_archive_last_run_at: 0,
+    trade_log_archive_last_candidate_count: 0,
+    trade_log_archive_last_archived_count: 0,
+    trade_log_archive_last_deleted_count: 0,
+    trade_log_archive_last_vacuumed: false,
+    trade_log_archive_last_message: '',
+    trade_log_archive_block_reason: '',
+    storage_state_known: false,
+    storage_save_dir_size_bytes: 0,
+    storage_data_dir_size_bytes: 0,
+    storage_log_dir_size_bytes: 0,
+    storage_trading_db_size_bytes: 0,
+    storage_trading_db_allocated_bytes: 0,
+    storage_trade_log_archive_db_size_bytes: 0,
+    storage_trade_log_archive_db_allocated_bytes: 0,
+    storage_identity_cache_size_bytes: 0,
+    storage_events_file_size_bytes: 0,
+    storage_background_log_size_bytes: 0,
+    storage_model_artifact_size_bytes: 0,
+    storage_artifact_quarantine_file_count: 0,
+    storage_artifact_quarantine_size_bytes: 0,
+    storage_db_recovery_quarantine_file_count: 0,
+    storage_db_recovery_quarantine_size_bytes: 0,
+    storage_message: ''
+};
 let shadowRestartPending = false;
 let shadowRestartKind = '';
 let shadowRestartRequestedAtMs = 0;
@@ -62,6 +107,8 @@ function resolveShadowRestartState(nextState) {
         clearShadowRestartPending();
         return nextState;
     }
+    // Successful backend reads are authoritative. If the backend no longer reports
+    // a restart as pending, stop forcing the local placeholder state.
     clearShadowRestartPending();
     return nextState;
 }
@@ -81,6 +128,9 @@ function shadowRestartPlaceholderState(state, kind, message = '') {
         startup_failure_message: '',
         startup_validation_failed: false,
         startup_validation_message: '',
+        startup_blocked: false,
+        startup_recovery_only: false,
+        startup_block_reason: '',
         mode: 'shadow',
         n_wallets: 0,
         loop_in_progress: false,
@@ -102,7 +152,12 @@ function shadowRestartPlaceholderState(state, kind, message = '') {
         model_fallback_reason: '',
         model_load_error: '',
         model_prediction_mode: '',
-        model_loaded_at: 0
+        model_loaded_at: 0,
+        model_training_scope: 'unknown',
+        model_training_since_ts: 0,
+        model_training_routed_only: false,
+        model_training_provenance_trusted: false,
+        model_training_block_reason: ''
     };
 }
 function shadowRestartWaitingState(nextState) {
@@ -115,7 +170,10 @@ function shadowRestartWaitingState(nextState) {
         shadow_restart_pending: true,
         shadow_restart_kind: nextKind,
         shadow_restart_message: String(nextState.shadow_restart_message || '').trim() || shadowRestartPendingMessage(nextKind),
-        startup_detail: String(nextState.startup_detail || '').trim() || (nextKind === 'db_recovery' ? 'Recovering shadow database' : 'Restarting shadow bot')
+        startup_detail: String(nextState.startup_detail || '').trim() || (nextKind === 'db_recovery' ? 'Recovering shadow database' : 'Restarting shadow bot'),
+        startup_blocked: false,
+        startup_recovery_only: false,
+        startup_block_reason: ''
     };
 }
 export function beginShadowRestartBotState(kind, message = '') {
@@ -200,10 +258,10 @@ export function useBotState(intervalMs = 1000) {
                     shadow_restart_kind: effectiveShadowRestartKind,
                     shadow_restart_message: effectiveShadowRestartMessage
                 };
-            botStateCache = nextState;
-            if (!cancelled) {
-                setState(nextState);
-            }
+                botStateCache = nextState;
+                if (!cancelled) {
+                    setState(nextState);
+                }
             }
             finally {
                 if (activeController === controller) {

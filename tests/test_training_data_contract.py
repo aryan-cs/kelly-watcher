@@ -112,8 +112,61 @@ class TrainingDataContractTest(unittest.TestCase):
                 conn.close()
 
                 df = train.load_training_data()
-
                 self.assertEqual(list(df["trade_id"]), ["labeled-early", "labeled-late"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_load_training_data_prefers_price_at_signal_for_effective_price(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at,
+                        actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        entry_gross_price, entry_gross_shares, entry_gross_size_usd,
+                        actual_pnl_usd, resolved_at, label_applied_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "effective-price-signal-first",
+                        "market-effective",
+                        "Effective price should come from the quote",
+                        "0xaaa",
+                        "yes",
+                        "buy",
+                        0.41,
+                        10.0,
+                        0.71,
+                        0.10,
+                        0,
+                        0,
+                        1_700_100_000,
+                        0.77,
+                        12.987013,
+                        10.0,
+                        0.41,
+                        24.390244,
+                        10.0,
+                        4.0,
+                        1_700_100_100,
+                        1_700_100_100,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                df = train.load_training_data()
+
+                self.assertEqual(list(df["trade_id"]), ["effective-price-signal-first"])
+                self.assertAlmostEqual(float(df.iloc[0]["effective_price"]), 0.41, places=6)
+                self.assertNotAlmostEqual(float(df.iloc[0]["effective_price"]), 0.77, places=6)
             finally:
                 db.DB_PATH = original_db_path
 

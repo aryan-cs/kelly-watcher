@@ -656,89 +656,118 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_dashboard_config_snapshot_includes_max_market_horizon_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            env_path = Path(tmpdir) / "save" / ".env.dev"
+            env_path = Path(tmpdir) / "save" / ".env"
             env_path.parent.mkdir(parents=True, exist_ok=True)
-            repo_env_path = Path(tmpdir) / ".env.dev"
             env_example_path = Path(tmpdir) / ".env.example"
-            repo_env_path.write_text("MAX_MARKET_HORIZON=365d\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
+            original_db_path = db.DB_PATH
+            db.DB_PATH = Path(tmpdir) / "trading.db"
+            db._invalidate_runtime_settings_cache()
+            db.init_db()
+            persisted_value = None
 
-            with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
-                dashboard_api, "REPO_ROOT", Path(tmpdir)
-            ), patch.object(
-                dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
-            ):
-                dashboard_api._write_env_value("MAX_MARKET_HORIZON", "7d")
-                snapshot = dashboard_api._config_snapshot()
+            try:
+                with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                    dashboard_api, "REPO_ROOT", Path(tmpdir)
+                ), patch.object(
+                    dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
+                ):
+                    dashboard_api._write_env_value("MAX_MARKET_HORIZON", "7d")
+                    snapshot = dashboard_api._config_snapshot()
+                    persisted_value = db.get_runtime_setting("MAX_MARKET_HORIZON")
+            finally:
+                db.DB_PATH = original_db_path
+                db._invalidate_runtime_settings_cache()
 
             self.assertEqual(snapshot["safe_values"]["MAX_MARKET_HORIZON"], "7d")
-            self.assertIn("MAX_MARKET_HORIZON=7d", env_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted_value, "7d")
 
     def test_dashboard_config_snapshot_includes_open_exposure_cap_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            env_path = Path(tmpdir) / "save" / ".env.dev"
+            env_path = Path(tmpdir) / "save" / ".env"
             env_path.parent.mkdir(parents=True, exist_ok=True)
-            repo_env_path = Path(tmpdir) / ".env.dev"
             env_example_path = Path(tmpdir) / ".env.example"
-            repo_env_path.write_text("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.60\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
+            original_db_path = db.DB_PATH
+            db.DB_PATH = Path(tmpdir) / "trading.db"
+            db._invalidate_runtime_settings_cache()
+            db.init_db()
+            persisted_value = None
 
-            with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
-                dashboard_api, "REPO_ROOT", Path(tmpdir)
-            ), patch.object(
-                dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
-            ):
-                dashboard_api._write_env_value("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.42")
-                snapshot = dashboard_api._config_snapshot()
+            try:
+                with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                    dashboard_api, "REPO_ROOT", Path(tmpdir)
+                ), patch.object(
+                    dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
+                ):
+                    dashboard_api._write_env_value("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.42")
+                    snapshot = dashboard_api._config_snapshot()
+                    persisted_value = db.get_runtime_setting("MAX_TOTAL_OPEN_EXPOSURE_FRACTION")
+            finally:
+                db.DB_PATH = original_db_path
+                db._invalidate_runtime_settings_cache()
 
             self.assertEqual(snapshot["safe_values"]["MAX_TOTAL_OPEN_EXPOSURE_FRACTION"], "0.42")
-            self.assertIn("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.42", env_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted_value, "0.42")
 
     def test_dashboard_config_snapshot_includes_heuristic_min_entry_price_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            env_path = Path(tmpdir) / "save" / ".env.dev"
+            env_path = Path(tmpdir) / "save" / ".env"
             env_path.parent.mkdir(parents=True, exist_ok=True)
-            repo_env_path = Path(tmpdir) / ".env.dev"
             env_example_path = Path(tmpdir) / ".env.example"
-            repo_env_path.write_text("HEURISTIC_MIN_ENTRY_PRICE=0.35\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
+            original_db_path = db.DB_PATH
+            db.DB_PATH = Path(tmpdir) / "trading.db"
+            db._invalidate_runtime_settings_cache()
+            db.init_db()
+            persisted_value = None
 
-            with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
-                dashboard_api, "REPO_ROOT", Path(tmpdir)
-            ), patch.object(
-                dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
-            ):
-                dashboard_api._write_env_value("HEURISTIC_MIN_ENTRY_PRICE", "0.50")
-                snapshot = dashboard_api._config_snapshot()
+            try:
+                with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                    dashboard_api, "REPO_ROOT", Path(tmpdir)
+                ), patch.object(
+                    dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
+                ):
+                    dashboard_api._write_env_value("HEURISTIC_MIN_ENTRY_PRICE", "0.50")
+                    snapshot = dashboard_api._config_snapshot()
+                    persisted_value = db.get_runtime_setting("HEURISTIC_MIN_ENTRY_PRICE")
+            finally:
+                db.DB_PATH = original_db_path
+                db._invalidate_runtime_settings_cache()
 
             self.assertEqual(snapshot["safe_values"]["HEURISTIC_MIN_ENTRY_PRICE"], "0.50")
-            self.assertIn("HEURISTIC_MIN_ENTRY_PRICE=0.50", env_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted_value, "0.50")
 
     def test_dashboard_config_snapshot_includes_replay_search_constraints_file_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            env_path = Path(tmpdir) / "save" / ".env.dev"
+            env_path = Path(tmpdir) / "save" / ".env"
             env_path.parent.mkdir(parents=True, exist_ok=True)
-            repo_env_path = Path(tmpdir) / ".env.dev"
             env_example_path = Path(tmpdir) / ".env.example"
-            repo_env_path.write_text("REPLAY_SEARCH_CONSTRAINTS_FILE=old.json\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
+            original_db_path = db.DB_PATH
+            db.DB_PATH = Path(tmpdir) / "trading.db"
+            db._invalidate_runtime_settings_cache()
+            db.init_db()
+            persisted_value = None
 
-            with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
-                dashboard_api, "REPO_ROOT", Path(tmpdir)
-            ), patch.object(
-                dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
-            ):
-                dashboard_api._write_env_value("REPLAY_SEARCH_CONSTRAINTS_FILE", "replay_search_specs/constraints.json")
-                snapshot = dashboard_api._config_snapshot()
+            try:
+                with patch.object(dashboard_api, "ENV_PATH", env_path), patch.object(
+                    dashboard_api, "REPO_ROOT", Path(tmpdir)
+                ), patch.object(
+                    dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
+                ):
+                    dashboard_api._write_env_value("REPLAY_SEARCH_CONSTRAINTS_FILE", "replay_search_specs/constraints.json")
+                    snapshot = dashboard_api._config_snapshot()
+                    persisted_value = db.get_runtime_setting("REPLAY_SEARCH_CONSTRAINTS_FILE")
+            finally:
+                db.DB_PATH = original_db_path
+                db._invalidate_runtime_settings_cache()
 
             self.assertEqual(
                 snapshot["safe_values"]["REPLAY_SEARCH_CONSTRAINTS_FILE"],
                 "replay_search_specs/constraints.json",
             )
-            self.assertIn(
-                "REPLAY_SEARCH_CONSTRAINTS_FILE=replay_search_specs/constraints.json",
-                env_path.read_text(encoding="utf-8"),
-            )
+            self.assertEqual(persisted_value, "replay_search_specs/constraints.json")
 
     def test_dashboard_config_snapshot_reports_live_wallet_registry_separately_from_bootstrap_env(self) -> None:
         with patch.object(
@@ -904,7 +933,11 @@ class RuntimeFixesTest(unittest.TestCase):
 
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0]["wallet_address"], "0xpromo")
+                self.assertEqual(rows[0]["post_promotion_promoted_at"], 1_700_000_000)
                 self.assertEqual(rows[0]["post_promotion_baseline_at"], 1_700_000_000)
+                self.assertEqual(rows[0]["post_promotion_boundary_action"], "promote")
+                self.assertEqual(rows[0]["post_promotion_boundary_source"], "auto_promoted")
+                self.assertIn("ready wallet discovered", rows[0]["post_promotion_boundary_reason"])
                 self.assertEqual(rows[0]["post_promotion_total_buy_signals"], 5)
                 self.assertEqual(rows[0]["post_promotion_resolved_copied_count"], 3)
                 self.assertEqual(rows[0]["post_promotion_timing_skips"], 1)
@@ -1002,6 +1035,102 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertEqual(int(promotion_state["0xpromo"]["baseline_at"] or 0), 1_700_000_500)
                 self.assertEqual(str(promotion_state["0xpromo"]["boundary_action"] or ""), "reactivate")
                 self.assertEqual(str(promotion_state["0xpromo"]["boundary_source"] or ""), "manual_web")
+
+                with patch.object(dashboard_api, "_identity_lookup", return_value={}), patch.object(
+                    dashboard_api, "_discover_candidate_map", return_value={}
+                ), patch.object(dashboard_api, "_wallet_watch_state_map", return_value={}), patch.object(
+                    dashboard_api,
+                    "_wallet_trust_snapshot_map",
+                    return_value={"0xpromo": {"trust_tier": "promotion_probation", "trust_size_multiplier": 0.05, "trust_note": ""}},
+                ):
+                    rows = dashboard_api._managed_wallet_rows(limit=10)
+
+                self.assertEqual(rows[0]["post_promotion_boundary_action"], "reactivate")
+                self.assertEqual(rows[0]["post_promotion_boundary_source"], "manual_web")
+                self.assertIn("web dashboard", rows[0]["post_promotion_boundary_reason"])
+                self.assertEqual(rows[0]["post_promotion_promoted_at"], 1_700_000_000)
+                self.assertEqual(rows[0]["post_promotion_baseline_at"], 1_700_000_500)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_managed_wallet_rows_surface_restore_proof_window_boundary(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO managed_wallets (
+                        wallet_address, tracking_enabled, source, added_at, updated_at, metadata_json
+                    ) VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        "0xpromo",
+                        1,
+                        "auto_promoted",
+                        1_700_000_000,
+                        1_700_000_500,
+                        '{"promotion_source":"wallet_discovery","promoted_at":1700000000}',
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_membership_events (
+                        wallet_address, action, source, reason, payload_json, created_at
+                    ) VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        "0xpromo",
+                        "promote",
+                        "auto_promoted",
+                        "ready wallet discovered in shadow scan",
+                        '{"promotion_source":"wallet_discovery","promoted_at":1700000000}',
+                        1_700_000_000,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_membership_events (
+                        wallet_address, action, source, reason, payload_json, created_at
+                    ) VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        "0xpromo",
+                        "restore",
+                        "shadow_reset",
+                        "shadow reset registry restore",
+                        '{"baseline_at":1700000500,"restored_source":"auto_promoted","tracking_enabled":true}',
+                        1_700_000_500,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address, status, tracking_started_at, reactivated_at, updated_at
+                    ) VALUES (?, 'active', ?, ?, ?)
+                    """,
+                    ("0xpromo", 1_700_000_500, 1_700_000_500, 1_700_000_500),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch.object(dashboard_api, "_identity_lookup", return_value={}), patch.object(
+                    dashboard_api, "_discover_candidate_map", return_value={}
+                ), patch.object(dashboard_api, "_wallet_watch_state_map", return_value={}), patch.object(
+                    dashboard_api,
+                    "_wallet_trust_snapshot_map",
+                    return_value={"0xpromo": {"trust_tier": "promotion_probation", "trust_size_multiplier": 0.05, "trust_note": ""}},
+                ):
+                    rows = dashboard_api._managed_wallet_rows(limit=10)
+
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["post_promotion_promoted_at"], 1_700_000_000)
+                self.assertEqual(rows[0]["post_promotion_baseline_at"], 1_700_000_500)
+                self.assertEqual(rows[0]["post_promotion_boundary_action"], "restore")
+                self.assertEqual(rows[0]["post_promotion_boundary_source"], "shadow_reset")
+                self.assertIn("shadow reset registry restore", rows[0]["post_promotion_boundary_reason"])
             finally:
                 db.DB_PATH = original_db_path
 
@@ -1666,6 +1795,37 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(persisted["mode"], "shadow")
         self.assertIn("configured live but forced shadow", persisted["mode_block_reason"])
         self.assertIn("malformed", persisted["mode_block_reason"])
+
+    def test_write_bot_state_marks_startup_failure_as_blocked_on_disk(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            with (
+                patch.object(main, "BOT_STATE_FILE", bot_state_file),
+                patch.object(main, "use_real_money", return_value=True),
+                patch.object(main, "poll_interval", return_value=1.0),
+                patch.object(main, "_managed_wallet_count", return_value=0),
+            ):
+                main._write_bot_state(
+                    replace=True,
+                    session_id="session-startup-failure",
+                    started_at=123,
+                    startup_failed=True,
+                    startup_validation_failed=True,
+                    startup_detail="startup validation failed: 2 errors",
+                    startup_failure_message="startup validation failed\n- bad config",
+                    startup_validation_message="startup validation failed\n- bad config",
+                    startup_blocked=False,
+                    startup_block_reason="",
+                )
+            persisted = json.loads(bot_state_file.read_text(encoding="utf-8"))
+
+        self.assertTrue(persisted["startup_failed"])
+        self.assertTrue(persisted["startup_validation_failed"])
+        self.assertTrue(persisted["startup_blocked"])
+        self.assertIn("startup validation failed", persisted["startup_block_reason"].lower())
+        self.assertEqual(persisted["configured_mode"], "live")
+        self.assertEqual(persisted["mode"], "shadow")
+        self.assertIn("configured live but forced shadow", persisted["mode_block_reason"])
 
     def test_storage_health_state_payload_reports_sizes_and_quarantine_counts(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -5955,6 +6115,34 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertAlmostEqual(float(captured["actual_entry_shares"]), 20.0, places=6)
         self.assertAlmostEqual(float(captured["actual_entry_size_usd"]), 10.0, places=6)
 
+    def test_shadow_buy_simulation_preserves_walked_book_spend_with_tolerance(self) -> None:
+        raw_book = {
+            "asks": [
+                {"price": 0.40, "size": 10.0},
+                {"price": 0.50, "size": 11.99},
+            ]
+        }
+
+        fill, reason = PolymarketExecutor._simulate_shadow_buy(raw_book, 10.0)
+
+        self.assertIsNone(reason)
+        self.assertIsNotNone(fill)
+        self.assertAlmostEqual(fill.spent_usd, 9.995, places=6)
+        self.assertAlmostEqual(fill.shares, 21.99, places=6)
+        self.assertAlmostEqual(fill.avg_price, 9.995 / 21.99, places=6)
+
+    def test_entry_latency_block_reason_uses_source_latency_limit(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        event = SimpleNamespace(timestamp=100.0, observed_at=102.0)
+
+        with patch("kelly_watcher.runtime.executor.max_source_latency_seconds", return_value=5.0):
+            reason = executor.entry_latency_block_reason(event, now_ts=106.4)
+
+        self.assertEqual(
+            reason,
+            "source trade was 6.4s old at execution time, above the 5.0s latency limit (observation 2.0s, processing 4.4s)",
+        )
+
     def test_log_trade_persists_entry_fee_breakdown(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -5981,6 +6169,20 @@ class RuntimeFixesTest(unittest.TestCase):
                     snapshot={"fee_rate_bps": 10},
                     trader_address="0xabc",
                     trader_name="Trader",
+                )
+                market_f = SimpleNamespace(
+                    execution_price=0.75,
+                    price_1h_ago=None,
+                    volume_7d_avg_usd=None,
+                    best_ask=0.5,
+                    best_bid=0.49,
+                    mid=0.495,
+                    volume_24h_usd=None,
+                    oi_usd=None,
+                    top_holder_pct=None,
+                    bid_depth_usd=None,
+                    ask_depth_usd=None,
+                    days_to_res=None,
                 )
                 economics = build_entry_economics(
                     gross_price=0.5,
@@ -6010,6 +6212,7 @@ class RuntimeFixesTest(unittest.TestCase):
                     actual_entry_size_usd=economics.total_cost_usd,
                     entry_economics=economics,
                     event=event,
+                    market_f=market_f,
                     signal={"mode": "heuristic"},
                 )
 
@@ -6018,7 +6221,7 @@ class RuntimeFixesTest(unittest.TestCase):
                     """
                     SELECT entry_fee_rate_bps, entry_fee_usd, entry_fee_shares,
                            entry_fixed_cost_usd, entry_gross_price, entry_gross_shares,
-                           entry_gross_size_usd
+                           entry_gross_size_usd, f_price
                     FROM trade_log
                     WHERE id=?
                     """,
@@ -6033,6 +6236,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertAlmostEqual(float(row["entry_gross_price"]), economics.gross_price, places=6)
                 self.assertAlmostEqual(float(row["entry_gross_shares"]), economics.gross_shares, places=6)
                 self.assertAlmostEqual(float(row["entry_gross_size_usd"]), economics.gross_spent_usd, places=6)
+                self.assertAlmostEqual(float(row["f_price"]), 0.75, places=6)
             finally:
                 db.DB_PATH = original_db_path
 
@@ -7287,6 +7491,8 @@ class RuntimeFixesTest(unittest.TestCase):
                 self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_validation_message"])
                 self.assertIn("warning text", payload["startup_validation_message"])
                 self.assertEqual(payload["mode"], "shadow")
+                self.assertTrue(payload["startup_blocked"])
+                self.assertIn("startup validation failed", payload["startup_block_reason"].lower())
                 self.assertEqual(payload["poll_interval"], 0.0)
                 self.assertEqual(payload["n_wallets"], 1)
                 self.assertEqual(payload["last_poll_at"], 0)
@@ -7333,6 +7539,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
                 self.assertTrue(payload["startup_failed"])
                 self.assertTrue(payload["startup_validation_failed"])
+                self.assertTrue(payload["startup_blocked"])
                 self.assertNotEqual(payload["session_id"], "old-session")
                 self.assertEqual(payload["last_poll_at"], 0)
                 self.assertFalse(payload["loop_in_progress"])
@@ -7435,6 +7642,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
                 payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
                 self.assertTrue(payload["startup_failed"])
+                self.assertTrue(payload["startup_blocked"])
                 self.assertTrue(payload["shadow_history_state_known"])
                 self.assertEqual(payload["resolved_shadow_trade_count"], 1)
                 self.assertEqual(payload["resolved_shadow_since_last_promotion"], 1)
@@ -7490,6 +7698,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 )
                 self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_failure_message"])
                 self.assertIn("MIN_CONFIDENCE must be numeric, got 'abc'", payload["startup_validation_message"])
+                self.assertTrue(payload["startup_blocked"])
                 self.assertEqual(payload["poll_interval"], 0.0)
             finally:
                 main.BOT_STATE_FILE = original_state_file
@@ -7536,6 +7745,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 payload = json.loads(main.BOT_STATE_FILE.read_text(encoding="utf-8"))
                 self.assertTrue(payload["startup_failed"])
                 self.assertFalse(payload["startup_validation_failed"])
+                self.assertTrue(payload["startup_blocked"])
                 self.assertEqual(payload["startup_detail"], "startup failed: belief sync exploded")
                 self.assertEqual(payload["startup_failure_message"], "startup failed: belief sync exploded")
                 self.assertEqual(payload["mode"], "shadow")

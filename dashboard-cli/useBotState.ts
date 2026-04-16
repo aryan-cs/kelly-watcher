@@ -178,6 +178,48 @@ export interface BotState {
   db_recovery_shadow_ready?: boolean
   db_recovery_shadow_segment_summary_json?: string
   db_recovery_shadow_block_reason?: string
+  trade_log_archive_state_known?: boolean
+  trade_log_archive_enabled?: boolean
+  trade_log_archive_status?: string
+  trade_log_archive_pending?: boolean
+  trade_log_archive_requested_at?: number
+  trade_log_archive_request_message?: string
+  trade_log_archive_db_path?: string
+  trade_log_archive_archive_path?: string
+  trade_log_archive_archive_exists?: boolean
+  trade_log_archive_active_db_size_bytes?: number
+  trade_log_archive_active_db_allocated_bytes?: number
+  trade_log_archive_archive_db_size_bytes?: number
+  trade_log_archive_archive_db_allocated_bytes?: number
+  trade_log_archive_active_row_count?: number
+  trade_log_archive_archive_row_count?: number
+  trade_log_archive_eligible_row_count?: number
+  trade_log_archive_cutoff_ts?: number
+  trade_log_archive_preserve_since_ts?: number
+  trade_log_archive_last_run_at?: number
+  trade_log_archive_last_candidate_count?: number
+  trade_log_archive_last_archived_count?: number
+  trade_log_archive_last_deleted_count?: number
+  trade_log_archive_last_vacuumed?: boolean
+  trade_log_archive_last_message?: string
+  trade_log_archive_block_reason?: string
+  storage_state_known?: boolean
+  storage_save_dir_size_bytes?: number
+  storage_data_dir_size_bytes?: number
+  storage_log_dir_size_bytes?: number
+  storage_trading_db_size_bytes?: number
+  storage_trading_db_allocated_bytes?: number
+  storage_trade_log_archive_db_size_bytes?: number
+  storage_trade_log_archive_db_allocated_bytes?: number
+  storage_identity_cache_size_bytes?: number
+  storage_events_file_size_bytes?: number
+  storage_background_log_size_bytes?: number
+  storage_model_artifact_size_bytes?: number
+  storage_artifact_quarantine_file_count?: number
+  storage_artifact_quarantine_size_bytes?: number
+  storage_db_recovery_quarantine_file_count?: number
+  storage_db_recovery_quarantine_size_bytes?: number
+  storage_message?: string
   loaded_scorer?: string
   loaded_model_backend?: string
   heuristic_enabled?: boolean
@@ -210,7 +252,52 @@ interface BotStateResponse {
   state?: BotState
 }
 
-let botStateCache: BotState = {api_base_url: apiBaseUrl, api_error: ''}
+let botStateCache: BotState = {
+  api_base_url: apiBaseUrl,
+  api_error: '',
+  trade_log_archive_state_known: false,
+  trade_log_archive_enabled: false,
+  trade_log_archive_status: 'checking',
+  trade_log_archive_pending: false,
+  trade_log_archive_requested_at: 0,
+  trade_log_archive_request_message: '',
+  trade_log_archive_db_path: '',
+  trade_log_archive_archive_path: '',
+  trade_log_archive_archive_exists: false,
+  trade_log_archive_active_db_size_bytes: 0,
+  trade_log_archive_active_db_allocated_bytes: 0,
+  trade_log_archive_archive_db_size_bytes: 0,
+  trade_log_archive_archive_db_allocated_bytes: 0,
+  trade_log_archive_active_row_count: 0,
+  trade_log_archive_archive_row_count: 0,
+  trade_log_archive_eligible_row_count: 0,
+  trade_log_archive_cutoff_ts: 0,
+  trade_log_archive_preserve_since_ts: 0,
+  trade_log_archive_last_run_at: 0,
+  trade_log_archive_last_candidate_count: 0,
+  trade_log_archive_last_archived_count: 0,
+  trade_log_archive_last_deleted_count: 0,
+  trade_log_archive_last_vacuumed: false,
+  trade_log_archive_last_message: '',
+  trade_log_archive_block_reason: '',
+  storage_state_known: false,
+  storage_save_dir_size_bytes: 0,
+  storage_data_dir_size_bytes: 0,
+  storage_log_dir_size_bytes: 0,
+  storage_trading_db_size_bytes: 0,
+  storage_trading_db_allocated_bytes: 0,
+  storage_trade_log_archive_db_size_bytes: 0,
+  storage_trade_log_archive_db_allocated_bytes: 0,
+  storage_identity_cache_size_bytes: 0,
+  storage_events_file_size_bytes: 0,
+  storage_background_log_size_bytes: 0,
+  storage_model_artifact_size_bytes: 0,
+  storage_artifact_quarantine_file_count: 0,
+  storage_artifact_quarantine_size_bytes: 0,
+  storage_db_recovery_quarantine_file_count: 0,
+  storage_db_recovery_quarantine_size_bytes: 0,
+  storage_message: ''
+}
 let shadowRestartPending = false
 type ShadowRestartKind = '' | 'shadow_reset' | 'db_recovery'
 let shadowRestartKind: ShadowRestartKind = ''

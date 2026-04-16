@@ -419,6 +419,9 @@ function ManagedWalletCard({wallet, onDrop, onReactivate, busyWallet}: ManagedWa
   const actionHandler = trackingEnabled && !isDropped ? onDrop : onReactivate
   const statusLabel = isDropped ? 'dropped' : trackingEnabled ? 'tracked' : 'disabled'
   const postPromotionActive = Boolean(wallet.post_promotion_baseline_at)
+  const proofBoundaryAction = String(wallet.post_promotion_boundary_action || '').trim().toLowerCase()
+  const proofBoundarySource = humanizeStatus(wallet.post_promotion_boundary_source, 'Wallet Discovery')
+  const proofBoundaryReason = firstLine(wallet.post_promotion_boundary_reason, '')
   const trustTierLabel = humanizeStatus(wallet.trust_tier, 'Trust pending')
   const trustSizeLabel =
     wallet.trust_size_multiplier === undefined || wallet.trust_size_multiplier === null
@@ -432,6 +435,26 @@ function ManagedWalletCard({wallet, onDrop, onReactivate, busyWallet}: ManagedWa
       )} • skip ${formatPercent((wallet.post_promotion_uncopyable_skip_rate || 0) * 100)} • pnl ${formatCurrency(
         wallet.post_promotion_resolved_copied_total_pnl_usd
       )}`
+    : ''
+  const postPromotionBoundaryLabel = postPromotionActive
+    ? proofBoundaryAction === 'reactivate'
+      ? `proof reset by reactivation ${formatRelativeSeconds(wallet.post_promotion_baseline_at)}`
+      : proofBoundaryAction === 'restore'
+        ? `proof reset by shadow reset ${formatRelativeSeconds(wallet.post_promotion_baseline_at)}`
+        : `promoted ${formatRelativeSeconds(wallet.post_promotion_baseline_at)}`
+    : ''
+  const originalPromotionLabel =
+    postPromotionActive &&
+    proofBoundaryAction &&
+    proofBoundaryAction !== 'promote' &&
+    wallet.post_promotion_promoted_at &&
+    wallet.post_promotion_promoted_at > 0
+      ? `auto-promoted ${formatRelativeSeconds(wallet.post_promotion_promoted_at)}`
+      : ''
+  const postPromotionBoundaryDetail = postPromotionActive
+    ? `Boundary: ${humanizeStatus(wallet.post_promotion_boundary_action, 'Promote')} • ${proofBoundarySource}${
+        proofBoundaryReason ? ` • ${proofBoundaryReason}` : ''
+      }`
     : ''
 
   return (
@@ -449,14 +472,15 @@ function ManagedWalletCard({wallet, onDrop, onReactivate, busyWallet}: ManagedWa
         <span>{walletAddress || 'N/A'}</span>
         <span>{wallet.discovery_score !== undefined ? `score ${wallet.discovery_score.toFixed(3)}` : 'no discovery score'}</span>
         <span>{wallet.discovery_accepted ? 'ready' : wallet.discovery_reason || 'snapshot only'}</span>
-        {postPromotionActive ? <span>promoted {formatRelativeSeconds(wallet.post_promotion_baseline_at)}</span> : null}
+        {postPromotionActive ? <span>{postPromotionBoundaryLabel}</span> : null}
+        {originalPromotionLabel ? <span>{originalPromotionLabel}</span> : null}
       </div>
       <div className="event-card__footer">
         <span>
           {`Trust: ${trustTierLabel} • size ${trustSizeLabel}${wallet.trust_note ? ` • ${wallet.trust_note}` : ''}`}
         </span>
         <span>
-          {wallet.post_promotion_evidence_note || wallet.status_reason || wallet.disabled_reason || 'No lifecycle note recorded.'}
+          {wallet.post_promotion_evidence_note || postPromotionBoundaryDetail || wallet.status_reason || wallet.disabled_reason || 'No lifecycle note recorded.'}
         </span>
         {postPromotionActive ? <span>{postPromotionSummary}</span> : null}
         <button
@@ -649,6 +673,55 @@ export function App() {
   const promotionReadyRate = useMemo(
     () => (promotedManagedWallets.length > 0 ? promotionReadyWallets.length / promotedManagedWallets.length : null),
     [promotedManagedWallets.length, promotionReadyWallets.length]
+  )
+  const activePromotedCount = useMemo(
+    () =>
+      promotedManagedWallets.filter((wallet) => {
+        const status = String(wallet.status || '').trim().toLowerCase()
+        return wallet.tracking_enabled !== false && status !== 'dropped'
+      }).length,
+    [promotedManagedWallets]
+  )
+  const droppedPromotedCount = useMemo(
+    () =>
+      promotedManagedWallets.filter((wallet) => String(wallet.status || '').trim().toLowerCase() === 'dropped').length,
+    [promotedManagedWallets]
+  )
+  const promotedUncopyableSkips = useMemo(
+    () =>
+      promotedManagedWallets.reduce((total, wallet) => {
+        const skips = Number(wallet.post_promotion_uncopyable_skips)
+        return total + (Number.isFinite(skips) ? skips : 0)
+      }, 0),
+    [promotedManagedWallets]
+  )
+  const promotedTimingSkips = useMemo(
+    () =>
+      promotedManagedWallets.reduce((total, wallet) => {
+        const skips = Number(wallet.post_promotion_timing_skips)
+        return total + (Number.isFinite(skips) ? skips : 0)
+      }, 0),
+    [promotedManagedWallets]
+  )
+  const promotedLiquiditySkips = useMemo(
+    () =>
+      promotedManagedWallets.reduce((total, wallet) => {
+        const skips = Number(wallet.post_promotion_liquidity_skips)
+        return total + (Number.isFinite(skips) ? skips : 0)
+      }, 0),
+    [promotedManagedWallets]
+  )
+  const promotedTotalBuySignals = useMemo(
+    () =>
+      promotedManagedWallets.reduce((total, wallet) => {
+        const count = Number(wallet.post_promotion_total_buy_signals)
+        return total + (Number.isFinite(count) ? count : 0)
+      }, 0),
+    [promotedManagedWallets]
+  )
+  const promotedWeightedSkipRate = useMemo(
+    () => (promotedTotalBuySignals > 0 ? promotedUncopyableSkips / promotedTotalBuySignals : null),
+    [promotedTotalBuySignals, promotedUncopyableSkips]
   )
   const promotionBlockerPreview = useMemo(() => {
     const notes = promotionProbationWallets
@@ -882,14 +955,51 @@ export function App() {
             : 'No post-promotion copied P&L yet'
       },
       {
+        label: 'Active Promoted',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotedManagedWallets.length
+            ? `${formatNumber(activePromotedCount)} active • ${formatNumber(droppedPromotedCount)} dropped`
+            : 'No promoted wallets tracked yet'
+      },
+      {
+        label: 'Execution Drag',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotedTotalBuySignals > 0
+            ? `${formatPercent((promotedWeightedSkipRate || 0) * 100)} weighted skip rate • ${formatNumber(
+                promotedUncopyableSkips
+              )}/${formatNumber(promotedTotalBuySignals)} uncopyable skips`
+            : 'No post-promotion buy signals yet'
+      },
+      {
+        label: 'Drag Causes',
+        value: walletPromotionSummaryBlockedMessage
+          ? walletPromotionSummaryBlockedMessage
+          : promotedUncopyableSkips > 0
+            ? `${formatNumber(promotedTimingSkips)} timing (${formatPercent(
+                (promotedTimingSkips / promotedUncopyableSkips) * 100
+              )}) • ${formatNumber(promotedLiquiditySkips)} liquidity (${formatPercent(
+                (promotedLiquiditySkips / promotedUncopyableSkips) * 100
+              )})`
+            : 'No post-promotion uncopyable skips yet'
+      },
+      {
         label: 'Probation Blockers',
         value: walletPromotionSummaryBlockedMessage || promotionBlockerPreview
       }
     ],
     [
+      activePromotedCount,
+      droppedPromotedCount,
       promotedManagedWallets.length,
       promotedResolvedCopiedCount,
       promotedResolvedCopiedPnl,
+      promotedLiquiditySkips,
+      promotedTotalBuySignals,
+      promotedTimingSkips,
+      promotedUncopyableSkips,
+      promotedWeightedSkipRate,
       promotedWeightedWinRate,
       promotionBlockerPreview,
       promotionPositiveReadyCount,

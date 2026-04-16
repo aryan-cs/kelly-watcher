@@ -169,7 +169,7 @@ def load_training_data(
             skip_reason,
             price_at_signal,
             signal_size_usd,
-            COALESCE(actual_entry_price, price_at_signal) AS effective_price,
+            price_at_signal AS effective_price,
             COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
             counterfactual_return,
             {TRAINING_RETURN_SQL} AS {RETURN_COL},

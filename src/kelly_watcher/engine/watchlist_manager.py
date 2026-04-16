@@ -1277,6 +1277,14 @@ class WatchlistManager:
         self._loop_count = 0
         self._snapshot = self._build_snapshot()
 
+    def replace_wallets(self, wallet_addresses: list[str]) -> WatchTierSnapshot:
+        wallets = _normalize_wallets(wallet_addresses)
+        with self._lock:
+            self.wallets = wallets
+            self._loop_count = 0
+            self._snapshot = self._build_snapshot()
+            return self._snapshot
+
     def _build_snapshot(self, *, run_auto_drop: bool = True) -> WatchTierSnapshot:
         _ensure_tracking_started(self.wallets)
         _refresh_wallet_policy_metrics(self.wallets)

@@ -28,6 +28,11 @@ export interface BotState {
   last_activity_at?: number
   loop_in_progress?: boolean
   mode?: 'shadow' | 'live'
+  configured_mode?: 'shadow' | 'live'
+  mode_block_reason?: string
+  startup_blocked?: boolean
+  startup_recovery_only?: boolean
+  startup_block_reason?: string
   n_wallets?: number
   poll_interval?: number
   last_poll_at?: number
@@ -47,6 +52,13 @@ export interface BotState {
   live_require_shadow_history_enabled?: boolean
   live_shadow_history_ready?: boolean
   live_shadow_history_total_ready?: boolean
+  shadow_snapshot_state_known?: boolean
+  shadow_snapshot_scope?: string
+  shadow_snapshot_status?: string
+  shadow_snapshot_resolved?: number
+  shadow_snapshot_routed_resolved?: number
+  shadow_snapshot_ready?: boolean
+  shadow_snapshot_block_reason?: string
   loaded_scorer?: string
   loaded_model_backend?: string
   model_runtime_compatible?: boolean
@@ -59,6 +71,45 @@ export interface BotState {
   shadow_restart_pending?: boolean
   shadow_restart_kind?: string
   shadow_restart_message?: string
+  db_integrity_known?: boolean
+  db_integrity_ok?: boolean
+  db_integrity_message?: string
+  db_recovery_state_known?: boolean
+  db_recovery_candidate_ready?: boolean
+  db_recovery_candidate_mode?: string
+  db_recovery_candidate_message?: string
+  wallet_discovery_last_scan_at?: number
+  wallet_discovery_last_scan_ok?: boolean
+  wallet_discovery_scanned_count?: number
+  wallet_discovery_candidate_count?: number
+  wallet_discovery_last_scan_message?: string
+  trade_log_archive_enabled?: boolean
+  trade_log_archive_state_known?: boolean
+  trade_log_archive_status?: string
+  trade_log_archive_pending?: boolean
+  trade_log_archive_requested_at?: number
+  trade_log_archive_request_message?: string
+  trade_log_archive_active_db_size_bytes?: number
+  trade_log_archive_active_db_allocated_bytes?: number
+  trade_log_archive_archive_db_size_bytes?: number
+  trade_log_archive_archive_db_allocated_bytes?: number
+  trade_log_archive_active_row_count?: number
+  trade_log_archive_archive_row_count?: number
+  trade_log_archive_eligible_row_count?: number
+  trade_log_archive_last_run_at?: number
+  trade_log_archive_last_archived_count?: number
+  trade_log_archive_last_deleted_count?: number
+  trade_log_archive_message?: string
+  trade_log_archive_block_reason?: string
+  storage_state_known?: boolean
+  storage_save_dir_size_bytes?: number
+  storage_data_dir_size_bytes?: number
+  storage_log_dir_size_bytes?: number
+  storage_trading_db_size_bytes?: number
+  storage_trading_db_allocated_bytes?: number
+  storage_trade_log_archive_db_size_bytes?: number
+  storage_trade_log_archive_db_allocated_bytes?: number
+  storage_message?: string
   api_error?: string
 }
 
@@ -90,6 +141,90 @@ export interface LiveEvent {
 
 export interface EventsResponse {
   events?: LiveEvent[]
+}
+
+export interface DiscoveryCandidate {
+  wallet_address?: string
+  username?: string
+  source_labels?: string[]
+  follow_score?: number
+  accepted?: boolean
+  reject_reason?: string
+  style?: string
+  watch_style?: string
+  leaderboard_rank?: number
+  recent_buys?: number
+  median_buy_lead_hours?: number
+  late_buy_ratio?: number
+  realized_pnl_usd?: number
+  updated_at?: number
+  [key: string]: unknown
+}
+
+export interface DiscoveryCandidatesResponse {
+  ok?: boolean
+  source?: string
+  count?: number
+  ready_count?: number
+  review_count?: number
+  candidates?: DiscoveryCandidate[]
+  message?: string
+  scanned_count?: number
+  accepted_count?: number
+  stored_count?: number
+  started_at?: number
+  finished_at?: number
+}
+
+export interface ManagedWallet {
+  wallet_address?: string
+  username?: string
+  registry_source?: string
+  source?: string
+  tracking_enabled?: boolean
+  status?: string
+  status_reason?: string
+  added_at?: number
+  updated_at?: number
+  disabled_at?: number
+  disabled_reason?: string
+  tracking_started_at?: number
+  last_source_ts_at_status?: number
+  discovery_score?: number
+  discovery_accepted?: boolean
+  discovery_reason?: string
+  discovery_style?: string
+  discovery_rank?: number
+  discovery_sources?: string[]
+  discovery_updated_at?: number
+}
+
+export interface ManagedWalletsResponse {
+  ok?: boolean
+  source?: string
+  count?: number
+  wallets?: ManagedWallet[]
+  events?: WalletMembershipEvent[]
+  event_source?: string
+  event_count?: number
+  message?: string
+}
+
+export interface WalletMembershipEvent {
+  wallet_address?: string
+  action?: string
+  source?: string
+  reason?: string
+  created_at?: number
+  payload?: Record<string, unknown>
+}
+
+export interface WalletMembershipEventsResponse {
+  ok?: boolean
+  source?: string
+  count?: number
+  events?: WalletMembershipEvent[]
+  message?: string
 }
 
 export function getApiToken(): string {
@@ -176,4 +311,22 @@ export async function fetchApiJson<T>(
     throw new ApiError(`Could not reach backend API at ${apiBaseUrl || 'this host'}.${suffix}`.trim(), 0)
   }
   return parseJsonResponse<T>(response)
+}
+
+export async function postApiJson<T>(
+  path: string,
+  body: Record<string, unknown> = {},
+  token = getApiToken()
+): Promise<T> {
+  return fetchApiJson<T>(
+    path,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    },
+    token
+  )
 }

@@ -288,6 +288,10 @@ a {
   padding: 1.2rem;
 }
 
+.panel-block {
+  margin-top: 1rem;
+}
+
 .panel:nth-child(1),
 .panel:nth-child(2) {
   grid-column: span 4;

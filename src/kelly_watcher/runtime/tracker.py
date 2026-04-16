@@ -112,6 +112,11 @@ class PolymarketTracker:
             self.wallets.append(wallet)
             logger.info("Added wallet to watchlist: %s", wallet)
 
+    def replace_wallets(self, wallet_addresses: list[str]) -> None:
+        wallets = [str(address or "").strip().lower() for address in wallet_addresses if str(address or "").strip()]
+        self.wallets = wallets
+        logger.info("Rebuilt tracker watchlist: %s wallet(s)", len(self.wallets))
+
     def prime_identities(self, wallet_addresses: list[str] | None = None) -> None:
         targets = self.wallets if wallet_addresses is None else wallet_addresses
         with self._new_http_client() as client:

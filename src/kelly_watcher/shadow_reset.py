@@ -39,6 +39,13 @@ ENV_PATH = env_path_for_profile(ENV_PROFILE)
 PID_FILE = BOT_PID_FILE
 BACKGROUND_LOG = BACKGROUND_LOG_PATH
 RestartWalletMode = Literal["keep_active", "keep_all", "clear_all"]
+BACKGROUND_LOG_MAX_BYTES = 10 * 1024 * 1024
+BACKGROUND_LOG_BACKUP_COUNT = 5
+RUNTIME_STDIO_LOG_PATH_ENV = "KELLY_RUNTIME_STDIO_LOG_PATH"
+RUNTIME_STDIO_LOG_MAX_BYTES_ENV = "KELLY_RUNTIME_STDIO_LOG_MAX_BYTES"
+RUNTIME_STDIO_LOG_BACKUPS_ENV = "KELLY_RUNTIME_STDIO_LOG_BACKUPS"
+WALLET_REGISTRY_SNAPSHOT_PATH = REPO_ROOT / ".shadow_wallet_registry_snapshot.json"
+WALLET_REGISTRY_CLEAR_ALL_MARKER_PATH = REPO_ROOT / ".shadow_wallet_registry_clear_all"
 
 
 def _source_env_path() -> Path:
@@ -111,6 +118,65 @@ def _parse_watched_wallets(raw: str) -> list[str]:
 
 def _serialize_watched_wallets(wallets: list[str]) -> str:
     return ",".join(wallets)
+
+
+def _wallet_registry_snapshot_payload(wallets: list[str], *, mode: RestartWalletMode) -> dict[str, object]:
+    return {
+        "mode": mode,
+        "wallets": wallets,
+        "created_at": int(time.time()),
+    }
+
+
+def _write_wallet_registry_snapshot(wallets: list[str], *, mode: RestartWalletMode) -> str:
+    payload = _wallet_registry_snapshot_payload(wallets, mode=mode)
+    snapshot_text = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    WALLET_REGISTRY_SNAPSHOT_PATH.write_text(f"{snapshot_text}\n", encoding="utf-8")
+    try:
+        WALLET_REGISTRY_CLEAR_ALL_MARKER_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    return snapshot_text
+
+
+def _write_wallet_registry_clear_all_marker() -> None:
+    WALLET_REGISTRY_CLEAR_ALL_MARKER_PATH.write_text(
+        f"{json.dumps({'mode': 'clear_all', 'created_at': int(time.time())}, separators=(',', ':'), sort_keys=True)}\n",
+        encoding="utf-8",
+    )
+    try:
+        WALLET_REGISTRY_SNAPSHOT_PATH.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _read_wallet_registry_snapshot() -> dict[str, object] | None:
+    try:
+        raw = WALLET_REGISTRY_SNAPSHOT_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def wallet_registry_clear_all_requested() -> bool:
+    return WALLET_REGISTRY_CLEAR_ALL_MARKER_PATH.exists()
+
+
+def _snapshot_wallets_from_payload(payload: dict[str, object] | None) -> tuple[RestartWalletMode, list[str]]:
+    if not payload:
+        return "keep_all", []
+    mode = _normalize_wallet_mode(str(payload.get("mode") or "keep_all"))
+    raw_wallets = payload.get("wallets") or []
+    wallets = _parse_watched_wallets(",".join(str(wallet) for wallet in raw_wallets if str(wallet).strip()))
+    return mode, wallets
 
 
 def _normalize_wallet_mode(
@@ -379,43 +445,83 @@ def _wallet_mode_intro_lines(wallet_mode: RestartWalletMode) -> tuple[str, ...]:
     if wallet_mode == "keep_active":
         return (
             reset_line,
-            "Reducing WATCHED_WALLETS to currently active wallets before restarting shadow mode.",
+            "Reducing the managed wallet registry to currently active wallets before restarting shadow mode.",
         )
     if wallet_mode == "clear_all":
         return (
             reset_line,
-            "Clearing WATCHED_WALLETS before restarting shadow mode.",
+            "Clearing the managed wallet registry before restarting shadow mode.",
         )
     return (
         reset_line,
-        "Preserving WATCHED_WALLETS.",
+        "Preserving the managed wallet registry.",
     )
 
 
 def _wallet_mode_result_line(wallet_mode: RestartWalletMode) -> str:
     if wallet_mode == "keep_active":
-        return "WATCHED_WALLETS reduced to active wallets."
+        return "Managed wallet registry reduced to active wallets."
     if wallet_mode == "clear_all":
-        return "WATCHED_WALLETS cleared."
-    return "WATCHED_WALLETS preserved."
+        return "Managed wallet registry cleared."
+    return "Managed wallet registry preserved."
 
 
 def apply_wallet_mode_for_reset(wallet_mode: str) -> tuple[RestartWalletMode, str, bool]:
     normalized_wallet_mode = _normalize_wallet_mode(wallet_mode)
-    previous_wallets = _read_env_value("WATCHED_WALLETS")
+    previous_wallets = ""
     wallets_updated = False
+    try:
+        current_wallets = db.load_managed_wallets(include_disabled=True)
+    except Exception:
+        current_wallets = _parse_watched_wallets(_read_env_value("WATCHED_WALLETS"))
     if normalized_wallet_mode == "keep_active":
-        active_wallets = _active_watched_wallets(_parse_watched_wallets(previous_wallets))
-        _write_env_value("WATCHED_WALLETS", _serialize_watched_wallets(active_wallets))
+        current_wallets = _active_watched_wallets(current_wallets)
+        previous_wallets = _write_wallet_registry_snapshot(current_wallets, mode=normalized_wallet_mode)
         wallets_updated = True
     elif normalized_wallet_mode == "clear_all":
-        _write_env_value("WATCHED_WALLETS", "")
+        current_wallets = []
+        previous_wallets = _write_wallet_registry_snapshot(current_wallets, mode=normalized_wallet_mode)
+        _write_wallet_registry_clear_all_marker()
+        wallets_updated = True
+    else:
+        previous_wallets = _write_wallet_registry_snapshot(current_wallets, mode=normalized_wallet_mode)
         wallets_updated = True
     return normalized_wallet_mode, previous_wallets, wallets_updated
 
 
 def restore_watched_wallets(previous_wallets: str) -> None:
-    _write_env_value("WATCHED_WALLETS", previous_wallets)
+    snapshot_text = str(previous_wallets or "").strip()
+    if not snapshot_text:
+        try:
+            WALLET_REGISTRY_SNAPSHOT_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    WALLET_REGISTRY_SNAPSHOT_PATH.write_text(f"{snapshot_text}\n", encoding="utf-8")
+
+
+def restore_managed_wallet_registry_snapshot() -> dict[str, object]:
+    payload = _read_wallet_registry_snapshot()
+    if payload is None:
+        if wallet_registry_clear_all_requested():
+            return {"restored": True, "wallets": [], "clear_all": True}
+        return {"restored": False, "wallets": [], "clear_all": False}
+
+    mode, wallets = _snapshot_wallets_from_payload(payload)
+    if mode == "clear_all":
+        try:
+            WALLET_REGISTRY_SNAPSHOT_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        return {"restored": True, "wallets": [], "clear_all": True}
+
+    if wallets:
+        db.restore_managed_wallets_from_snapshot(wallets, source="shadow_reset")
+    try:
+        WALLET_REGISTRY_SNAPSHOT_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    return {"restored": bool(wallets), "wallets": wallets, "clear_all": False}
 
 
 def reset_shadow_runtime() -> None:
@@ -474,31 +580,29 @@ def exec_restarted_bot() -> None:
 
 def launch_background_bot() -> int:
     env = runtime_env()
+    env[RUNTIME_STDIO_LOG_PATH_ENV] = str(BACKGROUND_LOG)
+    env[RUNTIME_STDIO_LOG_MAX_BYTES_ENV] = str(BACKGROUND_LOG_MAX_BYTES)
+    env[RUNTIME_STDIO_LOG_BACKUPS_ENV] = str(BACKGROUND_LOG_BACKUP_COUNT)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     BACKGROUND_LOG.parent.mkdir(parents=True, exist_ok=True)
-
-    log_handle = BACKGROUND_LOG.open("w", encoding="utf-8")
     popen_kwargs: dict[str, object] = {
         "cwd": str(REPO_ROOT),
         "env": env,
         "stdin": subprocess.DEVNULL,
-        "stdout": log_handle,
-        "stderr": subprocess.STDOUT,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
     }
-    try:
-        if os.name == "nt":
-            creationflags = 0
-            creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-            creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            if creationflags:
-                popen_kwargs["creationflags"] = creationflags
-        else:
-            popen_kwargs["start_new_session"] = True
+    if os.name == "nt":
+        creationflags = 0
+        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if creationflags:
+            popen_kwargs["creationflags"] = creationflags
+    else:
+        popen_kwargs["start_new_session"] = True
 
-        process = subprocess.Popen(_bot_command(), **popen_kwargs)
-    finally:
-        log_handle.close()
+    process = subprocess.Popen(_bot_command(), **popen_kwargs)
     PID_FILE.write_text(f"{process.pid}\n", encoding="utf-8")
     return int(process.pid)
 
@@ -533,7 +637,7 @@ def run(
     normalized_wallet_mode = _normalize_wallet_mode(wallet_mode, clear_wallets=clear_wallets)
     normalized_delay_seconds = max(float(delay_seconds or 0.0), 0.0)
     bankroll = shadow_bankroll_usd()
-    previous_wallets = _read_env_value("WATCHED_WALLETS")
+    previous_wallets = ""
     wallets_updated = False
 
     try:
@@ -619,12 +723,12 @@ def main(argv: list[str] | None = None) -> int:
     wallet_mode_group.add_argument(
         "--keep-active-wallets",
         action="store_true",
-        help="Reduce WATCHED_WALLETS to currently active wallets before restarting shadow mode.",
+        help="Reduce the managed wallet registry to currently active wallets before restarting shadow mode.",
     )
     wallet_mode_group.add_argument(
         "--clear-wallets",
         action="store_true",
-        help="Clear WATCHED_WALLETS in .env before restarting shadow mode.",
+        help="Clear the managed wallet registry before restarting shadow mode.",
     )
     args = parser.parse_args(argv)
     wallet_mode: RestartWalletMode = (

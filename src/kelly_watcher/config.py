@@ -1028,6 +1028,7 @@ def time_to_close_band_label(seconds: int) -> str:
 
 
 def watched_wallets() -> list[str]:
+    # Legacy bootstrap helper. Steady-state wallet membership now lives in SQLite.
     raw = _get("WATCHED_WALLETS")
     if not raw:
         return []

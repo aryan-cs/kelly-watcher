@@ -121,6 +121,43 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("Unknown wallet reactivation error", source_text)
                 self.assertIn("Unknown wallet drop error", source_text)
 
+    def test_wallet_registry_and_discovery_browser_surface_is_wired(self) -> None:
+        dashboard_api_source = _read_text("dashboard_api.py")
+        api_ts = _read_text("dashboard-web/src/api.ts")
+        app_ts = _read_text("dashboard-web/src/App.tsx")
+        readme = _read_text("README.md")
+
+        for endpoint in (
+            "/api/discovery/candidates",
+            "/api/discovery/scan",
+            "/api/wallets",
+            "/api/wallets/events",
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertIn(endpoint, dashboard_api_source)
+
+        for source_name, source_text in (
+            ("dashboard-web/src/api.ts", api_ts),
+            ("dashboard-web/src/App.tsx", app_ts),
+        ):
+            with self.subTest(source_name=source_name):
+                self.assertIn("DiscoveryCandidatesResponse", source_text)
+                self.assertIn("ManagedWalletsResponse", source_text)
+                self.assertIn("WalletMembershipEventsResponse", source_text)
+
+        for snippet in (
+            "Scan now",
+            "Wallet Registry",
+            "Discovery",
+            "Membership Timeline",
+            "DB-backed managed wallets",
+        ):
+            with self.subTest(snippet=snippet):
+                self.assertIn(snippet, app_ts)
+
+        self.assertIn("wallet registry and discovery panels are the primary workflow", readme)
+        self.assertIn("web dashboard is the supported place to review and manage the wallet registry", readme)
+
     def test_config_edits_are_blocked_during_recovery_only_startup(self) -> None:
         dashboard_api_source = _read_text("dashboard_api.py")
         dashboard_ts = _read_text("dashboard-cli/dashboard.tsx")
@@ -183,6 +220,20 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("pending_restart", source_text)
                 self.assertIn("recovery-only startup mode", source_text)
 
+    def test_trade_log_archive_ui_fails_closed_while_archive_state_is_unknown(self) -> None:
+        settings_ts = _read_text("dashboard-cli/pages/Settings.tsx")
+        settings_js = _read_text("dashboard-cli/pages/Settings.js")
+
+        for source_name, source_text in (
+            ("dashboard-cli/pages/Settings.tsx", settings_ts),
+            ("dashboard-cli/pages/Settings.js", settings_js),
+        ):
+            with self.subTest(source_name=source_name):
+                self.assertIn(
+                    "tradeLogArchiveStateKnown ? Boolean(state.trade_log_archive_enabled) : false",
+                    source_text,
+                )
+
     def test_shadow_restart_kind_is_wired_through_runtime_and_dashboard(self) -> None:
         main_source = _read_text("main.py")
         dashboard_api_source = _read_text("dashboard_api.py")
@@ -233,6 +284,21 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("manualRetrainBlockedMessage", source_text)
                 self.assertIn("t blocked", source_text)
                 self.assertIn("requestManualRetrain", source_text)
+
+    def test_models_page_blocks_query_empty_states_during_recovery_or_db_integrity_failure(self) -> None:
+        models_ts = _read_text("dashboard-cli/pages/Models.tsx")
+        models_js = _read_text("dashboard-cli/pages/Models.js")
+
+        for source_name, source_text in (
+            ("dashboard-cli/pages/Models.tsx", models_ts),
+            ("dashboard-cli/pages/Models.js", models_js),
+        ):
+            with self.subTest(source_name=source_name):
+                self.assertIn("modelsQueryBlockedMessage", source_text)
+                self.assertIn("Model queries are blocked:", source_text)
+                self.assertIn("No tracker signals yet.", source_text)
+                self.assertIn("No exit audits logged yet.", source_text)
+                self.assertIn("No retrain attempts logged yet.", source_text)
 
     def test_models_js_matches_shadow_snapshot_optimization_block_guard(self) -> None:
         models_ts = _read_text("dashboard-cli/pages/Models.tsx")

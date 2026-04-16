@@ -3,11 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-
-import env_profile
-import runtime_paths
-
-
+import kelly_watcher.env_profile as env_profile
+import kelly_watcher.runtime_paths as runtime_paths
 class EnvProfileTests(unittest.TestCase):
     def test_env_path_for_profile_points_into_save_folder(self) -> None:
         with TemporaryDirectory() as tmpdir:

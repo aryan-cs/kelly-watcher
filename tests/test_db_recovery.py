@@ -7,9 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import kelly_watcher.data.db as db
-import main
-
-
+import kelly_watcher.main as main
 def _recovery_state_fn():
     for module in (db, main):
         for name in ("db_recovery_state", "recovery_state", "_db_recovery_state"):

@@ -8,8 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-
-import config
+import kelly_watcher.config as config
 import kelly_watcher.data.db as db
 import kelly_watcher.engine.dedup as dedup
 import kelly_watcher.runtime.evaluator as evaluator

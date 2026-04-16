@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import kelly_watcher.data.db as db
 import kelly_watcher.runtime.evaluator as evaluator
-import main
+import kelly_watcher.main as main
 import kelly_watcher.runtime.performance_preview as performance_preview
 
 

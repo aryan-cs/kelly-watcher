@@ -4,14 +4,17 @@ import inspect
 import unittest
 from pathlib import Path
 
-import dashboard_api
-
+import kelly_watcher.dashboard_api as dashboard_api
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _read_text(relative_path: str) -> str:
-    return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    candidate = REPO_ROOT / relative_path
+    if candidate.exists():
+        return candidate.read_text(encoding="utf-8")
+    src_candidate = REPO_ROOT / "src" / "kelly_watcher" / relative_path
+    return src_candidate.read_text(encoding="utf-8")
 
 
 def _find_recovery_entrypoint():

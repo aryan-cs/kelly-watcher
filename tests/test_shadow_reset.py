@@ -53,7 +53,7 @@ class ShadowResetTest(unittest.TestCase):
             shadow_reset,
             "_scan_process_table",
             return_value={
-                111: "python main.py",
+                111: "python -m kelly_watcher.main",
                 222: "python something_else.py",
             },
         ), patch.object(shadow_reset, "_read_pid_file", return_value=333), patch.object(

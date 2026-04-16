@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import kelly_watcher.data.db as db
 import kelly_watcher.runtime.evaluator as evaluator
-import main
+import kelly_watcher.main as main
 import kelly_watcher.engine.shadow_evidence as shadow_evidence
 from kelly_watcher.engine.segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
 

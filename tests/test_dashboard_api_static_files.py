@@ -3,10 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-
-import dashboard_api
-
-
+import kelly_watcher.dashboard_api as dashboard_api
 class DashboardWebStaticAssetResolutionTest(unittest.TestCase):
     def test_resolves_root_route_and_asset_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

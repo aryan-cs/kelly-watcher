@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 import kelly_watcher.data.db as db
 import kelly_watcher.runtime.evaluator as evaluator
-import main
+import kelly_watcher.main as main
 import kelly_watcher.runtime.performance_preview as performance_preview
-from config import shadow_bankroll_usd
+from kelly_watcher.config import shadow_bankroll_usd
 
 
 def _insert_trade(

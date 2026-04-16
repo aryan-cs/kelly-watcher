@@ -5,8 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
-
-import config
+import kelly_watcher.config as config
 from kelly_watcher.engine.market_scorer import MarketScorer, build_market_features
 
 

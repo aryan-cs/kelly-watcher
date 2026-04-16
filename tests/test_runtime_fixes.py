@@ -77,14 +77,14 @@ if "py_clob_client.clob_types" not in sys.modules:
 import kelly_watcher.research.auto_retrain as auto_retrain
 import kelly_watcher.integrations.alerter as alerter
 import kelly_watcher.engine.beliefs as beliefs
-import config
+import kelly_watcher.config as config
 import kelly_watcher.engine.dedup as dedup
 import kelly_watcher.data.db as db
-import dashboard_api
+import kelly_watcher.dashboard_api as dashboard_api
 import kelly_watcher.runtime.evaluator as evaluator
 import httpx
 import kelly_watcher.data.identity_cache as identity_cache
-import main
+import kelly_watcher.main as main
 import kelly_watcher.runtime.performance_preview as performance_preview
 from kelly_watcher import shadow_reset
 import kelly_watcher.engine.shadow_evidence as shadow_evidence
@@ -221,7 +221,7 @@ class RuntimeFixesTest(unittest.TestCase):
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
             artifact_path.write_text("artifact", encoding="utf-8")
 
-            with patch("main.model_path", return_value=str(artifact_path)):
+            with patch("kelly_watcher.main.model_path", return_value=str(artifact_path)):
                 quarantined_path = main._quarantine_runtime_model_artifact(reason="db_recovery")
             self.assertTrue(quarantined_path)
             quarantined = Path(quarantined_path)
@@ -647,7 +647,7 @@ class RuntimeFixesTest(unittest.TestCase):
             return command[index + 1]
 
         self.assertEqual(command[0], sys.executable)
-        self.assertTrue(command[1].endswith("replay_search.py"))
+        self.assertEqual(command[1:3], ["-m", "kelly_watcher.research.replay_search"])
         self.assertEqual(_arg_value("--db"), str(db_path))
         self.assertEqual(_arg_value("--label-prefix"), "nightly")
         self.assertEqual(_arg_value("--notes"), "overnight sweep")
@@ -1185,6 +1185,14 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertFalse(snapshot["db_recovery_shadow_ready"])
         self.assertEqual(snapshot["db_recovery_shadow_segment_summary_json"], "[]")
         self.assertEqual(snapshot["db_recovery_shadow_block_reason"], "")
+        self.assertIn("trade_log_archive_enabled", snapshot)
+        self.assertFalse(snapshot["trade_log_archive_state_known"])
+        self.assertEqual(snapshot["trade_log_archive_active_row_count"], 0)
+        self.assertEqual(snapshot["trade_log_archive_archive_row_count"], 0)
+        self.assertEqual(snapshot["trade_log_archive_eligible_row_count"], 0)
+        self.assertEqual(snapshot["trade_log_archive_last_run_at"], 0)
+        self.assertEqual(snapshot["trade_log_archive_last_deleted_count"], 0)
+        self.assertEqual(snapshot["trade_log_archive_last_message"], "")
 
     def test_database_integrity_state_reports_sqlite_error(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -1459,7 +1467,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_shadow_history_state_payload_publishes_shadow_evidence_epoch(self) -> None:
         with patch(
-            "main.read_shadow_evidence_epoch",
+            "kelly_watcher.main.read_shadow_evidence_epoch",
             return_value={
                 "shadow_evidence_epoch_known": True,
                 "shadow_evidence_epoch_started_at": 1_700_123_456,
@@ -1560,7 +1568,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_current_shadow_segment_scope_since_ts_prefers_epoch_over_promotion(self) -> None:
         with patch(
-            "main.read_shadow_evidence_epoch",
+            "kelly_watcher.main.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 1_700_000_900},
         ):
             since_ts, promotion = main._current_shadow_segment_scope_since_ts({"applied_at": 1_700_000_400})
@@ -1570,13 +1578,13 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_segment_routed_history_trust_block_reason_uses_epoch_scoped_since_ts(self) -> None:
         with patch(
-            "main.read_shadow_evidence_epoch",
+            "kelly_watcher.main.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 1_700_000_900},
         ), patch(
-            "main._latest_applied_replay_promotion",
+            "kelly_watcher.main._latest_applied_replay_promotion",
             return_value={"applied_at": 1_700_000_400},
         ), patch(
-            "main.compute_segment_shadow_report",
+            "kelly_watcher.main.compute_segment_shadow_report",
             return_value={
                 "history_status": "empty",
                 "routed_resolved": 0,
@@ -1795,7 +1803,7 @@ class RuntimeFixesTest(unittest.TestCase):
         }
 
         with patch(
-            "main.db_recovery_state",
+            "kelly_watcher.main.db_recovery_state",
             return_value={
                 "db_recovery_state_known": True,
                 "db_recovery_candidate_ready": True,
@@ -1806,13 +1814,13 @@ class RuntimeFixesTest(unittest.TestCase):
                 "db_recovery_latest_verified_backup_at": 1_700_000_000,
             },
         ), patch(
-            "main.compute_tracker_preview_summary",
+            "kelly_watcher.main.compute_tracker_preview_summary",
             return_value=preview,
         ) as preview_mock, patch(
-            "main._latest_applied_replay_promotion",
+            "kelly_watcher.main._latest_applied_replay_promotion",
             return_value={"applied_at": 1_700_000_500},
         ), patch(
-            "main.compute_segment_shadow_report",
+            "kelly_watcher.main.compute_segment_shadow_report",
             return_value=report,
         ) as segment_mock:
             state = main._compute_db_recovery_shadow_state()
@@ -1899,7 +1907,7 @@ class RuntimeFixesTest(unittest.TestCase):
         }
 
         with patch(
-            "main.db_recovery_state",
+            "kelly_watcher.main.db_recovery_state",
             return_value={
                 "db_recovery_state_known": True,
                 "db_recovery_candidate_ready": True,
@@ -1910,10 +1918,10 @@ class RuntimeFixesTest(unittest.TestCase):
                 "db_recovery_latest_verified_backup_at": 1_700_000_000,
             },
         ), patch(
-            "main._evaluate_db_recovery_shadow_state",
+            "kelly_watcher.main._evaluate_db_recovery_shadow_state",
             side_effect=sqlite3.OperationalError("no such column: segment_id"),
         ), patch(
-            "main._evaluate_db_recovery_shadow_state_from_migrated_clone",
+            "kelly_watcher.main._evaluate_db_recovery_shadow_state_from_migrated_clone",
             return_value=migrated_state,
         ) as migrated_eval:
             state = main._compute_db_recovery_shadow_state()
@@ -1930,7 +1938,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_compute_db_recovery_shadow_state_marks_unavailable_candidate_when_no_backup_is_ready(self) -> None:
         with patch(
-            "main.db_recovery_state",
+            "kelly_watcher.main.db_recovery_state",
             return_value={
                 "db_recovery_state_known": True,
                 "db_recovery_candidate_ready": False,
@@ -1989,7 +1997,7 @@ class RuntimeFixesTest(unittest.TestCase):
         }
 
         with patch(
-            "main.db_recovery_state",
+            "kelly_watcher.main.db_recovery_state",
             return_value={
                 "db_recovery_state_known": True,
                 "db_recovery_candidate_ready": True,
@@ -1998,13 +2006,13 @@ class RuntimeFixesTest(unittest.TestCase):
                 "db_recovery_candidate_message": "",
             },
         ), patch(
-            "main.compute_tracker_preview_summary",
+            "kelly_watcher.main.compute_tracker_preview_summary",
             return_value=preview,
         ), patch(
-            "main._latest_applied_replay_promotion",
+            "kelly_watcher.main._latest_applied_replay_promotion",
             return_value={"applied_at": 1_700_001_000},
         ), patch(
-            "main.compute_segment_shadow_report",
+            "kelly_watcher.main.compute_segment_shadow_report",
             return_value=report,
         ):
             state = main._compute_db_recovery_shadow_state()
@@ -2023,7 +2031,7 @@ class RuntimeFixesTest(unittest.TestCase):
         expected = {"db_recovery_shadow_status": "migrated_insufficient"}
 
         with patch(
-            "main._evaluate_db_recovery_shadow_state_from_migrated_clone",
+            "kelly_watcher.main._evaluate_db_recovery_shadow_state_from_migrated_clone",
             return_value=expected,
         ):
             state = main._evaluate_migrated_recovery_candidate_shadow_state(candidate_path)
@@ -2032,7 +2040,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_shadow_history_trust_block_reason_reports_integrity_failure(self) -> None:
         with patch(
-            "main.database_integrity_state",
+            "kelly_watcher.main.database_integrity_state",
             return_value={
                 "db_integrity_known": True,
                 "db_integrity_ok": False,
@@ -2047,7 +2055,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_segment_routed_history_trust_block_reason_reports_legacy_only_history(self) -> None:
         with patch(
-            "main.compute_segment_shadow_report",
+            "kelly_watcher.main.compute_segment_shadow_report",
             return_value={
                 "history_status": "legacy_only",
                 "routed_resolved": 0,
@@ -2062,7 +2070,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_segment_routed_history_trust_block_reason_reports_insufficient_routed_history(self) -> None:
         with patch(
-            "main.compute_segment_shadow_report",
+            "kelly_watcher.main.compute_segment_shadow_report",
             return_value={
                 "history_status": "mixed",
                 "routed_resolved": 6,
@@ -2077,10 +2085,10 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_segment_routed_history_trust_block_reason_blocks_when_snapshot_is_all_history_without_routed_evidence(self) -> None:
         with patch(
-            "main._current_shadow_segment_scope_since_ts",
+            "kelly_watcher.main._current_shadow_segment_scope_since_ts",
             return_value=(0, None),
         ), patch(
-            "main.compute_segment_shadow_report",
+            "kelly_watcher.main.compute_segment_shadow_report",
             return_value={
                 "scope": "all_history",
                 "history_status": "empty",
@@ -2119,8 +2127,8 @@ class RuntimeFixesTest(unittest.TestCase):
             shadow_evidence_epoch_started_at=1_700_123_456,
             shadow_evidence_epoch_source="shadow_reset",
         )
-        with patch("main.compute_tracker_preview_summary", return_value=preview), patch(
-            "main._resolved_shadow_trade_count",
+        with patch("kelly_watcher.main.compute_tracker_preview_summary", return_value=preview), patch(
+            "kelly_watcher.main._resolved_shadow_trade_count",
             return_value=9,
         ):
             message = main._shadow_snapshot_trust_block_reason("Replay search")
@@ -2152,8 +2160,8 @@ class RuntimeFixesTest(unittest.TestCase):
             shadow_evidence_epoch_started_at=0,
             shadow_evidence_epoch_source="",
         )
-        with patch("main.compute_tracker_preview_summary", return_value=preview), patch(
-            "main._resolved_shadow_trade_count",
+        with patch("kelly_watcher.main.compute_tracker_preview_summary", return_value=preview), patch(
+            "kelly_watcher.main._resolved_shadow_trade_count",
             return_value=9,
         ):
             message = main._shadow_snapshot_trust_block_reason("Replay search")
@@ -2186,8 +2194,8 @@ class RuntimeFixesTest(unittest.TestCase):
             shadow_evidence_epoch_started_at=1_700_123_456,
             shadow_evidence_epoch_source="shadow_reset",
         )
-        with patch("main.compute_tracker_preview_summary", return_value=preview), patch(
-            "main._resolved_shadow_trade_count",
+        with patch("kelly_watcher.main.compute_tracker_preview_summary", return_value=preview), patch(
+            "kelly_watcher.main._resolved_shadow_trade_count",
             return_value=9,
         ):
             message = main._shadow_snapshot_trust_block_reason("Replay search")
@@ -2198,7 +2206,7 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_shadow_snapshot_trust_block_reason_reports_snapshot_evaluation_failure(self) -> None:
         with patch(
-            "main.compute_tracker_preview_summary",
+            "kelly_watcher.main.compute_tracker_preview_summary",
             side_effect=RuntimeError("preview exploded"),
         ):
             message = main._shadow_snapshot_trust_block_reason("Replay search")
@@ -2209,10 +2217,10 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_retrain_trust_block_state_prefers_integrity_failure(self) -> None:
         with patch(
-            "main._shadow_history_trust_block_reason",
+            "kelly_watcher.main._shadow_history_trust_block_reason",
             return_value="Retrain blocked: SQLite integrity check failed",
         ), patch(
-            "main._shadow_snapshot_trust_block_reason",
+            "kelly_watcher.main._shadow_snapshot_trust_block_reason",
             return_value="Retrain blocked: current evidence window is not active yet",
         ):
             status, message = main._retrain_trust_block_state("Retrain")
@@ -2222,10 +2230,10 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_retrain_trust_block_state_uses_shadow_snapshot_failure_when_integrity_is_clean(self) -> None:
         with patch(
-            "main._shadow_history_trust_block_reason",
+            "kelly_watcher.main._shadow_history_trust_block_reason",
             return_value="",
         ), patch(
-            "main._shadow_snapshot_trust_block_reason",
+            "kelly_watcher.main._shadow_snapshot_trust_block_reason",
             return_value="Retrain blocked: current evidence window is not active yet",
         ):
             status, message = main._retrain_trust_block_state("Retrain")
@@ -2235,10 +2243,10 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_retrain_trust_block_state_allows_retrain_when_shadow_evidence_is_trustworthy(self) -> None:
         with patch(
-            "main._shadow_history_trust_block_reason",
+            "kelly_watcher.main._shadow_history_trust_block_reason",
             return_value="",
         ), patch(
-            "main._shadow_snapshot_trust_block_reason",
+            "kelly_watcher.main._shadow_snapshot_trust_block_reason",
             return_value="",
         ):
             status, message = main._retrain_trust_block_state("Retrain")
@@ -2392,7 +2400,9 @@ class RuntimeFixesTest(unittest.TestCase):
         write_env_value.assert_called_once_with("USE_REAL_MONEY", "true")
 
     def test_set_live_mode_response_disables_live_mode_without_readiness_check(self) -> None:
-        with patch.object(dashboard_api, "_write_env_value") as write_env_value:
+        with patch.object(dashboard_api, "_bot_state_snapshot", return_value={}), patch.object(
+            dashboard_api, "_write_env_value"
+        ) as write_env_value:
             result = dashboard_api._set_live_mode_response({"enabled": False})
 
         self.assertTrue(result["ok"])
@@ -2496,6 +2506,60 @@ class RuntimeFixesTest(unittest.TestCase):
         )
 
         self.assertIsNone(result)
+
+    def test_trade_log_archive_preflight_blocks_while_shadow_restart_pending(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={
+                "shadow_restart_pending": True,
+                "started_at": 1_700_000_000,
+                "last_activity_at": 1_700_000_100,
+            },
+        ), patch.object(dashboard_api.time, "time", return_value=1_700_000_101):
+            result = dashboard_api._trade_log_archive_preflight()
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow restart", str(result["message"]).lower())
+
+    def test_dashboard_launch_trade_log_archive_writes_request_file(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "data"
+            request_file = data_dir / "trade_log_archive_request.json"
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            bot_state_file.write_text(
+                json.dumps({"session_id": "abc123", "started_at": 100, "mode": "shadow"}),
+                encoding="utf-8",
+            )
+            bot_state = {
+                "started_at": int(time.time()) - 10,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+                "startup_blocked": False,
+                "startup_recovery_only": False,
+                "db_integrity_known": True,
+                "db_integrity_ok": True,
+            }
+
+            with patch.object(dashboard_api, "DATA_DIR", data_dir), patch.object(
+                dashboard_api, "TRADE_LOG_ARCHIVE_REQUEST_FILE", request_file
+            ), patch.object(
+                dashboard_api, "BOT_STATE_FILE", bot_state_file
+            ), patch.object(
+                dashboard_api, "_bot_state_snapshot", return_value=bot_state
+            ), patch.object(
+                dashboard_api, "trade_log_archive_enabled", return_value=True
+            ), patch.object(
+                dashboard_api, "database_integrity_state",
+                return_value={"db_integrity_known": True, "db_integrity_ok": True, "db_integrity_message": ""},
+            ):
+                result = dashboard_api._launch_trade_log_archive({"source": "test"})
+
+            self.assertTrue(result["ok"])
+            self.assertIn("requested", str(result["message"]).lower())
+            payload = json.loads(request_file.read_text(encoding="utf-8"))
+            self.assertEqual(payload["source"], "test")
+            self.assertTrue(str(payload["request_id"]).startswith("trade-log-archive-"))
 
     def test_config_value_response_still_delegates_live_mode_keys(self) -> None:
         with patch.object(
@@ -3845,7 +3909,7 @@ class RuntimeFixesTest(unittest.TestCase):
         tracker_stub = SimpleNamespace(trade_feed_health=lambda: (now_ts, 0))
         executor_stub = SimpleNamespace(live_entry_health_reason=lambda: None)
 
-        with patch("main.max_daily_loss_pct", return_value=0.0), patch("main.use_real_money", return_value=False):
+        with patch("kelly_watcher.main.max_daily_loss_pct", return_value=0.0), patch("kelly_watcher.main.use_real_money", return_value=False):
             reason = main._entry_pause_reason(
                 tracker_stub,
                 executor_stub,
@@ -3896,7 +3960,7 @@ class RuntimeFixesTest(unittest.TestCase):
             )
         )
 
-        with patch("main.use_real_money", return_value=True):
+        with patch("kelly_watcher.main.use_real_money", return_value=True):
             state = main._entry_pause_state(
                 tracker_stub,
                 executor_stub,
@@ -4088,7 +4152,7 @@ class RuntimeFixesTest(unittest.TestCase):
             },
         ]
 
-        with patch("main.send_alert") as alert_mock:
+        with patch("kelly_watcher.main.send_alert") as alert_mock:
             main._send_resolution_alerts(resolved_rows)
 
         alert_mock.assert_called_once()
@@ -5387,7 +5451,10 @@ class RuntimeFixesTest(unittest.TestCase):
                 "MAX_MARKET_EXPOSURE_FRACTION": "abc",
             },
             clear=False,
-        ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch("main._resolved_shadow_trade_count", return_value=999), patch("main.send_alert"):
+        ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch(
+            "kelly_watcher.main._resolved_shadow_trade_count_in_current_evidence_window",
+            return_value=999,
+        ), patch("kelly_watcher.main.send_alert"):
             with self.assertRaises(RuntimeError) as ctx:
                 main._validate_startup()
         self.assertIn("MAX_MARKET_EXPOSURE_FRACTION must be numeric", str(ctx.exception))
@@ -5404,15 +5471,16 @@ class RuntimeFixesTest(unittest.TestCase):
             },
             clear=False,
         ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch(
-            "main._resolved_shadow_trade_count", return_value=999
+            "kelly_watcher.main._resolved_shadow_trade_count_in_current_evidence_window",
+            return_value=999,
         ), patch(
-            "main.database_integrity_state",
+            "kelly_watcher.main.database_integrity_state",
             return_value={
                 "db_integrity_known": True,
                 "db_integrity_ok": False,
                 "db_integrity_message": "database disk image is malformed",
             },
-        ), patch("main.send_alert"):
+        ), patch("kelly_watcher.main.send_alert"):
             with self.assertRaises(RuntimeError) as ctx:
                 main._validate_startup()
 
@@ -5420,16 +5488,16 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("malformed", str(ctx.exception))
 
     def test_validate_startup_blocks_shadow_when_db_integrity_fails_without_queued_rebootstrap(self) -> None:
-        with patch("main.use_real_money", return_value=False), patch(
-            "main.database_integrity_state",
+        with patch("kelly_watcher.main.use_real_money", return_value=False), patch(
+            "kelly_watcher.main.database_integrity_state",
             return_value={
                 "db_integrity_known": True,
                 "db_integrity_ok": False,
                 "db_integrity_message": "database disk image is malformed",
             },
-        ), patch("main._queued_shadow_rebootstrap_request_label", return_value=""), patch(
-            "main._persist_startup_validation_failure"
-        ) as persist_failure, patch("main.send_alert"):
+        ), patch("kelly_watcher.main._queued_shadow_rebootstrap_request_label", return_value=""), patch(
+            "kelly_watcher.main._persist_startup_validation_failure"
+        ) as persist_failure, patch("kelly_watcher.main.send_alert"):
             with self.assertRaises(RuntimeError) as ctx:
                 main._validate_startup()
 
@@ -5438,16 +5506,16 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("Recover DB or Shadow Reset", str(ctx.exception))
 
     def test_validate_startup_allows_shadow_when_db_integrity_fails_but_queued_rebootstrap_exists(self) -> None:
-        with patch("main.use_real_money", return_value=False), patch(
-            "main.database_integrity_state",
+        with patch("kelly_watcher.main.use_real_money", return_value=False), patch(
+            "kelly_watcher.main.database_integrity_state",
             return_value={
                 "db_integrity_known": True,
                 "db_integrity_ok": False,
                 "db_integrity_message": "database disk image is malformed",
             },
-        ), patch("main._queued_shadow_rebootstrap_request_label", return_value="db recovery"), patch(
-            "main._persist_startup_validation_failure"
-        ) as persist_failure, patch("main.send_alert"):
+        ), patch("kelly_watcher.main._queued_shadow_rebootstrap_request_label", return_value="db recovery"), patch(
+            "kelly_watcher.main._persist_startup_validation_failure"
+        ) as persist_failure, patch("kelly_watcher.main.send_alert"):
             main._validate_startup()
 
         persist_failure.assert_not_called()
@@ -5457,10 +5525,10 @@ class RuntimeFixesTest(unittest.TestCase):
             "SHADOW mode is blocked because SQLite integrity check failed: "
             "database disk image is malformed. Queue Recover DB or Shadow Reset before collecting fresh evidence."
         )
-        with patch("main.use_real_money", return_value=False), patch(
-            "main._queued_shadow_rebootstrap_request_label", return_value=""
+        with patch("kelly_watcher.main.use_real_money", return_value=False), patch(
+            "kelly_watcher.main._queued_shadow_rebootstrap_request_label", return_value=""
         ), patch(
-            "main.database_integrity_state",
+            "kelly_watcher.main.database_integrity_state",
             return_value={
                 "db_integrity_known": True,
                 "db_integrity_ok": False,
@@ -5527,13 +5595,13 @@ class RuntimeFixesTest(unittest.TestCase):
                 main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
                 with ExitStack() as stack:
                     stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xabc"]))
-                    stack.enter_context(patch("main.init_db"))
+                    stack.enter_context(patch("kelly_watcher.main.init_db"))
                     stack.enter_context(
-                        patch("main._validate_startup", side_effect=RuntimeError(validation_error))
+                        patch("kelly_watcher.main._validate_startup", side_effect=RuntimeError(validation_error))
                     )
                     stack.enter_context(
                         patch(
-                            "main.database_integrity_state",
+                            "kelly_watcher.main.database_integrity_state",
                             return_value={
                                 "db_integrity_known": True,
                                 "db_integrity_ok": False,
@@ -5541,29 +5609,29 @@ class RuntimeFixesTest(unittest.TestCase):
                             },
                         )
                     )
-                    stack.enter_context(patch("main._queued_shadow_rebootstrap_request_label", return_value=""))
-                    stack.enter_context(patch("main.db_recovery_state", return_value={"db_recovery_state_known": False}))
-                    stack.enter_context(patch("main._compute_db_recovery_shadow_state", return_value={}))
-                    stack.enter_context(patch("main._write_bot_pid_file"))
-                    stack.enter_context(patch("main._clear_bot_pid_file"))
-                    stack.enter_context(patch("main._repair_event_file_market_urls"))
-                    stack.enter_context(patch("main._install_shutdown_signal_handlers", return_value=[]))
-                    stack.enter_context(patch("main._restore_shutdown_signal_handlers"))
-                    stack.enter_context(patch("main._latest_retrain_run", return_value=None))
-                    stack.enter_context(patch("main._latest_replay_search_run", return_value=None))
-                    stack.enter_context(patch("main._latest_replay_promotion", return_value=None))
-                    stack.enter_context(patch("main._latest_applied_replay_promotion", return_value=None))
-                    stack.enter_context(patch("main.WatchlistManager", return_value=watchlist_stub))
-                    stack.enter_context(patch("main.start_dashboard_api_server", return_value=dashboard_server))
-                    sync_belief_priors = stack.enter_context(patch("main.sync_belief_priors"))
-                    tracker_cls = stack.enter_context(patch("main.PolymarketTracker"))
-                    executor_cls = stack.enter_context(patch("main.PolymarketExecutor"))
-                    engine_cls = stack.enter_context(patch("main.SignalEngine"))
-                    stack.enter_context(patch("main.use_real_money", return_value=False))
-                    stack.enter_context(patch("main.poll_interval", return_value=5.0))
-                    stack.enter_context(patch("main.send_alert"))
+                    stack.enter_context(patch("kelly_watcher.main._queued_shadow_rebootstrap_request_label", return_value=""))
+                    stack.enter_context(patch("kelly_watcher.main.db_recovery_state", return_value={"db_recovery_state_known": False}))
+                    stack.enter_context(patch("kelly_watcher.main._compute_db_recovery_shadow_state", return_value={}))
+                    stack.enter_context(patch("kelly_watcher.main._write_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._clear_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("kelly_watcher.main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("kelly_watcher.main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("kelly_watcher.main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("kelly_watcher.main.start_dashboard_api_server", return_value=dashboard_server))
+                    sync_belief_priors = stack.enter_context(patch("kelly_watcher.main.sync_belief_priors"))
+                    tracker_cls = stack.enter_context(patch("kelly_watcher.main.PolymarketTracker"))
+                    executor_cls = stack.enter_context(patch("kelly_watcher.main.PolymarketExecutor"))
+                    engine_cls = stack.enter_context(patch("kelly_watcher.main.SignalEngine"))
+                    stack.enter_context(patch("kelly_watcher.main.use_real_money", return_value=False))
+                    stack.enter_context(patch("kelly_watcher.main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("kelly_watcher.main.send_alert"))
                     blocked_service = stack.enter_context(
-                        patch("main._run_shadow_startup_blocked_service", side_effect=_block_then_stop)
+                        patch("kelly_watcher.main._run_shadow_startup_blocked_service", side_effect=_block_then_stop)
                     )
                     main.main()
 
@@ -5620,14 +5688,14 @@ class RuntimeFixesTest(unittest.TestCase):
             with patch.object(main, "DB_RECOVERY_REQUEST_FILE", db_recovery_request_file), patch.object(
                 main, "SHADOW_RESET_REQUEST_FILE", shadow_reset_request_file
             ), patch(
-                "main.db_recovery_state",
+                "kelly_watcher.main.db_recovery_state",
                 return_value={
                     "db_recovery_state_known": True,
                     "db_recovery_candidate_ready": True,
                     "db_recovery_candidate_path": "/tmp/verified-backup.sqlite",
                     "db_recovery_candidate_source_path": "/tmp/trading.sqlite",
                 },
-            ), patch("main.time.time", return_value=2_500):
+            ), patch("kelly_watcher.main.time.time", return_value=2_500):
                 self.assertEqual(main._queued_shadow_rebootstrap_request_label(), "db recovery")
 
             db_recovery_request_file.write_text(
@@ -5646,14 +5714,14 @@ class RuntimeFixesTest(unittest.TestCase):
             with patch.object(main, "DB_RECOVERY_REQUEST_FILE", db_recovery_request_file), patch.object(
                 main, "SHADOW_RESET_REQUEST_FILE", shadow_reset_request_file
             ), patch(
-                "main.db_recovery_state",
+                "kelly_watcher.main.db_recovery_state",
                 return_value={
                     "db_recovery_state_known": True,
                     "db_recovery_candidate_ready": True,
                     "db_recovery_candidate_path": "/tmp/verified-backup.sqlite",
                     "db_recovery_candidate_source_path": "/tmp/trading.sqlite",
                 },
-            ), patch("main.time.time", return_value=2_500):
+            ), patch("kelly_watcher.main.time.time", return_value=2_500):
                 self.assertEqual(main._queued_shadow_rebootstrap_request_label(), "")
 
     def test_validate_startup_blocks_live_until_post_promotion_shadow_history_is_available(self) -> None:
@@ -5763,7 +5831,7 @@ class RuntimeFixesTest(unittest.TestCase):
                         "LIVE_MIN_SHADOW_RESOLVED_SINCE_PROMOTION": "2",
                     },
                     clear=False,
-                ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch("main.send_alert"):
+                ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch("kelly_watcher.main.send_alert"):
                     with self.assertRaises(RuntimeError) as ctx:
                         main._validate_startup()
             finally:
@@ -6097,11 +6165,12 @@ class RuntimeFixesTest(unittest.TestCase):
             },
             clear=False,
         ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch(
-            "main._resolved_shadow_trade_count", return_value=999
+            "kelly_watcher.main._resolved_shadow_trade_count_in_current_evidence_window",
+            return_value=999,
         ), patch(
-            "main._resolved_shadow_trade_count_since_last_promotion",
+            "kelly_watcher.main._resolved_shadow_trade_count_since_last_promotion",
             return_value=(5, {"applied_at": 1_700_000_000}),
-        ), patch("main.send_alert"):
+        ), patch("kelly_watcher.main.send_alert"):
             with self.assertRaises(RuntimeError) as ctx:
                 main._validate_startup()
 
@@ -6121,24 +6190,25 @@ class RuntimeFixesTest(unittest.TestCase):
             },
             clear=False,
         ), patch.object(main, "WATCHED_WALLETS", [watched_wallet]), patch(
-            "main._resolved_shadow_trade_count", return_value=999
+            "kelly_watcher.main._resolved_shadow_trade_count_in_current_evidence_window",
+            return_value=999,
         ), patch(
-            "main._resolved_shadow_trade_count_since_last_promotion",
+            "kelly_watcher.main._resolved_shadow_trade_count_since_last_promotion",
             return_value=(999, None),
         ), patch(
-            "main.database_integrity_state",
+            "kelly_watcher.main.database_integrity_state",
             return_value={
                 "db_integrity_known": True,
                 "db_integrity_ok": True,
                 "db_integrity_message": "",
             },
         ), patch(
-            "main.compute_segment_shadow_report",
+            "kelly_watcher.main.compute_segment_shadow_report",
             return_value={
                 "status": "blocked",
                 "summary": "blocked by warm_mid (pnl $-5.00)",
             },
-        ), patch("main.send_alert"):
+        ), patch("kelly_watcher.main.send_alert"):
             with self.assertRaises(RuntimeError) as ctx:
                 main._validate_startup()
 
@@ -6175,20 +6245,20 @@ class RuntimeFixesTest(unittest.TestCase):
                 "SHADOW_EVIDENCE_EPOCH_FILE",
                 epoch_file,
             ), patch(
-                "main._resolved_shadow_trade_count",
+                "kelly_watcher.main._resolved_shadow_trade_count_in_current_evidence_window",
                 return_value=999,
             ), patch(
-                "main._resolved_shadow_trade_count_since_last_promotion",
+                "kelly_watcher.main._resolved_shadow_trade_count_since_last_promotion",
                 return_value=(999, {"applied_at": 1_700_000_400}),
             ), patch(
-                "main.database_integrity_state",
+                "kelly_watcher.main.database_integrity_state",
                 return_value={
                     "db_integrity_known": True,
                     "db_integrity_ok": True,
                     "db_integrity_message": "",
                 },
             ), patch(
-                "main.compute_segment_shadow_report",
+                "kelly_watcher.main.compute_segment_shadow_report",
                 side_effect=lambda **kwargs: (
                     self.assertEqual(kwargs.get("mode"), "shadow")
                     or self.assertEqual(kwargs.get("since_ts"), 1_700_123_456)
@@ -6200,7 +6270,7 @@ class RuntimeFixesTest(unittest.TestCase):
                         "legacy_unassigned_resolved": 42,
                     }
                 ),
-            ), patch("main.send_alert"):
+            ), patch("kelly_watcher.main.send_alert"):
                 with self.assertRaises(RuntimeError) as ctx:
                     main._validate_startup()
 
@@ -6314,7 +6384,7 @@ class RuntimeFixesTest(unittest.TestCase):
             clipped=True,
         )
 
-        with patch("main.min_bet_usd", return_value=1.0):
+        with patch("kelly_watcher.main.min_bet_usd", return_value=1.0):
             sizing, clip_note = main._apply_total_exposure_cap_to_sizing(
                 executor,
                 {"dollar_size": 10.0, "kelly_f": 0.01, "reason": "ok"},
@@ -6478,7 +6548,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 db.DB_PATH = original_db_path
 
     def test_startup_validation_reports_bad_numeric_config_cleanly(self) -> None:
-        with patch("main.WATCHED_WALLETS", ["0xabc"]), patch("main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")):
+        with patch("kelly_watcher.main.WATCHED_WALLETS", ["0xabc"]), patch("kelly_watcher.main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")):
             with self.assertRaisesRegex(RuntimeError, "MIN_CONFIDENCE must be numeric, got 'abc'"):
                 main._validate_startup()
 
@@ -6488,8 +6558,8 @@ class RuntimeFixesTest(unittest.TestCase):
             try:
                 main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
                 with (
-                    patch("main.use_real_money", side_effect=main.ConfigError("USE_REAL_MONEY must be boolean")),
-                    patch("main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
+                    patch("kelly_watcher.main.use_real_money", side_effect=main.ConfigError("USE_REAL_MONEY must be boolean")),
+                    patch("kelly_watcher.main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
                     patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
                 ):
                     main._persist_startup_validation_failure(
@@ -6539,8 +6609,8 @@ class RuntimeFixesTest(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with (
-                    patch("main.use_real_money", return_value=False),
-                    patch("main.poll_interval", return_value=5.0),
+                    patch("kelly_watcher.main.use_real_money", return_value=False),
+                    patch("kelly_watcher.main.poll_interval", return_value=5.0),
                     patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
                 ):
                     main._persist_startup_validation_failure(
@@ -6638,12 +6708,12 @@ class RuntimeFixesTest(unittest.TestCase):
                 )
 
                 with (
-                    patch("main.use_real_money", return_value=False),
-                    patch("main.poll_interval", return_value=5.0),
+                    patch("kelly_watcher.main.use_real_money", return_value=False),
+                    patch("kelly_watcher.main.poll_interval", return_value=5.0),
                     patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
-                    patch("main.live_require_shadow_history", return_value=True),
-                    patch("main.live_min_shadow_resolved", return_value=2),
-                    patch("main.live_min_shadow_resolved_since_promotion", return_value=1),
+                    patch("kelly_watcher.main.live_require_shadow_history", return_value=True),
+                    patch("kelly_watcher.main.live_min_shadow_resolved", return_value=2),
+                    patch("kelly_watcher.main.live_min_shadow_resolved_since_promotion", return_value=1),
                 ):
                     main._persist_startup_failure_state(
                         detail="startup failed: belief sync exploded",
@@ -6684,11 +6754,11 @@ class RuntimeFixesTest(unittest.TestCase):
                 main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
                 with (
                     patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
-                    patch("main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")),
-                    patch("main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
-                    patch("main.use_real_money", return_value=False),
+                    patch("kelly_watcher.main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")),
+                    patch("kelly_watcher.main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
+                    patch("kelly_watcher.main.use_real_money", return_value=False),
                     patch(
-                        "main.database_integrity_state",
+                        "kelly_watcher.main.database_integrity_state",
                         return_value={
                             "db_integrity_known": True,
                             "db_integrity_ok": True,
@@ -6732,21 +6802,21 @@ class RuntimeFixesTest(unittest.TestCase):
                 main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
                 with (
                     patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
-                    patch("main.init_db"),
-                    patch("main._validate_startup"),
-                    patch("main._write_bot_pid_file"),
-                    patch("main._clear_bot_pid_file"),
-                    patch("main._repair_event_file_market_urls"),
-                    patch("main._install_shutdown_signal_handlers", return_value=[]),
-                    patch("main._restore_shutdown_signal_handlers"),
-                    patch("main._latest_replay_promotion", return_value=None),
-                    patch("main._latest_applied_replay_promotion", return_value=None),
-                    patch("main.WatchlistManager", return_value=watchlist_stub),
-                    patch("main.start_dashboard_api_server", return_value=dashboard_server),
-                    patch("main.sync_belief_priors", side_effect=RuntimeError("belief sync exploded")),
-                    patch("main.use_real_money", return_value=False),
-                    patch("main.poll_interval", return_value=5.0),
-                    patch("main.send_alert"),
+                    patch("kelly_watcher.main.init_db"),
+                    patch("kelly_watcher.main._validate_startup"),
+                    patch("kelly_watcher.main._write_bot_pid_file"),
+                    patch("kelly_watcher.main._clear_bot_pid_file"),
+                    patch("kelly_watcher.main._repair_event_file_market_urls"),
+                    patch("kelly_watcher.main._install_shutdown_signal_handlers", return_value=[]),
+                    patch("kelly_watcher.main._restore_shutdown_signal_handlers"),
+                    patch("kelly_watcher.main._latest_replay_promotion", return_value=None),
+                    patch("kelly_watcher.main._latest_applied_replay_promotion", return_value=None),
+                    patch("kelly_watcher.main.WatchlistManager", return_value=watchlist_stub),
+                    patch("kelly_watcher.main.start_dashboard_api_server", return_value=dashboard_server),
+                    patch("kelly_watcher.main.sync_belief_priors", side_effect=RuntimeError("belief sync exploded")),
+                    patch("kelly_watcher.main.use_real_money", return_value=False),
+                    patch("kelly_watcher.main.poll_interval", return_value=5.0),
+                    patch("kelly_watcher.main.send_alert"),
                 ):
                     with self.assertRaisesRegex(RuntimeError, "belief sync exploded"):
                         main.main()
@@ -6802,13 +6872,13 @@ class RuntimeFixesTest(unittest.TestCase):
                 main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
                 with ExitStack() as stack:
                     stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xabc"]))
-                    stack.enter_context(patch("main.init_db"))
+                    stack.enter_context(patch("kelly_watcher.main.init_db"))
                     stack.enter_context(
-                        patch("main._validate_startup", side_effect=RuntimeError(validation_error))
+                        patch("kelly_watcher.main._validate_startup", side_effect=RuntimeError(validation_error))
                     )
                     stack.enter_context(
                         patch(
-                            "main.database_integrity_state",
+                            "kelly_watcher.main.database_integrity_state",
                             return_value={
                                 "db_integrity_known": True,
                                 "db_integrity_ok": False,
@@ -6816,29 +6886,29 @@ class RuntimeFixesTest(unittest.TestCase):
                             },
                         )
                     )
-                    stack.enter_context(patch("main._queued_shadow_rebootstrap_request_label", return_value=""))
-                    stack.enter_context(patch("main.db_recovery_state", return_value={"db_recovery_state_known": False}))
-                    stack.enter_context(patch("main._compute_db_recovery_shadow_state", return_value={}))
-                    stack.enter_context(patch("main._write_bot_pid_file"))
-                    stack.enter_context(patch("main._clear_bot_pid_file"))
-                    stack.enter_context(patch("main._repair_event_file_market_urls"))
-                    stack.enter_context(patch("main._install_shutdown_signal_handlers", return_value=[]))
-                    stack.enter_context(patch("main._restore_shutdown_signal_handlers"))
-                    stack.enter_context(patch("main._latest_retrain_run", return_value=None))
-                    stack.enter_context(patch("main._latest_replay_search_run", return_value=None))
-                    stack.enter_context(patch("main._latest_replay_promotion", return_value=None))
-                    stack.enter_context(patch("main._latest_applied_replay_promotion", return_value=None))
-                    stack.enter_context(patch("main.WatchlistManager", return_value=watchlist_stub))
-                    stack.enter_context(patch("main.start_dashboard_api_server", return_value=dashboard_server))
-                    sync_belief_priors = stack.enter_context(patch("main.sync_belief_priors"))
-                    tracker_cls = stack.enter_context(patch("main.PolymarketTracker"))
-                    executor_cls = stack.enter_context(patch("main.PolymarketExecutor"))
-                    engine_cls = stack.enter_context(patch("main.SignalEngine"))
-                    stack.enter_context(patch("main.use_real_money", return_value=False))
-                    stack.enter_context(patch("main.poll_interval", return_value=5.0))
-                    stack.enter_context(patch("main.send_alert"))
+                    stack.enter_context(patch("kelly_watcher.main._queued_shadow_rebootstrap_request_label", return_value=""))
+                    stack.enter_context(patch("kelly_watcher.main.db_recovery_state", return_value={"db_recovery_state_known": False}))
+                    stack.enter_context(patch("kelly_watcher.main._compute_db_recovery_shadow_state", return_value={}))
+                    stack.enter_context(patch("kelly_watcher.main._write_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._clear_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("kelly_watcher.main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("kelly_watcher.main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("kelly_watcher.main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("kelly_watcher.main.start_dashboard_api_server", return_value=dashboard_server))
+                    sync_belief_priors = stack.enter_context(patch("kelly_watcher.main.sync_belief_priors"))
+                    tracker_cls = stack.enter_context(patch("kelly_watcher.main.PolymarketTracker"))
+                    executor_cls = stack.enter_context(patch("kelly_watcher.main.PolymarketExecutor"))
+                    engine_cls = stack.enter_context(patch("kelly_watcher.main.SignalEngine"))
+                    stack.enter_context(patch("kelly_watcher.main.use_real_money", return_value=False))
+                    stack.enter_context(patch("kelly_watcher.main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("kelly_watcher.main.send_alert"))
                     blocked_service = stack.enter_context(
-                        patch("main._run_shadow_startup_blocked_service", side_effect=_block_then_stop)
+                        patch("kelly_watcher.main._run_shadow_startup_blocked_service", side_effect=_block_then_stop)
                     )
                     main.main()
 
@@ -6894,13 +6964,13 @@ class RuntimeFixesTest(unittest.TestCase):
                 main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
                 with ExitStack() as stack:
                     stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xabc"]))
-                    stack.enter_context(patch("main.init_db"))
+                    stack.enter_context(patch("kelly_watcher.main.init_db"))
                     stack.enter_context(
-                        patch("main._validate_startup", side_effect=RuntimeError(validation_error))
+                        patch("kelly_watcher.main._validate_startup", side_effect=RuntimeError(validation_error))
                     )
                     stack.enter_context(
                         patch(
-                            "main.database_integrity_state",
+                            "kelly_watcher.main.database_integrity_state",
                             return_value={
                                 "db_integrity_known": True,
                                 "db_integrity_ok": False,
@@ -6908,29 +6978,29 @@ class RuntimeFixesTest(unittest.TestCase):
                             },
                         )
                     )
-                    stack.enter_context(patch("main._queued_shadow_rebootstrap_request_label", return_value=""))
-                    stack.enter_context(patch("main.db_recovery_state", return_value={"db_recovery_state_known": False}))
-                    stack.enter_context(patch("main._compute_db_recovery_shadow_state", return_value={}))
-                    stack.enter_context(patch("main._consume_db_recovery_request", side_effect=[None, request]))
-                    stack.enter_context(patch("main._consume_shadow_reset_request", return_value=None))
-                    stack.enter_context(patch("main._write_bot_pid_file"))
-                    stack.enter_context(patch("main._clear_bot_pid_file"))
-                    stack.enter_context(patch("main._repair_event_file_market_urls"))
-                    stack.enter_context(patch("main._install_shutdown_signal_handlers", return_value=[]))
-                    stack.enter_context(patch("main._restore_shutdown_signal_handlers"))
-                    stack.enter_context(patch("main._latest_retrain_run", return_value=None))
-                    stack.enter_context(patch("main._latest_replay_search_run", return_value=None))
-                    stack.enter_context(patch("main._latest_replay_promotion", return_value=None))
-                    stack.enter_context(patch("main._latest_applied_replay_promotion", return_value=None))
-                    stack.enter_context(patch("main.WatchlistManager", return_value=watchlist_stub))
-                    stack.enter_context(patch("main.start_dashboard_api_server", return_value=dashboard_server))
-                    sync_belief_priors = stack.enter_context(patch("main.sync_belief_priors"))
-                    tracker_cls = stack.enter_context(patch("main.PolymarketTracker"))
-                    executor_cls = stack.enter_context(patch("main.PolymarketExecutor"))
-                    engine_cls = stack.enter_context(patch("main.SignalEngine"))
+                    stack.enter_context(patch("kelly_watcher.main._queued_shadow_rebootstrap_request_label", return_value=""))
+                    stack.enter_context(patch("kelly_watcher.main.db_recovery_state", return_value={"db_recovery_state_known": False}))
+                    stack.enter_context(patch("kelly_watcher.main._compute_db_recovery_shadow_state", return_value={}))
+                    stack.enter_context(patch("kelly_watcher.main._consume_db_recovery_request", side_effect=[None, request]))
+                    stack.enter_context(patch("kelly_watcher.main._consume_shadow_reset_request", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._write_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._clear_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("kelly_watcher.main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("kelly_watcher.main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("kelly_watcher.main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("kelly_watcher.main.start_dashboard_api_server", return_value=dashboard_server))
+                    sync_belief_priors = stack.enter_context(patch("kelly_watcher.main.sync_belief_priors"))
+                    tracker_cls = stack.enter_context(patch("kelly_watcher.main.PolymarketTracker"))
+                    executor_cls = stack.enter_context(patch("kelly_watcher.main.PolymarketExecutor"))
+                    engine_cls = stack.enter_context(patch("kelly_watcher.main.SignalEngine"))
                     recover_db = stack.enter_context(
                         patch(
-                            "main.recover_db_from_verified_backup",
+                            "kelly_watcher.main.recover_db_from_verified_backup",
                             return_value={
                                 "ok": True,
                                 "restored_path": "/tmp/trading.db",
@@ -6939,13 +7009,13 @@ class RuntimeFixesTest(unittest.TestCase):
                             },
                         )
                     )
-                    stack.enter_context(patch("main._quarantine_runtime_model_artifact", return_value=""))
-                    write_epoch = stack.enter_context(patch("main.write_shadow_evidence_epoch"))
-                    restart_bot = stack.enter_context(patch("main.exec_restarted_bot"))
-                    stack.enter_context(patch("main.logging.shutdown"))
-                    stack.enter_context(patch("main.use_real_money", return_value=False))
-                    stack.enter_context(patch("main.poll_interval", return_value=5.0))
-                    stack.enter_context(patch("main.send_alert"))
+                    stack.enter_context(patch("kelly_watcher.main._quarantine_runtime_model_artifact", return_value=""))
+                    write_epoch = stack.enter_context(patch("kelly_watcher.main.write_shadow_evidence_epoch"))
+                    restart_bot = stack.enter_context(patch("kelly_watcher.main.exec_restarted_bot"))
+                    stack.enter_context(patch("kelly_watcher.main.logging.shutdown"))
+                    stack.enter_context(patch("kelly_watcher.main.use_real_money", return_value=False))
+                    stack.enter_context(patch("kelly_watcher.main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("kelly_watcher.main.send_alert"))
                     main.main()
 
                 recover_db.assert_called_once()
@@ -6998,13 +7068,13 @@ class RuntimeFixesTest(unittest.TestCase):
                 main.EVENT_FILE = Path(tmpdir) / "events.jsonl"
                 with ExitStack() as stack:
                     stack.enter_context(patch.object(main, "WATCHED_WALLETS", ["0xabc"]))
-                    stack.enter_context(patch("main.init_db"))
+                    stack.enter_context(patch("kelly_watcher.main.init_db"))
                     stack.enter_context(
-                        patch("main._validate_startup", side_effect=RuntimeError(validation_error))
+                        patch("kelly_watcher.main._validate_startup", side_effect=RuntimeError(validation_error))
                     )
                     stack.enter_context(
                         patch(
-                            "main.database_integrity_state",
+                            "kelly_watcher.main.database_integrity_state",
                             return_value={
                                 "db_integrity_known": True,
                                 "db_integrity_ok": False,
@@ -7012,38 +7082,38 @@ class RuntimeFixesTest(unittest.TestCase):
                             },
                         )
                     )
-                    stack.enter_context(patch("main._queued_shadow_rebootstrap_request_label", return_value=""))
-                    stack.enter_context(patch("main.db_recovery_state", return_value={"db_recovery_state_known": False}))
-                    stack.enter_context(patch("main._compute_db_recovery_shadow_state", return_value={}))
-                    stack.enter_context(patch("main._consume_db_recovery_request", return_value=None))
-                    stack.enter_context(patch("main._consume_shadow_reset_request", side_effect=[None, request]))
-                    stack.enter_context(patch("main._write_bot_pid_file"))
-                    stack.enter_context(patch("main._clear_bot_pid_file"))
-                    stack.enter_context(patch("main._repair_event_file_market_urls"))
-                    stack.enter_context(patch("main._install_shutdown_signal_handlers", return_value=[]))
-                    stack.enter_context(patch("main._restore_shutdown_signal_handlers"))
-                    stack.enter_context(patch("main._latest_retrain_run", return_value=None))
-                    stack.enter_context(patch("main._latest_replay_search_run", return_value=None))
-                    stack.enter_context(patch("main._latest_replay_promotion", return_value=None))
-                    stack.enter_context(patch("main._latest_applied_replay_promotion", return_value=None))
-                    stack.enter_context(patch("main.WatchlistManager", return_value=watchlist_stub))
-                    stack.enter_context(patch("main.start_dashboard_api_server", return_value=dashboard_server))
-                    sync_belief_priors = stack.enter_context(patch("main.sync_belief_priors"))
-                    tracker_cls = stack.enter_context(patch("main.PolymarketTracker"))
-                    executor_cls = stack.enter_context(patch("main.PolymarketExecutor"))
-                    engine_cls = stack.enter_context(patch("main.SignalEngine"))
+                    stack.enter_context(patch("kelly_watcher.main._queued_shadow_rebootstrap_request_label", return_value=""))
+                    stack.enter_context(patch("kelly_watcher.main.db_recovery_state", return_value={"db_recovery_state_known": False}))
+                    stack.enter_context(patch("kelly_watcher.main._compute_db_recovery_shadow_state", return_value={}))
+                    stack.enter_context(patch("kelly_watcher.main._consume_db_recovery_request", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._consume_shadow_reset_request", side_effect=[None, request]))
+                    stack.enter_context(patch("kelly_watcher.main._write_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._clear_bot_pid_file"))
+                    stack.enter_context(patch("kelly_watcher.main._repair_event_file_market_urls"))
+                    stack.enter_context(patch("kelly_watcher.main._install_shutdown_signal_handlers", return_value=[]))
+                    stack.enter_context(patch("kelly_watcher.main._restore_shutdown_signal_handlers"))
+                    stack.enter_context(patch("kelly_watcher.main._latest_retrain_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_search_run", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main._latest_applied_replay_promotion", return_value=None))
+                    stack.enter_context(patch("kelly_watcher.main.WatchlistManager", return_value=watchlist_stub))
+                    stack.enter_context(patch("kelly_watcher.main.start_dashboard_api_server", return_value=dashboard_server))
+                    sync_belief_priors = stack.enter_context(patch("kelly_watcher.main.sync_belief_priors"))
+                    tracker_cls = stack.enter_context(patch("kelly_watcher.main.PolymarketTracker"))
+                    executor_cls = stack.enter_context(patch("kelly_watcher.main.PolymarketExecutor"))
+                    engine_cls = stack.enter_context(patch("kelly_watcher.main.SignalEngine"))
                     apply_wallet_mode = stack.enter_context(
                         patch(
-                            "main.apply_wallet_mode_for_reset",
+                            "kelly_watcher.main.apply_wallet_mode_for_reset",
                             return_value=("clear_all", "0xabc", False),
                         )
                     )
-                    reset_shadow_runtime = stack.enter_context(patch("main.reset_shadow_runtime"))
-                    restart_bot = stack.enter_context(patch("main.exec_restarted_bot"))
-                    stack.enter_context(patch("main.logging.shutdown"))
-                    stack.enter_context(patch("main.use_real_money", return_value=False))
-                    stack.enter_context(patch("main.poll_interval", return_value=5.0))
-                    stack.enter_context(patch("main.send_alert"))
+                    reset_shadow_runtime = stack.enter_context(patch("kelly_watcher.main.reset_shadow_runtime"))
+                    restart_bot = stack.enter_context(patch("kelly_watcher.main.exec_restarted_bot"))
+                    stack.enter_context(patch("kelly_watcher.main.logging.shutdown"))
+                    stack.enter_context(patch("kelly_watcher.main.use_real_money", return_value=False))
+                    stack.enter_context(patch("kelly_watcher.main.poll_interval", return_value=5.0))
+                    stack.enter_context(patch("kelly_watcher.main.send_alert"))
                     main.main()
 
                 apply_wallet_mode.assert_called_once_with("clear_all")
@@ -7070,7 +7140,7 @@ class RuntimeFixesTest(unittest.TestCase):
             original_state_file = main.BOT_STATE_FILE
             try:
                 main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
-                with patch("main.use_real_money", return_value=False), patch("main.poll_interval", return_value=2.0), patch.object(main, "WATCHED_WALLETS", ["0xabc"]):
+                with patch("kelly_watcher.main.use_real_money", return_value=False), patch("kelly_watcher.main.poll_interval", return_value=2.0), patch.object(main, "WATCHED_WALLETS", ["0xabc"]):
                     main._write_bot_state(
                         started_at=100,
                         last_poll_at=120,
@@ -7104,8 +7174,8 @@ class RuntimeFixesTest(unittest.TestCase):
             }
         )
 
-        with patch("main.poll_interval", return_value=5.0):
-            with self.assertLogs("main", level="INFO") as captured:
+        with patch("kelly_watcher.main.poll_interval", return_value=5.0):
+            with self.assertLogs("kelly_watcher.main", level="INFO") as captured:
                 main._log_runtime_ready(tracker_stub, watchlist_stub)
 
         output = "\n".join(captured.output)
@@ -7114,7 +7184,7 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertIn("Console output stays quiet between events.", output)
 
     def test_log_first_poll_summary_reports_initial_poll_completion(self) -> None:
-        with self.assertLogs("main", level="INFO") as captured:
+        with self.assertLogs("kelly_watcher.main", level="INFO") as captured:
             main._log_first_poll_summary(
                 elapsed=3.25,
                 polled_wallet_count=4,
@@ -7141,9 +7211,9 @@ class RuntimeFixesTest(unittest.TestCase):
         run_retrain_job = Mock()
 
         with (
-            patch("main.refresh_trader_cache") as refresh_cache,
-            patch("main._resolve_trades_and_alert", return_value=[]),
-            patch("main.should_retrain_early", return_value=True),
+            patch("kelly_watcher.main.refresh_trader_cache") as refresh_cache,
+            patch("kelly_watcher.main._resolve_trades_and_alert", return_value=[]),
+            patch("kelly_watcher.main.should_retrain_early", return_value=True),
         ):
             persist_state = Mock()
             main._run_deferred_startup_tasks(

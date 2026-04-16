@@ -349,6 +349,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 _emit_count = 0
 _event_lock = threading.Lock()
+# Legacy one-time bootstrap only. The runtime watch universe should come from the
+# DB-backed managed wallet registry after startup import/restore runs.
 WATCHED_WALLETS = watched_wallets()
 _MANUAL_REQUEST_RETRY_BACKOFF_SECONDS = 30
 _HEURISTIC_CONF_RE = re.compile(r"heuristic conf ([0-9.]+) < min ([0-9.]+)", re.IGNORECASE)
@@ -369,11 +371,30 @@ def _runtime_managed_wallets() -> list[str]:
         wallets = load_managed_wallets()
     except Exception:
         wallets = []
-    if wallets:
-        return wallets
-    if not wallet_registry_clear_all_requested():
-        return list(WATCHED_WALLETS)
-    return []
+    return list(wallets)
+
+
+def _managed_wallet_registry_total_count() -> int:
+    try:
+        state = managed_wallet_registry_state()
+    except Exception:
+        return 0
+    try:
+        total_count = int(state.get("managed_wallet_total_count") or 0)
+    except (TypeError, ValueError):
+        total_count = 0
+    if total_count > 0:
+        return total_count
+    wallets = state.get("managed_wallets") or []
+    if isinstance(wallets, list):
+        return len(wallets)
+    return 0
+
+
+def _should_import_bootstrap_watched_wallets(clear_all_snapshot_requested: bool) -> bool:
+    if clear_all_snapshot_requested or not WATCHED_WALLETS:
+        return False
+    return _managed_wallet_registry_total_count() <= 0
 
 
 def _managed_wallet_count() -> int:
@@ -6240,7 +6261,7 @@ def main() -> None:
     except Exception:
         logger.warning("Managed wallet registry snapshot restore failed", exc_info=True)
     try:
-        if not clear_all_snapshot_requested and not load_managed_wallets() and WATCHED_WALLETS:
+        if _should_import_bootstrap_watched_wallets(clear_all_snapshot_requested):
             imported_count = import_managed_wallets_from_env(WATCHED_WALLETS)
             if imported_count > 0:
                 logger.info("Imported %s managed wallet(s) from WATCHED_WALLETS bootstrap", imported_count)

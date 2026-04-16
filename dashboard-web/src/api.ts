@@ -76,8 +76,13 @@ export interface BotState {
   db_integrity_message?: string
   db_recovery_state_known?: boolean
   db_recovery_candidate_ready?: boolean
+  db_recovery_candidate_path?: string
+  db_recovery_candidate_source_path?: string
   db_recovery_candidate_mode?: string
   db_recovery_candidate_message?: string
+  db_recovery_candidate_class_reason?: string
+  db_recovery_latest_verified_backup_path?: string
+  db_recovery_latest_verified_backup_at?: number
   wallet_discovery_last_scan_at?: number
   wallet_discovery_last_scan_ok?: boolean
   wallet_discovery_scanned_count?: number
@@ -96,9 +101,13 @@ export interface BotState {
   trade_log_archive_active_row_count?: number
   trade_log_archive_archive_row_count?: number
   trade_log_archive_eligible_row_count?: number
+  trade_log_archive_cutoff_ts?: number
+  trade_log_archive_preserve_since_ts?: number
   trade_log_archive_last_run_at?: number
+  trade_log_archive_last_candidate_count?: number
   trade_log_archive_last_archived_count?: number
   trade_log_archive_last_deleted_count?: number
+  trade_log_archive_last_vacuumed?: boolean
   trade_log_archive_message?: string
   trade_log_archive_block_reason?: string
   storage_state_known?: boolean

@@ -297,11 +297,13 @@ def _read_safe_env_values() -> dict[str, str]:
 
 def _config_snapshot() -> dict[str, Any]:
     safe_values = _read_safe_env_values()
-    watched_wallets = [
+    legacy_bootstrap_watched_wallets = [
         wallet.strip().lower()
         for wallet in str(safe_values.get("WATCHED_WALLETS", "") or "").split(",")
         if wallet.strip()
     ]
+    wallet_registry_source = _wallet_registry_source()
+    live_wallets = _wallet_registry_addresses()
     rows: list[dict[str, str]] = []
     for key, value in _read_env_items():
         if key == "WATCHED_WALLETS":
@@ -310,7 +312,11 @@ def _config_snapshot() -> dict[str, Any]:
         rows.append({"key": key, "value": redacted})
     return {
         "safe_values": safe_values,
-        "watched_wallets": watched_wallets,
+        "watched_wallets": live_wallets,
+        "live_wallets": live_wallets,
+        "live_wallet_count": len(live_wallets),
+        "wallet_registry_source": wallet_registry_source,
+        "legacy_bootstrap_watched_wallets": legacy_bootstrap_watched_wallets,
         "rows": rows,
     }
 
@@ -1697,6 +1703,23 @@ def _live_mode_enable_block_reasons(bot_state: dict[str, Any] | None = None) -> 
 def _set_live_mode_response(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     enabled = _live_mode_enabled_from_payload(payload)
     bot_state = _bot_state_snapshot()
+    if not enabled:
+        _write_env_value("USE_REAL_MONEY", "false")
+        if bool(bot_state.get("shadow_restart_pending")):
+            return {
+                "ok": True,
+                "message": "Live Trading saved as OFF. Shadow restart is already pending and will continue in shadow mode.",
+            }
+        startup_block = _startup_block_reason(bot_state)
+        if startup_block:
+            return {
+                "ok": True,
+                "message": "Live Trading saved as OFF. The backend is currently blocked, but the persisted config is now shadow-only.",
+            }
+        return {
+            "ok": True,
+            "message": "Live Trading saved as OFF. Restart the bot to apply it safely.",
+        }
     blocked = _blocked_shadow_mutation_response("Live mode changes", bot_state)
     if blocked:
         startup_block = _startup_block_reason(bot_state)
@@ -1706,12 +1729,6 @@ def _set_live_mode_response(payload: dict[str, Any] | None = None) -> dict[str, 
                 "message": f"Live trading remains blocked: backend startup is blocked: {startup_block}",
             }
         return blocked
-    if not enabled:
-        _write_env_value("USE_REAL_MONEY", "false")
-        return {
-            "ok": True,
-            "message": "Live Trading saved as OFF. Restart the bot to apply it safely.",
-        }
 
     reasons = _live_mode_enable_block_reasons()
     if reasons:
@@ -1961,6 +1978,19 @@ def _config_value_response(key: str, value: str) -> tuple[int, dict[str, Any]]:
     if normalized_key == "USE_REAL_MONEY":
         result = _set_live_mode_response({"enabled": normalized_value})
         return (200 if result.get("ok") else 409, result)
+    if normalized_key == "WATCHED_WALLETS":
+        snapshot = _config_snapshot()
+        return (
+            409,
+            {
+                "ok": False,
+                "message": (
+                    "WATCHED_WALLETS is bootstrap-only after the DB-backed wallet registry migration. "
+                    "Use the wallet registry and shadow-reset controls in the web dashboard instead."
+                ),
+                **snapshot,
+            },
+        )
 
     blocked_response = _blocked_shadow_mutation_response("Config editing")
     if blocked_response is not None:

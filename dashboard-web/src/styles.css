@@ -292,6 +292,20 @@ a {
   margin-top: 1rem;
 }
 
+.panel__subtle--control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.control-select {
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #0f172a;
+  padding: 0.45rem 0.8rem;
+}
+
 .panel:nth-child(1),
 .panel:nth-child(2) {
   grid-column: span 4;

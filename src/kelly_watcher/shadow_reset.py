@@ -473,7 +473,7 @@ def apply_wallet_mode_for_reset(wallet_mode: str) -> tuple[RestartWalletMode, st
     try:
         current_wallets = db.load_managed_wallets(include_disabled=True)
     except Exception:
-        current_wallets = _parse_watched_wallets(_read_env_value("WATCHED_WALLETS"))
+        current_wallets = []
     if normalized_wallet_mode == "keep_active":
         current_wallets = _active_watched_wallets(current_wallets)
         previous_wallets = _write_wallet_registry_snapshot(current_wallets, mode=normalized_wallet_mode)

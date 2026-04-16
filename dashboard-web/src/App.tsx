@@ -179,6 +179,15 @@ function shortId(value: string | undefined, prefixLength = 8): string {
   return normalized.length <= prefixLength ? normalized : normalized.slice(0, prefixLength)
 }
 
+function basename(value: string | undefined | null): string {
+  const normalized = String(value || '').trim()
+  if (!normalized) {
+    return 'N/A'
+  }
+  const parts = normalized.split(/[\\/]/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : normalized
+}
+
 function formatLabelList(values: string[] | undefined): string {
   const labels = (values || [])
     .map((value) => String(value || '').trim())
@@ -431,6 +440,9 @@ export function App() {
   const [tokenVersion, setTokenVersion] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
   const [authRejected, setAuthRejected] = useState(false)
+  const [shadowRestartWalletMode, setShadowRestartWalletMode] = useState<'keep_all' | 'keep_active' | 'clear_all'>(
+    'keep_active'
+  )
 
   const healthState = usePolledJson<ApiHealth>(
     (signal) => fetchApiJson<ApiHealth>('/api/health', {signal}, ''),
@@ -549,6 +561,35 @@ export function App() {
     botState?.db_recovery_candidate_message,
     'No verified recovery candidate has been classified yet.'
   )
+  const recoveryCandidateClassReason = firstLine(botState?.db_recovery_candidate_class_reason, recoveryCandidateMessage)
+  const configuredModeLabel = humanizeStatus(botState?.configured_mode || botState?.mode, 'Shadow')
+  const effectiveModeLabel = humanizeStatus(botState?.mode, 'Shadow')
+  const modeOverrideDetail = firstLine(
+    botState?.mode_block_reason,
+    configuredModeLabel === effectiveModeLabel ? 'No override active.' : 'Effective runtime mode differs from configured mode.'
+  )
+  const recoveryCandidateFile = basename(botState?.db_recovery_candidate_path)
+  const recoverySourceFile = basename(botState?.db_recovery_candidate_source_path)
+  const latestVerifiedBackupFile = basename(botState?.db_recovery_latest_verified_backup_path)
+  const recoveryPathDetail = firstLine(botState?.db_recovery_candidate_path, recoveryCandidateFile || 'Unavailable')
+  const latestVerifiedBackupDetail = firstLine(
+    botState?.db_recovery_latest_verified_backup_path,
+    latestVerifiedBackupFile || 'Unavailable'
+  )
+  const archiveWindowDetail =
+    botState?.trade_log_archive_state_known
+      ? `cutoff ${formatTimestamp(botState?.trade_log_archive_cutoff_ts)} • preserve since ${formatTimestamp(
+          botState?.trade_log_archive_preserve_since_ts
+        )}`
+      : 'Archive window still loading.'
+  const archiveResultDetail =
+    botState?.trade_log_archive_state_known
+      ? `candidates ${formatNumber(botState?.trade_log_archive_last_candidate_count)} • archived ${formatNumber(
+          botState?.trade_log_archive_last_archived_count
+        )} • deleted ${formatNumber(botState?.trade_log_archive_last_deleted_count)}${
+          botState?.trade_log_archive_last_vacuumed ? ' • vacuumed' : ''
+        }`
+      : 'Archive result still loading.'
   const walletRegistrySource = humanizeStatus(managedWalletsResource.data?.source, 'Wallet registry pending')
   const discoveryScanStatus = botState?.wallet_discovery_last_scan_ok
     ? 'Ready'
@@ -654,7 +695,7 @@ export function App() {
   const requestShadowRestart = async () =>
     runDashboardAction('shadow-restart', async () => {
       const result = await postApiJson<{ok?: boolean; message?: string}>('/api/shadow/restart', {
-        wallet_mode: 'keep_active'
+        wallet_mode: shadowRestartWalletMode
       })
       return result.message || 'Shadow restart requested.'
     })
@@ -674,6 +715,75 @@ export function App() {
       })
       return result.message || 'Trade log archive requested.'
     })
+
+  const requestForceShadowMode = async () =>
+    runDashboardAction('force-shadow-mode', async () => {
+      const result = await postApiJson<{ok?: boolean; message?: string}>('/api/live-mode', {
+        enabled: false
+      })
+      return result.message || 'Live Trading saved as OFF.'
+    })
+
+  const actionBusyReason = 'Another dashboard action is already in progress.'
+  const liveConfigNeedsShadow = botState?.configured_mode === 'live' || botState?.mode === 'live'
+  const restartShadowDisabledReason =
+    busyAction && busyAction !== 'shadow-restart'
+      ? actionBusyReason
+      : shadowRestartPending
+        ? shadowRestartMessage
+        : !botState?.started_at
+          ? 'Bot state is still loading.'
+          : ''
+  const recoverDbDisabledReason =
+    busyAction && busyAction !== 'db-recovery'
+      ? actionBusyReason
+      : shadowRestartPending
+        ? shadowRestartMessage
+        : startupBlocked
+          ? startupBlockReason
+          : botState?.configured_mode === 'live' || botState?.mode === 'live'
+            ? 'DB recovery is blocked while live trading is configured or active.'
+            : !botState?.db_recovery_state_known
+              ? 'Recovery candidate is still being evaluated.'
+              : !botState?.db_recovery_candidate_ready
+                ? recoveryCandidateClassReason || recoveryCandidateMessage || 'No verified recovery candidate is ready.'
+                : ''
+  const tradeLogArchiveDisabledReason =
+    busyAction && busyAction !== 'trade-log-archive'
+      ? actionBusyReason
+      : shadowRestartPending
+        ? shadowRestartMessage
+        : startupBlocked
+          ? startupBlockReason
+          : !botState?.trade_log_archive_enabled
+            ? 'Trade log archiving is disabled in config.'
+            : tradeLogArchivePending
+              ? tradeLogArchiveMessage
+              : dbIntegrityBlocked
+                ? `SQLite integrity check failed: ${dbIntegrityMessage}`
+                : !botState?.trade_log_archive_state_known
+                  ? 'Trade log archive state is still loading.'
+                  : ''
+  const forceShadowModeDisabledReason =
+    busyAction && busyAction !== 'force-shadow-mode'
+      ? actionBusyReason
+      : !botState?.started_at
+        ? 'Bot state is still loading.'
+        : !liveConfigNeedsShadow
+          ? 'Already configured for shadow-only.'
+          : ''
+  const restartShadowActionDetail = restartShadowDisabledReason || 'Available now.'
+  const recoverDbActionDetail =
+    recoverDbDisabledReason ||
+    `${recoveryCandidateMode}${recoveryCandidateClassReason ? ` • ${recoveryCandidateClassReason}` : ''}`
+  const tradeLogArchiveActionDetail =
+    tradeLogArchiveDisabledReason ||
+    `${tradeLogArchiveStatus} • eligible ${formatNumber(botState?.trade_log_archive_eligible_row_count)}`
+  const forceShadowModeActionDetail =
+    forceShadowModeDisabledReason ||
+    (botState?.configured_mode === 'live' && botState?.mode === 'shadow'
+      ? 'Available now. Clears the persisted live config without waiting for recovery to finish.'
+      : 'Available now. Saves Live Trading as OFF and keeps the project shadow-only.')
 
   const operationalWarnings = useMemo(() => {
     const warnings: string[] = []
@@ -853,6 +963,10 @@ export function App() {
   const operationsRows = useMemo(
     () => [
       {
+        label: 'Wallet Registry',
+        value: `${walletRegistrySource} • ${formatNumber(managedWallets.length)} live wallet(s)`
+      },
+      {
         label: 'Startup',
         value: startupBlocked
           ? startupRecoveryOnly
@@ -883,12 +997,36 @@ export function App() {
           : 'Checking'
       },
       {
+        label: 'Mode Policy',
+        value: `${configuredModeLabel} configured • ${effectiveModeLabel} effective`
+      },
+      {
         label: 'Recovery Candidate',
         value: botState?.db_recovery_state_known
           ? `${recoveryCandidateMode} • ${
               botState?.db_recovery_candidate_ready ? 'verified' : recoveryCandidateMessage
             }`
           : 'Checking'
+      },
+      {
+        label: 'Recovery Files',
+        value: botState?.db_recovery_state_known
+          ? `${recoveryCandidateFile} ← ${recoverySourceFile}`
+          : 'Checking'
+      },
+      {
+        label: 'Latest Backup',
+        value: botState?.db_recovery_latest_verified_backup_at
+          ? `${latestVerifiedBackupFile} • ${formatTimestamp(botState?.db_recovery_latest_verified_backup_at)}`
+          : 'No verified backup recorded'
+      },
+      {
+        label: 'Archive Window',
+        value: archiveWindowDetail
+      },
+      {
+        label: 'Archive Result',
+        value: archiveResultDetail
       },
       {
         label: 'Discovery Scan',
@@ -908,10 +1046,16 @@ export function App() {
     ],
     [
       botState,
+      archiveResultDetail,
+      archiveWindowDetail,
+      configuredModeLabel,
       dbIntegrityBlocked,
       dbIntegrityMessage,
+      managedWallets.length,
       recoveryCandidateMessage,
+      recoveryCandidateFile,
       recoveryCandidateMode,
+      recoverySourceFile,
       shadowRestartMessage,
       shadowRestartPending,
       shadowSnapshotDetail,
@@ -920,7 +1064,10 @@ export function App() {
       startupRecoveryOnly,
       discoveryScanMessage,
       discoveryScanStatus,
-      tradeLogArchiveStatus
+      effectiveModeLabel,
+      latestVerifiedBackupFile,
+      tradeLogArchiveStatus,
+      walletRegistrySource
     ]
   )
 
@@ -1122,11 +1269,26 @@ export function App() {
                 ? `${formatBytes(botState?.storage_save_dir_size_bytes)} in save/`
                 : 'Waiting for storage snapshot'}
             </p>
+            <label className="panel__subtle panel__subtle--control">
+              <span>Reset wallets</span>
+              <select
+                className="control-select"
+                value={shadowRestartWalletMode}
+                onChange={(event) =>
+                  setShadowRestartWalletMode(event.target.value as 'keep_all' | 'keep_active' | 'clear_all')
+                }
+                disabled={busyAction !== null || Boolean(restartShadowDisabledReason)}
+              >
+                <option value="keep_active">Keep active</option>
+                <option value="keep_all">Keep all</option>
+                <option value="clear_all">Clear all</option>
+              </select>
+            </label>
             <button
               type="button"
               className="button button--ghost"
               onClick={requestShadowRestart}
-              disabled={busyAction !== null}
+              disabled={busyAction !== null || Boolean(restartShadowDisabledReason)}
             >
               {busyAction === 'shadow-restart' ? 'Restarting...' : 'Restart Shadow'}
             </button>
@@ -1134,7 +1296,7 @@ export function App() {
               type="button"
               className="button button--ghost"
               onClick={requestDbRecovery}
-              disabled={busyAction !== null}
+              disabled={busyAction !== null || Boolean(recoverDbDisabledReason)}
             >
               {busyAction === 'db-recovery' ? 'Recovering...' : 'Recover DB'}
             </button>
@@ -1142,10 +1304,20 @@ export function App() {
               type="button"
               className="button button--ghost"
               onClick={requestTradeLogArchive}
-              disabled={busyAction !== null}
+              disabled={busyAction !== null || Boolean(tradeLogArchiveDisabledReason)}
             >
               {busyAction === 'trade-log-archive' ? 'Archiving...' : 'Archive Trade Log'}
             </button>
+            {liveConfigNeedsShadow ? (
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={requestForceShadowMode}
+                disabled={busyAction !== null || Boolean(forceShadowModeDisabledReason)}
+              >
+                {busyAction === 'force-shadow-mode' ? 'Saving...' : 'Set Shadow-Only'}
+              </button>
+            ) : null}
           </div>
         </div>
         {operationalWarnings.length ? (
@@ -1157,6 +1329,18 @@ export function App() {
             ))}
           </div>
         ) : null}
+        <div className="stack">
+          <p className="panel__subtle">
+            Restart Shadow ({humanizeStatus(shadowRestartWalletMode)}): {restartShadowActionDetail}
+          </p>
+          <p className="panel__subtle">Recover DB: {recoverDbActionDetail}</p>
+          <p className="panel__subtle">Archive Trade Log: {tradeLogArchiveActionDetail}</p>
+          <p className="panel__subtle">Set Shadow-Only: {forceShadowModeActionDetail}</p>
+          <p className="panel__subtle">Mode policy: {configuredModeLabel} configured, {effectiveModeLabel} effective.</p>
+          <p className="panel__subtle">Mode override: {modeOverrideDetail}</p>
+          <p className="panel__subtle">Recovery path: {recoveryPathDetail}</p>
+          <p className="panel__subtle">Latest verified backup: {latestVerifiedBackupDetail}</p>
+        </div>
         <dl className="detail-list">
           {operationsRows.map((row) => (
             <div key={row.label} className="detail-list__row">

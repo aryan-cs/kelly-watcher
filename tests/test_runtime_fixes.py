@@ -740,6 +740,85 @@ class RuntimeFixesTest(unittest.TestCase):
                 env_path.read_text(encoding="utf-8"),
             )
 
+    def test_dashboard_config_snapshot_reports_live_wallet_registry_separately_from_bootstrap_env(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_read_safe_env_values",
+            return_value={"WATCHED_WALLETS": "0xenv1,0xenv2"},
+        ), patch.object(
+            dashboard_api,
+            "_wallet_registry_source",
+            return_value="managed_wallets",
+        ), patch.object(
+            dashboard_api,
+            "_wallet_registry_addresses",
+            return_value=["0xdb1", "0xdb2", "0xdb3"],
+        ), patch.object(
+            dashboard_api,
+            "_read_env_items",
+            return_value=[("WATCHED_WALLETS", "0xenv1,0xenv2"), ("MAX_MARKET_HORIZON", "7d")],
+        ):
+            snapshot = dashboard_api._config_snapshot()
+
+        self.assertEqual(snapshot["watched_wallets"], ["0xdb1", "0xdb2", "0xdb3"])
+        self.assertEqual(snapshot["live_wallets"], ["0xdb1", "0xdb2", "0xdb3"])
+        self.assertEqual(snapshot["live_wallet_count"], 3)
+        self.assertEqual(snapshot["wallet_registry_source"], "managed_wallets")
+        self.assertEqual(snapshot["legacy_bootstrap_watched_wallets"], ["0xenv1", "0xenv2"])
+
+    def test_config_value_response_blocks_watched_wallets_edit_when_registry_is_db_backed(self) -> None:
+        with patch.object(dashboard_api, "_wallet_registry_source", return_value="managed_wallets"), patch.object(
+            dashboard_api,
+            "_config_snapshot",
+            return_value={"wallet_registry_source": "managed_wallets", "watched_wallets": ["0xdb1"]},
+        ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
+            status_code, payload = dashboard_api._config_value_response("WATCHED_WALLETS", "0xenv")
+
+        self.assertEqual(status_code, 409)
+        self.assertFalse(payload["ok"])
+        self.assertIn("bootstrap-only", payload["message"])
+        self.assertEqual(payload["wallet_registry_source"], "managed_wallets")
+        write_env_value.assert_not_called()
+
+    def test_config_value_response_blocks_watched_wallets_edit_even_when_registry_is_unavailable(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_config_snapshot",
+            return_value={"wallet_registry_source": "unavailable", "watched_wallets": []},
+        ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
+            status_code, payload = dashboard_api._config_value_response("WATCHED_WALLETS", "0xenv")
+
+        self.assertEqual(status_code, 409)
+        self.assertFalse(payload["ok"])
+        self.assertIn("bootstrap-only", payload["message"])
+        self.assertEqual(payload["wallet_registry_source"], "unavailable")
+        write_env_value.assert_not_called()
+
+    def test_runtime_managed_wallets_does_not_fallback_to_bootstrap_env(self) -> None:
+        with patch("kelly_watcher.main.load_managed_wallets", return_value=[]), patch.object(
+            main, "WATCHED_WALLETS", ["0xenv1", "0xenv2"]
+        ):
+            self.assertEqual(main._runtime_managed_wallets(), [])
+
+    def test_should_import_bootstrap_watched_wallets_only_when_registry_is_empty(self) -> None:
+        with patch.object(main, "WATCHED_WALLETS", ["0xenv"]), patch(
+            "kelly_watcher.main.managed_wallet_registry_state",
+            return_value={"managed_wallet_total_count": 0, "managed_wallets": []},
+        ):
+            self.assertTrue(main._should_import_bootstrap_watched_wallets(False))
+
+        with patch.object(main, "WATCHED_WALLETS", ["0xenv"]), patch(
+            "kelly_watcher.main.managed_wallet_registry_state",
+            return_value={"managed_wallet_total_count": 2, "managed_wallets": ["0xdb1", "0xdb2"]},
+        ):
+            self.assertFalse(main._should_import_bootstrap_watched_wallets(False))
+
+        with patch.object(main, "WATCHED_WALLETS", ["0xenv"]), patch(
+            "kelly_watcher.main.managed_wallet_registry_state",
+            return_value={"managed_wallet_total_count": 0, "managed_wallets": []},
+        ):
+            self.assertFalse(main._should_import_bootstrap_watched_wallets(True))
+
     def test_build_replay_search_command_includes_file_backed_specs_and_inline_overrides(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -2681,9 +2760,10 @@ class RuntimeFixesTest(unittest.TestCase):
         ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
             result = dashboard_api._set_live_mode_response({"enabled": False})
 
-        self.assertFalse(result["ok"])
-        self.assertIn("shadow restart", str(result["message"]).lower())
-        write_env_value.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertIn("saved as off", str(result["message"]).lower())
+        self.assertIn("restart", str(result["message"]).lower())
+        write_env_value.assert_called_once_with("USE_REAL_MONEY", "false")
 
     def test_set_live_mode_response_blocks_disable_while_startup_is_blocked(self) -> None:
         with patch.object(
@@ -2696,9 +2776,26 @@ class RuntimeFixesTest(unittest.TestCase):
         ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
             result = dashboard_api._set_live_mode_response({"enabled": False})
 
-        self.assertFalse(result["ok"])
-        self.assertIn("startup blocked", str(result["message"]).lower())
-        write_env_value.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertIn("saved as off", str(result["message"]).lower())
+        self.assertIn("shadow-only", str(result["message"]).lower())
+        write_env_value.assert_called_once_with("USE_REAL_MONEY", "false")
+
+    def test_set_live_mode_response_disables_live_mode_while_db_integrity_fails(self) -> None:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={
+                "db_integrity_known": True,
+                "db_integrity_ok": False,
+                "db_integrity_message": "database disk image is malformed",
+            },
+        ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
+            result = dashboard_api._set_live_mode_response({"enabled": False})
+
+        self.assertTrue(result["ok"])
+        self.assertIn("saved as off", str(result["message"]).lower())
+        write_env_value.assert_called_once_with("USE_REAL_MONEY", "false")
 
     def test_config_value_response_blocks_while_shadow_restart_pending(self) -> None:
         with patch.object(
@@ -5809,6 +5906,9 @@ class RuntimeFixesTest(unittest.TestCase):
                 "db_integrity_ok": False,
                 "db_integrity_message": "database disk image is malformed",
             },
+        ), patch(
+            "kelly_watcher.main.load_managed_wallets",
+            return_value=["0xabc"],
         ), patch("kelly_watcher.main._queued_shadow_rebootstrap_request_label", return_value="db recovery"), patch(
             "kelly_watcher.main._persist_startup_validation_failure"
         ) as persist_failure, patch("kelly_watcher.main.send_alert"):
@@ -6863,7 +6963,9 @@ class RuntimeFixesTest(unittest.TestCase):
                 db.DB_PATH = original_db_path
 
     def test_startup_validation_reports_bad_numeric_config_cleanly(self) -> None:
-        with patch("kelly_watcher.main.WATCHED_WALLETS", ["0xabc"]), patch("kelly_watcher.main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")):
+        with patch("kelly_watcher.main.load_managed_wallets", return_value=["0xabc"]), patch(
+            "kelly_watcher.main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")
+        ):
             with self.assertRaisesRegex(RuntimeError, "MIN_CONFIDENCE must be numeric, got 'abc'"):
                 main._validate_startup()
 
@@ -6875,7 +6977,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 with (
                     patch("kelly_watcher.main.use_real_money", side_effect=main.ConfigError("USE_REAL_MONEY must be boolean")),
                     patch("kelly_watcher.main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
-                    patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
+                    patch("kelly_watcher.main.load_managed_wallets", return_value=["0xabc"]),
                 ):
                     main._persist_startup_validation_failure(
                         ["MIN_CONFIDENCE must be numeric, got 'abc'", "MAX_BET_FRACTION must be between 0 and 1, got 2"],
@@ -7068,7 +7170,7 @@ class RuntimeFixesTest(unittest.TestCase):
             try:
                 main.BOT_STATE_FILE = Path(tmpdir) / "bot_state.json"
                 with (
-                    patch.object(main, "WATCHED_WALLETS", ["0xabc"]),
+                    patch("kelly_watcher.main.load_managed_wallets", return_value=["0xabc"]),
                     patch("kelly_watcher.main.min_confidence", side_effect=main.ConfigError("MIN_CONFIDENCE must be numeric, got 'abc'")),
                     patch("kelly_watcher.main.poll_interval", side_effect=main.ConfigError("POLL_INTERVAL must be numeric")),
                     patch("kelly_watcher.main.use_real_money", return_value=False),

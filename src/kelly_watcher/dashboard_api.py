@@ -331,8 +331,8 @@ def _config_snapshot() -> dict[str, Any]:
         if wallet.strip()
     ]
     registry_state = _managed_wallet_registry_snapshot()
-    wallet_registry_source = _wallet_registry_source_from_state(registry_state)
-    live_wallets = _wallet_registry_addresses_from_state(registry_state)
+    wallet_registry_source = _wallet_registry_source()
+    live_wallets = _wallet_registry_addresses()
     runtime_settings = load_runtime_settings()
     rows: list[dict[str, str]] = []
     for key, value in sorted(runtime_settings.items()):
@@ -2613,7 +2613,8 @@ def _config_value_response(key: str, value: str) -> tuple[int, dict[str, Any]]:
             {
                 "ok": False,
                 "message": (
-                    "WATCHED_WALLETS is bootstrap-only after the DB-backed wallet registry migration. "
+                    "Config editing for WATCHED_WALLETS is blocked because it is bootstrap-only after the "
+                    "DB-backed wallet registry migration. "
                     "Use the wallet registry and shadow-reset controls in the web dashboard instead."
                 ),
                 **snapshot,
@@ -2636,7 +2637,8 @@ def _config_clear_response(key: str) -> tuple[int, dict[str, Any]]:
             {
                 "ok": False,
                 "message": (
-                    "WATCHED_WALLETS is bootstrap-only after the DB-backed wallet registry migration. "
+                    "Config editing for WATCHED_WALLETS is blocked because it is bootstrap-only after the "
+                    "DB-backed wallet registry migration. "
                     "Use the wallet registry and shadow-reset controls in the web dashboard instead."
                 ),
                 **snapshot,

@@ -372,8 +372,11 @@ _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECA
 
 
 def _runtime_managed_wallets() -> list[str]:
-    wallets = _managed_wallet_registry_runtime_wallets()
-    return list(wallets or [])
+    try:
+        return [str(wallet).strip().lower() for wallet in load_managed_wallets() if str(wallet).strip()]
+    except Exception:
+        wallets = _managed_wallet_registry_runtime_wallets()
+        return list(wallets or [])
 
 
 def _managed_wallet_registry_status(state: dict[str, object] | None = None) -> str:

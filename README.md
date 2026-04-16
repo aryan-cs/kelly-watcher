@@ -263,16 +263,6 @@ cd dashboard-cli
 npm run dev
 ```
 
-Windows helpers:
-
-```bat
-start-dashboard.cmd
-```
-
-```bat
-start-dashboard-web.cmd
-```
-
 ## Runtime Modes
 
 ### Shadow Mode
@@ -642,10 +632,10 @@ Run one-time live collateral setup:
 uv run python polymarket_setup.py
 ```
 
-Run the bot in a restart loop on Windows:
+On Windows, run the same backend command directly from Command Prompt, PowerShell, or Task Scheduler:
 
 ```bat
-watchdog.bat
+uv run python main.py
 ```
 
 ## Environment Variables

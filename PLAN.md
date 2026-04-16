@@ -2576,29 +2576,18 @@ if __name__ == "__main__":
 
 ## 18. Windows Deployment with uv
 
-### Watchdog script
-
-Create `watchdog.bat` in the project root:
-
-```batch
-@echo off
-:loop
-uv run python main.py
-echo Bot exited with code %errorlevel%. Restarting in 10 seconds...
-timeout /t 10
-goto loop
-```
-
 ### Auto-start via Task Scheduler
 
 1. Open Task Scheduler (`taskschd.msc`)
 2. Create Basic Task → name it "Polymarket Bot"
 3. Trigger: "When the computer starts"
 4. Action: Start a program
-   - Program: `C:\path\to\polymarket-bot\watchdog.bat`
+   - Program: `C:\Users\<yourname>\.local\bin\uv.exe`
+   - Add arguments: `run python main.py`
    - Start in: `C:\path\to\polymarket-bot`
 5. Conditions: uncheck "Only start if on AC power"
 6. Settings: "If already running, do not start a new instance"
+7. Add recovery settings so Windows restarts the task on failure
 
 ### Prevent sleep
 
@@ -2619,17 +2608,12 @@ scheduler.add_job(
 )
 ```
 
-### Environment variable for uv
+### uv path
 
-If uv is not in the system PATH for the Task Scheduler user, use the full path:
+If uv is not in the system PATH for the Task Scheduler user, use the full path and pass the command as arguments:
 
 ```batch
-@echo off
-:loop
 C:\Users\<yourname>\.local\bin\uv.exe run python main.py
-echo Restarting in 10 seconds...
-timeout /t 10
-goto loop
 ```
 
 ---
@@ -2661,7 +2645,7 @@ This checklist must be completed before setting `USE_REAL_MONEY=true`. Every ite
 - [ ] `polymarket_setup.py` run once — USDC allowances confirmed
 - [ ] Live USDC balance confirmed: `uv run python -c "from executor import PolymarketExecutor; e = PolymarketExecutor(); print(e.get_usdc_balance())"`
 - [ ] Telegram alerts firing correctly
-- [ ] Watchdog bat tested — restarts after crash
+- [ ] Task Scheduler entrypoint tested — bot starts cleanly and is configured to restart on failure
 - [ ] Windows never-sleep applied
 - [ ] SQLite daily backup scheduled
 - [ ] Logs rotate correctly (check `logs/bot.log` size)
@@ -2679,7 +2663,7 @@ This checklist must be completed before setting `USE_REAL_MONEY=true`. Every ite
 When all gates are green:
 1. Stop the running bot (`Ctrl+C` or kill the Task Scheduler job)
 2. Edit `.env`: change `USE_REAL_MONEY=false` to `USE_REAL_MONEY=true`
-3. Restart: `watchdog.bat`
+3. Restart: `uv run python main.py`
 4. Confirm Telegram alert says `[LIVE]` not `[SHADOW]`
 5. Watch the first few trades carefully
 
@@ -2695,7 +2679,6 @@ polymarket-bot/
 |-- .gitignore
 |-- pyproject.toml           # uv Python project definition and dependencies
 |-- uv.lock                  # Locked Python dependency versions — commit this
-|-- watchdog.bat             # Windows crash-restart wrapper
 |-- README.md
 |
 |-- main.py                  # Entry point: polling loop + scheduler

@@ -138,7 +138,28 @@ class ShadowResetTest(unittest.TestCase):
         stdout = io.StringIO()
         with patch.object(shadow_reset, "use_real_money", return_value=False), patch.object(
             shadow_reset, "shadow_bankroll_usd", return_value=3000.0
-        ), patch.object(shadow_reset.db, "load_managed_wallets", return_value=["0xactive", "0xdropped"]), patch.object(
+        ), patch.object(
+            shadow_reset.db,
+            "load_managed_wallet_registry_rows",
+            return_value=[
+                {
+                    "wallet_address": "0xactive",
+                    "tracking_enabled": True,
+                    "source": "auto_promoted",
+                    "metadata": {"promotion_source": "wallet_discovery", "promoted_at": 1_700_000_000},
+                    "disabled_at": None,
+                    "disabled_reason": "",
+                },
+                {
+                    "wallet_address": "0xdropped",
+                    "tracking_enabled": True,
+                    "source": "manual_web",
+                    "metadata": {},
+                    "disabled_at": None,
+                    "disabled_reason": "",
+                },
+            ],
+        ), patch.object(
             shadow_reset, "_active_watched_wallets", return_value=["0xactive"]
         ) as active_wallets, patch.object(
             shadow_reset, "_write_wallet_registry_snapshot", return_value='{"mode":"keep_active","wallets":["0xactive"]}'
@@ -155,7 +176,19 @@ class ShadowResetTest(unittest.TestCase):
         stop_bot.assert_called_once_with(target_pids=None)
         reset_runtime.assert_called_once_with()
         active_wallets.assert_called_once_with(["0xactive", "0xdropped"])
-        write_snapshot.assert_called_once_with(["0xactive"], mode="keep_active")
+        write_snapshot.assert_called_once_with(
+            [
+                {
+                    "wallet_address": "0xactive",
+                    "tracking_enabled": True,
+                    "source": "auto_promoted",
+                    "metadata": {"promotion_source": "wallet_discovery", "promoted_at": 1_700_000_000},
+                    "disabled_at": None,
+                    "disabled_reason": "",
+                }
+            ],
+            mode="keep_active",
+        )
         output = stdout.getvalue()
         self.assertIn("Reducing the managed wallet registry to currently active wallets", output)
         self.assertIn("Managed wallet registry reduced to active wallets.", output)
@@ -163,7 +196,7 @@ class ShadowResetTest(unittest.TestCase):
     def test_apply_wallet_mode_for_reset_fails_closed_when_registry_load_fails(self) -> None:
         with patch.object(
             shadow_reset.db,
-            "load_managed_wallets",
+            "load_managed_wallet_registry_rows",
             side_effect=RuntimeError("db unavailable"),
         ), patch.object(
             shadow_reset,
@@ -178,6 +211,124 @@ class ShadowResetTest(unittest.TestCase):
                 shadow_reset.apply_wallet_mode_for_reset("keep_all")
 
         write_snapshot.assert_not_called()
+
+    def test_restore_managed_wallet_registry_snapshot_preserves_provenance_and_disabled_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            original_snapshot_path = shadow_reset.WALLET_REGISTRY_SNAPSHOT_PATH
+            original_clear_all_path = shadow_reset.WALLET_REGISTRY_CLEAR_ALL_MARKER_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                shadow_reset.WALLET_REGISTRY_SNAPSHOT_PATH = Path(tmpdir) / ".shadow_wallet_registry_snapshot.json"
+                shadow_reset.WALLET_REGISTRY_CLEAR_ALL_MARKER_PATH = Path(tmpdir) / ".shadow_wallet_registry_clear_all"
+                db.init_db()
+
+                payload = shadow_reset._wallet_registry_snapshot_payload(
+                    [
+                        {
+                            "wallet_address": "0xpromo",
+                            "tracking_enabled": True,
+                            "source": "auto_promoted",
+                            "metadata": {
+                                "promotion_source": "wallet_discovery",
+                                "promoted_at": 1_700_000_000,
+                            },
+                            "disabled_at": None,
+                            "disabled_reason": "",
+                        },
+                        {
+                            "wallet_address": "0xmanual",
+                            "tracking_enabled": False,
+                            "source": "manual_web",
+                            "metadata": {"operator_note": "disabled before reset"},
+                            "disabled_at": 1_700_000_050,
+                            "disabled_reason": "operator disabled",
+                        },
+                    ],
+                    mode="keep_all",
+                )
+                shadow_reset.WALLET_REGISTRY_SNAPSHOT_PATH.write_text(
+                    json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+
+                with patch("kelly_watcher.data.db.time.time", return_value=1_700_000_500):
+                    result = shadow_reset.restore_managed_wallet_registry_snapshot()
+
+                self.assertTrue(result["restored"])
+                self.assertEqual(result["wallets"], ["0xpromo", "0xmanual"])
+
+                registry_rows = db.load_managed_wallet_registry_rows(include_disabled=True)
+                self.assertEqual(
+                    registry_rows,
+                    [
+                        {
+                            "wallet_address": "0xpromo",
+                            "tracking_enabled": True,
+                            "source": "auto_promoted",
+                            "added_at": 1_700_000_500,
+                            "updated_at": 1_700_000_500,
+                            "disabled_at": None,
+                            "disabled_reason": "",
+                            "metadata": {
+                                "promotion_source": "wallet_discovery",
+                                "promoted_at": 1_700_000_000,
+                            },
+                        },
+                        {
+                            "wallet_address": "0xmanual",
+                            "tracking_enabled": False,
+                            "source": "manual_web",
+                            "added_at": 1_700_000_500,
+                            "updated_at": 1_700_000_500,
+                            "disabled_at": 1_700_000_050,
+                            "disabled_reason": "operator disabled",
+                            "metadata": {"operator_note": "disabled before reset"},
+                        },
+                    ],
+                )
+
+                conn = db.get_conn()
+                restore_events = conn.execute(
+                    """
+                    SELECT wallet_address, action, source, payload_json, created_at
+                    FROM wallet_membership_events
+                    ORDER BY wallet_address ASC
+                    """
+                ).fetchall()
+                active_row = conn.execute(
+                    """
+                    SELECT status, tracking_started_at, reactivated_at
+                    FROM wallet_watch_state
+                    WHERE wallet_address='0xpromo'
+                    """
+                ).fetchone()
+                disabled_row = conn.execute(
+                    """
+                    SELECT status
+                    FROM wallet_watch_state
+                    WHERE wallet_address='0xmanual'
+                    """
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(len(restore_events), 2)
+                self.assertEqual(str(restore_events[0]["action"] or ""), "restore")
+                self.assertEqual(str(restore_events[0]["source"] or ""), "shadow_reset")
+                self.assertEqual(int(restore_events[0]["created_at"] or 0), 1_700_000_500)
+                self.assertEqual(str(active_row["status"] or ""), "active")
+                self.assertEqual(int(active_row["tracking_started_at"] or 0), 1_700_000_500)
+                self.assertEqual(int(active_row["reactivated_at"] or 0), 1_700_000_500)
+                self.assertIsNone(disabled_row)
+
+                promotion_state = db.load_wallet_promotion_state(["0xpromo"])
+                self.assertTrue(bool(promotion_state["0xpromo"]["is_auto_promoted"]))
+                self.assertEqual(int(promotion_state["0xpromo"]["baseline_at"] or 0), 1_700_000_500)
+                self.assertEqual(str(promotion_state["0xpromo"]["boundary_action"] or ""), "restore")
+            finally:
+                shadow_reset.WALLET_REGISTRY_SNAPSHOT_PATH = original_snapshot_path
+                shadow_reset.WALLET_REGISTRY_CLEAR_ALL_MARKER_PATH = original_clear_all_path
+                db.DB_PATH = original_db_path
 
     def test_run_forwards_target_pids_to_stop_existing_bot(self) -> None:
         stdout = io.StringIO()

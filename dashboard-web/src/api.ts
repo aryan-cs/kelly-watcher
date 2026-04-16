@@ -133,6 +133,24 @@ export interface BotStateResponse {
   state?: BotState
 }
 
+export interface ConfigRow {
+  key?: string
+  value?: string
+  source?: string
+}
+
+export interface ConfigSnapshot {
+  safe_values?: Record<string, string>
+  watched_wallets?: string[]
+  live_wallets?: string[]
+  live_wallet_count?: number
+  wallet_registry_source?: string
+  legacy_bootstrap_watched_wallets?: string[]
+  rows?: ConfigRow[]
+  ok?: boolean
+  message?: string
+}
+
 export interface DbRecoveryInventoryEntry {
   path?: string
   kind?: string
@@ -223,11 +241,17 @@ export interface ManagedWallet {
   discovery_rank?: number
   discovery_sources?: string[]
   discovery_updated_at?: number
+  post_promotion_promoted_at?: number
   post_promotion_baseline_at?: number
+  post_promotion_boundary_action?: string
+  post_promotion_boundary_source?: string
+  post_promotion_boundary_reason?: string
   post_promotion_source?: string
   post_promotion_reason?: string
   post_promotion_total_buy_signals?: number
   post_promotion_uncopyable_skips?: number
+  post_promotion_timing_skips?: number
+  post_promotion_liquidity_skips?: number
   post_promotion_uncopyable_skip_rate?: number
   post_promotion_resolved_copied_count?: number
   post_promotion_resolved_copied_win_rate?: number
@@ -239,6 +263,9 @@ export interface ManagedWallet {
   trust_tier?: string
   trust_size_multiplier?: number
   trust_note?: string
+  wallet_family?: string
+  wallet_family_multiplier?: number
+  wallet_family_note?: string
 }
 
 export interface ManagedWalletsResponse {

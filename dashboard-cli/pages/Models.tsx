@@ -6402,6 +6402,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const startupApiError = compactSingleLineText(botState.api_error)
   const shadowRestartPending = Boolean(botState.shadow_restart_pending)
   const shadowRestartMessage = String(botState.shadow_restart_message || '').trim() || 'shadow restart in progress'
+  const dbIntegrityKnown = Boolean(botState.db_integrity_known)
+  const dbIntegrityOk = !dbIntegrityKnown || Boolean(botState.db_integrity_ok)
+  const dbIntegrityMessage = compactSingleLineText(botState.db_integrity_message)
+  const modelsQueryBlockedMessage =
+    shadowRestartPending
+      ? `Model queries are blocked: ${shadowRestartMessage}`
+      : startupRecoveryOnly
+        ? `Model queries are blocked: ${startupBlockReason || startupDetail || 'startup blocked in recovery-only mode'}`
+        : dbIntegrityKnown && !dbIntegrityOk
+          ? `Model queries are blocked: ${dbIntegrityMessage || 'SQLite integrity check failed.'}`
+          : ''
   const manualRetrainPending = Boolean(botState.manual_retrain_pending)
   const manualRetrainRequestedAt = Math.max(0, Number(botState.manual_retrain_requested_at || 0))
   const manualRetrainMessage = compactSingleLineText(botState.manual_retrain_message)
@@ -7023,7 +7034,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             </React.Fragment>
           ))
         ) : (
-          <Text color={theme.dim}>{fit('No tracker signals yet.', modelsColumnWidths[1])}</Text>
+          <Text color={modelsQueryBlockedMessage ? theme.yellow : theme.dim}>
+            {fit(modelsQueryBlockedMessage || 'No tracker signals yet.', modelsColumnWidths[1])}
+          </Text>
         )}
         <ModelsSpacer />
         <ModelsSectionTitle
@@ -7060,7 +7073,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             />
           ))
         ) : (
-          <Text color={theme.dim}>{fit('No exit audits logged yet.', modelsColumnWidths[1])}</Text>
+          <Text color={modelsQueryBlockedMessage ? theme.yellow : theme.dim}>
+            {fit(modelsQueryBlockedMessage || 'No exit audits logged yet.', modelsColumnWidths[1])}
+          </Text>
         )}
       </InkBox>
 
@@ -7170,7 +7185,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
             />
           ))
         ) : (
-          <Text color={theme.dim}>{fit('No retrain attempts logged yet.', modelsColumnWidths[2])}</Text>
+          <Text color={modelsQueryBlockedMessage ? theme.yellow : theme.dim}>
+            {fit(modelsQueryBlockedMessage || 'No retrain attempts logged yet.', modelsColumnWidths[2])}
+          </Text>
         )}
       </InkBox>
     </InkBox>

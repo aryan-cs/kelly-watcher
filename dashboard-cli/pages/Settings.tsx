@@ -109,6 +109,19 @@ function formatSettingsPercent(value: number | null | undefined, digits = 2): st
   return `${formatNumber(value * 100, digits)}%`
 }
 
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || Number.isNaN(bytes) || bytes < 0) return '-'
+  if (bytes < 1024) return `${formatNumber(bytes, 0)} B`
+  const units = ['KiB', 'MiB', 'GiB', 'TiB']
+  let value = bytes / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${formatNumber(value, value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[unitIndex]}`
+}
+
 function isMigratedRecoveryShadowStatus(status: string): boolean {
   return /(?:^|[_\s-])(migrated|legacy_migrated|mixed)(?:$|[_\s-])/i.test(status)
 }
@@ -223,6 +236,7 @@ const CONFIG_BLURBS: Record<string, string> = {
 
 const DANGER_ACTION_BLURBS: Record<string, string> = {
   live_trading: 'Uses the guarded backend live-mode endpoint.',
+  archive_trade_log: 'Queues a bounded trade-log archive batch. Startup and daily maintenance already perform the same cleanup automatically.',
   restart_shadow: 'Resets shadow state, history, and models.',
   recover_db: 'Restores the shadow ledger from the latest verified backup. A backup can be integrity-only or evidence-ready.'
 }
@@ -925,6 +939,188 @@ export function Settings({editor}: SettingsProps) {
   const settingsRowsBlocked = shadowRestartPending || startupRecoveryOnly || (dbIntegrityKnown && !dbIntegrityOk)
   const settingsRowsValue = settingsRowsBlocked ? 'BLOCKED' : String(counts[0]?.n || 0)
   const settingsRowsColor = settingsRowsBlocked ? theme.yellow : theme.white
+  const tradeLogArchiveStateKnown = Boolean(state.trade_log_archive_state_known)
+  const tradeLogArchiveEnabled = tradeLogArchiveStateKnown ? Boolean(state.trade_log_archive_enabled) : false
+  const tradeLogArchivePending = Boolean(state.trade_log_archive_pending)
+  const tradeLogArchiveRequestedAt = Math.max(0, Number(state.trade_log_archive_requested_at || 0))
+  const tradeLogArchiveRequestMessage = String(state.trade_log_archive_request_message || '').trim()
+  const tradeLogArchiveDbPath = String(state.trade_log_archive_db_path || '').trim()
+  const tradeLogArchiveArchivePath = String(state.trade_log_archive_archive_path || '').trim()
+  const tradeLogArchiveArchiveExists = Boolean(state.trade_log_archive_archive_exists)
+  const tradeLogArchiveActiveDbSizeBytes = Math.max(0, Number(state.trade_log_archive_active_db_size_bytes || 0))
+  const tradeLogArchiveActiveDbAllocatedBytes = Math.max(0, Number(state.trade_log_archive_active_db_allocated_bytes || 0))
+  const tradeLogArchiveArchiveDbSizeBytes = Math.max(0, Number(state.trade_log_archive_archive_db_size_bytes || 0))
+  const tradeLogArchiveArchiveDbAllocatedBytes = Math.max(0, Number(state.trade_log_archive_archive_db_allocated_bytes || 0))
+  const tradeLogArchiveActiveRowCount = Math.max(0, Number(state.trade_log_archive_active_row_count || 0))
+  const tradeLogArchiveArchiveRowCount = Math.max(0, Number(state.trade_log_archive_archive_row_count || 0))
+  const tradeLogArchiveEligibleRowCount = Math.max(0, Number(state.trade_log_archive_eligible_row_count || 0))
+  const tradeLogArchiveCutoffTs = Math.max(0, Number(state.trade_log_archive_cutoff_ts || 0))
+  const tradeLogArchivePreserveSinceTs = Math.max(0, Number(state.trade_log_archive_preserve_since_ts || 0))
+  const tradeLogArchiveLastRunAt = Math.max(0, Number(state.trade_log_archive_last_run_at || 0))
+  const tradeLogArchiveLastCandidateCount = Math.max(0, Number(state.trade_log_archive_last_candidate_count || 0))
+  const tradeLogArchiveLastArchivedCount = Math.max(0, Number(state.trade_log_archive_last_archived_count || 0))
+  const tradeLogArchiveLastDeletedCount = Math.max(0, Number(state.trade_log_archive_last_deleted_count || 0))
+  const tradeLogArchiveLastVacuumed = Boolean(state.trade_log_archive_last_vacuumed)
+  const tradeLogArchiveLastMessage = String(state.trade_log_archive_last_message || '').trim()
+  const tradeLogArchiveBlockReason = String(state.trade_log_archive_block_reason || '').trim()
+  const tradeLogArchiveStatus = !tradeLogArchiveStateKnown
+    ? 'checking'
+    : tradeLogArchivePending
+      ? 'pending'
+      : !tradeLogArchiveEnabled
+        ? 'disabled'
+        : tradeLogArchiveBlockReason
+          ? 'blocked'
+          : tradeLogArchiveLastRunAt > 0
+            ? tradeLogArchiveLastArchivedCount > 0
+              ? 'updated'
+              : 'idle'
+            : tradeLogArchiveEligibleRowCount > 0
+              ? 'ready'
+              : 'idle'
+  const tradeLogArchiveColor = !tradeLogArchiveStateKnown
+    ? theme.dim
+    : tradeLogArchivePending
+      ? theme.yellow
+      : !tradeLogArchiveEnabled
+        ? theme.red
+        : tradeLogArchiveBlockReason
+          ? theme.red
+          : tradeLogArchiveStatus === 'updated' || tradeLogArchiveStatus === 'ready'
+            ? theme.green
+            : tradeLogArchiveEligibleRowCount > 0
+              ? theme.yellow
+              : theme.dim
+  const tradeLogArchiveSummaryLines = useMemo(() => {
+    if (!tradeLogArchiveStateKnown) {
+      return ['waiting for the bot to publish trade-log archive state']
+    }
+    return [
+      `status: ${tradeLogArchiveStatus}`,
+      `enabled: ${tradeLogArchiveEnabled ? 'yes' : 'no'}`,
+      `hot db: ${formatBytes(tradeLogArchiveActiveDbSizeBytes)} logical / ${formatBytes(tradeLogArchiveActiveDbAllocatedBytes)} allocated (${formatNumber(tradeLogArchiveActiveRowCount)} rows)`,
+      `archive db: ${tradeLogArchiveArchiveExists ? `${formatBytes(tradeLogArchiveArchiveDbSizeBytes)} logical / ${formatBytes(tradeLogArchiveArchiveDbAllocatedBytes)} allocated` : 'missing'} (${formatNumber(tradeLogArchiveArchiveRowCount)} rows)`,
+      `eligible rows: ${formatNumber(tradeLogArchiveEligibleRowCount)}`,
+      `cutoff: ${tradeLogArchiveCutoffTs > 0 ? formatSettingsDateTime(tradeLogArchiveCutoffTs) : '-'}`,
+      `preserve since: ${tradeLogArchivePreserveSinceTs > 0 ? formatSettingsDateTime(tradeLogArchivePreserveSinceTs) : '-'}`,
+      `last run: ${tradeLogArchiveLastRunAt > 0 ? formatSettingsDateTime(tradeLogArchiveLastRunAt) : '-'}`,
+      `last moved: ${formatNumber(tradeLogArchiveLastDeletedCount)} deleted / ${formatNumber(tradeLogArchiveLastArchivedCount)} archived`,
+      tradeLogArchiveLastVacuumed ? 'last run vacuumed the hot DB' : 'last run did not vacuum the hot DB',
+      tradeLogArchiveLastMessage || tradeLogArchiveRequestMessage || 'startup and daily maintenance keep archive cleanup moving automatically'
+    ]
+  }, [
+    tradeLogArchiveActiveDbSizeBytes,
+    tradeLogArchiveActiveDbAllocatedBytes,
+    tradeLogArchiveActiveRowCount,
+    tradeLogArchiveArchiveDbSizeBytes,
+    tradeLogArchiveArchiveDbAllocatedBytes,
+    tradeLogArchiveArchiveExists,
+    tradeLogArchiveArchiveRowCount,
+    tradeLogArchiveBlockReason,
+    tradeLogArchiveEnabled,
+    tradeLogArchiveEligibleRowCount,
+    tradeLogArchiveLastArchivedCount,
+    tradeLogArchiveLastDeletedCount,
+    tradeLogArchiveLastMessage,
+    tradeLogArchiveLastRunAt,
+    tradeLogArchiveLastVacuumed,
+    tradeLogArchivePending,
+    tradeLogArchivePreserveSinceTs,
+    tradeLogArchiveRequestMessage,
+    tradeLogArchiveStateKnown,
+    tradeLogArchiveStatus,
+    tradeLogArchiveCutoffTs
+  ])
+  const tradeLogArchiveDetailLines = [
+    tradeLogArchiveBlockReason ? `block reason: ${tradeLogArchiveBlockReason}` : '',
+    tradeLogArchivePending ? 'manual archive request is queued and waiting for the backend to process it' : '',
+    'cleanup runs automatically at startup and on a daily schedule',
+    'manual archive uses the same bounded batch as the automatic cleanup job',
+    'rows newer than the current evidence/promotion baseline stay in the hot DB'
+  ].filter(Boolean)
+  const tradeLogArchiveDetailWrappedLines = tradeLogArchiveDetailLines.flatMap((line) =>
+    wrapText(line, Math.max(24, panelContentWidth))
+  )
+  const storageStateKnown = Boolean(state.storage_state_known)
+  const storageSaveDirSizeBytes = Math.max(0, Number(state.storage_save_dir_size_bytes || 0))
+  const storageDataDirSizeBytes = Math.max(0, Number(state.storage_data_dir_size_bytes || 0))
+  const storageLogDirSizeBytes = Math.max(0, Number(state.storage_log_dir_size_bytes || 0))
+  const storageTradingDbSizeBytes = Math.max(0, Number(state.storage_trading_db_size_bytes || 0))
+  const storageTradingDbAllocatedBytes = Math.max(0, Number(state.storage_trading_db_allocated_bytes || 0))
+  const storageTradeLogArchiveDbSizeBytes = Math.max(0, Number(state.storage_trade_log_archive_db_size_bytes || 0))
+  const storageTradeLogArchiveDbAllocatedBytes = Math.max(0, Number(state.storage_trade_log_archive_db_allocated_bytes || 0))
+  const storageIdentityCacheSizeBytes = Math.max(0, Number(state.storage_identity_cache_size_bytes || 0))
+  const storageEventsFileSizeBytes = Math.max(0, Number(state.storage_events_file_size_bytes || 0))
+  const storageBackgroundLogSizeBytes = Math.max(0, Number(state.storage_background_log_size_bytes || 0))
+  const storageModelArtifactSizeBytes = Math.max(0, Number(state.storage_model_artifact_size_bytes || 0))
+  const storageArtifactQuarantineFileCount = Math.max(0, Number(state.storage_artifact_quarantine_file_count || 0))
+  const storageArtifactQuarantineSizeBytes = Math.max(0, Number(state.storage_artifact_quarantine_size_bytes || 0))
+  const storageDbRecoveryQuarantineFileCount = Math.max(0, Number(state.storage_db_recovery_quarantine_file_count || 0))
+  const storageDbRecoveryQuarantineSizeBytes = Math.max(0, Number(state.storage_db_recovery_quarantine_size_bytes || 0))
+  const storageMessage = String(state.storage_message || '').trim()
+  const storageStatus = !storageStateKnown
+    ? 'checking'
+    : !dbIntegrityOk
+      ? 'blocked_db_integrity'
+      : storageSaveDirSizeBytes >= 1024 * 1024 * 1024 || storageTradingDbSizeBytes >= 512 * 1024 * 1024
+        ? 'pressure'
+        : 'ok'
+  const storageColor = !storageStateKnown
+    ? theme.dim
+    : !dbIntegrityOk
+      ? theme.red
+      : storageStatus === 'pressure'
+        ? theme.yellow
+        : theme.green
+  const storageSummaryLines = useMemo(() => {
+    if (!storageStateKnown) {
+      return ['waiting for the bot to publish runtime storage health']
+    }
+    return [
+      `status: ${storageStatus}`,
+      `save/: ${formatBytes(storageSaveDirSizeBytes)}`,
+      `save/data: ${formatBytes(storageDataDirSizeBytes)}`,
+      `save/logs: ${formatBytes(storageLogDirSizeBytes)}`,
+      `trading.db: ${formatBytes(storageTradingDbSizeBytes)} logical / ${formatBytes(storageTradingDbAllocatedBytes)} allocated`,
+      `archive db: ${formatBytes(storageTradeLogArchiveDbSizeBytes)} logical / ${formatBytes(storageTradeLogArchiveDbAllocatedBytes)} allocated`,
+      `identity cache: ${formatBytes(storageIdentityCacheSizeBytes)}`,
+      `events.jsonl: ${formatBytes(storageEventsFileSizeBytes)}`,
+      `shadow runtime log: ${formatBytes(storageBackgroundLogSizeBytes)}`,
+      `model artifact: ${formatBytes(storageModelArtifactSizeBytes)}`,
+      `artifact quarantine: ${formatNumber(storageArtifactQuarantineFileCount)} file(s) / ${formatBytes(storageArtifactQuarantineSizeBytes)}`,
+      `DB recovery quarantine: ${formatNumber(storageDbRecoveryQuarantineFileCount)} file(s) / ${formatBytes(storageDbRecoveryQuarantineSizeBytes)}`,
+      storageMessage || 'identity-cache pruning and artifact-quarantine retention now run during startup and hourly maintenance'
+    ]
+  }, [
+    storageArtifactQuarantineFileCount,
+    storageArtifactQuarantineSizeBytes,
+    storageBackgroundLogSizeBytes,
+    storageDataDirSizeBytes,
+    storageDbRecoveryQuarantineFileCount,
+    storageDbRecoveryQuarantineSizeBytes,
+    storageEventsFileSizeBytes,
+    storageIdentityCacheSizeBytes,
+    storageLogDirSizeBytes,
+    storageMessage,
+    storageModelArtifactSizeBytes,
+    storageSaveDirSizeBytes,
+    storageStateKnown,
+    storageStatus,
+    storageTradeLogArchiveDbSizeBytes,
+    storageTradeLogArchiveDbAllocatedBytes,
+    storageTradingDbSizeBytes,
+    storageTradingDbAllocatedBytes
+  ])
+  const storageDetailWrappedLines = [
+    !dbIntegrityOk ? 'SQLite integrity failure still blocks some hot-DB cleanup paths until Recover DB or Restart Shadow restores a clean ledger' : '',
+    storageTradingDbAllocatedBytes > Math.max(storageTradingDbSizeBytes, 1) * 1.25
+      ? 'trading.db currently consumes materially more disk than its logical file size'
+      : '',
+    'trade-log archiving handles old resolved rows, while this panel tracks the remaining runtime storage footprint',
+    'shadow runtime stdio now rotates during long-running detached sessions instead of growing one file until restart'
+  ]
+    .filter(Boolean)
+    .flatMap((line) => wrapText(line, Math.max(24, panelContentWidth)))
   const shadowHistoryReadyForLive = shadowHistoryStateKnown && shadowGateReady
   const segmentShadowReadyForLive = shadowSegmentStateKnown
     && shadowSegmentStatus === 'ready'
@@ -1391,6 +1587,75 @@ export function Settings({editor}: SettingsProps) {
       ) : null}
 
       <InkBox marginTop={1}>
+        <Box title="Trade Log Archive" width="100%" accent={tradeLogArchiveStateKnown && tradeLogArchiveEnabled && !tradeLogArchivePending && !tradeLogArchiveBlockReason}>
+          <InkBox flexDirection="column" marginTop={1}>
+            <StatRow label="Status" value={tradeLogArchiveStatus} color={tradeLogArchiveColor} />
+            <StatRow label="Enabled" value={tradeLogArchiveEnabled ? 'yes' : 'no'} color={tradeLogArchiveEnabled ? theme.green : theme.red} />
+            <StatRow label="Hot DB" value={`${formatBytes(tradeLogArchiveActiveDbSizeBytes)} logical / ${formatBytes(tradeLogArchiveActiveDbAllocatedBytes)} allocated`} color={theme.white} />
+            <StatRow label="Archive DB" value={tradeLogArchiveArchiveExists ? `${formatBytes(tradeLogArchiveArchiveDbSizeBytes)} logical / ${formatBytes(tradeLogArchiveArchiveDbAllocatedBytes)} allocated` : 'missing'} color={tradeLogArchiveArchiveExists ? theme.white : theme.dim} />
+            <StatRow label="Hot rows" value={formatNumber(tradeLogArchiveActiveRowCount)} color={theme.white} />
+            <StatRow label="Archive rows" value={formatNumber(tradeLogArchiveArchiveRowCount)} color={theme.white} />
+            <StatRow label="Eligible" value={formatNumber(tradeLogArchiveEligibleRowCount)} color={tradeLogArchiveEligibleRowCount > 0 ? theme.yellow : theme.white} />
+            <StatRow label="Last run" value={tradeLogArchiveLastRunAt > 0 ? formatSettingsDateTime(tradeLogArchiveLastRunAt) : '-'} color={theme.white} />
+            <StatRow label="Last moved" value={`${formatNumber(tradeLogArchiveLastDeletedCount)} deleted / ${formatNumber(tradeLogArchiveLastArchivedCount)} archived`} color={theme.white} />
+            <InkBox flexDirection="column" marginTop={1}>
+              <Text color={theme.dim}>Summary</Text>
+              {tradeLogArchiveSummaryLines.map((line, index) => (
+                <Text key={`trade-log-archive-summary-${index}`} color={tradeLogArchiveColor}>
+                  {line}
+                </Text>
+              ))}
+              {tradeLogArchiveDetailWrappedLines.length > 0 ? (
+                <InkBox flexDirection="column" marginTop={1}>
+                  <Text color={theme.dim}>Details</Text>
+                  {tradeLogArchiveDetailWrappedLines.map((line, index) => (
+                    <Text key={`trade-log-archive-detail-${index}`} color={tradeLogArchiveColor}>
+                      {line}
+                    </Text>
+                  ))}
+                </InkBox>
+              ) : null}
+            </InkBox>
+          </InkBox>
+        </Box>
+      </InkBox>
+
+      <InkBox marginTop={1}>
+        <Box title="Storage Health" width="100%" accent={storageStateKnown && dbIntegrityOk && storageStatus !== 'pressure'}>
+          <InkBox flexDirection="column" marginTop={1}>
+            <StatRow label="Status" value={storageStatus} color={storageColor} />
+            <StatRow label="save/" value={formatBytes(storageSaveDirSizeBytes)} color={theme.white} />
+            <StatRow label="save/data" value={formatBytes(storageDataDirSizeBytes)} color={theme.white} />
+            <StatRow label="save/logs" value={formatBytes(storageLogDirSizeBytes)} color={theme.white} />
+            <StatRow label="trading.db" value={`${formatBytes(storageTradingDbSizeBytes)} logical / ${formatBytes(storageTradingDbAllocatedBytes)} allocated`} color={storageTradingDbAllocatedBytes > Math.max(storageTradingDbSizeBytes, 1) * 1.25 ? theme.yellow : theme.white} />
+            <StatRow label="archive db" value={`${formatBytes(storageTradeLogArchiveDbSizeBytes)} logical / ${formatBytes(storageTradeLogArchiveDbAllocatedBytes)} allocated`} color={theme.white} />
+            <StatRow label="identity cache" value={formatBytes(storageIdentityCacheSizeBytes)} color={theme.white} />
+            <StatRow label="runtime log" value={formatBytes(storageBackgroundLogSizeBytes)} color={theme.white} />
+            <StatRow label="artifact quarantine" value={`${formatNumber(storageArtifactQuarantineFileCount)} / ${formatBytes(storageArtifactQuarantineSizeBytes)}`} color={theme.white} />
+            <StatRow label="recovery quarantine" value={`${formatNumber(storageDbRecoveryQuarantineFileCount)} / ${formatBytes(storageDbRecoveryQuarantineSizeBytes)}`} color={theme.white} />
+            <InkBox flexDirection="column" marginTop={1}>
+              <Text color={theme.dim}>Summary</Text>
+              {storageSummaryLines.map((line, index) => (
+                <Text key={`storage-summary-${index}`} color={storageColor}>
+                  {line}
+                </Text>
+              ))}
+              {storageDetailWrappedLines.length > 0 ? (
+                <InkBox flexDirection="column" marginTop={1}>
+                  <Text color={theme.dim}>Details</Text>
+                  {storageDetailWrappedLines.map((line, index) => (
+                    <Text key={`storage-detail-${index}`} color={storageColor}>
+                      {line}
+                    </Text>
+                  ))}
+                </InkBox>
+              ) : null}
+            </InkBox>
+          </InkBox>
+        </Box>
+      </InkBox>
+
+      <InkBox marginTop={1}>
         <Box title="Database Recovery" width="100%" accent={dbRecoveryStateKnown && dbRecoveryCandidateReady && !dbRecoveryPendingState}>
           <InkBox flexDirection="column" marginTop={1}>
             <StatRow label="Status" value={dbRecoveryStatus} color={dbRecoveryColor} />
@@ -1585,6 +1850,16 @@ export function Settings({editor}: SettingsProps) {
                 const value =
                   action.id === 'live_trading' && (startupRecoveryOnly || shadowRestartPending)
                     ? 'BLOCKED'
+                    : action.id === 'archive_trade_log'
+                      ? !tradeLogArchiveStateKnown
+                        ? 'CHECKING'
+                        : tradeLogArchivePending
+                          ? 'PENDING'
+                          : !tradeLogArchiveEnabled
+                            ? 'DISABLED'
+                            : tradeLogArchiveBlockReason
+                              ? 'BLOCKED'
+                              : `${formatNumber(tradeLogArchiveEligibleRowCount)} rows`
                     : shadowRestartPending && (action.id === 'restart_shadow' || action.id === 'recover_db')
                       ? 'PENDING'
                     : action.id === 'recover_db'
@@ -1597,6 +1872,18 @@ export function Settings({editor}: SettingsProps) {
                       : shadowRestartPending
                         ? theme.yellow
                       : liveTradingEnabled ? theme.green : theme.red
+                    : action.id === 'archive_trade_log'
+                      ? !tradeLogArchiveStateKnown
+                        ? theme.dim
+                        : tradeLogArchivePending
+                          ? theme.yellow
+                          : !tradeLogArchiveEnabled
+                            ? theme.red
+                            : tradeLogArchiveBlockReason
+                              ? theme.red
+                              : tradeLogArchiveEligibleRowCount > 0
+                                ? theme.green
+                                : theme.white
                     : shadowRestartPending && (action.id === 'restart_shadow' || action.id === 'recover_db')
                       ? theme.yellow
                     : action.id === 'recover_db'

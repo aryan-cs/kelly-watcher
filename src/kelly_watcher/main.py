@@ -199,6 +199,7 @@ from kelly_watcher.config import (
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
     heuristic_min_entry_price,
+    log_level,
     min_execution_window_seconds,
     min_bet_usd,
     min_confidence,
@@ -261,19 +262,22 @@ from kelly_watcher.config import (
     watched_wallets,
     xgboost_allowed_entry_price_bands,
 )
-from kelly_watcher.dashboard_api import DashboardApiServer, ENV_PATH, _write_env_value, start_dashboard_api_server
+from kelly_watcher.dashboard_api import DashboardApiServer, start_dashboard_api_server
 from kelly_watcher.data.db import (
     archive_old_trade_log_rows,
     DB_PATH,
     create_verified_backup,
     database_integrity_state,
+    delete_runtime_setting,
     db_recovery_state,
     get_conn,
     get_conn_for_path,
+    get_runtime_setting,
     get_trade_log_read_conn,
     init_db,
     import_managed_wallets_from_env,
     load_managed_wallets,
+    set_runtime_setting,
     recover_db_from_verified_backup,
     trade_log_archive_db_path,
     trade_log_archive_state,
@@ -332,6 +336,7 @@ from kelly_watcher.engine.wallet_trust import (
     allow_duplicate_side_override,
     apply_wallet_trust_sizing,
     get_wallet_trust_state,
+    wallet_family_edge_threshold_uplift,
 )
 from kelly_watcher.engine.watchlist_manager import WatchlistManager
 
@@ -339,7 +344,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=log_level(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10 * 1024 * 1024, backupCount=5),
@@ -367,18 +372,55 @@ _MAX_HORIZON_RE = re.compile(r"beyond max horizon ([0-9.]+[smhdw])", re.IGNORECA
 
 
 def _runtime_managed_wallets() -> list[str]:
+    wallets = _managed_wallet_registry_runtime_wallets()
+    return list(wallets or [])
+
+
+def _managed_wallet_registry_status(state: dict[str, object] | None = None) -> str:
+    if state is None:
+        state = managed_wallet_registry_state()
+    status = str(state.get("managed_wallet_registry_status") or "").strip().lower()
+    if status in {"ready", "empty", "missing", "unreadable"}:
+        return status
+    if not bool(state.get("managed_wallet_registry_available", True)):
+        return "missing"
     try:
-        wallets = load_managed_wallets()
+        total_count = int(state.get("managed_wallet_total_count") or 0)
+    except (TypeError, ValueError):
+        total_count = 0
+    if total_count > 0:
+        return "ready"
+    wallets = state.get("managed_wallets") or []
+    if isinstance(wallets, list) and wallets:
+        return "ready"
+    return "empty"
+
+
+def _managed_wallet_registry_runtime_wallets(state: dict[str, object] | None = None) -> list[str] | None:
+    if state is None:
+        state = managed_wallet_registry_state()
+    status = _managed_wallet_registry_status(state)
+    if status in {"missing", "unreadable"}:
+        return None
+    wallets = state.get("managed_wallets")
+    if isinstance(wallets, list):
+        return [str(wallet).strip().lower() for wallet in wallets if str(wallet).strip()]
+    try:
+        return list(load_managed_wallets())
     except Exception:
-        wallets = []
-    return list(wallets)
+        return [] if status == "empty" else None
 
 
-def _managed_wallet_registry_total_count() -> int:
+def _managed_wallet_registry_total_count() -> int | None:
     try:
         state = managed_wallet_registry_state()
     except Exception:
+        return None
+    status = _managed_wallet_registry_status(state)
+    if status == "empty":
         return 0
+    if status in {"missing", "unreadable"}:
+        return None
     try:
         total_count = int(state.get("managed_wallet_total_count") or 0)
     except (TypeError, ValueError):
@@ -391,10 +433,18 @@ def _managed_wallet_registry_total_count() -> int:
     return 0
 
 
-def _should_import_bootstrap_watched_wallets(clear_all_snapshot_requested: bool) -> bool:
-    if clear_all_snapshot_requested or not WATCHED_WALLETS:
+def _should_import_bootstrap_watched_wallets(
+    clear_all_snapshot_requested: bool,
+    *,
+    snapshot_restore_failed: bool = False,
+) -> bool:
+    if clear_all_snapshot_requested or snapshot_restore_failed or not WATCHED_WALLETS:
         return False
-    return _managed_wallet_registry_total_count() <= 0
+    try:
+        state = managed_wallet_registry_state()
+    except Exception:
+        return False
+    return _managed_wallet_registry_status(state) == "empty"
 
 
 def _managed_wallet_count() -> int:
@@ -748,6 +798,12 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "bankroll_usd": None,
         "last_event_count": 0,
         "polled_wallet_count": 0,
+        "managed_wallet_registry_available": False,
+        "managed_wallet_registry_status": "unknown",
+        "managed_wallet_registry_error": "",
+        "managed_wallet_count": 0,
+        "managed_wallet_total_count": 0,
+        "managed_wallet_registry_updated_at": 0,
         "retrain_in_progress": False,
         "retrain_started_at": 0,
         "last_retrain_started_at": 0,
@@ -897,6 +953,8 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "db_recovery_candidate_class_reason": "",
         "db_recovery_latest_verified_backup_path": "",
         "db_recovery_latest_verified_backup_at": 0,
+        "db_recovery_inventory": [],
+        "db_recovery_inventory_count": 0,
         "db_recovery_shadow_state_known": False,
         "db_recovery_shadow_candidate_path": "",
         "db_recovery_shadow_status": "checking",
@@ -995,6 +1053,15 @@ def _effective_runtime_mode(configured_mode: str, state: Mapping[str, object]) -
     configured = _normalize_trading_mode(configured_mode)
     if configured != "live":
         return "shadow", ""
+    if bool(state.get("startup_failed")) or bool(state.get("startup_validation_failed")):
+        reason = (
+            str(state.get("startup_block_reason") or "").strip()
+            or str(state.get("startup_failure_message") or "").strip()
+            or str(state.get("startup_validation_message") or "").strip()
+            or str(state.get("startup_detail") or "").strip()
+            or "startup failed"
+        )
+        return "shadow", f"configured live but forced shadow: {reason}"
     if bool(state.get("startup_blocked")) or bool(state.get("startup_recovery_only")):
         reason = str(state.get("startup_block_reason") or "").strip() or "startup blocked"
         return "shadow", f"configured live but forced shadow: {reason}"
@@ -1045,6 +1112,16 @@ def _write_bot_state(*, replace: bool = False, **extra) -> None:
         }
     )
     state.update(extra)
+    startup_failed = bool(state.get("startup_failed"))
+    startup_validation_failed = bool(state.get("startup_validation_failed"))
+    if startup_failed or startup_validation_failed:
+        state["startup_blocked"] = True
+        if not str(state.get("startup_block_reason") or "").strip():
+            state["startup_block_reason"] = (
+                str(state.get("startup_failure_message") or "").strip()
+                or str(state.get("startup_validation_message") or "").strip()
+                or str(state.get("startup_detail") or "").strip()
+            )
     mode, mode_block_reason = _effective_runtime_mode(configured_mode, state)
     state.update(
         {
@@ -1099,9 +1176,9 @@ def _persist_startup_failure_state(
         startup_failure_message=str(message or "").strip(),
         startup_validation_failed=bool(validation_failed),
         startup_validation_message=str(message or "").strip() if validation_failed else "",
-        startup_blocked=False,
+        startup_blocked=True,
         startup_recovery_only=False,
-        startup_block_reason="",
+        startup_block_reason=str(message or "").strip() or str(detail or "").strip(),
     )
     for loader, payload_builder in (
         (_latest_retrain_run, _latest_retrain_state_payload),
@@ -1169,6 +1246,10 @@ def _persist_startup_failure_state(
     except Exception as exc:
         state.update(_shadow_snapshot_error_payload(str(exc)))
         state.update(_routed_shadow_performance_error_payload(str(exc)))
+    try:
+        state.update(managed_wallet_registry_state())
+    except Exception:
+        pass
     try:
         state.update(database_integrity_state())
     except Exception:
@@ -2260,7 +2341,8 @@ def _process_manual_trade_request(
             _skip_event(event, amount_usd, exposure_block_reason, decision="MANUAL")
             return
 
-        market_f = build_market_features(snapshot, close_time, amount_usd, fill_estimate.avg_price)
+        quoted_price = _quoted_execution_price(snapshot, fill_estimate.avg_price)
+        market_f = build_market_features(snapshot, close_time, amount_usd, quoted_price)
         if market_f is None:
             event = _manual_trade_event(
                 request,
@@ -2293,6 +2375,31 @@ def _process_manual_trade_request(
             metadata_fetched_at=metadata_fetched_at,
             orderbook_fetched_at=orderbook_fetched_at,
         )
+        latency_reason = executor.entry_latency_block_reason(event)
+        if latency_reason:
+            manual_signal = {
+                "mode": "manual",
+                "manual": True,
+                "source": request.source,
+                "trader": {"score": None},
+                "market": {"score": None},
+            }
+            executor.log_skip(
+                trade_id=manual_trade_id,
+                market_id=request.market_id,
+                question=question,
+                trader_address="manual",
+                side=request.side,
+                price=fill_estimate.avg_price,
+                size_usd=amount_usd,
+                confidence=0.0,
+                kelly_f=0.0,
+                reason=latency_reason,
+                event=event,
+                signal=manual_signal,
+            )
+            _skip_event(event, amount_usd, latency_reason, decision="MANUAL")
+            return
         result = executor.execute(
             trade_id=manual_trade_id,
             market_id=request.market_id,
@@ -2506,6 +2613,52 @@ def _pause_event(event, amount_usd: float, reason: str) -> None:
     _skip_event(event, amount_usd, reason, decision="PAUSE")
 
 
+def _quoted_execution_price(snapshot: Mapping[str, Any] | None, fallback: float | None = None) -> float:
+    payload = snapshot if isinstance(snapshot, Mapping) else {}
+    best_ask = float(payload.get("best_ask") or 0.0)
+    if 0.0 < best_ask < 1.0:
+        return best_ask
+    mid = float(payload.get("mid") or 0.0)
+    if 0.0 < mid < 1.0:
+        return mid
+    fallback_price = float(fallback or 0.0)
+    return fallback_price if 0.0 < fallback_price < 1.0 else 0.0
+
+
+def _model_fill_edge_block_reason(signal: Mapping[str, Any] | None, fill_economics) -> str | None:
+    if not isinstance(signal, Mapping):
+        return None
+    if str(signal.get("mode") or "").strip().lower() != "xgboost":
+        return None
+    if fill_economics is None:
+        return None
+    try:
+        confidence = float(signal.get("confidence"))
+        effective_price = float(fill_economics.sizing_effective_price)
+        edge_threshold = float(signal.get("edge_threshold") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    wallet_trust = signal.get("wallet_trust")
+    wallet_family = ""
+    if isinstance(wallet_trust, Mapping):
+        wallet_family = str(wallet_trust.get("family") or "").strip().lower()
+    family_edge_uplift = wallet_family_edge_threshold_uplift(wallet_family)
+    required_edge_threshold = edge_threshold + family_edge_uplift
+    if confidence <= 0 or effective_price <= 0:
+        return None
+    estimated_edge = confidence - effective_price
+    if estimated_edge + 1e-9 >= required_edge_threshold:
+        return None
+    if family_edge_uplift > 0 and wallet_family:
+        return (
+            f"estimated fill edge {estimated_edge:.3f} < threshold {required_edge_threshold:.3f} "
+            f"after slippage for wallet family {wallet_family.replace('_', ' ')}"
+        )
+    return (
+        f"estimated fill edge {estimated_edge:.3f} < threshold {required_edge_threshold:.3f} after slippage"
+    )
+
+
 def _is_non_actionable_exit_reason(reason: str) -> bool:
     return (reason or "").strip().lower() == "watched trader exited, but we had no matching position open to close"
 
@@ -2696,7 +2849,8 @@ def process_event(
         _reject_event(event, 0.0, rough_size, reason)
         return 0.0
 
-    market_f = build_market_features(event.snapshot, event.close_time, rough_size, rough_fill.avg_price)
+    quoted_market_price = _quoted_execution_price(event.snapshot, event.price)
+    market_f = build_market_features(event.snapshot, event.close_time, rough_size, quoted_market_price)
     if market_f is None:
         reason = _humanize_reason("failed to build market features")
         executor.log_skip(
@@ -2790,7 +2944,7 @@ def process_event(
     )
     preview_sizing = size_signal(
         signal["confidence"],
-        rough_fill.avg_price if rough_fill.avg_price > 0 else event.price,
+        quoted_market_price if quoted_market_price > 0 else event.price,
         bankroll,
         signal.get("mode", "heuristic"),
         effective_market_price=rough_entry_economics.sizing_effective_price,
@@ -2882,7 +3036,7 @@ def process_event(
             break
         next_sizing = size_signal(
             signal["confidence"],
-            fill_estimate.avg_price if fill_estimate.avg_price > 0 else event.price,
+            quoted_market_price if quoted_market_price > 0 else event.price,
             bankroll,
             signal.get("mode", "heuristic"),
             effective_market_price=fill_economics.sizing_effective_price,
@@ -3066,11 +3220,55 @@ def process_event(
         _skip_event(event, sizing["dollar_size"], exposure_block_reason)
         return 0.0
 
+    fill_edge_block_reason = _model_fill_edge_block_reason(signal, fill_economics)
+    if fill_edge_block_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal["confidence"],
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=fill_edge_block_reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _skip_event(event, sizing["dollar_size"], fill_edge_block_reason)
+        return 0.0
+
+    latency_reason = executor.entry_latency_block_reason(event)
+    if latency_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal["confidence"],
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=latency_reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _skip_event(event, sizing["dollar_size"], latency_reason)
+        return 0.0
+
     market_f_final = build_market_features(
         event.snapshot,
         event.close_time,
         sizing["dollar_size"],
-        fill_estimate.avg_price,
+        quoted_market_price if quoted_market_price > 0 else fill_estimate.avg_price,
     )
     result = executor.execute(
         trade_id=event.trade_id,
@@ -3990,6 +4188,7 @@ def _shadow_history_state_payload(
 
 def _segment_shadow_state_payload(report: dict[str, Any]) -> dict[str, object]:
     segments = report.get("segments") or []
+    wallet_families = report.get("wallet_families") or []
     routed_resolved, legacy_resolved, history_status, routed_coverage_pct = _segment_history_metrics_from_report(report)
     routed_state = _routed_shadow_gate_state(report)
     return {
@@ -4012,6 +4211,13 @@ def _segment_shadow_state_payload(report: dict[str, Any]) -> dict[str, object]:
         "shadow_segment_routing_coverage_pct": routed_coverage_pct,
         "shadow_segment_summary_json": json.dumps(_json_safe_value(segments), separators=(",", ":")),
         "shadow_segment_block_reason": str(report.get("summary") or "").strip(),
+        "shadow_wallet_family_state_known": True,
+        "shadow_wallet_family_history_status": str(report.get("wallet_family_history_status") or "empty"),
+        "shadow_wallet_family_classified_resolved": max(int(report.get("wallet_family_classified_resolved") or 0), 0),
+        "shadow_wallet_family_unassigned_resolved": max(int(report.get("wallet_family_unassigned_resolved") or 0), 0),
+        "shadow_wallet_family_coverage_pct": report.get("wallet_family_coverage_pct"),
+        "shadow_wallet_family_summary_json": json.dumps(_json_safe_value(wallet_families), separators=(",", ":")),
+        "shadow_wallet_family_block_reason": str(report.get("wallet_family_summary") or "").strip(),
         **routed_state,
     }
 
@@ -4037,6 +4243,13 @@ def _segment_shadow_error_payload(message: str) -> dict[str, object]:
         "shadow_segment_routing_coverage_pct": None,
         "shadow_segment_summary_json": "[]",
         "shadow_segment_block_reason": str(message or "").strip(),
+        "shadow_wallet_family_state_known": True,
+        "shadow_wallet_family_history_status": "empty",
+        "shadow_wallet_family_classified_resolved": 0,
+        "shadow_wallet_family_unassigned_resolved": 0,
+        "shadow_wallet_family_coverage_pct": None,
+        "shadow_wallet_family_summary_json": "[]",
+        "shadow_wallet_family_block_reason": str(message or "").strip(),
         "routed_shadow_state_known": True,
         "routed_shadow_status": "error",
         "routed_shadow_min_resolved": max(int(SEGMENT_SHADOW_MIN_RESOLVED or 0), 0),
@@ -4992,13 +5205,11 @@ def _apply_env_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
     if not prepared:
         raise ValueError("Promotion config payload did not contain any promotable config keys")
     snapshot = {
-        "env_path": ENV_PATH,
-        "env_file_existed": ENV_PATH.exists(),
-        "env_file_text": ENV_PATH.read_text(encoding="utf-8") if ENV_PATH.exists() else None,
+        "runtime_settings": {key: get_runtime_setting(key) for key, _value in prepared},
         "env_values": {key: os.environ.get(key) for key, _value in prepared},
     }
     for key, value in prepared:
-        _write_env_value(key, value)
+        set_runtime_setting(key, value)
         os.environ[key] = value
     return {
         "applied_keys": [key for key, _value in prepared],
@@ -5009,14 +5220,17 @@ def _apply_env_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _restore_env_config_payload(snapshot: dict[str, Any]) -> None:
-    env_path = snapshot.get("env_path")
-    if not isinstance(env_path, Path):
-        raise ValueError("Invalid env snapshot path")
-    if bool(snapshot.get("env_file_existed")):
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text(str(snapshot.get("env_file_text") or ""), encoding="utf-8")
-    elif env_path.exists():
-        env_path.unlink()
+    runtime_settings = snapshot.get("runtime_settings") or {}
+    if not isinstance(runtime_settings, dict):
+        raise ValueError("Invalid runtime settings snapshot")
+    for raw_key, previous_value in runtime_settings.items():
+        key = str(raw_key or "").strip().upper()
+        if not key:
+            continue
+        if previous_value is None:
+            delete_runtime_setting(key)
+        else:
+            set_runtime_setting(key, str(previous_value))
 
     env_values = snapshot.get("env_values") or {}
     if isinstance(env_values, dict):
@@ -5725,8 +5939,15 @@ def _validate_startup() -> None:
             errors.append(str(exc))
             return None
 
-    runtime_wallets = _runtime_managed_wallets()
-    if not runtime_wallets:
+    registry_state = managed_wallet_registry_state()
+    registry_status = _managed_wallet_registry_status(registry_state)
+    runtime_wallets = _managed_wallet_registry_runtime_wallets(registry_state) or []
+    if registry_status == "missing":
+        errors.append("managed wallet registry table is missing")
+    elif registry_status == "unreadable":
+        detail = str(registry_state.get("managed_wallet_registry_error") or "").strip()
+        errors.append("managed wallet registry is unreadable" + (f": {detail}" if detail else ""))
+    elif not runtime_wallets:
         errors.append("managed wallet registry is empty")
 
     confidence = _capture_config(min_confidence)
@@ -6252,6 +6473,7 @@ def main() -> None:
 
     init_db()
     clear_all_snapshot_requested = False
+    snapshot_restore_failed = False
     try:
         snapshot_result = restore_managed_wallet_registry_snapshot()
         clear_all_snapshot_requested = bool(snapshot_result.get("clear_all"))
@@ -6259,9 +6481,13 @@ def main() -> None:
         if restored_wallets:
             logger.info("Restored %s managed wallet(s) from shadow-reset snapshot", len(restored_wallets))
     except Exception:
+        snapshot_restore_failed = True
         logger.warning("Managed wallet registry snapshot restore failed", exc_info=True)
     try:
-        if _should_import_bootstrap_watched_wallets(clear_all_snapshot_requested):
+        if _should_import_bootstrap_watched_wallets(
+            clear_all_snapshot_requested,
+            snapshot_restore_failed=snapshot_restore_failed,
+        ):
             imported_count = import_managed_wallets_from_env(WATCHED_WALLETS)
             if imported_count > 0:
                 logger.info("Imported %s managed wallet(s) from WATCHED_WALLETS bootstrap", imported_count)
@@ -7130,10 +7356,22 @@ def main() -> None:
 
             def _refresh_managed_wallet_registry() -> None:
                 nonlocal runtime_wallets
-                managed_wallets = load_managed_wallets()
-                if not managed_wallets:
+                registry_state = managed_wallet_registry_state()
+                managed_wallets = _managed_wallet_registry_runtime_wallets(registry_state)
+                if managed_wallets is None:
+                    if runtime_wallets:
+                        runtime_wallets = []
+                        watchlist.replace_wallets([])
+                        if tracker is not None:
+                            tracker.replace_wallets([])
+                        refresh_trader_cache([])
+                    _persist_bot_state(
+                        **watchlist.state_fields(),
+                        **registry_state,
+                    )
                     return
                 if managed_wallets == runtime_wallets:
+                    _persist_bot_state(**registry_state)
                     return
                 runtime_wallets = managed_wallets
                 watchlist.replace_wallets(managed_wallets)
@@ -7142,11 +7380,14 @@ def main() -> None:
                 refresh_trader_cache(managed_wallets)
                 _persist_bot_state(
                     **watchlist.state_fields(),
-                    **managed_wallet_registry_state(),
+                    **registry_state,
                 )
 
             def _refresh_wallet_discovery() -> None:
                 summary = refresh_wallet_discovery_candidates(runtime_wallets)
+                promoted_count = max(int(summary.get("promoted_count") or 0), 0)
+                if promoted_count > 0:
+                    _refresh_managed_wallet_registry()
                 message = str(summary.get("message") or "").strip()
                 if message:
                     if bool(summary.get("ok")):

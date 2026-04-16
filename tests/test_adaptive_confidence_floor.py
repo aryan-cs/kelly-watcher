@@ -94,6 +94,37 @@ class AdaptiveConfidenceFloorTest(unittest.TestCase):
         self.assertEqual(decision.floor, 0.605)
         self.assertGreater(decision.adjustment, 0.0)
 
+    def test_draggy_wallet_family_raises_floor_even_without_local_returns(self) -> None:
+        decision = derive_adaptive_floor(
+            base_floor=0.60,
+            bucket="15m_1h",
+            bucket_stats=BucketStats(
+                resolved_executed_count=0,
+                resolved_executed_avg_return=None,
+                low_conf_samples=(),
+            ),
+            wallet_family="timing_sensitive",
+        )
+
+        self.assertEqual(decision.floor, 0.605)
+        self.assertGreater(decision.adjustment, 0.0)
+        self.assertIn("wallet family timing sensitive requires a higher confidence floor", decision.reasons)
+
+    def test_liquidity_sensitive_wallet_family_gets_larger_floor_uplift(self) -> None:
+        decision = derive_adaptive_floor(
+            base_floor=0.60,
+            bucket="1h_6h",
+            bucket_stats=BucketStats(
+                resolved_executed_count=0,
+                resolved_executed_avg_return=None,
+                low_conf_samples=(),
+            ),
+            wallet_family="liquidity_sensitive",
+        )
+
+        self.assertEqual(decision.floor, 0.61)
+        self.assertGreater(decision.adjustment, 0.0)
+
     def test_heuristic_size_respects_min_confidence_override(self) -> None:
         with patch.dict(os.environ, {"MIN_CONFIDENCE": "0.60"}, clear=False):
             rejected = heuristic_size(0.59, 100.0)

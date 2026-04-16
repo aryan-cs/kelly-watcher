@@ -26,6 +26,7 @@ from kelly_watcher.config import (
     max_live_health_failures,
     max_market_exposure_fraction,
     max_orderbook_staleness_seconds,
+    max_source_latency_seconds,
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
     settlement_fixed_cost_usd,
@@ -669,7 +670,7 @@ class PolymarketExecutor:
         if remaining_usd > 0.01 or filled_shares <= 0:
             return None, "shadow simulation rejected the buy because there was not enough ask depth to fill the whole order"
 
-        spent_usd = round(float(dollar_size), 6)
+        spent_usd = round(spent_usd, 6)
         avg_price = spent_usd / filled_shares if filled_shares > 0 else 0.0
         return SimulatedFill(spent_usd=spent_usd, shares=filled_shares, avg_price=avg_price), None
 
@@ -1126,6 +1127,56 @@ class PolymarketExecutor:
             gross_notional_usd=fill.spent_usd,
             gross_price=fill.avg_price,
             market_meta=market_meta,
+        )
+
+    @staticmethod
+    def _source_latency_seconds(event, *, now_ts: float | None = None) -> float | None:
+        source_ts = getattr(event, "timestamp", None)
+        if not isinstance(source_ts, (int, float)) or source_ts <= 0:
+            return None
+        effective_now = float(now_ts if now_ts is not None else time.time())
+        return round(max(effective_now - float(source_ts), 0.0), 3)
+
+    @classmethod
+    def entry_latency_block_reason(
+        cls,
+        event,
+        *,
+        now_ts: float | None = None,
+    ) -> str | None:
+        max_latency = max_source_latency_seconds()
+        if max_latency <= 0:
+            return None
+
+        source_latency_s = cls._source_latency_seconds(event, now_ts=now_ts)
+        if source_latency_s is None or source_latency_s <= max_latency + 1e-9:
+            return None
+
+        observation_latency_s = None
+        observed_at = getattr(event, "observed_at", None)
+        source_ts = getattr(event, "timestamp", None)
+        if (
+            isinstance(source_ts, (int, float))
+            and source_ts > 0
+            and isinstance(observed_at, (int, float))
+            and observed_at > 0
+        ):
+            observation_latency_s = round(max(float(observed_at) - float(source_ts), 0.0), 3)
+
+        processing_latency_s = None
+        if isinstance(observed_at, (int, float)) and observed_at > 0:
+            effective_now = float(now_ts if now_ts is not None else time.time())
+            processing_latency_s = round(max(effective_now - float(observed_at), 0.0), 3)
+
+        detail_parts = []
+        if observation_latency_s is not None:
+            detail_parts.append(f"observation {observation_latency_s:.1f}s")
+        if processing_latency_s is not None:
+            detail_parts.append(f"processing {processing_latency_s:.1f}s")
+        details = f" ({', '.join(detail_parts)})" if detail_parts else ""
+        return (
+            f"source trade was {source_latency_s:.1f}s old at execution time, "
+            f"above the {max_latency:.1f}s latency limit{details}"
         )
 
     def execute(
@@ -2478,11 +2529,11 @@ def log_trade(
     )
     market_components = signal.get("market", {}).get("components", {}) if isinstance(signal, dict) else {}
     feature_price = (
-        float(actual_entry_price)
-        if actual_entry_price is not None
+        float(getattr(market_f, "execution_price", 0.0))
+        if market_f and getattr(market_f, "execution_price", 0.0)
         else (
-            float(getattr(market_f, "execution_price", 0.0))
-            if market_f and getattr(market_f, "execution_price", 0.0)
+            float(actual_entry_price)
+            if actual_entry_price is not None
             else float(price)
         )
     )
@@ -2611,13 +2662,9 @@ def log_trade(
         )
         expected_exit_fee_usd = float(entry_economics.expected_exit_fee_usd)
         expected_close_fixed_cost_usd = float(entry_economics.expected_close_fixed_cost_usd)
-        try:
-            expected_edge = round(float(confidence) - float(entry_economics.sizing_effective_price), 6)
-        except (TypeError, ValueError):
-            expected_edge = expected_edge
     if expected_edge is None:
         try:
-            expected_edge = round(float(confidence) - float(price), 6)
+            expected_edge = round(float(confidence) - float(feature_price), 6)
         except (TypeError, ValueError):
             expected_edge = None
     if promotion_epoch_id <= 0:

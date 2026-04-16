@@ -63,6 +63,20 @@ function formatSettingsPercent(value, digits = 2) {
         return '-';
     return `${formatNumber(value * 100, digits)}%`;
 }
+function formatBytes(bytes) {
+    if (bytes == null || Number.isNaN(bytes) || bytes < 0)
+        return '-';
+    if (bytes < 1024)
+        return `${formatNumber(bytes, 0)} B`;
+    const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+    let value = bytes / 1024;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024;
+        unitIndex += 1;
+    }
+    return `${formatNumber(value, value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
 function isMigratedRecoveryShadowStatus(status) {
     return /(?:^|[_\s-])(migrated|legacy_migrated|mixed)(?:$|[_\s-])/i.test(status);
 }
@@ -176,6 +190,7 @@ const CONFIG_BLURBS = {
 };
 const DANGER_ACTION_BLURBS = {
     live_trading: 'Uses the guarded backend live-mode endpoint.',
+    archive_trade_log: 'Queues a bounded trade-log archive batch. Startup and daily maintenance already perform the same cleanup automatically.',
     restart_shadow: 'Resets shadow state, history, and models.',
     recover_db: 'Restores the shadow ledger from the latest verified backup. A backup can be integrity-only or evidence-ready.'
 };
@@ -315,10 +330,10 @@ export function Settings({ editor }) {
         ? shadowRestartPending
             ? shadowRestartMessage
             : dbRecoveryCandidateMode === 'evidence_ready'
-            ? `Recover DB will restore an evidence-ready verified backup. ${dbRecoveryCandidateClassReason}`
-            : dbRecoveryCandidateMode === 'integrity_only'
-                ? `Recover DB will restore an integrity-only verified backup. ${dbRecoveryCandidateClassReason}`
-                : dbRecoveryCandidateUnavailableMessage
+                ? `Recover DB will restore an evidence-ready verified backup. ${dbRecoveryCandidateClassReason}`
+                : dbRecoveryCandidateMode === 'integrity_only'
+                    ? `Recover DB will restore an integrity-only verified backup. ${dbRecoveryCandidateClassReason}`
+                    : dbRecoveryCandidateUnavailableMessage
         : '';
     const restartShadowDangerBlurb = !editor.dangerConfirm && selectedDangerAction?.id === 'restart_shadow' && shadowRestartPending
         ? shadowRestartMessage
@@ -327,11 +342,11 @@ export function Settings({ editor }) {
         ? `${shadowRestartMessage} Live-mode requests stay blocked until the backend restarts.`
         : startupRecoveryOnly && !editor.dangerConfirm && selectedDangerAction?.id === 'live_trading'
             ? 'Backend is in recovery-only mode. Recover DB or Restart Shadow first; live-mode requests stay blocked until startup recovers.'
-        : recoverDbDangerBlurb
-            || restartShadowDangerBlurb
-            || DANGER_OPTION_BLURBS[selectedDangerOption?.id || '']
-            || DANGER_ACTION_BLURBS[editor.dangerConfirm?.actionId || selectedDangerAction?.id || '']
-        || '';
+            : recoverDbDangerBlurb
+                || restartShadowDangerBlurb
+                || DANGER_OPTION_BLURBS[selectedDangerOption?.id || '']
+                || DANGER_ACTION_BLURBS[editor.dangerConfirm?.actionId || selectedDangerAction?.id || '']
+                || '';
     const dangerHelperLines = wrapText(dangerBlurb, dangerContentWidth);
     const startupBlockedHelperLines = startupRecoveryOnly
         ? wrapText(startupBlockReason
@@ -619,7 +634,7 @@ export function Settings({ editor }) {
                 'this box reflects routed post-segmentation performance, not legacy shadow history'
             ];
         }
-        return [
+        const summaryParts = [
             `status: ${routedShadowPerformanceStatus}`,
             `gate: ${routedShadowGateLabel}`,
             `pnl: ${routedShadowTotalPnlUsd == null ? '-' : `$${formatNumber(routedShadowTotalPnlUsd)}`}`,
@@ -632,6 +647,7 @@ export function Settings({ editor }) {
                 ? 'legacy history dominates, so routed performance remains insufficient'
                 : 'routed performance is based on routed post-segmentation evidence'
         ];
+        return summaryParts;
     }, [
         routedShadowExpectancyUsd,
         routedShadowGateLabel,
@@ -703,7 +719,7 @@ export function Settings({ editor }) {
                 'this section separates routed post-segmentation evidence from legacy/unassigned shadow history'
             ];
         }
-        return [
+        const summaryParts = [
             `status: ${routedShadowStatus}`,
             `threshold: ${routedShadowMinResolved > 0 ? formatNumber(routedShadowMinResolved) : '-'}`,
             `total resolved: ${formatNumber(routedShadowTotalResolved)}`,
@@ -716,6 +732,7 @@ export function Settings({ editor }) {
                 : 'routed evidence is present',
             'routed evidence is separate from legacy/unassigned shadow history'
         ];
+        return summaryParts;
     }, [
         routedShadowLegacyDominant,
         routedShadowLegacyResolved,
@@ -816,6 +833,186 @@ export function Settings({ editor }) {
     const settingsRowsBlocked = shadowRestartPending || startupRecoveryOnly || (dbIntegrityKnown && !dbIntegrityOk);
     const settingsRowsValue = settingsRowsBlocked ? 'BLOCKED' : String(counts[0]?.n || 0);
     const settingsRowsColor = settingsRowsBlocked ? theme.yellow : theme.white;
+    const tradeLogArchiveStateKnown = Boolean(state.trade_log_archive_state_known);
+    const tradeLogArchiveEnabled = tradeLogArchiveStateKnown ? Boolean(state.trade_log_archive_enabled) : false;
+    const tradeLogArchivePending = Boolean(state.trade_log_archive_pending);
+    const tradeLogArchiveRequestedAt = Math.max(0, Number(state.trade_log_archive_requested_at || 0));
+    const tradeLogArchiveRequestMessage = String(state.trade_log_archive_request_message || '').trim();
+    const tradeLogArchiveDbPath = String(state.trade_log_archive_db_path || '').trim();
+    const tradeLogArchiveArchivePath = String(state.trade_log_archive_archive_path || '').trim();
+    const tradeLogArchiveArchiveExists = Boolean(state.trade_log_archive_archive_exists);
+    const tradeLogArchiveActiveDbSizeBytes = Math.max(0, Number(state.trade_log_archive_active_db_size_bytes || 0));
+    const tradeLogArchiveActiveDbAllocatedBytes = Math.max(0, Number(state.trade_log_archive_active_db_allocated_bytes || 0));
+    const tradeLogArchiveArchiveDbSizeBytes = Math.max(0, Number(state.trade_log_archive_archive_db_size_bytes || 0));
+    const tradeLogArchiveArchiveDbAllocatedBytes = Math.max(0, Number(state.trade_log_archive_archive_db_allocated_bytes || 0));
+    const tradeLogArchiveActiveRowCount = Math.max(0, Number(state.trade_log_archive_active_row_count || 0));
+    const tradeLogArchiveArchiveRowCount = Math.max(0, Number(state.trade_log_archive_archive_row_count || 0));
+    const tradeLogArchiveEligibleRowCount = Math.max(0, Number(state.trade_log_archive_eligible_row_count || 0));
+    const tradeLogArchiveCutoffTs = Math.max(0, Number(state.trade_log_archive_cutoff_ts || 0));
+    const tradeLogArchivePreserveSinceTs = Math.max(0, Number(state.trade_log_archive_preserve_since_ts || 0));
+    const tradeLogArchiveLastRunAt = Math.max(0, Number(state.trade_log_archive_last_run_at || 0));
+    const tradeLogArchiveLastCandidateCount = Math.max(0, Number(state.trade_log_archive_last_candidate_count || 0));
+    const tradeLogArchiveLastArchivedCount = Math.max(0, Number(state.trade_log_archive_last_archived_count || 0));
+    const tradeLogArchiveLastDeletedCount = Math.max(0, Number(state.trade_log_archive_last_deleted_count || 0));
+    const tradeLogArchiveLastVacuumed = Boolean(state.trade_log_archive_last_vacuumed);
+    const tradeLogArchiveLastMessage = String(state.trade_log_archive_last_message || '').trim();
+    const tradeLogArchiveBlockReason = String(state.trade_log_archive_block_reason || '').trim();
+    const tradeLogArchiveStatus = !tradeLogArchiveStateKnown
+        ? 'checking'
+        : tradeLogArchivePending
+            ? 'pending'
+            : !tradeLogArchiveEnabled
+                ? 'disabled'
+                : tradeLogArchiveBlockReason
+                    ? 'blocked'
+                    : tradeLogArchiveLastRunAt > 0
+                        ? tradeLogArchiveLastArchivedCount > 0
+                            ? 'updated'
+                            : 'idle'
+                        : tradeLogArchiveEligibleRowCount > 0
+                            ? 'ready'
+                            : 'idle';
+    const tradeLogArchiveColor = !tradeLogArchiveStateKnown
+        ? theme.dim
+        : tradeLogArchivePending
+            ? theme.yellow
+            : !tradeLogArchiveEnabled
+                ? theme.red
+                : tradeLogArchiveBlockReason
+                    ? theme.red
+                    : tradeLogArchiveStatus === 'updated' || tradeLogArchiveStatus === 'ready'
+                        ? theme.green
+                        : tradeLogArchiveEligibleRowCount > 0
+                            ? theme.yellow
+                            : theme.dim;
+    const tradeLogArchiveSummaryLines = useMemo(() => {
+        if (!tradeLogArchiveStateKnown) {
+            return ['waiting for the bot to publish trade-log archive state'];
+        }
+        return [
+            `status: ${tradeLogArchiveStatus}`,
+            `enabled: ${tradeLogArchiveEnabled ? 'yes' : 'no'}`,
+            `hot db: ${formatBytes(tradeLogArchiveActiveDbSizeBytes)} logical / ${formatBytes(tradeLogArchiveActiveDbAllocatedBytes)} allocated (${formatNumber(tradeLogArchiveActiveRowCount)} rows)`,
+            `archive db: ${tradeLogArchiveArchiveExists ? `${formatBytes(tradeLogArchiveArchiveDbSizeBytes)} logical / ${formatBytes(tradeLogArchiveArchiveDbAllocatedBytes)} allocated` : 'missing'} (${formatNumber(tradeLogArchiveArchiveRowCount)} rows)`,
+            `eligible rows: ${formatNumber(tradeLogArchiveEligibleRowCount)}`,
+            `cutoff: ${tradeLogArchiveCutoffTs > 0 ? formatSettingsDateTime(tradeLogArchiveCutoffTs) : '-'}`,
+            `preserve since: ${tradeLogArchivePreserveSinceTs > 0 ? formatSettingsDateTime(tradeLogArchivePreserveSinceTs) : '-'}`,
+            `last run: ${tradeLogArchiveLastRunAt > 0 ? formatSettingsDateTime(tradeLogArchiveLastRunAt) : '-'}`,
+            `last moved: ${formatNumber(tradeLogArchiveLastDeletedCount)} deleted / ${formatNumber(tradeLogArchiveLastArchivedCount)} archived`,
+            tradeLogArchiveLastVacuumed ? 'last run vacuumed the hot DB' : 'last run did not vacuum the hot DB',
+            tradeLogArchiveLastMessage || tradeLogArchiveRequestMessage || 'startup and daily maintenance keep archive cleanup moving automatically'
+        ];
+    }, [
+        tradeLogArchiveActiveDbSizeBytes,
+        tradeLogArchiveActiveDbAllocatedBytes,
+        tradeLogArchiveActiveRowCount,
+        tradeLogArchiveArchiveDbSizeBytes,
+        tradeLogArchiveArchiveDbAllocatedBytes,
+        tradeLogArchiveArchiveExists,
+        tradeLogArchiveArchiveRowCount,
+        tradeLogArchiveBlockReason,
+        tradeLogArchiveEnabled,
+        tradeLogArchiveEligibleRowCount,
+        tradeLogArchiveLastArchivedCount,
+        tradeLogArchiveLastDeletedCount,
+        tradeLogArchiveLastMessage,
+        tradeLogArchiveLastRunAt,
+        tradeLogArchiveLastVacuumed,
+        tradeLogArchivePending,
+        tradeLogArchivePreserveSinceTs,
+        tradeLogArchiveRequestMessage,
+        tradeLogArchiveStateKnown,
+        tradeLogArchiveStatus,
+        tradeLogArchiveCutoffTs
+    ]);
+    const tradeLogArchiveDetailLines = [
+        tradeLogArchiveBlockReason ? `block reason: ${tradeLogArchiveBlockReason}` : '',
+        tradeLogArchivePending ? 'manual archive request is queued and waiting for the backend to process it' : '',
+        'cleanup runs automatically at startup and on a daily schedule',
+        'manual archive uses the same bounded batch as the automatic cleanup job',
+        'rows newer than the current evidence/promotion baseline stay in the hot DB'
+    ].filter(Boolean);
+    const tradeLogArchiveDetailWrappedLines = tradeLogArchiveDetailLines.flatMap((line) => wrapText(line, Math.max(24, panelContentWidth)));
+    const storageStateKnown = Boolean(state.storage_state_known);
+    const storageSaveDirSizeBytes = Math.max(0, Number(state.storage_save_dir_size_bytes || 0));
+    const storageDataDirSizeBytes = Math.max(0, Number(state.storage_data_dir_size_bytes || 0));
+    const storageLogDirSizeBytes = Math.max(0, Number(state.storage_log_dir_size_bytes || 0));
+    const storageTradingDbSizeBytes = Math.max(0, Number(state.storage_trading_db_size_bytes || 0));
+    const storageTradingDbAllocatedBytes = Math.max(0, Number(state.storage_trading_db_allocated_bytes || 0));
+    const storageTradeLogArchiveDbSizeBytes = Math.max(0, Number(state.storage_trade_log_archive_db_size_bytes || 0));
+    const storageTradeLogArchiveDbAllocatedBytes = Math.max(0, Number(state.storage_trade_log_archive_db_allocated_bytes || 0));
+    const storageIdentityCacheSizeBytes = Math.max(0, Number(state.storage_identity_cache_size_bytes || 0));
+    const storageEventsFileSizeBytes = Math.max(0, Number(state.storage_events_file_size_bytes || 0));
+    const storageBackgroundLogSizeBytes = Math.max(0, Number(state.storage_background_log_size_bytes || 0));
+    const storageModelArtifactSizeBytes = Math.max(0, Number(state.storage_model_artifact_size_bytes || 0));
+    const storageArtifactQuarantineFileCount = Math.max(0, Number(state.storage_artifact_quarantine_file_count || 0));
+    const storageArtifactQuarantineSizeBytes = Math.max(0, Number(state.storage_artifact_quarantine_size_bytes || 0));
+    const storageDbRecoveryQuarantineFileCount = Math.max(0, Number(state.storage_db_recovery_quarantine_file_count || 0));
+    const storageDbRecoveryQuarantineSizeBytes = Math.max(0, Number(state.storage_db_recovery_quarantine_size_bytes || 0));
+    const storageMessage = String(state.storage_message || '').trim();
+    const storageStatus = !storageStateKnown
+        ? 'checking'
+        : !dbIntegrityOk
+            ? 'blocked_db_integrity'
+            : storageSaveDirSizeBytes >= 1024 * 1024 * 1024 || storageTradingDbSizeBytes >= 512 * 1024 * 1024
+                ? 'pressure'
+                : 'ok';
+    const storageColor = !storageStateKnown
+        ? theme.dim
+        : !dbIntegrityOk
+            ? theme.red
+            : storageStatus === 'pressure'
+                ? theme.yellow
+                : theme.green;
+    const storageSummaryLines = useMemo(() => {
+        if (!storageStateKnown) {
+            return ['waiting for the bot to publish runtime storage health'];
+        }
+        return [
+            `status: ${storageStatus}`,
+            `save/: ${formatBytes(storageSaveDirSizeBytes)}`,
+            `save/data: ${formatBytes(storageDataDirSizeBytes)}`,
+            `save/logs: ${formatBytes(storageLogDirSizeBytes)}`,
+            `trading.db: ${formatBytes(storageTradingDbSizeBytes)} logical / ${formatBytes(storageTradingDbAllocatedBytes)} allocated`,
+            `archive db: ${formatBytes(storageTradeLogArchiveDbSizeBytes)} logical / ${formatBytes(storageTradeLogArchiveDbAllocatedBytes)} allocated`,
+            `identity cache: ${formatBytes(storageIdentityCacheSizeBytes)}`,
+            `events.jsonl: ${formatBytes(storageEventsFileSizeBytes)}`,
+            `shadow runtime log: ${formatBytes(storageBackgroundLogSizeBytes)}`,
+            `model artifact: ${formatBytes(storageModelArtifactSizeBytes)}`,
+            `artifact quarantine: ${formatNumber(storageArtifactQuarantineFileCount)} file(s) / ${formatBytes(storageArtifactQuarantineSizeBytes)}`,
+            `DB recovery quarantine: ${formatNumber(storageDbRecoveryQuarantineFileCount)} file(s) / ${formatBytes(storageDbRecoveryQuarantineSizeBytes)}`,
+            storageMessage || 'identity-cache pruning and artifact-quarantine retention now run during startup and hourly maintenance'
+        ];
+    }, [
+        storageArtifactQuarantineFileCount,
+        storageArtifactQuarantineSizeBytes,
+        storageBackgroundLogSizeBytes,
+        storageDataDirSizeBytes,
+        storageDbRecoveryQuarantineFileCount,
+        storageDbRecoveryQuarantineSizeBytes,
+        storageEventsFileSizeBytes,
+        storageIdentityCacheSizeBytes,
+        storageLogDirSizeBytes,
+        storageMessage,
+        storageModelArtifactSizeBytes,
+        storageSaveDirSizeBytes,
+        storageStateKnown,
+        storageStatus,
+        storageTradeLogArchiveDbSizeBytes,
+        storageTradeLogArchiveDbAllocatedBytes,
+        storageTradingDbSizeBytes,
+        storageTradingDbAllocatedBytes
+    ]);
+    const storageDetailWrappedLines = [
+        !dbIntegrityOk ? 'SQLite integrity failure still blocks some hot-DB cleanup paths until Recover DB or Restart Shadow restores a clean ledger' : '',
+        storageTradingDbAllocatedBytes > Math.max(storageTradingDbSizeBytes, 1) * 1.25
+            ? 'trading.db currently consumes materially more disk than its logical file size'
+            : '',
+        'trade-log archiving handles old resolved rows, while this panel tracks the remaining runtime storage footprint',
+        'shadow runtime stdio now rotates during long-running detached sessions instead of growing one file until restart'
+    ]
+        .filter(Boolean)
+        .flatMap((line) => wrapText(line, Math.max(24, panelContentWidth)));
     const shadowHistoryReadyForLive = shadowHistoryStateKnown && shadowGateReady;
     const segmentShadowReadyForLive = shadowSegmentStateKnown
         && shadowSegmentStatus === 'ready'
@@ -832,7 +1029,9 @@ export function Settings({ editor }) {
         ? 'disabled'
         : shadowRestartPending
             ? 'pending_restart'
-            : liveModeReady ? 'ready' : 'blocked';
+            : liveModeReady
+                ? 'ready'
+                : 'blocked';
     const liveReadinessColor = !liveTradingEnabled
         ? theme.red
         : shadowRestartPending
@@ -865,19 +1064,19 @@ export function Settings({ editor }) {
         : dbRecoveryPendingState
             ? 'pending_restart'
             : dbRecoveryCandidateReady
-            ? 'ready'
-            : dbRecoveryCandidatePath || dbRecoveryCandidateSourcePath || dbRecoveryCandidateMessage
-                ? 'blocked'
-                : 'idle';
+                ? 'ready'
+                : dbRecoveryCandidatePath || dbRecoveryCandidateSourcePath || dbRecoveryCandidateMessage
+                    ? 'blocked'
+                    : 'idle';
     const dbRecoveryColor = !dbRecoveryStateKnown
         ? theme.dim
         : dbRecoveryPendingState
             ? theme.yellow
             : dbRecoveryCandidateReady
-            ? theme.green
-            : dbRecoveryCandidatePath || dbRecoveryCandidateSourcePath || dbRecoveryCandidateMessage
-                ? theme.yellow
-                : theme.dim;
+                ? theme.green
+                : dbRecoveryCandidatePath || dbRecoveryCandidateSourcePath || dbRecoveryCandidateMessage
+                    ? theme.yellow
+                    : theme.dim;
     const dbRecoverySummaryLines = useMemo(() => {
         if (!dbRecoveryStateKnown) {
             return ['waiting for the bot to publish DB recovery readiness'];
@@ -895,7 +1094,16 @@ export function Settings({ editor }) {
             `latest verified backup: ${dbRecoveryLatestVerifiedBackupPath || '-'}`,
             `latest verified backup at: ${dbRecoveryLatestVerifiedBackupAt > 0 ? formatSettingsDateTime(dbRecoveryLatestVerifiedBackupAt) : '-'}`
         ];
-    }, [dbRecoveryCandidateModeLabel, dbRecoveryCandidateReady, dbRecoveryPendingState, dbRecoveryLatestVerifiedBackupAt, dbRecoveryLatestVerifiedBackupPath, dbRecoveryStateKnown, dbRecoveryStatus, shadowRestartMessage]);
+    }, [
+        dbRecoveryCandidateModeLabel,
+        dbRecoveryCandidateReady,
+        dbRecoveryPendingState,
+        dbRecoveryLatestVerifiedBackupAt,
+        dbRecoveryLatestVerifiedBackupPath,
+        dbRecoveryStateKnown,
+        dbRecoveryStatus,
+        shadowRestartMessage
+    ]);
     const dbRecoveryDetailLines = [
         dbRecoveryPendingState ? `pending: ${shadowRestartMessage}` : '',
         dbRecoveryCandidatePath ? `candidate path: ${dbRecoveryCandidatePath}` : '',
@@ -931,23 +1139,23 @@ export function Settings({ editor }) {
         : dbRecoveryPendingState
             ? theme.yellow
             : /block|fail|error|corrupt|invalid/i.test(dbRecoveryShadowStatus)
-            ? theme.red
-            : dbRecoveryShadowMigratedEvaluation || /migrated|legacy_migrated|mixed/i.test(dbRecoveryShadowStatus)
-                ? theme.yellow
-                : /ready|ok|healthy|positive/i.test(dbRecoveryShadowStatus)
-                    ? theme.green
-                    : dbRecoveryShadowCandidatePath
-                        ? theme.yellow
-                        : theme.dim;
+                ? theme.red
+                : dbRecoveryShadowMigratedEvaluation || /migrated|legacy_migrated|mixed/i.test(dbRecoveryShadowStatus)
+                    ? theme.yellow
+                    : /ready|ok|healthy|positive/i.test(dbRecoveryShadowStatus)
+                        ? theme.green
+                        : dbRecoveryShadowCandidatePath
+                            ? theme.yellow
+                            : theme.dim;
     const dbRecoveryShadowEvaluationLabel = !dbRecoveryShadowStateKnown
         ? 'checking'
         : dbRecoveryPendingState
             ? 'restart pending'
             : dbRecoveryShadowMigratedEvaluation
-            ? 'migrated temp clone'
-            : dbRecoveryShadowCandidatePath
-                ? 'verified backup candidate'
-                : 'no candidate';
+                ? 'migrated temp clone'
+                : dbRecoveryShadowCandidatePath
+                    ? 'verified backup candidate'
+                    : 'no candidate';
     const dbRecoveryShadowMigrationNote = dbRecoveryShadowMigratedEvaluation
         ? 'evaluated from a migrated temp clone; the backup file itself was not modified'
         : '';
@@ -968,7 +1176,7 @@ export function Settings({ editor }) {
                 'this section reflects the verified backup candidate, not active runtime data'
             ];
         }
-        return [
+        const summaryParts = [
             `candidate use: ${dbRecoveryCandidateModeLabel}`,
             `status: ${dbRecoveryShadowStatus}`,
             `evaluation: ${dbRecoveryShadowEvaluationLabel}`,
@@ -983,11 +1191,14 @@ export function Settings({ editor }) {
             'backup-candidate shadow data only; not active runtime data',
             dbRecoveryShadowMigrationNote
         ];
+        return summaryParts.filter(Boolean);
     }, [
         dbRecoveryShadowActed,
         dbRecoveryShadowCandidatePath,
         dbRecoveryCandidateModeLabel,
         dbRecoveryShadowExpectancyUsd,
+        dbRecoveryShadowEvaluationLabel,
+        dbRecoveryShadowMigrationNote,
         dbRecoveryPendingState,
         dbRecoveryShadowProfitFactor,
         dbRecoveryShadowResolved,
@@ -998,8 +1209,6 @@ export function Settings({ editor }) {
         dbRecoveryShadowStatus,
         dbRecoveryShadowTotalPnlUsd,
         dbRecoveryShadowReturnPct,
-        dbRecoveryShadowMigrationNote,
-        dbRecoveryShadowEvaluationLabel,
         shadowRestartMessage
     ]);
     const dbRecoveryShadowDetailLines = [
@@ -1019,7 +1228,7 @@ export function Settings({ editor }) {
         try {
             return segmentSummaryLinesFromJson(raw);
         }
-        catch (_a) {
+        catch {
             return ['segment summary: unavailable'];
         }
     }, [dbRecoveryShadowCandidatePath, dbRecoveryShadowStateKnown, state.db_recovery_shadow_segment_summary_json]);
@@ -1048,7 +1257,7 @@ export function Settings({ editor }) {
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
                     React.createElement(StatRow, { label: "Live trading", value: liveTradingEnabled ? 'enabled in config' : 'disabled in config', color: liveTradingEnabled ? theme.green : theme.red }),
                     React.createElement(StatRow, { label: "DB integrity", value: dbIntegrityStatus, color: dbIntegrityColor }),
-            React.createElement(StatRow, { label: "All-time shadow history", value: shadowHistoryStateKnown ? shadowGateStatus : 'checking', color: shadowHistoryStateKnown ? shadowGateColor : theme.dim }),
+                    React.createElement(StatRow, { label: "All-time shadow history", value: shadowHistoryStateKnown ? shadowGateStatus : 'checking', color: shadowHistoryStateKnown ? shadowGateColor : theme.dim }),
                     React.createElement(StatRow, { label: "Segment shadow", value: shadowSegmentStatus, color: shadowSegmentColor }),
                     React.createElement(StatRow, { label: "Overall", value: liveReadinessStatus, color: liveReadinessColor }),
                     React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
@@ -1076,7 +1285,7 @@ export function Settings({ editor }) {
                         shadowHistoryEpochSummaryLines.map((line, index) => (React.createElement(Text, { key: `shadow-history-epoch-summary-${index}`, color: shadowHistoryEpochColor }, line))),
                         shadowHistoryEpochDetailWrappedLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
                             React.createElement(Text, { color: theme.dim }, "Warnings"),
-                            shadowHistoryEpochDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `shadow-history-epoch-detail-${index}`, color: shadowHistoryEpochColor }, line))))) : null))),
+                            shadowHistoryEpochDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `shadow-history-epoch-detail-${index}`, color: shadowHistoryEpochColor }, line))))) : null)))),
         React.createElement(InkBox, { marginTop: 1 },
             React.createElement(Box, { title: "Segment Shadow Readiness", width: "100%", accent: shadowSegmentStateKnown && shadowSegmentBlockedCount === 0 },
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
@@ -1150,7 +1359,44 @@ export function Settings({ editor }) {
                     React.createElement(StatRow, { label: "Status", value: dbIntegrityStatus, color: dbIntegrityColor }),
                     dbIntegrityLines.map((line, index) => (React.createElement(Text, { key: `db-integrity-${index}`, color: dbIntegrityColor }, line))))))) : null,
         React.createElement(InkBox, { marginTop: 1 },
-        React.createElement(Box, { title: "Database Recovery", width: "100%", accent: dbRecoveryStateKnown && dbRecoveryCandidateReady && !dbRecoveryPendingState },
+            React.createElement(Box, { title: "Trade Log Archive", width: "100%", accent: tradeLogArchiveStateKnown && tradeLogArchiveEnabled && !tradeLogArchivePending && !tradeLogArchiveBlockReason },
+                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
+                    React.createElement(StatRow, { label: "Status", value: tradeLogArchiveStatus, color: tradeLogArchiveColor }),
+                    React.createElement(StatRow, { label: "Enabled", value: tradeLogArchiveEnabled ? 'yes' : 'no', color: tradeLogArchiveEnabled ? theme.green : theme.red }),
+                    React.createElement(StatRow, { label: "Hot DB", value: `${formatBytes(tradeLogArchiveActiveDbSizeBytes)} logical / ${formatBytes(tradeLogArchiveActiveDbAllocatedBytes)} allocated`, color: theme.white }),
+                    React.createElement(StatRow, { label: "Archive DB", value: tradeLogArchiveArchiveExists ? `${formatBytes(tradeLogArchiveArchiveDbSizeBytes)} logical / ${formatBytes(tradeLogArchiveArchiveDbAllocatedBytes)} allocated` : 'missing', color: tradeLogArchiveArchiveExists ? theme.white : theme.dim }),
+                    React.createElement(StatRow, { label: "Hot rows", value: formatNumber(tradeLogArchiveActiveRowCount), color: theme.white }),
+                    React.createElement(StatRow, { label: "Archive rows", value: formatNumber(tradeLogArchiveArchiveRowCount), color: theme.white }),
+                    React.createElement(StatRow, { label: "Eligible", value: formatNumber(tradeLogArchiveEligibleRowCount), color: tradeLogArchiveEligibleRowCount > 0 ? theme.yellow : theme.white }),
+                    React.createElement(StatRow, { label: "Last run", value: tradeLogArchiveLastRunAt > 0 ? formatSettingsDateTime(tradeLogArchiveLastRunAt) : '-', color: theme.white }),
+                    React.createElement(StatRow, { label: "Last moved", value: `${formatNumber(tradeLogArchiveLastDeletedCount)} deleted / ${formatNumber(tradeLogArchiveLastArchivedCount)} archived`, color: theme.white }),
+                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
+                        React.createElement(Text, { color: theme.dim }, "Summary"),
+                        tradeLogArchiveSummaryLines.map((line, index) => (React.createElement(Text, { key: `trade-log-archive-summary-${index}`, color: tradeLogArchiveColor }, line))),
+                        tradeLogArchiveDetailWrappedLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
+                            React.createElement(Text, { color: theme.dim }, "Details"),
+                            tradeLogArchiveDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `trade-log-archive-detail-${index}`, color: tradeLogArchiveColor }, line))))) : null)))),
+        React.createElement(InkBox, { marginTop: 1 },
+            React.createElement(Box, { title: "Storage Health", width: "100%", accent: storageStateKnown && dbIntegrityOk && storageStatus !== 'pressure' },
+                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
+                    React.createElement(StatRow, { label: "Status", value: storageStatus, color: storageColor }),
+                    React.createElement(StatRow, { label: "save/", value: formatBytes(storageSaveDirSizeBytes), color: theme.white }),
+                    React.createElement(StatRow, { label: "save/data", value: formatBytes(storageDataDirSizeBytes), color: theme.white }),
+                    React.createElement(StatRow, { label: "save/logs", value: formatBytes(storageLogDirSizeBytes), color: theme.white }),
+                    React.createElement(StatRow, { label: "trading.db", value: `${formatBytes(storageTradingDbSizeBytes)} logical / ${formatBytes(storageTradingDbAllocatedBytes)} allocated`, color: storageTradingDbAllocatedBytes > Math.max(storageTradingDbSizeBytes, 1) * 1.25 ? theme.yellow : theme.white }),
+                    React.createElement(StatRow, { label: "archive db", value: `${formatBytes(storageTradeLogArchiveDbSizeBytes)} logical / ${formatBytes(storageTradeLogArchiveDbAllocatedBytes)} allocated`, color: theme.white }),
+                    React.createElement(StatRow, { label: "identity cache", value: formatBytes(storageIdentityCacheSizeBytes), color: theme.white }),
+                    React.createElement(StatRow, { label: "runtime log", value: formatBytes(storageBackgroundLogSizeBytes), color: theme.white }),
+                    React.createElement(StatRow, { label: "artifact quarantine", value: `${formatNumber(storageArtifactQuarantineFileCount)} / ${formatBytes(storageArtifactQuarantineSizeBytes)}`, color: theme.white }),
+                    React.createElement(StatRow, { label: "recovery quarantine", value: `${formatNumber(storageDbRecoveryQuarantineFileCount)} / ${formatBytes(storageDbRecoveryQuarantineSizeBytes)}`, color: theme.white }),
+                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
+                        React.createElement(Text, { color: theme.dim }, "Summary"),
+                        storageSummaryLines.map((line, index) => (React.createElement(Text, { key: `storage-summary-${index}`, color: storageColor }, line))),
+                        storageDetailWrappedLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
+                            React.createElement(Text, { color: theme.dim }, "Details"),
+                            storageDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `storage-detail-${index}`, color: storageColor }, line))))) : null)))),
+        React.createElement(InkBox, { marginTop: 1 },
+            React.createElement(Box, { title: "Database Recovery", width: "100%", accent: dbRecoveryStateKnown && dbRecoveryCandidateReady && !dbRecoveryPendingState },
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
                     React.createElement(StatRow, { label: "Status", value: dbRecoveryStatus, color: dbRecoveryColor }),
                     React.createElement(StatRow, { label: "Use", value: dbRecoveryCandidateModeLabel, color: dbRecoveryCandidateModeColor }),
@@ -1161,7 +1407,7 @@ export function Settings({ editor }) {
                             React.createElement(Text, { color: theme.dim }, "Details"),
                             dbRecoveryDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `db-recovery-detail-${index}`, color: dbRecoveryColor }, line))))) : null)))),
         React.createElement(InkBox, { marginTop: 1 },
-        React.createElement(Box, { title: "Recovery Candidate Shadow", width: "100%", accent: dbRecoveryShadowStateKnown && dbRecoveryCandidateMode === 'evidence_ready' && !dbRecoveryPendingState },
+            React.createElement(Box, { title: "Recovery Candidate Shadow", width: "100%", accent: dbRecoveryShadowStateKnown && dbRecoveryCandidateMode === 'evidence_ready' && !dbRecoveryPendingState },
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
                     React.createElement(Text, { color: theme.dim }, "This panel measures whether the recovery candidate is evidence-ready. A verified backup alone is only integrity-only."),
                     React.createElement(StatRow, { label: "Status", value: dbRecoveryShadowStatus, color: dbRecoveryShadowColor }),
@@ -1224,27 +1470,49 @@ export function Settings({ editor }) {
                         const label = `${selected ? '>' : ' '} ${option.label}`;
                         return (React.createElement(InkBox, { key: `${editor.dangerConfirm?.actionId}-${option.id}`, width: "100%" },
                             React.createElement(Text, { color: selected ? theme.accent : theme.white, backgroundColor: rowBackground, bold: selected }, fit(label, dangerContentWidth))));
-                })))) : (React.createElement(React.Fragment, null, dangerActions.map((action, index) => {
+                    })))) : (React.createElement(React.Fragment, null, dangerActions.map((action, index) => {
                     const selected = editor.focusArea === 'danger' && index === safeDangerIndex;
                     const rowBackground = selected ? selectedRowBackground : undefined;
                     const value = action.id === 'live_trading' && (startupRecoveryOnly || shadowRestartPending)
                         ? 'BLOCKED'
-                        : shadowRestartPending && (action.id === 'restart_shadow' || action.id === 'recover_db')
-                            ? 'PENDING'
-                        : action.id === 'recover_db'
-                            ? dbRecoveryCandidateModeShortLabel
-                            : action.value(envData.rawValues);
+                        : action.id === 'archive_trade_log'
+                            ? !tradeLogArchiveStateKnown
+                                ? 'CHECKING'
+                                : tradeLogArchivePending
+                                    ? 'PENDING'
+                                    : !tradeLogArchiveEnabled
+                                        ? 'DISABLED'
+                                        : tradeLogArchiveBlockReason
+                                            ? 'BLOCKED'
+                                            : `${formatNumber(tradeLogArchiveEligibleRowCount)} rows`
+                            : shadowRestartPending && (action.id === 'restart_shadow' || action.id === 'recover_db')
+                                ? 'PENDING'
+                                : action.id === 'recover_db'
+                                    ? dbRecoveryCandidateModeShortLabel
+                                    : action.value(envData.rawValues);
                     const valueColor = action.id === 'live_trading'
                         ? startupRecoveryOnly
                             ? theme.red
                             : shadowRestartPending
                                 ? theme.yellow
-                            : liveTradingEnabled ? theme.green : theme.red
-                        : shadowRestartPending && (action.id === 'restart_shadow' || action.id === 'recover_db')
-                            ? theme.yellow
-                        : action.id === 'recover_db'
-                            ? dbRecoveryCandidateModeColor
-                            : theme.yellow;
+                                : liveTradingEnabled ? theme.green : theme.red
+                        : action.id === 'archive_trade_log'
+                            ? !tradeLogArchiveStateKnown
+                                ? theme.dim
+                                : tradeLogArchivePending
+                                    ? theme.yellow
+                                    : !tradeLogArchiveEnabled
+                                        ? theme.red
+                                        : tradeLogArchiveBlockReason
+                                            ? theme.red
+                                            : tradeLogArchiveEligibleRowCount > 0
+                                                ? theme.green
+                                                : theme.white
+                            : shadowRestartPending && (action.id === 'restart_shadow' || action.id === 'recover_db')
+                                ? theme.yellow
+                                : action.id === 'recover_db'
+                                    ? dbRecoveryCandidateModeColor
+                                    : theme.yellow;
                     return (React.createElement(InkBox, { key: action.id, width: "100%" },
                         React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, fit(`${selected ? '>' : ' '} ${action.label}`, dangerLabelWidth)),
                         React.createElement(Text, { backgroundColor: rowBackground }, " "),

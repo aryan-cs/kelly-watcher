@@ -19,6 +19,16 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 REQUEST_TIMEOUT_SECONDS = 15.0
 RETRY_BASE_DELAY_SECONDS = 0.5
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+DISCOVERY_SOURCE_SPECS: tuple[tuple[str, str, str, str], ...] = (
+    ("leaderboard:day-pnl", "OVERALL", "DAY", "PNL"),
+    ("leaderboard:day-vol", "OVERALL", "DAY", "VOL"),
+    ("leaderboard:week-pnl", "OVERALL", "WEEK", "PNL"),
+    ("leaderboard:week-vol", "OVERALL", "WEEK", "VOL"),
+    ("leaderboard:month-pnl", "OVERALL", "MONTH", "PNL"),
+    ("leaderboard:month-vol", "OVERALL", "MONTH", "VOL"),
+    ("leaderboard:all-pnl", "OVERALL", "ALL", "PNL"),
+    ("leaderboard:all-vol", "OVERALL", "ALL", "VOL"),
+)
 
 
 @dataclass

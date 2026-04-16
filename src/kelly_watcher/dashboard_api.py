@@ -26,12 +26,17 @@ from kelly_watcher.data.db import (
     DB_PATH,
     database_integrity_state,
     db_recovery_state,
+    delete_runtime_setting,
     get_conn,
+    get_runtime_setting,
     get_trade_log_read_conn,
+    managed_wallet_registry_state,
     load_wallet_promotion_state,
+    load_runtime_settings,
+    set_runtime_setting,
     trade_log_archive_state,
 )
-from kelly_watcher.env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, repo_env_path_for_profile
+from kelly_watcher.env_profile import ENV_ONLY_KEYS, LEGACY_ENV_PATH, active_env_path
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 from kelly_watcher.engine.wallet_trust import get_wallet_trust_state
 from kelly_watcher.runtime.wallet_discovery import (
@@ -60,8 +65,8 @@ _MANAGED_WALLET_TRUST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _MANAGED_WALLET_TRUST_CACHE_TTL_SECONDS = 10.0
 _MANAGED_WALLET_TRUST_CACHE_LOCK = threading.Lock()
 
-ENV_PROFILE = active_env_profile()
-ENV_PATH = env_path_for_profile(ENV_PROFILE)
+ENV_PROFILE = "default"
+ENV_PATH = active_env_path()
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 IDENTITY_FILE = IDENTITY_CACHE_PATH
 
@@ -268,13 +273,10 @@ def _dashboard_web_content_type(path: Path) -> str:
 def _source_env_path() -> Path:
     if ENV_PATH.exists():
         return ENV_PATH
-    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
-    if ENV_PATH != expected_env_path:
-        return ENV_PATH
-    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    repo_env_path = REPO_ROOT / ".env"
     if repo_env_path.exists():
         return repo_env_path
-    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
+    if LEGACY_ENV_PATH.exists():
         return LEGACY_ENV_PATH
     return ENV_EXAMPLE_PATH
 
@@ -298,7 +300,7 @@ def _read_env_items() -> list[tuple[str, str]]:
 
 def _read_safe_env_values() -> dict[str, str]:
     safe_values: dict[str, str] = {}
-    for key, value in _read_env_items():
+    for key, value in load_runtime_settings().items():
         if key in SAFE_ENV_KEYS:
             safe_values[key] = value
     return safe_values
@@ -328,20 +330,28 @@ def _config_snapshot() -> dict[str, Any]:
         for wallet in str(safe_values.get("WATCHED_WALLETS", "") or "").split(",")
         if wallet.strip()
     ]
-    wallet_registry_source = _wallet_registry_source()
-    live_wallets = _wallet_registry_addresses()
+    registry_state = _managed_wallet_registry_snapshot()
+    wallet_registry_source = _wallet_registry_source_from_state(registry_state)
+    live_wallets = _wallet_registry_addresses_from_state(registry_state)
+    runtime_settings = load_runtime_settings()
     rows: list[dict[str, str]] = []
+    for key, value in sorted(runtime_settings.items()):
+        redacted = "************" if SECRET_KEY_RE.search(key) else (value or "unset")
+        rows.append({"key": key, "value": redacted, "source": "runtime_settings"})
     for key, value in _read_env_items():
-        if key == "WATCHED_WALLETS":
+        if key == "WATCHED_WALLETS" or key in runtime_settings:
             continue
         redacted = "************" if SECRET_KEY_RE.search(key) else (value or "unset")
-        rows.append({"key": key, "value": redacted})
+        rows.append({"key": key, "value": redacted, "source": "env"})
     return {
         "safe_values": safe_values,
         "watched_wallets": live_wallets,
         "live_wallets": live_wallets,
         "live_wallet_count": len(live_wallets),
         "wallet_registry_source": wallet_registry_source,
+        "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+        "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+        "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
         "legacy_bootstrap_watched_wallets": legacy_bootstrap_watched_wallets,
         "rows": rows,
     }
@@ -372,47 +382,123 @@ def _sqlite_fetch_rows(sql: str, params: list[Any]) -> list[dict[str, Any]]:
         conn.close()
 
 
-def _wallet_registry_source() -> str:
+def _managed_wallet_registry_snapshot() -> dict[str, Any]:
     try:
-        conn = get_conn()
-    except sqlite3.DatabaseError:
-        return "unavailable"
-    try:
-        if _sqlite_table_exists(conn, "managed_wallets"):
-            return "managed_wallets"
-        if _sqlite_table_exists(conn, "wallet_watch_state"):
-            return "wallet_watch_state"
-        return "unavailable"
-    finally:
-        conn.close()
+        return dict(managed_wallet_registry_state())
+    except sqlite3.DatabaseError as exc:
+        return {
+            "managed_wallet_registry_available": False,
+            "managed_wallet_registry_status": "unreadable",
+            "managed_wallet_registry_error": str(exc).splitlines()[0].strip(),
+            "managed_wallets": [],
+            "managed_wallet_count": 0,
+            "managed_wallet_total_count": 0,
+            "managed_wallet_registry_updated_at": 0,
+        }
 
 
-def _wallet_registry_addresses() -> list[str]:
-    try:
-        conn = get_conn()
-    except sqlite3.DatabaseError:
+def _wallet_registry_source_from_state(registry_state: dict[str, Any] | None = None) -> str:
+    state = dict(registry_state or _managed_wallet_registry_snapshot())
+    status = str(state.get("managed_wallet_registry_status") or "").strip().lower()
+    if status in {"ready", "empty"}:
+        return "managed_wallets"
+    return "unavailable"
+
+
+def _wallet_registry_addresses_from_state(registry_state: dict[str, Any] | None = None) -> list[str]:
+    state = dict(registry_state or _managed_wallet_registry_snapshot())
+    status = str(state.get("managed_wallet_registry_status") or "").strip().lower()
+    if status not in {"ready", "empty"}:
         return []
-    try:
-        if _sqlite_table_exists(conn, "managed_wallets"):
-            rows = conn.execute("SELECT wallet_address FROM managed_wallets ORDER BY wallet_address ASC").fetchall()
-        elif _sqlite_table_exists(conn, "wallet_watch_state"):
-            rows = conn.execute(
-                "SELECT wallet_address FROM wallet_watch_state ORDER BY wallet_address ASC"
-            ).fetchall()
-        else:
-            rows = []
-    finally:
-        conn.close()
-
-    wallets: list[str] = []
+    wallets = state.get("managed_wallets") or []
     seen: set[str] = set()
-    for row in rows:
-        wallet = str(row["wallet_address"] or "").strip().lower()
+    normalized: list[str] = []
+    for value in wallets if isinstance(wallets, list) else []:
+        wallet = str(value or "").strip().lower()
         if not wallet or wallet in seen:
             continue
         seen.add(wallet)
-        wallets.append(wallet)
-    return wallets
+        normalized.append(wallet)
+    return normalized
+
+
+def _discovery_candidate_gate_status(row: dict[str, Any]) -> str:
+    accepted = bool(row.get("accepted"))
+    if accepted:
+        return "ready"
+    reason = str(row.get("reject_reason") or "").strip().lower()
+    if not reason:
+        return "review_error"
+    if reason.startswith("analysis_failed"):
+        return "review_error"
+    if "local_copy" in reason or "local performance" in reason:
+        return "review_local_performance"
+    if "conviction" in reason:
+        return "review_conviction"
+    if any(token in reason for token in ("avg_buy_size", "large_buy", "buy_size")):
+        return "review_size"
+    if any(token in reason for token in ("lead", "late_buy", "last_trade_age")):
+        return "review_timing"
+    return "review_sample"
+
+
+def _discovery_candidate_rows(limit: int | None = None) -> list[dict[str, Any]]:
+    candidates = load_wallet_discovery_candidates(limit=limit)
+    wallets = [
+        str(row.get("wallet_address") or "").strip().lower()
+        for row in candidates
+        if str(row.get("wallet_address") or "").strip()
+    ]
+    policy_metrics_map = _wallet_policy_metrics_rows(wallets)
+    promotion_state_map = load_wallet_promotion_state(wallets)
+    tracked_wallets = set(_wallet_registry_addresses())
+    enriched: list[dict[str, Any]] = []
+    for row in candidates:
+        wallet = str(row.get("wallet_address") or "").strip().lower()
+        if not wallet:
+            continue
+        policy_metrics = policy_metrics_map.get(wallet, {})
+        promotion_state = promotion_state_map.get(wallet, {})
+        payload = dict(row)
+        payload["wallet_address"] = wallet
+        payload["copyability_gate_status"] = str(
+            row.get("copyability_gate_status") or _discovery_candidate_gate_status(row)
+        ).strip()
+        payload["promoted"] = bool(promotion_state.get("is_auto_promoted"))
+        payload["promoted_at"] = int(promotion_state.get("promoted_at") or 0)
+        payload["tracked"] = wallet in tracked_wallets
+        payload["post_promotion_baseline_at"] = int(
+            policy_metrics.get("post_promotion_baseline_at")
+            or promotion_state.get("baseline_at")
+            or 0
+        )
+        payload["post_promotion_evidence_ready"] = bool(policy_metrics.get("post_promotion_evidence_ready") or False)
+        payload["post_promotion_evidence_note"] = str(policy_metrics.get("post_promotion_evidence_note") or "").strip()
+        payload["post_promotion_total_buy_signals"] = int(policy_metrics.get("post_promotion_total_buy_signals") or 0)
+        payload["post_promotion_uncopyable_skip_rate"] = float(
+            policy_metrics.get("post_promotion_uncopyable_skip_rate") or 0.0
+        )
+        payload["post_promotion_resolved_copied_count"] = int(
+            policy_metrics.get("post_promotion_resolved_copied_count") or 0
+        )
+        payload["post_promotion_resolved_copied_avg_return"] = (
+            float(policy_metrics["post_promotion_resolved_copied_avg_return"])
+            if policy_metrics.get("post_promotion_resolved_copied_avg_return") is not None
+            else None
+        )
+        payload["post_promotion_resolved_copied_total_pnl_usd"] = float(
+            policy_metrics.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0
+        )
+        enriched.append(payload)
+    return enriched
+
+
+def _wallet_registry_source() -> str:
+    return _wallet_registry_source_from_state(_managed_wallet_registry_snapshot())
+
+
+def _wallet_registry_addresses() -> list[str]:
+    return _wallet_registry_addresses_from_state(_managed_wallet_registry_snapshot())
 
 
 def _wallet_watch_state_map(wallet_addresses: list[str]) -> dict[str, dict[str, Any]]:
@@ -478,6 +564,8 @@ def _wallet_policy_metrics_rows(wallet_addresses: list[str]) -> dict[str, dict[s
               post_promotion_reason,
               post_promotion_total_buy_signals,
               post_promotion_uncopyable_skips,
+              post_promotion_timing_skips,
+              post_promotion_liquidity_skips,
               post_promotion_uncopyable_skip_rate,
               post_promotion_resolved_copied_count,
               post_promotion_resolved_copied_win_rate,
@@ -528,6 +616,9 @@ def _wallet_trust_snapshot_map(wallet_addresses: list[str]) -> dict[str, dict[st
                     "trust_tier": str(state.tier or "").strip(),
                     "trust_size_multiplier": float(state.size_multiplier),
                     "trust_note": str(state.tier_note or "").strip(),
+                    "wallet_family": str(state.family or "").strip(),
+                    "wallet_family_multiplier": float(state.family_multiplier),
+                    "wallet_family_note": str(state.family_note or "").strip(),
                 }
             except sqlite3.DatabaseError:
                 refreshed[wallet] = {}
@@ -564,28 +655,6 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
             )
             rows = conn.execute(query, (max(int(limit or 250), 1),)).fetchall()
             registry_source = "managed_wallets"
-        elif _sqlite_table_exists(conn, "wallet_watch_state"):
-            rows = conn.execute(
-                """
-                SELECT
-                  wallet_address,
-                  status,
-                  status_reason,
-                  dropped_at,
-                  reactivated_at,
-                  tracking_started_at,
-                  last_source_ts_at_status,
-                  updated_at
-                FROM wallet_watch_state
-                ORDER BY
-                  CASE status WHEN 'active' THEN 0 WHEN 'dropped' THEN 1 ELSE 2 END,
-                  updated_at DESC,
-                  wallet_address ASC
-                LIMIT ?
-                """,
-                (max(int(limit or 250), 1),),
-            ).fetchall()
-            registry_source = "wallet_watch_state"
         else:
             return []
     finally:
@@ -612,13 +681,14 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
         trust_state = trust_state_map.get(wallet, {})
         source = str(row_dict.get("source") or registry_source).strip()
         tracking_enabled = bool(row_dict.get("tracking_enabled")) if "tracking_enabled" in row_dict else str(row_dict.get("status") or "").strip().lower() != "dropped"
+        watch_status = str(watch_state.get("status") or row_dict.get("status") or "").strip().lower()
         payload: dict[str, Any] = {
             "wallet_address": wallet,
             "username": identity or str(discovery.get("username") or "").strip(),
             "registry_source": registry_source,
             "source": source or registry_source,
             "tracking_enabled": tracking_enabled,
-            "status": str(watch_state.get("status") or row_dict.get("status") or ("active" if tracking_enabled else "disabled")).strip(),
+            "status": ("disabled" if not tracking_enabled else (watch_status or "active")),
             "status_reason": str(watch_state.get("status_reason") or row_dict.get("disabled_reason") or row_dict.get("status_reason") or "").strip(),
             "added_at": int(row_dict.get("added_at") or row_dict.get("tracking_started_at") or 0),
             "updated_at": int(row_dict.get("updated_at") or 0),
@@ -626,11 +696,29 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
             "disabled_reason": str(row_dict.get("disabled_reason") or row_dict.get("status_reason") or "").strip(),
             "tracking_started_at": int(row_dict.get("tracking_started_at") or 0),
             "last_source_ts_at_status": int(row_dict.get("last_source_ts_at_status") or 0),
+            "post_promotion_promoted_at": int(promotion_state.get("promoted_at") or 0),
             "post_promotion_baseline_at": int(
                 policy_metrics.get("post_promotion_baseline_at")
                 or promotion_state.get("baseline_at")
                 or 0
             ),
+            "post_promotion_boundary_action": str(
+                promotion_state.get("boundary_action")
+                or promotion_state.get("event_action")
+                or ("promote" if (policy_metrics.get("post_promotion_baseline_at") or promotion_state.get("baseline_at")) else "")
+            ).strip(),
+            "post_promotion_boundary_source": str(
+                promotion_state.get("boundary_source")
+                or promotion_state.get("event_source")
+                or promotion_state.get("promotion_source")
+                or ""
+            ).strip(),
+            "post_promotion_boundary_reason": str(
+                promotion_state.get("boundary_reason")
+                or promotion_state.get("event_reason")
+                or promotion_state.get("promotion_reason")
+                or ""
+            ).strip(),
             "post_promotion_source": str(
                 policy_metrics.get("post_promotion_source")
                 or promotion_state.get("promotion_source")
@@ -643,6 +731,8 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
             ).strip(),
             "post_promotion_total_buy_signals": int(policy_metrics.get("post_promotion_total_buy_signals") or 0),
             "post_promotion_uncopyable_skips": int(policy_metrics.get("post_promotion_uncopyable_skips") or 0),
+            "post_promotion_timing_skips": int(policy_metrics.get("post_promotion_timing_skips") or 0),
+            "post_promotion_liquidity_skips": int(policy_metrics.get("post_promotion_liquidity_skips") or 0),
             "post_promotion_uncopyable_skip_rate": float(policy_metrics.get("post_promotion_uncopyable_skip_rate") or 0.0),
             "post_promotion_resolved_copied_count": int(policy_metrics.get("post_promotion_resolved_copied_count") or 0),
             "post_promotion_resolved_copied_win_rate": (
@@ -668,6 +758,13 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
                 else None
             ),
             "trust_note": str(trust_state.get("trust_note") or "").strip(),
+            "wallet_family": str(trust_state.get("wallet_family") or "").strip(),
+            "wallet_family_multiplier": (
+                float(trust_state["wallet_family_multiplier"])
+                if trust_state.get("wallet_family_multiplier") is not None
+                else None
+            ),
+            "wallet_family_note": str(trust_state.get("wallet_family_note") or "").strip(),
         }
         if discovery:
             payload.update(
@@ -769,11 +866,39 @@ def _wallet_membership_events(limit: int | None = None) -> tuple[list[dict[str, 
 
 
 def _wallet_registry_summary(limit: int | None = None) -> dict[str, Any]:
+    registry_state = _managed_wallet_registry_snapshot()
     wallets = _managed_wallet_rows(limit)
     event_rows, event_source = _wallet_membership_events(limit)
+    source = _wallet_registry_source_from_state(registry_state)
+    if source != "managed_wallets":
+        return {
+            "ok": False,
+            "source": source,
+            "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+            "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+            "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+            "managed_wallet_count": int(registry_state.get("managed_wallet_count") or 0),
+            "managed_wallet_total_count": int(registry_state.get("managed_wallet_total_count") or 0),
+            "managed_wallet_registry_updated_at": int(registry_state.get("managed_wallet_registry_updated_at") or 0),
+            "wallets": [],
+            "count": 0,
+            "events": event_rows,
+            "event_source": event_source,
+            "event_count": len(event_rows),
+            "message": (
+                "Managed wallet registry is unavailable because the canonical managed_wallets table is missing or unreadable. "
+                "Recover or reset the DB before trusting wallet inventory."
+            ),
+        }
     return {
         "ok": True,
-        "source": _wallet_registry_source(),
+        "source": source,
+        "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+        "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+        "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+        "managed_wallet_count": int(registry_state.get("managed_wallet_count") or 0),
+        "managed_wallet_total_count": int(registry_state.get("managed_wallet_total_count") or 0),
+        "managed_wallet_registry_updated_at": int(registry_state.get("managed_wallet_registry_updated_at") or 0),
         "wallets": wallets,
         "count": len(wallets),
         "events": event_rows,
@@ -783,11 +908,52 @@ def _wallet_registry_summary(limit: int | None = None) -> dict[str, Any]:
 
 
 def _discovery_candidates_response(limit: int | None = None) -> dict[str, Any]:
-    candidates = load_wallet_discovery_candidates(limit=limit)
+    integrity = database_integrity_state()
+    registry_state = _managed_wallet_registry_snapshot()
+    registry_status = str(registry_state.get("managed_wallet_registry_status") or "").strip().lower()
+    if bool(integrity.get("db_integrity_known")) and not bool(integrity.get("db_integrity_ok")):
+        detail = str(integrity.get("db_integrity_message") or "").splitlines()[0].strip()
+        suffix = f": {detail}" if detail else ""
+        return {
+            "ok": False,
+            "source": "wallet_discovery_candidates",
+            "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+            "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+            "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+            "count": 0,
+            "ready_count": 0,
+            "review_count": 0,
+            "candidates": [],
+            "message": f"Discovery candidates are unavailable because SQLite integrity check failed{suffix}.",
+        }
+    if registry_status in {"missing", "unreadable"}:
+        detail = str(registry_state.get("managed_wallet_registry_error") or "").strip()
+        suffix = f": {detail}" if detail else ""
+        return {
+            "ok": False,
+            "source": "wallet_discovery_candidates",
+            "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+            "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+            "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+            "count": 0,
+            "ready_count": 0,
+            "review_count": 0,
+            "candidates": [],
+            "message": (
+                "Discovery candidates are unavailable because the managed wallet registry is "
+                + ("unreadable" if registry_status == "unreadable" else "missing")
+                + suffix
+                + "."
+            ),
+        }
+    candidates = _discovery_candidate_rows(limit=limit)
     accepted_count = sum(1 for row in candidates if bool(row.get("accepted")))
     return {
         "ok": True,
         "source": "wallet_discovery_candidates",
+        "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+        "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+        "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
         "candidates": candidates,
         "count": len(candidates),
         "ready_count": accepted_count,
@@ -807,6 +973,23 @@ def _discovery_scan_response() -> dict[str, Any]:
             "ok": False,
             "message": f"Wallet discovery scan is unavailable because SQLite integrity check failed{suffix}.",
         }
+    registry_state = _managed_wallet_registry_snapshot()
+    registry_status = str(registry_state.get("managed_wallet_registry_status") or "").strip().lower()
+    if registry_status in {"missing", "unreadable"}:
+        detail = str(registry_state.get("managed_wallet_registry_error") or "").strip()
+        suffix = f": {detail}" if detail else ""
+        return {
+            "ok": False,
+            "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+            "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+            "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+            "message": (
+                "Wallet discovery scan is unavailable because the managed wallet registry is "
+                + ("unreadable" if registry_status == "unreadable" else "missing")
+                + suffix
+                + "."
+            ),
+        }
 
     try:
         summary = refresh_wallet_discovery_candidates(_wallet_registry_addresses())
@@ -821,6 +1004,12 @@ def _write_env_value(key: str, value: str) -> None:
     if not VALID_ENV_KEY_RE.match(key):
         raise ValueError(f"Invalid config key: {key}")
 
+    normalized_key = str(key or "").strip().upper()
+    text_value = str(value or "").strip()
+    if normalized_key not in ENV_ONLY_KEYS:
+        set_runtime_setting(normalized_key, text_value)
+        return
+
     with _env_lock:
         source_path = _source_env_path()
         try:
@@ -832,8 +1021,8 @@ def _write_env_value(key: str, value: str) -> None:
         found = False
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith(f"{key}="):
-                updated.append(f"{key}={value}")
+            if stripped.startswith(f"{normalized_key}="):
+                updated.append(f"{normalized_key}={text_value}")
                 found = True
             else:
                 updated.append(line)
@@ -841,10 +1030,36 @@ def _write_env_value(key: str, value: str) -> None:
         if not found:
             if updated and updated[-1] != "":
                 updated.append("")
-            updated.append(f"{key}={value}")
+            updated.append(f"{normalized_key}={text_value}")
 
         ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
         ENV_PATH.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+
+def _clear_env_value(key: str) -> None:
+    if not VALID_ENV_KEY_RE.match(key):
+        raise ValueError(f"Invalid config key: {key}")
+
+    normalized_key = str(key or "").strip().upper()
+    if normalized_key not in ENV_ONLY_KEYS:
+        delete_runtime_setting(normalized_key)
+        return
+
+    with _env_lock:
+        source_path = _source_env_path()
+        try:
+            lines = source_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+
+        updated = [
+            line
+            for line in lines
+            if not line.strip().startswith(f"{normalized_key}=")
+        ]
+
+        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ENV_PATH.write_text("\n".join(updated).rstrip() + "\n", encoding="utf-8")
 
 
 def _read_json_dict(path: Path) -> dict[str, Any]:
@@ -1636,9 +1851,200 @@ def _reactivate_wallet(wallet_address: str) -> dict[str, Any]:
                 """,
                 (wallet, now_ts, now_ts, now_ts),
             )
+            conn.execute(
+                """
+                INSERT INTO wallet_membership_events (
+                  wallet_address,
+                  action,
+                  source,
+                  reason,
+                  payload_json,
+                  created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    wallet,
+                    "reactivate",
+                    "manual_web",
+                    "wallet reactivated from web dashboard",
+                    json.dumps(
+                        {
+                            "baseline_at": now_ts,
+                            "reactivated_at": now_ts,
+                            "boundary_kind": "reactivate",
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    now_ts,
+                ),
+            )
     finally:
         conn.close()
     return {"ok": True, "message": "Wallet reactivated."}
+
+
+def _set_wallet_tracking_enabled(
+    wallet_address: str,
+    *,
+    tracking_enabled: bool,
+    action: str,
+    reason: str,
+) -> dict[str, Any]:
+    wallet = wallet_address.strip().lower()
+    if not wallet:
+        return {"ok": False, "message": "Missing wallet address."}
+
+    now_ts = int(time.time())
+    conn = get_conn()
+    try:
+        existing = conn.execute(
+            """
+            SELECT wallet_address, source, metadata_json
+            FROM managed_wallets
+            WHERE wallet_address=?
+            """,
+            (wallet,),
+        ).fetchone()
+        if existing is None:
+            return {"ok": False, "message": "Wallet is not in the managed wallet registry."}
+        current_enabled = True
+        enabled_row = conn.execute(
+            "SELECT tracking_enabled FROM managed_wallets WHERE wallet_address=?",
+            (wallet,),
+        ).fetchone()
+        if enabled_row is not None:
+            current_enabled = bool(int(enabled_row["tracking_enabled"] or 0))
+        if current_enabled == tracking_enabled:
+            return {
+                "ok": True,
+                "message": (
+                    "Wallet already enabled."
+                    if tracking_enabled
+                    else "Wallet already disabled."
+                ),
+            }
+
+        with conn:
+            conn.execute(
+                """
+                UPDATE managed_wallets
+                SET tracking_enabled=?,
+                    updated_at=?,
+                    disabled_at=?,
+                    disabled_reason=?
+                WHERE wallet_address=?
+                """,
+                (
+                    1 if tracking_enabled else 0,
+                    now_ts,
+                    None if tracking_enabled else now_ts,
+                    "" if tracking_enabled else reason,
+                    wallet,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO wallet_membership_events (
+                  wallet_address,
+                  action,
+                  source,
+                  reason,
+                  payload_json,
+                  created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    wallet,
+                    action,
+                    "manual_web",
+                    reason,
+                    json.dumps(
+                        {
+                            "tracking_enabled": tracking_enabled,
+                            "boundary_kind": action,
+                            "changed_at": now_ts,
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    now_ts,
+                ),
+            )
+            if tracking_enabled:
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                      wallet_address,
+                      status,
+                      status_reason,
+                      dropped_at,
+                      reactivated_at,
+                      tracking_started_at,
+                      updated_at
+                    ) VALUES (?, 'active', NULL, NULL, ?, ?, ?)
+                    ON CONFLICT(wallet_address) DO UPDATE SET
+                      status='active',
+                      status_reason=NULL,
+                      dropped_at=NULL,
+                      reactivated_at=excluded.reactivated_at,
+                      tracking_started_at=CASE
+                        WHEN COALESCE(wallet_watch_state.tracking_started_at, 0)=0 THEN excluded.tracking_started_at
+                        ELSE wallet_watch_state.tracking_started_at
+                      END,
+                      updated_at=excluded.updated_at
+                    """,
+                    (wallet, now_ts, now_ts, now_ts),
+                )
+            else:
+                cursor_row = conn.execute(
+                    "SELECT last_source_ts FROM wallet_cursors WHERE wallet_address=?",
+                    (wallet,),
+                ).fetchone()
+                last_source_ts = int(cursor_row["last_source_ts"] or 0) if cursor_row else 0
+                conn.execute(
+                    """
+                    INSERT INTO wallet_watch_state (
+                      wallet_address,
+                      status,
+                      status_reason,
+                      dropped_at,
+                      last_source_ts_at_status,
+                      updated_at
+                    ) VALUES (?, 'dropped', ?, ?, ?, ?)
+                    ON CONFLICT(wallet_address) DO UPDATE SET
+                      status='dropped',
+                      status_reason=excluded.status_reason,
+                      dropped_at=excluded.dropped_at,
+                      last_source_ts_at_status=excluded.last_source_ts_at_status,
+                      updated_at=excluded.updated_at
+                    """,
+                    (wallet, reason, now_ts, last_source_ts, now_ts),
+                )
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "message": "Wallet enabled." if tracking_enabled else "Wallet disabled.",
+    }
+
+
+def _enable_wallet(wallet_address: str) -> dict[str, Any]:
+    return _set_wallet_tracking_enabled(
+        wallet_address,
+        tracking_enabled=True,
+        action="enable",
+        reason="wallet enabled from web dashboard",
+    )
+
+
+def _disable_wallet(wallet_address: str) -> dict[str, Any]:
+    return _set_wallet_tracking_enabled(
+        wallet_address,
+        tracking_enabled=False,
+        action="disable",
+        reason="wallet disabled from web dashboard",
+    )
 
 
 def _drop_wallet(wallet_address: str, reason: str = "manual dashboard drop") -> dict[str, Any]:
@@ -2173,6 +2579,20 @@ def _reactivate_wallet_response(wallet_address: str) -> dict[str, Any]:
     return _reactivate_wallet(wallet_address)
 
 
+def _enable_wallet_response(wallet_address: str) -> dict[str, Any]:
+    blocked_response = _blocked_shadow_mutation_response("Wallet enable")
+    if blocked_response is not None:
+        return blocked_response
+    return _enable_wallet(wallet_address)
+
+
+def _disable_wallet_response(wallet_address: str) -> dict[str, Any]:
+    blocked_response = _blocked_shadow_mutation_response("Wallet disable")
+    if blocked_response is not None:
+        return blocked_response
+    return _disable_wallet(wallet_address)
+
+
 def _save_position_manual_edit_response(payload: dict[str, Any]) -> dict[str, Any]:
     blocked_response = _blocked_shadow_mutation_response("Manual position edits")
     if blocked_response is not None:
@@ -2200,11 +2620,30 @@ def _config_value_response(key: str, value: str) -> tuple[int, dict[str, Any]]:
             },
         )
 
-    blocked_response = _blocked_shadow_mutation_response("Config editing")
-    if blocked_response is not None:
-        return (409, blocked_response)
-
     _write_env_value(normalized_key, normalized_value)
+    return (200, _config_snapshot())
+
+
+def _config_clear_response(key: str) -> tuple[int, dict[str, Any]]:
+    normalized_key = str(key or "").strip()
+    if normalized_key == "USE_REAL_MONEY":
+        result = _set_live_mode_response({"enabled": False})
+        return (200 if result.get("ok") else 409, result)
+    if normalized_key == "WATCHED_WALLETS":
+        snapshot = _config_snapshot()
+        return (
+            409,
+            {
+                "ok": False,
+                "message": (
+                    "WATCHED_WALLETS is bootstrap-only after the DB-backed wallet registry migration. "
+                    "Use the wallet registry and shadow-reset controls in the web dashboard instead."
+                ),
+                **snapshot,
+            },
+        )
+
+    _clear_env_value(normalized_key)
     return (200, _config_snapshot())
 
 
@@ -2510,6 +2949,12 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
                 self._send_json(status_code, payload)
                 return
 
+            if path == "/api/config/clear":
+                key = str(body.get("key") or "").strip()
+                status_code, payload = _config_clear_response(key)
+                self._send_json(status_code, payload)
+                return
+
             if path == "/api/live-mode":
                 result = _set_live_mode_response(body)
                 self._send_json(200 if result.get("ok") else 409, result)
@@ -2536,6 +2981,16 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
             if path == "/api/wallets/reactivate":
                 wallet_address = str(body.get("walletAddress") or body.get("wallet_address") or "").strip()
                 self._send_json(200, _reactivate_wallet_response(wallet_address))
+                return
+
+            if path == "/api/wallets/enable":
+                wallet_address = str(body.get("walletAddress") or body.get("wallet_address") or "").strip()
+                self._send_json(200, _enable_wallet_response(wallet_address))
+                return
+
+            if path == "/api/wallets/disable":
+                wallet_address = str(body.get("walletAddress") or body.get("wallet_address") or "").strip()
+                self._send_json(200, _disable_wallet_response(wallet_address))
                 return
 
             if path == "/api/positions/manual-edit":

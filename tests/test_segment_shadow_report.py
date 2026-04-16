@@ -34,6 +34,7 @@ def _insert_trade(
     expected_exit_fee_usd: float = 0.01,
     expected_close_fixed_cost_usd: float = 0.0,
     outcome: int | None = None,
+    decision_context_json: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -65,11 +66,12 @@ def _insert_trade(
             resolved_at,
             experiment_arm,
             segment_id,
+            decision_context_json,
             expected_edge,
             expected_fill_cost_usd,
             expected_exit_fee_usd,
             expected_close_fixed_cost_usd
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             trade_id,
@@ -99,6 +101,7 @@ def _insert_trade(
             resolved_at,
             experiment_arm,
             segment_id,
+            decision_context_json,
             expected_edge,
             expected_fill_cost_usd,
             expected_exit_fee_usd,
@@ -372,7 +375,18 @@ class SegmentShadowReportTest(TestCase):
             return_value=1_700_123_456,
         ), patch(
             "kelly_watcher.runtime.evaluator.compute_segment_shadow_report",
-            return_value={"total_segments": 1, "status": "blocked", "summary": "need more resolved"},
+            return_value={
+                "total_segments": 1,
+                "status": "blocked",
+                "summary": "need more resolved",
+                "wallet_family_history_status": "mixed",
+                "wallet_family_coverage_pct": 2 / 3,
+                "wallet_family_summary": (
+                    "2 classified resolved | 1 unassigned resolved | "
+                    "top families: scalable (1 resolved, pnl $4.00), "
+                    "timing_sensitive (1 resolved, pnl $-1.00)"
+                ),
+            },
         ) as segment_report, patch(
             "kelly_watcher.runtime.evaluator.persist_performance_snapshot"
         ) as persist_snapshot, patch("kelly_watcher.runtime.evaluator.send_alert") as send_alert:
@@ -385,6 +399,9 @@ class SegmentShadowReportTest(TestCase):
         alert_text = str(send_alert.call_args.args[0])
         self.assertIn("shadow scope: current evidence window", alert_text.lower())
         self.assertIn("legacy/all-time resolved trades excluded", alert_text.lower())
+        self.assertIn("wallet families: mixed", alert_text.lower())
+        self.assertIn("coverage 66.7%", alert_text.lower())
+        self.assertIn("top families: scalable", alert_text.lower())
 
     def test_report_blocks_segment_on_large_calibration_gap(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -472,5 +489,64 @@ class SegmentShadowReportTest(TestCase):
                 self.assertAlmostEqual(float(warm_mid["avg_realized_fill_cost_usd"]), 0.10, places=6)
                 self.assertAlmostEqual(float(warm_mid["avg_fill_cost_slippage_usd"]), 0.08, places=6)
                 self.assertAlmostEqual(float(warm_mid["max_fill_cost_slippage_usd"]), 0.05, places=6)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_report_summarizes_wallet_family_coverage_from_decision_context(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    _insert_trade(
+                        conn,
+                        trade_id="family-scalable-win",
+                        segment_id="hot_short",
+                        shadow_pnl_usd=4.0,
+                        resolved_at=1_700_000_600,
+                        decision_context_json=json.dumps({"signal": {"wallet_trust": {"family": "scalable"}}}),
+                    )
+                    _insert_trade(
+                        conn,
+                        trade_id="family-timing-loss",
+                        segment_id="warm_mid",
+                        shadow_pnl_usd=-1.0,
+                        resolved_at=1_700_000_620,
+                        decision_context_json=json.dumps({"signal": {"wallet_trust": {"family": "timing_sensitive"}}}),
+                    )
+                    _insert_trade(
+                        conn,
+                        trade_id="family-legacy-win",
+                        segment_id="discovery_long",
+                        shadow_pnl_usd=2.0,
+                        resolved_at=1_700_000_640,
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                report = evaluator.compute_segment_shadow_report(min_resolved=1)
+                payload = main._segment_shadow_state_payload(report)
+
+                self.assertEqual(report["wallet_family_history_status"], "mixed")
+                self.assertEqual(report["wallet_family_classified_resolved"], 2)
+                self.assertEqual(report["wallet_family_unassigned_resolved"], 1)
+                self.assertAlmostEqual(float(report["wallet_family_coverage_pct"]), 2 / 3, places=6)
+                self.assertIn("classified resolved", str(report["wallet_family_summary"]))
+                self.assertEqual(payload["shadow_wallet_family_history_status"], "mixed")
+                self.assertEqual(payload["shadow_wallet_family_classified_resolved"], 2)
+                self.assertEqual(payload["shadow_wallet_family_unassigned_resolved"], 1)
+                self.assertAlmostEqual(float(payload["shadow_wallet_family_coverage_pct"]), 2 / 3, places=6)
+
+                wallet_families = report["wallet_families"]
+                self.assertEqual([row["wallet_family"] for row in wallet_families], ["scalable", "timing_sensitive"])
+                scalable = next(row for row in wallet_families if row["wallet_family"] == "scalable")
+                timing_sensitive = next(row for row in wallet_families if row["wallet_family"] == "timing_sensitive")
+                self.assertEqual(scalable["resolved"], 1)
+                self.assertAlmostEqual(float(scalable["total_pnl_usd"]), 4.0, places=6)
+                self.assertEqual(timing_sensitive["resolved"], 1)
+                self.assertAlmostEqual(float(timing_sensitive["total_pnl_usd"]), -1.0, places=6)
             finally:
                 db.DB_PATH = original_db_path

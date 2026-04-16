@@ -1,7 +1,7 @@
 import {postApiJson} from './api.js'
 import {readEnvValues} from './configEditor.js'
 
-export type DangerActionId = 'live_trading' | 'restart_shadow' | 'recover_db'
+export type DangerActionId = 'live_trading' | 'archive_trade_log' | 'restart_shadow' | 'recover_db'
 export type RestartShadowWalletMode = 'keep_active' | 'keep_all' | 'clear_all'
 
 export interface DangerActionDefinition {
@@ -44,6 +44,12 @@ export const dangerActions: DangerActionDefinition[] = [
     value: (envValues) => `${watchedWalletCount(envValues)} wlts`
   },
   {
+    id: 'archive_trade_log',
+    label: 'Archive Trade Log',
+    description: 'Move eligible closed trade_log rows out of the hot database and into the cold archive DB. Startup and daily maintenance already do this automatically; this manual action runs one bounded batch now.',
+    value: () => 'batch'
+  },
+  {
     id: 'recover_db',
     label: 'Recover DB',
     description: 'Restore the shadow SQLite database from the latest verified backup and restart shadow mode. A verified backup may be integrity-only, not evidence-ready. Use this only when the current ledger is corrupt or untrustworthy.',
@@ -80,6 +86,17 @@ export async function restartShadowAccount(walletMode: RestartShadowWalletMode):
     return {
       ok: false,
       message: `Shadow restart failed: ${error instanceof Error ? error.message : 'unknown error'}`
+    }
+  }
+}
+
+export async function archiveTradeLog(): Promise<DangerActionResult> {
+  try {
+    return await postApiJson<DangerActionResult>('/api/shadow/archive-trade-log', {})
+  } catch (error) {
+    return {
+      ok: false,
+      message: `Trade log archive failed: ${error instanceof Error ? error.message : 'unknown error'}`
     }
   }
 }

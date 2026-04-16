@@ -24,6 +24,7 @@ from kelly_watcher.engine.trade_contract import EXECUTED_ENTRY_SQL, OPEN_EXECUTE
 logger = logging.getLogger(__name__)
 _EDITABLE_STATUSES = frozenset({"open", "waiting", "win", "lose", "exit"})
 _ROUTED_SEGMENT_IDS = frozenset({*SEGMENT_IDS, SEGMENT_FALLBACK})
+_UNASSIGNED_WALLET_FAMILY = "unassigned"
 
 _SHADOW_OPEN_POSITIONS_SQL = f"""
 SELECT
@@ -44,6 +45,7 @@ SELECT
     3
   ) AS entry_price,
   ROUND(tl.confidence, 3) AS confidence,
+  tl.decision_context_json,
   tl.placed_at AS entered_at,
   COALESCE(NULLIF(tl.market_close_ts, 0), 0) AS market_close_ts,
   COALESCE(NULLIF(tl.market_close_ts, 0), 0) AS resolution_ts,
@@ -166,6 +168,7 @@ SELECT
     ),
     3
   ) AS confidence,
+  NULL AS decision_context_json,
   p.entered_at,
   COALESCE(
     (
@@ -239,6 +242,7 @@ SELECT
   ROUND(tl.actual_entry_shares, 6) AS shares,
   ROUND(tl.actual_entry_price, 3) AS entry_price,
   ROUND(tl.confidence, 3) AS confidence,
+  tl.decision_context_json,
   tl.placed_at AS entered_at,
   COALESCE(NULLIF(tl.market_close_ts, 0), tl.resolved_at, tl.placed_at) AS market_close_ts,
   COALESCE(NULLIF(tl.exited_at, 0), NULLIF(tl.resolved_at, 0), NULLIF(tl.market_close_ts, 0), tl.placed_at) AS resolution_ts,
@@ -316,6 +320,13 @@ class PerformancePreviewSummary:
     routed_legacy_acted: int = 0
     routed_legacy_resolved: int = 0
     routed_coverage_pct: float | None = None
+    wallet_family_history_status: str = "empty"
+    wallet_family_classified_acted: int = 0
+    wallet_family_classified_resolved: int = 0
+    wallet_family_unassigned_acted: int = 0
+    wallet_family_unassigned_resolved: int = 0
+    wallet_family_coverage_pct: float | None = None
+    wallet_families: tuple[dict[str, Any], ...] = ()
     shadow_evidence_epoch_started_at: int = 0
     shadow_evidence_epoch_source: str = ""
 
@@ -418,6 +429,43 @@ def _is_routed_segment_id(raw: Any) -> bool:
     return _normalize_segment_id(raw) in _ROUTED_SEGMENT_IDS
 
 
+def _normalize_wallet_family(raw: Any) -> str:
+    normalized = str(raw or "").strip().lower().replace(" ", "_")
+    return normalized or _UNASSIGNED_WALLET_FAMILY
+
+
+def _extract_wallet_family(decision_context_json: Any) -> str:
+    if not decision_context_json:
+        return _UNASSIGNED_WALLET_FAMILY
+    payload = decision_context_json
+    if isinstance(decision_context_json, str):
+        try:
+            payload = json.loads(decision_context_json)
+        except Exception:
+            return _UNASSIGNED_WALLET_FAMILY
+    if not isinstance(payload, dict):
+        return _UNASSIGNED_WALLET_FAMILY
+    signal_payload = payload.get("signal")
+    if not isinstance(signal_payload, dict):
+        signal_payload = {}
+    payload_wallet_trust = payload.get("wallet_trust")
+    if not isinstance(payload_wallet_trust, dict):
+        payload_wallet_trust = {}
+    signal_wallet_trust = signal_payload.get("wallet_trust")
+    if not isinstance(signal_wallet_trust, dict):
+        signal_wallet_trust = {}
+    for candidate in (
+        payload.get("wallet_family"),
+        payload_wallet_trust.get("family"),
+        signal_payload.get("wallet_family"),
+        signal_wallet_trust.get("family"),
+    ):
+        normalized = _normalize_wallet_family(candidate)
+        if normalized != _UNASSIGNED_WALLET_FAMILY:
+            return normalized
+    return _UNASSIGNED_WALLET_FAMILY
+
+
 def _position_sort_key(row: dict[str, Any]) -> tuple[float, float, str]:
     return (
         float(row.get("resolution_ts") or row.get("market_close_ts") or row.get("entered_at") or 0),
@@ -500,6 +548,85 @@ def _slice_summary(
         "avg_confidence": avg_confidence,
         "avg_total": avg_total,
     }
+
+
+def _wallet_family_preview(rows: list[dict[str, Any]], *, starting_bankroll: float | None) -> dict[str, Any]:
+    family_groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        wallet_family = _extract_wallet_family(row.get("decision_context_json"))
+        family_groups.setdefault(wallet_family, []).append(row)
+
+    family_rows: list[dict[str, Any]] = []
+    for wallet_family, family_rows_raw in family_groups.items():
+        slice_summary = _slice_summary(family_rows_raw, starting_bankroll=starting_bankroll)
+        family_rows.append(
+            {
+                "wallet_family": wallet_family,
+                "acted": int(slice_summary["acted"] or 0),
+                "resolved": int(slice_summary["resolved"] or 0),
+                "wins": int(slice_summary["wins"] or 0),
+                "win_rate": slice_summary["win_rate"],
+                "total_pnl": slice_summary["total_pnl"],
+                "return_pct": slice_summary["return_pct"],
+                "profit_factor": slice_summary["profit_factor"],
+                "expectancy_usd": slice_summary["expectancy_usd"],
+                "expectancy_pct": slice_summary["expectancy_pct"],
+                "avg_confidence": slice_summary["avg_confidence"],
+                "avg_total": slice_summary["avg_total"],
+            }
+        )
+
+    family_rows.sort(
+        key=lambda row: (
+            0 if str(row.get("wallet_family") or "") != _UNASSIGNED_WALLET_FAMILY else 1,
+            -int(row.get("resolved") or 0),
+            -float(row.get("total_pnl") or 0.0),
+            str(row.get("wallet_family") or ""),
+        )
+    )
+    unassigned_row = next(
+        (row for row in family_rows if str(row.get("wallet_family") or "") == _UNASSIGNED_WALLET_FAMILY),
+        None,
+    )
+    classified_rows = [
+        row for row in family_rows if str(row.get("wallet_family") or "") != _UNASSIGNED_WALLET_FAMILY
+    ]
+    classified_acted = sum(int(row.get("acted") or 0) for row in classified_rows)
+    classified_resolved = sum(int(row.get("resolved") or 0) for row in classified_rows)
+    unassigned_acted = int((unassigned_row or {}).get("acted") or 0)
+    unassigned_resolved = int((unassigned_row or {}).get("resolved") or 0)
+    total_resolved = classified_resolved + unassigned_resolved
+    history_status = "empty"
+    if classified_resolved <= 0 and unassigned_resolved > 0:
+        history_status = "unassigned_only"
+    elif classified_resolved > 0 and unassigned_resolved > 0:
+        history_status = "mixed"
+    elif classified_resolved > 0:
+        history_status = "classified_only"
+    coverage_pct = (
+        _round_to(classified_resolved / total_resolved, 4)
+        if total_resolved > 0
+        else None
+    )
+    return {
+        "wallet_family_history_status": history_status,
+        "wallet_family_classified_acted": classified_acted,
+        "wallet_family_classified_resolved": classified_resolved,
+        "wallet_family_unassigned_acted": unassigned_acted,
+        "wallet_family_unassigned_resolved": unassigned_resolved,
+        "wallet_family_coverage_pct": coverage_pct,
+        "wallet_families": tuple(classified_rows),
+    }
+
+
+def _format_wallet_families(rows: tuple[dict[str, Any], ...] | list[dict[str, Any]]) -> str:
+    families = list(rows or [])[:3]
+    if not families:
+        return "-"
+    return " | ".join(
+        f"{row['wallet_family']} {int(row.get('resolved') or 0)}/{int(row.get('acted') or 0)} {_format_dollar(row.get('total_pnl'))}"
+        for row in families
+    )
 
 
 def _normalize_effective_position(
@@ -720,6 +847,13 @@ def compute_tracker_preview_summary(
     routed_legacy_acted = 0
     routed_legacy_resolved = 0
     routed_coverage_pct = None
+    wallet_family_history_status = "empty"
+    wallet_family_classified_acted = 0
+    wallet_family_classified_resolved = 0
+    wallet_family_unassigned_acted = 0
+    wallet_family_unassigned_resolved = 0
+    wallet_family_coverage_pct = None
+    wallet_families: tuple[dict[str, Any], ...] = ()
 
     if active_mode == "shadow":
         routed_rows = [row for row in effective_positions if _is_routed_segment_id(row.get("segment_id"))]
@@ -767,6 +901,17 @@ def compute_tracker_preview_summary(
             routed_history_status = "mixed"
         elif routed_resolved > 0:
             routed_history_status = "routed_only"
+        wallet_family_preview = _wallet_family_preview(
+            effective_positions,
+            starting_bankroll=starting_bankroll,
+        )
+        wallet_family_history_status = str(wallet_family_preview["wallet_family_history_status"] or "empty")
+        wallet_family_classified_acted = int(wallet_family_preview["wallet_family_classified_acted"] or 0)
+        wallet_family_classified_resolved = int(wallet_family_preview["wallet_family_classified_resolved"] or 0)
+        wallet_family_unassigned_acted = int(wallet_family_preview["wallet_family_unassigned_acted"] or 0)
+        wallet_family_unassigned_resolved = int(wallet_family_preview["wallet_family_unassigned_resolved"] or 0)
+        wallet_family_coverage_pct = wallet_family_preview["wallet_family_coverage_pct"]
+        wallet_families = tuple(wallet_family_preview["wallet_families"] or ())
 
     return PerformancePreviewSummary(
         title=active_title,
@@ -802,6 +947,13 @@ def compute_tracker_preview_summary(
         routed_legacy_acted=routed_legacy_acted,
         routed_legacy_resolved=routed_legacy_resolved,
         routed_coverage_pct=routed_coverage_pct,
+        wallet_family_history_status=wallet_family_history_status,
+        wallet_family_classified_acted=wallet_family_classified_acted,
+        wallet_family_classified_resolved=wallet_family_classified_resolved,
+        wallet_family_unassigned_acted=wallet_family_unassigned_acted,
+        wallet_family_unassigned_resolved=wallet_family_unassigned_resolved,
+        wallet_family_coverage_pct=wallet_family_coverage_pct,
+        wallet_families=wallet_families,
         shadow_evidence_epoch_started_at=shadow_epoch_started_at,
         shadow_evidence_epoch_source=shadow_epoch_source,
     )
@@ -880,6 +1032,17 @@ def render_tracker_preview_message(summary: PerformancePreviewSummary | None = N
                     + f"{resolved_summary.routed_legacy_resolved} legacy/unassigned resolved excluded)"
                 ),
                 f"Routed history: {resolved_summary.routed_history_status}",
+                (
+                    "Wallet-family coverage: "
+                    + (
+                        _format_pct(resolved_summary.wallet_family_coverage_pct)
+                        if resolved_summary.wallet_family_coverage_pct is not None
+                        else "-"
+                    )
+                    + f" ({resolved_summary.wallet_family_classified_resolved} classified resolved, "
+                    + f"{resolved_summary.wallet_family_unassigned_resolved} unassigned resolved excluded)"
+                ),
+                f"Wallet-family history: {resolved_summary.wallet_family_history_status}",
             ]
         )
         bot_state = _safe_read_bot_state()
@@ -933,6 +1096,18 @@ def render_tracker_preview_message(summary: PerformancePreviewSummary | None = N
                 f"Routed profit factor: {_format_ratio(resolved_summary.routed_profit_factor)}",
                 f"Routed expectancy: {_format_expectancy(resolved_summary.routed_expectancy_usd, resolved_summary.routed_expectancy_pct)}",
                 f"Routed history: {resolved_summary.routed_history_status}",
+                (
+                    "Wallet-family coverage: "
+                    + (
+                        _format_pct(resolved_summary.wallet_family_coverage_pct)
+                        if resolved_summary.wallet_family_coverage_pct is not None
+                        else "-"
+                    )
+                    + f" ({resolved_summary.wallet_family_classified_resolved} classified resolved, "
+                    + f"{resolved_summary.wallet_family_unassigned_resolved} unassigned resolved excluded)"
+                ),
+                f"Wallet-family history: {resolved_summary.wallet_family_history_status}",
+                f"Wallet families: {_format_wallet_families(resolved_summary.wallet_families)}",
             ]
         )
         bot_state = _safe_read_bot_state()

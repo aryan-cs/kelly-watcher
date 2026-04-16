@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from kelly_watcher.config import min_confidence
 from kelly_watcher.data.db import get_trade_log_read_conn
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
+from kelly_watcher.engine.wallet_trust import (
+    get_wallet_trust_state,
+    wallet_family_confidence_floor_uplift,
+)
 
 CACHE_TTL_SECONDS = 60.0
 SHORT_WINDOW_SECONDS = 15 * 60
@@ -85,12 +89,20 @@ def adaptive_min_confidence_for_signal(
     bucket = _bucket_from_days_to_res(days_to_res)
     snapshot = _load_snapshot()
     bucket_stats = snapshot.bucket_stats.get(bucket, BucketStats())
-    local_stats = snapshot.local_copy_stats.get(str(trader_address or "").strip().lower()) if trader_address else None
+    wallet_key = str(trader_address or "").strip().lower()
+    local_stats = snapshot.local_copy_stats.get(wallet_key) if wallet_key else None
+    wallet_family = ""
+    if wallet_key:
+        try:
+            wallet_family = str(get_wallet_trust_state(wallet_key).family or "").strip().lower()
+        except Exception:
+            wallet_family = ""
     return derive_adaptive_floor(
         base_floor=base_floor,
         bucket=bucket,
         bucket_stats=bucket_stats,
         local_stats=local_stats,
+        wallet_family=wallet_family,
     )
 
 
@@ -100,6 +112,7 @@ def derive_adaptive_floor(
     bucket: str,
     bucket_stats: BucketStats,
     local_stats: LocalCopyStats | None = None,
+    wallet_family: str | None = None,
 ) -> AdaptiveFloorDecision:
     min_floor = max(0.0, round(base_floor - MAX_LOWERING, 4))
     max_floor = min(1.0, round(base_floor + MAX_RAISE, 4))
@@ -148,6 +161,13 @@ def derive_adaptive_floor(
         ):
             floor = min(floor, round(base_floor - 0.005, 4))
             reasons.append("local copied returns for this wallet are strong")
+
+    family_floor_uplift = wallet_family_confidence_floor_uplift(wallet_family)
+    if family_floor_uplift > 0:
+        floor = max(floor, round(base_floor + family_floor_uplift, 4))
+        reasons.append(
+            f"wallet family {str(wallet_family or '').replace('_', ' ')} requires a higher confidence floor"
+        )
 
     clamped_floor = round(min(max(floor, min_floor), max_floor), 4)
     return AdaptiveFloorDecision(

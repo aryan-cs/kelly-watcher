@@ -4,7 +4,7 @@ import { cycleDurationPreset, editableConfigFields, isPresetDurationField, readE
 import { MODEL_PANEL_COLUMN_LAYOUT, MODEL_PANEL_DEFS, Models } from './pages/Models.js';
 import { requestManualRetrain } from './retrainControl.js';
 import { stackPanels } from './responsive.js';
-import { dangerActions, recoverShadowDatabase, restartShadowAccount, setLiveTradingEnabled } from './settingsDanger.js';
+import { archiveTradeLog, dangerActions, recoverShadowDatabase, restartShadowAccount, setLiveTradingEnabled } from './settingsDanger.js';
 import { theme } from './theme.js';
 import { LiveFeed } from './pages/LiveFeed.js';
 import { Signals } from './pages/Signals.js';
@@ -142,11 +142,11 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
             ? theme.red
             : shadowRestartPending
                 ? theme.yellow
-            : pollIsFresh
-                ? theme.green
-                : startupInProgress || (startedAt > 0 && activityIsFresh && loopInProgress)
-                    ? theme.yellow
-                    : theme.red;
+                : pollIsFresh
+                    ? theme.green
+                    : startupInProgress || (startedAt > 0 && activityIsFresh && loopInProgress)
+                        ? theme.yellow
+                        : theme.red;
     const backendStatusText = startupFailed
         ? startupRecoveryOnly
             ? startupFailureText || 'recovery-only mode'
@@ -155,15 +155,15 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
             ? apiIssueTag
             : shadowRestartPending
                 ? shadowRestartMessage
-            : startupInProgress && startupDetail
-                ? startupDetail
-                : describeBackendStatus({
-                startedAt,
-                lastPollAt,
-                activityIsFresh,
-                pollIsFresh,
-                loopInProgress
-            });
+                : startupInProgress && startupDetail
+                    ? startupDetail
+                    : describeBackendStatus({
+                        startedAt,
+                        lastPollAt,
+                        activityIsFresh,
+                        pollIsFresh,
+                        loopInProgress
+                    });
     const backendStatusTag = formatHeaderStatusTag(backendStatusText);
     const navLabels = terminal.compact
         ? { 1: 'F', 2: 'S', 3: 'P', 4: 'M', 5: 'W', 6: 'C' }
@@ -187,30 +187,30 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
             ? apiError
             : shadowRestartPending
                 ? shadowRestartMessage
-            : retrainInProgress
-                ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
-                : startupInProgress
-                    ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
-                    : recentRetrainText
-                        ? `${recentRetrainText} | ${lastPollText}`
-                        : lastPollText;
+                : retrainInProgress
+                    ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
+                    : startupInProgress
+                        ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
+                        : recentRetrainText
+                            ? `${recentRetrainText} | ${lastPollText}`
+                            : lastPollText;
     const footerStatusColor = apiError
         ? theme.red
         : shadowRestartPending
             ? theme.yellow
-        : activeTransientNotice
-            ? activeTransientNotice.tone === 'error'
-                ? theme.red
-                : activeTransientNotice.tone === 'success'
-                    ? theme.green
-                    : theme.accent
-            : isRefreshing
-                ? theme.accent
-                : retrainInProgress
-                    ? theme.yellow
-                    : startupInProgress
+            : activeTransientNotice
+                ? activeTransientNotice.tone === 'error'
+                    ? theme.red
+                    : activeTransientNotice.tone === 'success'
+                        ? theme.green
+                        : theme.accent
+                : isRefreshing
+                    ? theme.accent
+                    : retrainInProgress
                         ? theme.yellow
-                        : theme.dim;
+                        : startupInProgress
+                            ? theme.yellow
+                            : theme.dim;
     const footerControls = page === 1
         ? terminal.compact
             ? '↑↓ scroll  ↑↑ latest  r refresh  q exit'
@@ -457,6 +457,22 @@ function App() {
     const dbRecoveryCandidateUnavailableMessage = dbRecoveryCandidateClassReason
         || String(botState.db_recovery_candidate_message || '').trim()
         || 'Recover DB is unavailable because no verified backup candidate is ready.';
+    const tradeLogArchiveStateKnown = Boolean(botState.trade_log_archive_state_known);
+    const tradeLogArchiveEnabled = tradeLogArchiveStateKnown
+        ? Boolean(botState.trade_log_archive_enabled)
+        : String(readEnvValues().TRADE_LOG_ARCHIVE_ENABLED || 'true').trim().toLowerCase() === 'true';
+    const tradeLogArchivePending = Boolean(botState.trade_log_archive_pending);
+    const tradeLogArchiveStatus = String(botState.trade_log_archive_status || '').trim().toLowerCase();
+    const tradeLogArchiveBlockReason = String(botState.trade_log_archive_block_reason || '').trim();
+    const tradeLogArchiveBlockedMessage = !tradeLogArchiveEnabled
+        ? 'Trade log archive is disabled in config.'
+        : shadowRestartPending
+            ? shadowRestartMessage
+            : startupRecoveryOnly
+                ? startupFailureText || 'Recovery-only mode: trade log archive is unavailable until Recover DB or Restart Shadow completes.'
+                : tradeLogArchiveBlockReason
+                    ? tradeLogArchiveBlockReason
+                    : '';
     const selectedModelPanel = MODEL_PANEL_DEFS[Math.max(0, Math.min(modelSelectionIndex, MODEL_PANEL_DEFS.length - 1))];
     const selectedModelSettingKeys = selectedModelPanel?.settingKeys || [];
     useEffect(() => {
@@ -490,6 +506,16 @@ function App() {
                 nextStatusTone = 'error';
                 changed = true;
             }
+            else if (actionId === 'archive_trade_log' && (tradeLogArchiveBlockedMessage || tradeLogArchivePending)) {
+                next = {
+                    ...next,
+                    focusArea: 'danger',
+                    dangerConfirm: null
+                };
+                nextStatusMessage = tradeLogArchiveBlockedMessage || String(botState.trade_log_archive_request_message || '').trim() || 'Trade log archive is pending.';
+                nextStatusTone = tradeLogArchiveBlockedMessage ? 'error' : 'info';
+                changed = true;
+            }
             else if (shadowRestartPending && (actionId === 'restart_shadow' || actionId === 'recover_db')) {
                 next = {
                     ...next,
@@ -508,7 +534,7 @@ function App() {
                 statusTone: nextStatusTone
             };
         });
-    }, [configEditBlockedMessage, liveModeBlockedMessage, shadowRestartPending, shadowRestartMessage]);
+    }, [botState.trade_log_archive_request_message, configEditBlockedMessage, liveModeBlockedMessage, shadowRestartPending, shadowRestartMessage, tradeLogArchiveBlockedMessage, tradeLogArchivePending]);
     const walletPaneCount = (pane) => {
         if (pane === 'best')
             return walletMeta.bestCount;
@@ -1139,6 +1165,40 @@ function App() {
             }));
             return;
         }
+        if (selectedDangerAction.id === 'archive_trade_log') {
+            if (tradeLogArchiveBlockedMessage) {
+                setSettingsEditor((current) => ({
+                    ...current,
+                    focusArea: 'danger',
+                    dangerConfirm: null,
+                    statusMessage: tradeLogArchiveBlockedMessage,
+                    statusTone: 'error'
+                }));
+                return;
+            }
+            const eligibleRows = Number(botState.trade_log_archive_eligible_row_count || 0);
+            const cutoffTs = Number(botState.trade_log_archive_cutoff_ts || 0);
+            const preserveSinceTs = Number(botState.trade_log_archive_preserve_since_ts || 0);
+            const cutoffText = cutoffTs > 0 ? ` Cutoff: ${new Date(cutoffTs * 1000).toLocaleString()}.` : '';
+            const preserveSinceText = preserveSinceTs > 0 ? ` Preserve since: ${new Date(preserveSinceTs * 1000).toLocaleString()}.` : '';
+            setSettingsEditor((current) => ({
+                ...current,
+                focusArea: 'danger',
+                dangerConfirm: {
+                    actionId: 'archive_trade_log',
+                    title: 'Archive Trade Log?',
+                    message: `This moves a bounded batch of cold trade_log rows out of the hot database and into the cold archive DB. Startup and daily maintenance already do this automatically.${eligibleRows > 0 ? ` ${eligibleRows} eligible row(s) are ready now.` : ' No eligible rows are ready right now.'}${cutoffText}${preserveSinceText}`,
+                    options: [
+                        { id: 'confirm_archive', label: 'Archive trade log', description: 'Queue one bounded archive batch through the backend request path.' },
+                        { id: 'cancel', label: 'Cancel', description: 'Leave the hot database unchanged.' }
+                    ],
+                    selectedIndex: 0
+                },
+                statusMessage: 'Use up/down to choose. Enter confirms. Esc cancels.',
+                statusTone: 'info'
+            }));
+            return;
+        }
         if (selectedDangerAction.id === 'recover_db') {
             if (dbRecoveryCandidateMode === 'unavailable') {
                 setSettingsEditor((current) => ({
@@ -1224,6 +1284,16 @@ function App() {
             }));
             return;
         }
+        if (confirm.actionId === 'archive_trade_log' && tradeLogArchiveBlockedMessage) {
+            setSettingsEditor((current) => ({
+                ...current,
+                focusArea: 'danger',
+                dangerConfirm: null,
+                statusMessage: tradeLogArchiveBlockedMessage,
+                statusTone: 'error'
+            }));
+            return;
+        }
         if (shadowRestartPending
             && (confirm.actionId === 'restart_shadow' || confirm.actionId === 'recover_db')) {
             setSettingsEditor((current) => ({
@@ -1237,9 +1307,11 @@ function App() {
         }
         const result = confirm.actionId === 'live_trading'
             ? await setLiveTradingEnabled(selectedOption.id === 'confirm_enable')
-            : confirm.actionId === 'recover_db'
-                ? await recoverShadowDatabase()
-                : await restartShadowAccount(selectedOption.id);
+            : confirm.actionId === 'archive_trade_log'
+                ? await archiveTradeLog()
+                : confirm.actionId === 'recover_db'
+                    ? await recoverShadowDatabase()
+                    : await restartShadowAccount(selectedOption.id);
         setSettingsEditor((current) => ({
             ...current,
             values: readEditableConfigValues(),
@@ -1251,6 +1323,9 @@ function App() {
         if (result.ok) {
             if (confirm.actionId === 'restart_shadow' || confirm.actionId === 'recover_db') {
                 beginShadowRestartUiReset(confirm.actionId === 'recover_db' ? 'db_recovery' : 'shadow_reset', result.message);
+            }
+            if (confirm.actionId === 'archive_trade_log') {
+                clearQueryCache();
             }
             setIsRefreshing(true);
             setRefreshToken((current) => current + 1);

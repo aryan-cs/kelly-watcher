@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,60 +10,68 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 LEGACY_ENV_PATH = REPO_ROOT / ".env"
 ENV_PROFILE_ENV_VAR = "KELLY_ENV"
-DEFAULT_ENV_PROFILE = "dev"
-SUPPORTED_ENV_PROFILES = ("dev", "prod")
+DEFAULT_ENV_PROFILE = "default"
+SUPPORTED_ENV_PROFILES = ("default",)
+SAVE_ENV_PATH = REPO_ROOT / "save" / ".env"
+REPO_ENV_PATH = REPO_ROOT / ".env"
+
+ENV_ONLY_KEYS = frozenset(
+    {
+        "POLYGON_PRIVATE_KEY",
+        "POLYGON_WALLET_ADDRESS",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "DASHBOARD_API_HOST",
+        "DASHBOARD_API_PORT",
+        "DASHBOARD_API_TOKEN",
+        "DASHBOARD_WEB_URL",
+        "KELLY_API_BASE_URL",
+        "KELLY_API_TOKEN",
+        "KELLY_RUNTIME_STDIO_LOG_PATH",
+        "KELLY_RUNTIME_STDIO_LOG_MAX_BYTES",
+        "KELLY_RUNTIME_STDIO_LOG_BACKUPS",
+    }
+)
+BOOTSTRAP_ENV_KEYS = frozenset({"WATCHED_WALLETS"})
+_BOOTSTRAP_COMPLETE = False
 
 
-def _normalize_profile(value: str | None) -> str | None:
-    profile = str(value or "").strip().lower()
-    return profile if profile in SUPPORTED_ENV_PROFILES else None
+def _normalize_profile(_value: str | None) -> str:
+    return DEFAULT_ENV_PROFILE
 
 
 def profile_from_argv(argv: list[str] | tuple[str, ...] | None = None) -> str | None:
-    raw_args = list(sys.argv[1:] if argv is None else argv)
-    wants_dev = "--dev" in raw_args
-    wants_prod = "--prod" in raw_args
-    if wants_dev and wants_prod:
-        raise ValueError("Pass only one of --dev or --prod.")
-    if wants_prod:
-        return "prod"
-    if wants_dev:
-        return "dev"
+    del argv
     return None
 
 
 def profile_from_environ(environ: dict[str, str] | None = None) -> str | None:
-    return _normalize_profile((environ or os.environ).get(ENV_PROFILE_ENV_VAR))
+    del environ
+    return DEFAULT_ENV_PROFILE
 
 
 def active_env_profile(
     argv: list[str] | tuple[str, ...] | None = None,
     environ: dict[str, str] | None = None,
 ) -> str:
-    del environ
-    return profile_from_argv(argv) or DEFAULT_ENV_PROFILE
+    del argv, environ
+    return DEFAULT_ENV_PROFILE
 
 
 def save_dir_for_repo(repo_root: Path = REPO_ROOT) -> Path:
     return repo_root / "save"
 
 
-def env_path_for_profile(profile: str, repo_root: Path = REPO_ROOT) -> Path:
-    normalized = _normalize_profile(profile)
-    if not normalized:
-        raise ValueError(f"Unsupported env profile: {profile!r}")
-    return save_dir_for_repo(repo_root) / f".env.{normalized}"
+def env_path_for_profile(_profile: str, repo_root: Path = REPO_ROOT) -> Path:
+    return save_dir_for_repo(repo_root) / ".env"
 
 
-def repo_env_path_for_profile(profile: str, repo_root: Path = REPO_ROOT) -> Path:
-    normalized = _normalize_profile(profile)
-    if not normalized:
-        raise ValueError(f"Unsupported env profile: {profile!r}")
-    return repo_root / f".env.{normalized}"
+def repo_env_path_for_profile(_profile: str, repo_root: Path = REPO_ROOT) -> Path:
+    return repo_root / ".env"
 
 
 def ensure_persistent_env_path(
-    profile: str,
+    profile: str = DEFAULT_ENV_PROFILE,
     repo_root: Path = REPO_ROOT,
 ) -> Path:
     preferred = env_path_for_profile(profile, repo_root)
@@ -72,8 +79,7 @@ def ensure_persistent_env_path(
         return preferred
 
     repo_env = repo_env_path_for_profile(profile, repo_root)
-    legacy = repo_root / LEGACY_ENV_PATH.name
-    source = repo_env if repo_env.exists() else legacy if profile == "dev" and legacy.exists() else None
+    source = repo_env if repo_env.exists() else LEGACY_ENV_PATH if LEGACY_ENV_PATH.exists() else None
     if source is None:
         return preferred
 
@@ -87,16 +93,15 @@ def active_env_path(
     environ: dict[str, str] | None = None,
     repo_root: Path = REPO_ROOT,
 ) -> Path:
-    profile = active_env_profile(argv, environ)
-    preferred = env_path_for_profile(profile, repo_root)
-    repo_env = repo_env_path_for_profile(profile, repo_root)
-    legacy = repo_root / LEGACY_ENV_PATH.name
+    del argv, environ
+    preferred = env_path_for_profile(DEFAULT_ENV_PROFILE, repo_root)
+    repo_env = repo_env_path_for_profile(DEFAULT_ENV_PROFILE, repo_root)
     if preferred.exists():
         return preferred
     if repo_env.exists():
         return repo_env
-    if profile == "dev" and legacy.exists():
-        return legacy
+    if LEGACY_ENV_PATH.exists():
+        return LEGACY_ENV_PATH
     return preferred
 
 
@@ -104,7 +109,8 @@ def active_env_flag(
     argv: list[str] | tuple[str, ...] | None = None,
     environ: dict[str, str] | None = None,
 ) -> str:
-    return f"--{active_env_profile(argv, environ)}"
+    del argv, environ
+    return ""
 
 
 def init_env_profile(
@@ -113,24 +119,29 @@ def init_env_profile(
     *,
     override: bool = False,
 ) -> tuple[str, Path]:
+    global _BOOTSTRAP_COMPLETE
+
     profile = active_env_profile(argv, environ)
     ensure_persistent_env_path(profile)
     path = active_env_path(argv, environ)
     os.environ[ENV_PROFILE_ENV_VAR] = profile
     if path.exists():
         load_dotenv(path, override=override)
+    if not _BOOTSTRAP_COMPLETE:
+        try:
+            from kelly_watcher.data.db import bootstrap_runtime_settings_from_env
+
+            bootstrap_runtime_settings_from_env(
+                path,
+                env_only_keys=ENV_ONLY_KEYS,
+                bootstrap_env_keys=BOOTSTRAP_ENV_KEYS,
+            )
+        except Exception:
+            pass
+        _BOOTSTRAP_COMPLETE = True
     return profile, path
 
 
 def add_env_profile_flags(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--dev",
-        action="store_true",
-        help="Use .env.dev for config (default).",
-    )
-    group.add_argument(
-        "--prod",
-        action="store_true",
-        help="Use .env.prod for config.",
-    )
+    del parser
+    return None

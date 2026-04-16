@@ -5884,6 +5884,16 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const startupApiError = compactSingleLineText(botState.api_error);
     const shadowRestartPending = Boolean(botState.shadow_restart_pending);
     const shadowRestartMessage = String(botState.shadow_restart_message || '').trim() || 'shadow restart in progress';
+    const dbIntegrityKnown = Boolean(botState.db_integrity_known);
+    const dbIntegrityOk = !dbIntegrityKnown || Boolean(botState.db_integrity_ok);
+    const dbIntegrityMessage = compactSingleLineText(botState.db_integrity_message);
+    const modelsQueryBlockedMessage = shadowRestartPending
+        ? `Model queries are blocked: ${shadowRestartMessage}`
+        : startupRecoveryOnly
+            ? `Model queries are blocked: ${startupBlockReason || startupDetail || 'startup blocked in recovery-only mode'}`
+            : dbIntegrityKnown && !dbIntegrityOk
+                ? `Model queries are blocked: ${dbIntegrityMessage || 'SQLite integrity check failed.'}`
+                : '';
     const manualRetrainPending = Boolean(botState.manual_retrain_pending);
     const manualRetrainRequestedAt = Math.max(0, Number(botState.manual_retrain_requested_at || 0));
     const manualRetrainMessage = compactSingleLineText(botState.manual_retrain_message);
@@ -6365,13 +6375,13 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             signalModeCards.length ? (signalModeCards.map((card, index) => (React.createElement(React.Fragment, { key: card.title },
                 React.createElement(ModelsSpacer, null),
                 React.createElement(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[1], color: card.titleColor ?? theme.white }),
-                card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))))))) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[1]))),
+                card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))))))) : (React.createElement(Text, { color: modelsQueryBlockedMessage ? theme.yellow : theme.dim }, fit(modelsQueryBlockedMessage || 'No tracker signals yet.', modelsColumnWidths[1]))),
             React.createElement(ModelsSpacer, null),
             React.createElement(ModelsSectionTitle, { title: "Exit Guard", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
             exitGuardStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[1], labelWidth: 12 }))),
             React.createElement(ModelsSpacer, null),
             React.createElement(RecentExitHeaderRow, { width: modelsColumnWidths[1] }),
-            recentExitAudits.length ? (recentExitAudits.map((row, index) => (React.createElement(RecentExitDataRow, { key: `${row.audited_at}-${row.decision || 'decision'}-${index}`, width: modelsColumnWidths[1], timestamp: formatShortDateTime(row.audited_at), timestampColor: theme.dim, action: exitDecisionLabel(row.decision, row.reason), actionColor: exitDecisionColor(row.decision, row.reason), estimatedReturn: formatPct(row.estimated_return_pct, 1), estimatedReturnColor: signedMetricColor(row.estimated_return_pct), reason: String(row.reason || '').trim() || '-', reasonColor: theme.dim })))) : (React.createElement(Text, { color: theme.dim }, fit('No exit audits logged yet.', modelsColumnWidths[1])))),
+            recentExitAudits.length ? (recentExitAudits.map((row, index) => (React.createElement(RecentExitDataRow, { key: `${row.audited_at}-${row.decision || 'decision'}-${index}`, width: modelsColumnWidths[1], timestamp: formatShortDateTime(row.audited_at), timestampColor: theme.dim, action: exitDecisionLabel(row.decision, row.reason), actionColor: exitDecisionColor(row.decision, row.reason), estimatedReturn: formatPct(row.estimated_return_pct, 1), estimatedReturnColor: signedMetricColor(row.estimated_return_pct), reason: String(row.reason || '').trim() || '-', reasonColor: theme.dim })))) : (React.createElement(Text, { color: modelsQueryBlockedMessage ? theme.yellow : theme.dim }, fit(modelsQueryBlockedMessage || 'No exit audits logged yet.', modelsColumnWidths[1])))),
         React.createElement(InkBox, { width: modelsColumnGap }),
         React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),
@@ -6390,7 +6400,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                 React.createElement(DenseModelsRow, { label: "Brier c / i", value: `${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`, color: sharedHoldoutGateReadColor(latestSharedHoldoutRun), width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }))) : null,
             React.createElement(ModelsSpacer, null),
             React.createElement(RecentRunsHeaderRow, { width: modelsColumnWidths[2] }),
-            recentRetrainRuns.length ? (recentRetrainRuns.map((row, index) => (React.createElement(RecentRunsDataRow, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, width: modelsColumnWidths[2], timestamp: formatShortDateTime(row.finished_at), timestampColor: theme.dim, logLoss: formatNumber(row.log_loss, 3), logLossColor: lowerIsBetterColor(row.log_loss, 0.55, 0.69), brier: formatNumber(row.brier_score, 3), brierColor: lowerIsBetterColor(row.brier_score, 0.18, 0.25), result: retrainRunStateCompactLabel(row.status, row.deployed), resultColor: retrainRunStateColor(row.status, row.deployed) })))) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[2]))))));
+            recentRetrainRuns.length ? (recentRetrainRuns.map((row, index) => (React.createElement(RecentRunsDataRow, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, width: modelsColumnWidths[2], timestamp: formatShortDateTime(row.finished_at), timestampColor: theme.dim, logLoss: formatNumber(row.log_loss, 3), logLossColor: lowerIsBetterColor(row.log_loss, 0.55, 0.69), brier: formatNumber(row.brier_score, 3), brierColor: lowerIsBetterColor(row.brier_score, 0.18, 0.25), result: retrainRunStateCompactLabel(row.status, row.deployed), resultColor: retrainRunStateColor(row.status, row.deployed) })))) : (React.createElement(Text, { color: modelsQueryBlockedMessage ? theme.yellow : theme.dim }, fit(modelsQueryBlockedMessage || 'No retrain attempts logged yet.', modelsColumnWidths[2]))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         renderPageBody(),
         detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },

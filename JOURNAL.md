@@ -439,3 +439,21 @@ Blockers: Browser/API consumers for the new registry status are still dirty in t
 Next: Wire `managed_wallet_registry_status` / `managed_wallet_registry_error` into the browser-facing wallet-registry and startup views once the shared dashboard files are free, and decide whether `dashboard_api._wallet_registry_addresses()` should consume the new status directly instead of its remaining fallback logic.
 Decisions: `managed_wallet_registry_state()` now classifies the canonical wallet registry as `ready`, `empty`, `missing`, or `unreadable` and preserves the old boolean/count fields for compatibility. `main.py` now uses that explicit status for bootstrap import gating, startup validation wording, startup-failure state persistence, runtime wallet loading, and managed-wallet registry refresh behavior. Missing/unreadable registry states now fail closed instead of being treated like an empty registry.
 Tests: `python -m py_compile src/kelly_watcher/data/db.py src/kelly_watcher/main.py tests/test_managed_wallet_registry_state.py tests/test_wallet_discovery_runtime_sync.py` -> passed; `uv run pytest tests/test_managed_wallet_registry_state.py tests/test_wallet_discovery_runtime_sync.py -q` -> 7 passed, 3 subtests passed; `uv run pytest tests/test_wallet_discovery.py tests/test_managed_wallet_registry_state.py tests/test_wallet_discovery_runtime_sync.py -q` -> 9 passed, 3 subtests passed
+
+[2026-04-16 21:33 CDT] codex-main
+Task: Fail closed when the managed-wallet registry degrades after startup so the runtime cannot keep polling stale wallets from the last good snapshot.
+Claims: `JOURNAL.md`, `src/kelly_watcher/main.py`, `tests/test_managed_wallet_registry_runtime_sync.py`
+Status: In progress
+Blockers: `src/kelly_watcher/main.py` is a shared integration point and `tests/test_wallet_discovery_runtime_sync.py` is already dirty elsewhere, so this slice needs a new focused regression file instead of touching the omnibus runtime tests.
+Next: Clear the in-memory tracker/watchlist and trader cache when periodic registry sync sees `missing` or `unreadable`, then lock it with a scheduler-level regression around the degraded-after-start transition.
+Decisions: Shadow mode should fail closed if the canonical wallet registry disappears or becomes unreadable after boot. Persisting the error state is not enough if the runtime keeps polling the last good wallet set.
+Tests: Pending
+
+[2026-04-16 21:37 CDT] codex-main
+Task: Complete the degraded-after-start managed-wallet fail-closed runtime fix.
+Claims: `JOURNAL.md`, `src/kelly_watcher/main.py`, `tests/test_managed_wallet_registry_runtime_sync.py`
+Status: Completed
+Blockers: The live DB integrity problem is still the main blocker before shadow tracking can be judged from real evidence. This slice just removes another stale-state loophole in the runtime.
+Next: Highest-value follow-up is to propagate the explicit `managed_wallet_registry_status` / `managed_wallet_registry_error` contract through the wallet-registry/browser API so operators no longer have to infer registry health from endpoint shape or fallback behavior.
+Decisions: Periodic managed-wallet registry sync now clears `runtime_wallets`, `watchlist`, `tracker`, and the trader cache when the canonical registry becomes `missing` or `unreadable` after startup. That means shadow mode no longer keeps polling stale wallets from the last good snapshot when the registry degrades mid-run.
+Tests: `python -m py_compile src/kelly_watcher/main.py tests/test_managed_wallet_registry_runtime_sync.py` -> passed; `uv run pytest tests/test_managed_wallet_registry_runtime_sync.py tests/test_managed_wallet_registry_state.py -q` -> 6 passed, 5 subtests passed

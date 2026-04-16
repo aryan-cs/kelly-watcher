@@ -7332,7 +7332,16 @@ def main() -> None:
                 registry_state = managed_wallet_registry_state()
                 managed_wallets = _managed_wallet_registry_runtime_wallets(registry_state)
                 if managed_wallets is None:
-                    _persist_bot_state(**registry_state)
+                    if runtime_wallets:
+                        runtime_wallets = []
+                        watchlist.replace_wallets([])
+                        if tracker is not None:
+                            tracker.replace_wallets([])
+                        refresh_trader_cache([])
+                    _persist_bot_state(
+                        **watchlist.state_fields(),
+                        **registry_state,
+                    )
                     return
                 if managed_wallets == runtime_wallets:
                     _persist_bot_state(**registry_state)

@@ -1,5 +1,6 @@
 import {useMemo, type ReactNode} from 'react'
 import {type LiveEvent} from './api'
+import {useResizableColumns} from './columnResize'
 import {
   buildTradeIdLookup,
   formatClock,
@@ -8,17 +9,18 @@ import {
   formatFixedNumber,
   joinClasses,
   outcomeColor,
-  positiveDollarColor,
   probabilityColor,
   resolveActionText,
   shortAddress,
   useEventFeed,
   feedTheme
 } from './feedUtils'
+import {moneyMetricColor} from './uiFormat'
 
 interface TrackerFeedProps {
   mode: 'mock' | 'api'
   mockEvents: LiveEvent[]
+  bankrollUsd?: number
 }
 
 type TrackerColumnKey =
@@ -47,6 +49,7 @@ interface TrackerColumn {
   label: string
   colClassName: string
   cellClassName?: string
+  resizable?: boolean
   render?: (row: TrackerDisplayRow) => ReactNode
 }
 
@@ -77,7 +80,7 @@ const TRACKER_COLUMNS: TrackerColumn[] = [
   {key: 'profit', label: 'PROFIT', colClassName: 'tracker-col tracker-col--compact', cellClassName: 'tracker-cell--numeric'}
 ]
 
-function buildTrackerRow(event: LiveEvent, displayId?: number): TrackerDisplayRow {
+function buildTrackerRow(event: LiveEvent, displayId?: number, bankrollUsd?: number): TrackerDisplayRow {
   const username = event.username || shortAddress(event.trader || '-')
   const action = resolveActionText(event)
   const effectiveShares = event.shares ?? event.size_usd
@@ -107,8 +110,8 @@ function buildTrackerRow(event: LiveEvent, displayId?: number): TrackerDisplayRo
       action: outcomeColor(action),
       side: outcomeColor(event.side),
       price: probabilityColor(event.price),
-      toWin: toWinUsd != null ? positiveDollarColor(toWinUsd, 100) : feedTheme.dim,
-      profit: profitUsd != null ? positiveDollarColor(profitUsd, 100) : feedTheme.dim
+      toWin: toWinUsd != null ? moneyMetricColor(toWinUsd, bankrollUsd, paidUsd) : feedTheme.dim,
+      profit: profitUsd != null ? moneyMetricColor(profitUsd, bankrollUsd, paidUsd) : feedTheme.dim
     },
     titles: {
       market: event.question || '-'
@@ -126,16 +129,17 @@ function renderEmptyState(loading: boolean, error: string): string {
   return 'WAITING FOR INCOMING TRADE EVENTS...'
 }
 
-export function TrackerFeed({mode, mockEvents}: TrackerFeedProps) {
+export function TrackerFeed({mode, mockEvents, bankrollUsd}: TrackerFeedProps) {
   const {events, error, loading} = useEventFeed(mode, mockEvents)
+  const {widths, tableWidth, startResize} = useResizableColumns('tracker-feed', TRACKER_COLUMNS)
   const allIncoming = useMemo(
     () => events.filter((event) => event.type === 'incoming').reverse(),
     [events]
   )
   const tradeIdLookup = useMemo(() => buildTradeIdLookup(events), [events])
   const rows = useMemo(
-    () => allIncoming.map((event) => buildTrackerRow(event, tradeIdLookup.get(event.trade_id))),
-    [allIncoming, tradeIdLookup]
+    () => allIncoming.map((event) => buildTrackerRow(event, tradeIdLookup.get(event.trade_id), bankrollUsd)),
+    [allIncoming, bankrollUsd, tradeIdLookup]
   )
   const sourceLabel = mode === 'mock' ? 'MOCK FEED' : 'LIVE FEED'
 
@@ -149,10 +153,18 @@ export function TrackerFeed({mode, mockEvents}: TrackerFeedProps) {
       </header>
 
       <div className="tracker-page__viewport">
-        <table className="tracker-table">
+        <table
+          className="tracker-table"
+          data-resizable-table-id="tracker-feed"
+          style={tableWidth ? {width: `${tableWidth}px`} : undefined}
+        >
           <colgroup>
             {TRACKER_COLUMNS.map((column) => (
-              <col key={column.key} className={column.colClassName} />
+              <col
+                key={column.key}
+                className={column.colClassName}
+                style={widths?.[column.key] ? {width: `${widths[column.key]}px`} : undefined}
+              />
             ))}
           </colgroup>
           <thead>
@@ -161,9 +173,20 @@ export function TrackerFeed({mode, mockEvents}: TrackerFeedProps) {
                 <th
                   key={column.key}
                   scope="col"
+                  data-column-key={column.key}
                   className={joinClasses('tracker-head', column.cellClassName)}
                 >
-                  {column.label}
+                  <div className="resize-head">
+                    <span className="resize-head__label">{column.label}</span>
+                    {column.resizable === false ? null : (
+                      <button
+                        type="button"
+                        className="resize-head__handle"
+                        aria-label={`Resize ${column.label} column`}
+                        onPointerDown={(event) => startResize(column, event)}
+                      />
+                    )}
+                  </div>
                 </th>
               ))}
             </tr>
@@ -179,7 +202,9 @@ export function TrackerFeed({mode, mockEvents}: TrackerFeedProps) {
                       style={row.colors[column.key] ? {color: row.colors[column.key]} : undefined}
                       title={row.titles[column.key]}
                     >
-                      {column.render ? column.render(row) : row.cells[column.key]}
+                      <div className="tracker-cell__content">
+                        {column.render ? column.render(row) : row.cells[column.key]}
+                      </div>
                     </td>
                   ))}
                 </tr>

@@ -1042,6 +1042,16 @@ def render_tracker_preview_message(summary: PerformancePreviewSummary | None = N
                     + f" ({resolved_summary.wallet_family_classified_resolved} classified resolved, "
                     + f"{resolved_summary.wallet_family_unassigned_resolved} unassigned resolved excluded)"
                 ),
+                (
+                    "Wallet-family acted funnel: "
+                    + f"{resolved_summary.wallet_family_classified_acted} acted -> "
+                    + f"{resolved_summary.wallet_family_classified_resolved} resolved"
+                    + (
+                        f" ({resolved_summary.wallet_family_unassigned_acted} unassigned acted excluded)"
+                        if resolved_summary.wallet_family_unassigned_acted > 0
+                        else ""
+                    )
+                ),
                 f"Wallet-family history: {resolved_summary.wallet_family_history_status}",
             ]
         )
@@ -1105,6 +1115,16 @@ def render_tracker_preview_message(summary: PerformancePreviewSummary | None = N
                     )
                     + f" ({resolved_summary.wallet_family_classified_resolved} classified resolved, "
                     + f"{resolved_summary.wallet_family_unassigned_resolved} unassigned resolved excluded)"
+                ),
+                (
+                    "Wallet-family acted funnel: "
+                    + f"{resolved_summary.wallet_family_classified_acted} acted -> "
+                    + f"{resolved_summary.wallet_family_classified_resolved} resolved"
+                    + (
+                        f" ({resolved_summary.wallet_family_unassigned_acted} unassigned acted excluded)"
+                        if resolved_summary.wallet_family_unassigned_acted > 0
+                        else ""
+                    )
                 ),
                 f"Wallet-family history: {resolved_summary.wallet_family_history_status}",
                 f"Wallet families: {_format_wallet_families(resolved_summary.wallet_families)}",

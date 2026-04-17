@@ -50,6 +50,9 @@ class WalletBackendApiTest(unittest.TestCase):
                 "managed_wallet_registry_updated_at": 1_700_000_000,
             },
         ), patch(
+            "kelly_watcher.dashboard_api._bot_state_snapshot",
+            return_value={"wallet_discovery_last_scan_at": 1_700_000_120},
+        ), patch(
             "kelly_watcher.dashboard_api.load_wallet_discovery_candidates",
             return_value=[
                 {
@@ -59,12 +62,17 @@ class WalletBackendApiTest(unittest.TestCase):
                     "follow_score": 0.81,
                     "accepted": False,
                     "reject_reason": "conviction_ratio<30%",
+                    "updated_at": 1_700_000_100,
                 }
             ],
         ), patch(
             "kelly_watcher.dashboard_api._wallet_policy_metrics_rows",
             return_value={
                 "0xabc": {
+                    "local_quality_score": 0.67,
+                    "local_weight": 0.4,
+                    "local_drop_ready": False,
+                    "local_drop_reason": "",
                     "post_promotion_baseline_at": 1_700_000_100,
                     "post_promotion_evidence_ready": False,
                     "post_promotion_evidence_note": "1/6 buy signals",
@@ -76,6 +84,31 @@ class WalletBackendApiTest(unittest.TestCase):
                 }
             },
         ), patch(
+            "kelly_watcher.dashboard_api._wallet_trust_snapshot_map",
+            return_value={
+                "0xabc": {
+                    "trust_tier": "discovery",
+                    "trust_size_multiplier": 0.05,
+                    "trust_note": "wallet is in discovery",
+                    "wallet_family": "emerging",
+                    "wallet_family_multiplier": 1.0,
+                    "wallet_family_note": "wallet family emerging from cold-start history",
+                }
+            },
+        ), patch(
+            "kelly_watcher.dashboard_api._wallet_watch_state_map",
+            return_value={
+                "0xabc": {
+                    "status": "dropped",
+                    "status_reason": "wallet inactive for 7d",
+                    "dropped_at": 1_700_000_025,
+                    "reactivated_at": 1_700_000_075,
+                    "tracking_started_at": 1_699_999_900,
+                    "last_source_ts_at_status": 1_700_000_020,
+                    "updated_at": 1_700_000_080,
+                }
+            },
+        ), patch(
             "kelly_watcher.dashboard_api.load_wallet_promotion_state",
             return_value={
                 "0xabc": {
@@ -84,21 +117,46 @@ class WalletBackendApiTest(unittest.TestCase):
                     "baseline_at": 1_700_000_100,
                 }
             },
-        ):
+        ), patch("kelly_watcher.dashboard_api.time.time", return_value=1_700_000_180):
             payload = dashboard_api._discovery_candidates_response()
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["ready_count"], 0)
         self.assertEqual(payload["review_count"], 1)
+        self.assertEqual(payload["stale_count"], 1)
+        self.assertEqual(payload["tracked_count"], 1)
+        self.assertEqual(payload["dropped_count"], 1)
+        self.assertEqual(payload["reactivated_count"], 1)
+        self.assertEqual(payload["promoted_count"], 1)
+        self.assertEqual(payload["wallet_discovery_last_scan_at"], 1_700_000_120)
         row = payload["candidates"][0]
         self.assertEqual(row["copyability_gate_status"], "review_conviction")
         self.assertTrue(row["promoted"])
         self.assertEqual(row["promoted_at"], 1_700_000_050)
+        self.assertEqual(row["candidate_updated_at"], 1_700_000_100)
+        self.assertEqual(row["wallet_discovery_last_scan_at"], 1_700_000_120)
+        self.assertEqual(row["candidate_age_seconds"], 80)
+        self.assertTrue(row["candidate_is_stale"])
+        self.assertEqual(row["candidate_stale_reason"], "candidate row predates the latest discovery scan")
         self.assertEqual(row["post_promotion_baseline_at"], 1_700_000_100)
         self.assertFalse(row["post_promotion_evidence_ready"])
         self.assertEqual(row["post_promotion_total_buy_signals"], 1)
         self.assertAlmostEqual(row["post_promotion_uncopyable_skip_rate"], 0.25)
         self.assertEqual(row["post_promotion_resolved_copied_total_pnl_usd"], -5.0)
+        self.assertAlmostEqual(row["local_quality_score"], 0.67)
+        self.assertAlmostEqual(row["local_weight"], 0.4)
+        self.assertFalse(row["local_drop_ready"])
+        self.assertEqual(row["trust_tier"], "discovery")
+        self.assertAlmostEqual(row["trust_size_multiplier"], 0.05)
+        self.assertEqual(row["wallet_family"], "emerging")
+        self.assertAlmostEqual(row["wallet_family_multiplier"], 1.0)
+        self.assertEqual(row["watch_status"], "dropped")
+        self.assertEqual(row["watch_status_reason"], "wallet inactive for 7d")
+        self.assertEqual(row["watch_dropped_at"], 1_700_000_025)
+        self.assertEqual(row["watch_reactivated_at"], 1_700_000_075)
+        self.assertEqual(row["watch_tracking_started_at"], 1_699_999_900)
+        self.assertEqual(row["watch_last_source_ts_at_status"], 1_700_000_020)
+        self.assertEqual(row["watch_updated_at"], 1_700_000_080)
 
     def test_wallet_registry_summary_surfaces_explicit_registry_health(self) -> None:
         with patch(

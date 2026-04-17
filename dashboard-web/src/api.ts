@@ -129,7 +129,22 @@ export interface BotState {
   storage_trade_log_archive_db_size_bytes?: number
   storage_trade_log_archive_db_allocated_bytes?: number
   storage_message?: string
+  training_runs?: ModelTrainingRun[]
   api_error?: string
+}
+
+export interface ModelTrainingRun {
+  run_id?: string
+  started_at?: number
+  finished_at?: number
+  scorer?: string
+  backend?: string
+  log_loss?: number
+  brier?: number
+  deployed?: boolean
+  deployed_at?: number
+  status?: string
+  note?: string
 }
 
 export interface BotStateResponse {
@@ -171,6 +186,7 @@ export interface LiveEvent {
   type: 'incoming' | 'signal'
   trade_id: string
   market_id: string
+  token_id?: string
   question: string
   market_url?: string
   side: string
@@ -311,6 +327,18 @@ export interface WalletMembershipEventsResponse {
   message?: string
 }
 
+export interface ManualTradeResponse {
+  ok?: boolean
+  message?: string
+}
+
+export interface DangerActionResponse {
+  ok?: boolean
+  message?: string
+}
+
+export type RestartShadowWalletMode = 'keep_active' | 'keep_all' | 'clear_all'
+
 export function getApiToken(): string {
   if (envApiToken) {
     return envApiToken
@@ -432,10 +460,71 @@ export async function fetchDiscoveryCandidates(): Promise<DiscoveryCandidatesRes
   return fetchApiJson<DiscoveryCandidatesResponse>('/api/discovery/candidates')
 }
 
+export async function saveConfigValue(key: string, value: string): Promise<ConfigSnapshot | null> {
+  return postApiJson<ConfigSnapshot>('/api/config/value', {key, value})
+}
+
+export async function clearConfigValue(key: string): Promise<ConfigSnapshot | null> {
+  return postApiJson<ConfigSnapshot>('/api/config/clear', {key})
+}
+
 export async function fetchWalletMembershipEvents(): Promise<WalletMembershipEventsResponse | null> {
   return fetchApiJson<WalletMembershipEventsResponse>('/api/wallets/events')
 }
 
 export async function requestDiscoveryScan(): Promise<DiscoveryCandidatesResponse | null> {
   return postApiJson<DiscoveryCandidatesResponse>('/api/discovery/scan', {})
+}
+
+export async function requestDropWallet(
+  walletAddress: string,
+  reason = 'manual dashboard drop'
+): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/wallets/drop', {
+    walletAddress,
+    reason
+  })
+}
+
+export async function requestReactivateWallet(
+  walletAddress: string
+): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/wallets/reactivate', {
+    walletAddress
+  })
+}
+
+export async function requestManualTradeCashOut(input: {
+  marketId: string
+  tokenId: string
+  side: string
+  question?: string
+  traderAddress?: string
+}): Promise<ManualTradeResponse | null> {
+  return postApiJson<ManualTradeResponse>('/api/manual-trade', {
+    action: 'cash_out',
+    marketId: input.marketId,
+    tokenId: input.tokenId,
+    side: input.side,
+    question: input.question,
+    traderAddress: input.traderAddress
+  })
+}
+
+export async function setLiveTradingEnabled(enabled: boolean): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/live-mode', {enabled})
+}
+
+export async function requestTradeLogArchive(): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/shadow/archive-trade-log', {})
+}
+
+export async function requestShadowRestart(
+  walletMode: RestartShadowWalletMode
+): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/shadow/restart', {walletMode})
+}
+
+export async function requestRecoverDb(): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/shadow/recover-db', {})
 }

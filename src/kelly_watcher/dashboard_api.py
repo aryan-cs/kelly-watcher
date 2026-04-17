@@ -442,8 +442,14 @@ def _discovery_candidate_gate_status(row: dict[str, Any]) -> str:
     return "review_sample"
 
 
-def _discovery_candidate_rows(limit: int | None = None) -> list[dict[str, Any]]:
+def _discovery_candidate_rows(
+    limit: int | None = None,
+    *,
+    discovery_last_scan_at: int = 0,
+    now_ts: int | None = None,
+) -> list[dict[str, Any]]:
     candidates = load_wallet_discovery_candidates(limit=limit)
+    effective_now_ts = int(now_ts if now_ts is not None else time.time())
     wallets = [
         str(row.get("wallet_address") or "").strip().lower()
         for row in candidates
@@ -451,6 +457,8 @@ def _discovery_candidate_rows(limit: int | None = None) -> list[dict[str, Any]]:
     ]
     policy_metrics_map = _wallet_policy_metrics_rows(wallets)
     promotion_state_map = load_wallet_promotion_state(wallets)
+    trust_state_map = _wallet_trust_snapshot_map(wallets)
+    watch_state_map = _wallet_watch_state_map(wallets)
     tracked_wallets = set(_wallet_registry_addresses())
     enriched: list[dict[str, Any]] = []
     for row in candidates:
@@ -459,6 +467,9 @@ def _discovery_candidate_rows(limit: int | None = None) -> list[dict[str, Any]]:
             continue
         policy_metrics = policy_metrics_map.get(wallet, {})
         promotion_state = promotion_state_map.get(wallet, {})
+        trust_state = trust_state_map.get(wallet, {})
+        watch_state = watch_state_map.get(wallet, {})
+        candidate_updated_at = int(row.get("updated_at") or 0)
         payload = dict(row)
         payload["wallet_address"] = wallet
         payload["copyability_gate_status"] = str(
@@ -467,6 +478,28 @@ def _discovery_candidate_rows(limit: int | None = None) -> list[dict[str, Any]]:
         payload["promoted"] = bool(promotion_state.get("is_auto_promoted"))
         payload["promoted_at"] = int(promotion_state.get("promoted_at") or 0)
         payload["tracked"] = wallet in tracked_wallets
+        payload["watch_status"] = str(watch_state.get("status") or "").strip().lower()
+        payload["watch_status_reason"] = str(watch_state.get("status_reason") or "").strip()
+        payload["watch_dropped_at"] = int(watch_state.get("dropped_at") or 0)
+        payload["watch_reactivated_at"] = int(watch_state.get("reactivated_at") or 0)
+        payload["watch_tracking_started_at"] = int(watch_state.get("tracking_started_at") or 0)
+        payload["watch_last_source_ts_at_status"] = int(watch_state.get("last_source_ts_at_status") or 0)
+        payload["watch_updated_at"] = int(watch_state.get("updated_at") or 0)
+        payload["candidate_updated_at"] = candidate_updated_at
+        payload["wallet_discovery_last_scan_at"] = max(int(discovery_last_scan_at or 0), 0)
+        payload["candidate_age_seconds"] = (
+            max(effective_now_ts - candidate_updated_at, 0)
+            if candidate_updated_at > 0
+            else None
+        )
+        payload["candidate_is_stale"] = False
+        payload["candidate_stale_reason"] = ""
+        if candidate_updated_at <= 0:
+            payload["candidate_is_stale"] = True
+            payload["candidate_stale_reason"] = "candidate row is missing a discovery refresh timestamp"
+        elif discovery_last_scan_at > 0 and candidate_updated_at < discovery_last_scan_at:
+            payload["candidate_is_stale"] = True
+            payload["candidate_stale_reason"] = "candidate row predates the latest discovery scan"
         payload["post_promotion_baseline_at"] = int(
             policy_metrics.get("post_promotion_baseline_at")
             or promotion_state.get("baseline_at")
@@ -489,6 +522,28 @@ def _discovery_candidate_rows(limit: int | None = None) -> list[dict[str, Any]]:
         payload["post_promotion_resolved_copied_total_pnl_usd"] = float(
             policy_metrics.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0
         )
+        payload["local_quality_score"] = (
+            float(policy_metrics["local_quality_score"])
+            if policy_metrics.get("local_quality_score") is not None
+            else None
+        )
+        payload["local_weight"] = float(policy_metrics.get("local_weight") or 0.0)
+        payload["local_drop_ready"] = bool(policy_metrics.get("local_drop_ready") or False)
+        payload["local_drop_reason"] = str(policy_metrics.get("local_drop_reason") or "").strip()
+        payload["trust_tier"] = str(trust_state.get("trust_tier") or "").strip()
+        payload["trust_size_multiplier"] = (
+            float(trust_state["trust_size_multiplier"])
+            if trust_state.get("trust_size_multiplier") is not None
+            else None
+        )
+        payload["trust_note"] = str(trust_state.get("trust_note") or "").strip()
+        payload["wallet_family"] = str(trust_state.get("wallet_family") or "").strip()
+        payload["wallet_family_multiplier"] = (
+            float(trust_state["wallet_family_multiplier"])
+            if trust_state.get("wallet_family_multiplier") is not None
+            else None
+        )
+        payload["wallet_family_note"] = str(trust_state.get("wallet_family_note") or "").strip()
         enriched.append(payload)
     return enriched
 
@@ -910,6 +965,7 @@ def _wallet_registry_summary(limit: int | None = None) -> dict[str, Any]:
 def _discovery_candidates_response(limit: int | None = None) -> dict[str, Any]:
     integrity = database_integrity_state()
     registry_state = _managed_wallet_registry_snapshot()
+    bot_state = _bot_state_snapshot()
     registry_status = str(registry_state.get("managed_wallet_registry_status") or "").strip().lower()
     if bool(integrity.get("db_integrity_known")) and not bool(integrity.get("db_integrity_ok")):
         detail = str(integrity.get("db_integrity_message") or "").splitlines()[0].strip()
@@ -946,18 +1002,30 @@ def _discovery_candidates_response(limit: int | None = None) -> dict[str, Any]:
                 + "."
             ),
         }
-    candidates = _discovery_candidate_rows(limit=limit)
+    discovery_last_scan_at = int(bot_state.get("wallet_discovery_last_scan_at") or 0)
+    candidates = _discovery_candidate_rows(limit=limit, discovery_last_scan_at=discovery_last_scan_at)
     accepted_count = sum(1 for row in candidates if bool(row.get("accepted")))
+    stale_count = sum(1 for row in candidates if bool(row.get("candidate_is_stale")))
+    tracked_count = sum(1 for row in candidates if bool(row.get("tracked")))
+    dropped_count = sum(1 for row in candidates if str(row.get("watch_status") or "").strip().lower() == "dropped")
+    reactivated_count = sum(1 for row in candidates if int(row.get("watch_reactivated_at") or 0) > 0)
+    promoted_count = sum(1 for row in candidates if bool(row.get("promoted")))
     return {
         "ok": True,
         "source": "wallet_discovery_candidates",
         "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
         "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
         "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+        "wallet_discovery_last_scan_at": discovery_last_scan_at,
         "candidates": candidates,
         "count": len(candidates),
         "ready_count": accepted_count,
         "review_count": max(len(candidates) - accepted_count, 0),
+        "stale_count": stale_count,
+        "tracked_count": tracked_count,
+        "dropped_count": dropped_count,
+        "reactivated_count": reactivated_count,
+        "promoted_count": promoted_count,
     }
 
 

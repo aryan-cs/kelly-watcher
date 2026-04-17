@@ -1,5 +1,6 @@
 import {useMemo, type ReactNode} from 'react'
 import {type LiveEvent} from './api'
+import {useResizableColumns} from './columnResize'
 import {
   buildTradeIdLookup,
   decisionColor,
@@ -33,8 +34,8 @@ type SignalsColumnKey =
   | 'price'
   | 'shares'
   | 'total'
-  | 'decision'
   | 'confidence'
+  | 'decision'
   | 'reason'
 
 interface SignalsDisplayRow {
@@ -50,6 +51,7 @@ interface SignalsColumn {
   label: string
   colClassName: string
   cellClassName?: string
+  resizable?: boolean
   render?: (row: SignalsDisplayRow) => ReactNode
 }
 
@@ -76,8 +78,8 @@ const SIGNALS_COLUMNS: SignalsColumn[] = [
   {key: 'price', label: 'PRICE', colClassName: 'signals-col signals-col--compact', cellClassName: 'signals-cell--numeric'},
   {key: 'shares', label: 'SHARES', colClassName: 'signals-col signals-col--compact', cellClassName: 'signals-cell--numeric'},
   {key: 'total', label: 'TOTAL', colClassName: 'signals-col signals-col--compact', cellClassName: 'signals-cell--numeric'},
-  {key: 'decision', label: 'DEC', colClassName: 'signals-col signals-col--compact'},
   {key: 'confidence', label: 'CONF', colClassName: 'signals-col signals-col--compact', cellClassName: 'signals-cell--numeric'},
+  {key: 'decision', label: 'DEC', colClassName: 'signals-col signals-col--compact'},
   {key: 'reason', label: 'REASON', colClassName: 'signals-col signals-col--reason', cellClassName: 'signals-cell--reason'}
 ]
 
@@ -107,8 +109,8 @@ function buildSignalsRow(
       price: formatFixedNumber(event.price),
       shares: formatFixedNumber(shares),
       total: formatFixedDollar(totalUsd),
-      decision: String(event.decision || '-').toUpperCase(),
       confidence: confidence != null ? formatFixedPercent(confidence, 1) : '-',
+      decision: String(event.decision || '-').toUpperCase(),
       reason
     },
     colors: {
@@ -138,6 +140,7 @@ function renderEmptyState(loading: boolean, error: string): string {
 
 export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
   const {events, error, loading} = useEventFeed(mode, mockEvents)
+  const {widths, tableWidth, startResize} = useResizableColumns('signals-feed', SIGNALS_COLUMNS)
   const allSignals = useMemo(
     () => events.filter((event) => event.type === 'signal').reverse(),
     [events]
@@ -171,10 +174,18 @@ export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
       </header>
 
       <div className="signals-page__viewport">
-        <table className="signals-table">
+        <table
+          className="signals-table"
+          data-resizable-table-id="signals-feed"
+          style={tableWidth ? {width: `${tableWidth}px`} : undefined}
+        >
           <colgroup>
             {SIGNALS_COLUMNS.map((column) => (
-              <col key={column.key} className={column.colClassName} />
+              <col
+                key={column.key}
+                className={column.colClassName}
+                style={widths?.[column.key] ? {width: `${widths[column.key]}px`} : undefined}
+              />
             ))}
           </colgroup>
           <thead>
@@ -183,9 +194,20 @@ export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
                 <th
                   key={column.key}
                   scope="col"
+                  data-column-key={column.key}
                   className={joinClasses('signals-head', column.cellClassName)}
                 >
-                  {column.label}
+                  <div className="resize-head">
+                    <span className="resize-head__label">{column.label}</span>
+                    {column.resizable === false ? null : (
+                      <button
+                        type="button"
+                        className="resize-head__handle"
+                        aria-label={`Resize ${column.label} column`}
+                        onPointerDown={(event) => startResize(column, event)}
+                      />
+                    )}
+                  </div>
                 </th>
               ))}
             </tr>
@@ -201,7 +223,9 @@ export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
                       style={row.colors[column.key] ? {color: row.colors[column.key]} : undefined}
                       title={row.titles[column.key]}
                     >
-                      {column.render ? column.render(row) : row.cells[column.key]}
+                      <div className="signals-cell__content">
+                        {column.render ? column.render(row) : row.cells[column.key]}
+                      </div>
                     </td>
                   ))}
                 </tr>

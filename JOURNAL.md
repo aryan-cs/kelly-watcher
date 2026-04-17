@@ -8,6 +8,589 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-17 14:08 CDT] codex-main
+Task: Rework the `PERFORMANCE` page `TRACKER STATS` box so it shows the small set of account and trading stats that actually matter for operating decisions.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained performance-page stats pass.
+Next: If we refine `PERFORMANCE` further later, the next meaningful step is deciding whether `AVAILABLE CASH` and `CURRENT BALANCE` should come from a backend account-equity snapshot instead of mock-derived math, not adding more rows back.
+Decisions: I removed low-signal rows (`TRACKED VOLUME`, `AVG CONF`, `AVG TOTAL`) and clarified the P&L split. The box now emphasizes: `START BALANCE`, `CURRENT BALANCE`, `NET P&L`, `REALIZED P&L`, `OPEN P&L`, `RETURN %`, `EXPOSURE`, `AVAILABLE CASH`, `MAX DD`, `OPEN POSITIONS`, `RESOLVED`, `WIN RATE`, `PROFIT FACTOR`, and `EXPECTANCY`. I also changed `RETURN %` to use net P&L instead of realized-only P&L and changed the panel meta to `resolved / open / exposed`, which is more actionable than tracked volume.
+Notes for other agents: Keep this box focused on account state, realized/open split, risk, and trading quality. If you add another metric later, it should displace an existing one rather than turning the panel back into a dump of every available stat.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> pending; `npm run build` in `dashboard-web` -> pending
+
+[2026-04-17 13:56 CDT] codex-main
+Task: Add breathing room around the config dropdown arrows so the chevron does not sit flush against the right edge.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None. This was a contained CSS-only polish pass.
+Next: If select styling needs more refinement later, keep it in the shared config/danger-zone select styles rather than mixing browser-native and custom arrows again.
+Decisions: I replaced the browser-default select arrow treatment with a simple custom chevron built from CSS gradients on both `.config-editor__select` and `.danger-zone__select`. That lets us control the arrow position directly, add a little inset from the right edge, and keep the connected control layout intact.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 11:23 CDT] codex-main
+Task: Replace chip-style discrete config controls with dropdowns for the multi-option settings.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained config-editor control swap.
+Next: If we tune config UX further later, keep the current split: short binary toggles can stay inline, while many-option discrete fields should remain dropdowns to save space.
+Decisions: I added a small `useConfigDiscreteDropdown` helper and changed the config editor so discrete fields with many options, especially duration-style rows, render as a connected `<select>` plus `SAVE` control instead of a wrap of chips. The simple two-option boolean fields still use inline toggle buttons. I also added a dedicated `.config-editor__select` style so the dropdown stays visually connected to the save button like the existing text inputs.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 11:18 CDT] codex-main
+Task: Make `TRACKER STATS` on `PERFORMANCE` show more useful account-level stats and remove the extra header text from the `BALANCE` box.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained performance-page content cleanup.
+Next: If we refine `PERFORMANCE` further later, the next step should be deciding whether `AVAILABLE CASH` should stay mock-derived or come from a backend account balance field once one exists.
+Decisions: I replaced weaker tracker rows with more useful balance-oriented stats: `START BALANCE`, `CURRENT BALANCE`, `TRACKED VOLUME`, and `AVAILABLE CASH`, while keeping core trading stats like P&L, return, exposure, drawdown, and win rate. I also removed the extra balance-chart header text entirely so the `BALANCE` panel now shows only the panel title at the top-left and the graph itself.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 11:08 CDT] codex-main
+Task: Add a real `TRAINING RUNS` list to the `MODEL` page with timestamps, log loss, Brier score, and deploy status.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/mockDashboard.ts`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. The current model page had summary fields only, but the web data path was easy to extend.
+Next: If we later wire the backend to return fuller training metadata, keep the same runs-table panel and just expand the row schema instead of replacing it with another summary-only box.
+Decisions: I added a typed `ModelTrainingRun` shape to `BotState`, seeded mock XGBoost run history in `mockDashboard.ts`, passed `trainingRuns` through `App.tsx`, and rendered a dedicated `TRAINING RUNS` panel on the `MODEL` page using the shared dashboard table component. The panel lists run start timestamp, log loss, Brier, status, and whether the challenger was deployed, with status/deploy coloring and internal scrolling support for longer histories.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 11:01 CDT] codex-main
+Task: Tighten the `MODEL` page so panel labels stay single-line more often and the layout uses five narrower boxes across instead of three wide stacks.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained model-page layout/density pass.
+Next: If the model page still needs tuning later, adjust the box order or meta text length, not the five-across panel structure that now makes the page denser.
+Decisions: I flattened the model panel layout so each model section is its own direct grid item instead of living inside one of three stacked columns. The page now renders seven boxes in a five-column grid on desktop, which narrows the panels and gets more sections visible at once. I also made the model field labels single-line with ellipsis by default, so short and medium labels stop wrapping early while long notes still wrap below when needed.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 10:56 CDT] codex-main
+Task: Update the `PERFORMANCE` position tables so current positions show potential profit and past positions drop the redundant return column.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained performance-table change.
+Next: If the performance tables need another pass later, focus on column order or sizing, not reverting the shared payoff math now used for the new current-position profit column.
+Decisions: I added a `potentialProfitForPosition` helper that uses the same payout logic as the tracker feed (`shares - paid`) and inserted a `PROFIT` column between `TOTAL` and `CONF` on `CURRENT POSITIONS`. I also removed the `RETURN` column from `PAST POSITIONS`, leaving the realized `P&L` column as the main outcome measure for resolved trades.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 10:51 CDT] codex-main
+Task: Replace discrete config inputs with single-select button groups so fixed-choice settings do not use freeform text fields.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This stayed within the config editor UI layer.
+Next: If we refine config UX further later, the next pass should be about grouping/filtering fields, not reverting discrete fields back to freeform inputs.
+Decisions: I added a discrete-options helper and switched boolean, choice, and duration-based config rows over to inline single-select button groups. Only one option appears active at a time, and selecting an option updates the draft value while keeping the separate `SAVE` action. Numeric and freeform text fields remain standard inputs. I also added the matching config-toggle styling and updated the source tests to assert the new discrete control path.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 10:46 CDT] codex-main
+Task: Make each config field’s input and `SAVE` button share one connected horizontal control row to save vertical space.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None. This was a contained config-editor layout pass.
+Next: If the config editor needs more density later, the next step should be field grouping or filtering, not separating the input/save controls again.
+Decisions: I changed the config row markup so the field input/select and its `SAVE` button live inside a single `config-editor__controls` row instead of being rendered as separate vertical blocks. The CSS now treats that control row as a two-column grid with zero gap, removes the input’s right border, and stretches the button to full control-row height so the input and button read as one connected unit.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 10:39 CDT] codex-main
+Task: Reduce the visual bulk of the `CONFIG` page action buttons.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None. This was a contained CSS density pass.
+Next: If the config page still needs density tuning later, keep it to spacing and control sizing rather than reworking the editor/danger-zone structure again.
+Decisions: I reduced the padding and tightened the control gaps for both the config editor `SAVE` buttons and the danger-zone controls. The result is a denser button footprint with less dead space around the label text, while keeping the same panel structure and interaction behavior.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 10:37 CDT] codex-main
+Task: Increase the mock dashboard dataset to 150 tracked wallets for scroll and density testing.
+Claims: `JOURNAL.md`, `dashboard-web/src/mockDashboard.ts`
+Status: Completed
+Blockers: None. This was isolated to mock-data generation.
+Next: If the user wants a different test distribution later, adjust the tracked/dropped target constants rather than hand-editing wallet rows again.
+Decisions: I replaced the small fixed active-wallet split with explicit mock-data targets. The generator now derives how many extra active wallets are needed so the final managed-wallet pool contains exactly 150 tracked wallets, while still adding a separate batch of dropped wallets for the dropped/Reactivate table. Because `watched_wallets` and mock wallet counts were already derived from the managed-wallet pool, those views stay consistent automatically with the larger tracked-wallet dataset.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 10:29 CDT] codex-main
+Task: Make dropped wallets render with red usernames in the `BEST WALLETS` and `WORST WALLETS` summary tables.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a small wallet-summary presentation fix.
+Next: If the wallet summaries need more distinction later, keep it scoped to row styling or sorting, not the underlying wallet data consistency work that is already in place.
+Decisions: I kept the best/worst summary tables rendering usernames in the first text column, but added a conditional color function so any row whose managed-wallet status is `disabled` now renders that username in red. Active rows keep the default text color; only dropped wallets get the danger treatment.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 10:24 CDT] codex-main
+Task: Fix wallet-page mock-data consistency and repair the visibility/layout of the `DROP` / `REACTIVATE` action columns.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/mockDashboard.ts`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None. The problems were all in the mock-data layer and wallet-table presentation, not the backend routes.
+Next: If wallet UX still needs tuning later, the next pass should be about viewport sizing or sort order, not data consistency or action-button rendering.
+Decisions: I derived the mock `watched_wallets` list and active-wallet count directly from the generated managed-wallet pool so `WALLETS`, `CONFIG`, and the mock bot state now agree on how many wallets are being tracked. I also made the best/worst panel meta less misleading by reporting the shown subset relative to the total wallet pool instead of implying those are distinct counts. Finally, I restored the `DROP` / `REACTIVATE` columns to the far-right position the user preferred and fixed their button styling by replacing the undefined CSS color variables with concrete colors, which made the full-cell action buttons actually visible again.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 01:34 CDT] codex-main
+Task: Expand mock wallet data for scroll testing and add `DROP` / `REACTIVATE` action columns to the `WALLETS` page with both mock-mode and API-mode behavior.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/mockDashboard.ts`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. The backend wallet action endpoints already existed, so this stayed in the web/dashboard layer.
+Next: If wallet UX needs another pass later, tune viewport heights or action feedback, not the basic mock/API action plumbing that now updates both `WALLETS` and `CONFIG`.
+Decisions: I moved `managedWallets` into `App` state so wallet mutations propagate to both the `WALLETS` and `CONFIG` pages. I added `requestDropWallet` and `requestReactivateWallet` API helpers, expanded the mock managed-wallet set with 20 generated extra rows so tracked/dropped tables naturally scroll, and added full-cell `DROP` / `REACTIVATE` action columns to the tracked and dropped wallet tables. In mock mode the actions mutate the local managed-wallet state immediately; in API mode they call the backend endpoints and then refetch `/api/wallets`. I also added a lightweight page-level action status message plus shared wallet-action button styles.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 01:15 CDT] codex-main
+Task: Remove the dead gaps on `MODEL` by changing the boxed sections from a row-coupled grid into stacked columns of panels.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. The boxed model sections already existed; the problem was the row-based grid causing short cards to leave empty space under them.
+Next: If the model page still needs tuning later, adjust which boxes sit in which column, not the underlying stacked-column pattern that removed the empty gaps.
+Decisions: I kept every model section as its own box, but moved the layout from a single row-based panel grid to three stacked columns of panels. That preserves the boxed style while removing the row-height coupling that created the big dead area under shorter boxes like `CONFIDENCE + MODES`. The model grid still fills the page width evenly, but each column now stacks independently so the layout behaves more like a compact dashboard than a masonry grid with holes.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 01:11 CDT] codex-main
+Task: Rework the `MODEL` page so each model section is its own boxed panel, and remove the top stat boxes plus the old subsection-in-columns layout.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This stayed contained to the model-page structure and layout classes.
+Next: If the model page needs another pass later, it should be about panel ordering or density within specific panels, not bringing back the old top stat strip.
+Decisions: I removed the top stat box strip entirely and replaced the three-column subsection layout with a panel grid where `PREDICTION QUALITY`, `CONFIDENCE + MODES`, `TRACKER HEALTH`, `DECISION PATHS`, `SHADOW SNAPSHOT`, `TRAINING CYCLE`, and `MODEL STATUS` each render in their own bordered box. The page now behaves more like the boxed performance layout the user referenced, while still keeping the model page viewport-bound with internal scrolling on the panel grid.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 01:07 CDT] codex-main
+Task: Rework the `CONFIG` page card layout so the setting rows and danger-zone actions read cleanly, with watched wallets visible again.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None. The issue was layout/styling, not missing data.
+Next: If the config page needs more iteration later, focus on grouping or filtering fields, not changing the repaired row hierarchy again.
+Decisions: I changed the config editor rows to a simpler single-column card structure: one-line title at the top, full-width metadata/description directly underneath, full-width input, and actions aligned at the bottom right. I also restructured the danger-zone actions so their title and description span the card width while status/value and buttons live together on the lower control row. The right column is now a flex stack with a fixed watched-wallets panel on top and the danger zone taking the remaining height, so watched wallets are visible again instead of getting squeezed out by the action panel.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 01:02 CDT] codex-main
+Task: Fix the broken `CONFIG` page right-column layout so `WATCHED WALLETS` is visible again and the `DANGER ZONE` no longer dominates the whole section.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None. The structure in `ConfigPage` was already correct; the breakage was in the shared config-page layout and danger-zone styling.
+Next: If the config page needs more tuning later, adjust density or field grouping inside the editor, not the core two-column layout that now keeps the right-side panels readable.
+Decisions: I kept the existing `ConfigPage` markup and fixed this as a CSS/layout pass. The side column now reserves guaranteed space for `WATCHED WALLETS` with a proper top row, while `DANGER ZONE` takes the remaining height and scrolls internally instead of forcing the watched-wallets panel closed. I also removed the heavy red-tinted panel background from the entire danger-zone container, moved the danger actions to a cleaner `copy/value` plus lower `controls` layout, and let the long notes wrap normally so that section reads like a panel again instead of a collapsed alert stack.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 00:54 CDT] codex-main
+Task: Apply the red→yellow→green cutoff-based confidence gradient to the `CURRENT POSITIONS` `CONF` column on `PERFORMANCE`.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. The shared cutoff gradient helper already existed, so this was only a prop-wiring and table-color pass.
+Next: If we want the same confidence cutoff semantics elsewhere later, reuse the same `cutoffRatioGradient` + `MIN_CONFIDENCE` path instead of reintroducing fixed confidence colors.
+Decisions: The `CURRENT POSITIONS` `CONF` column now uses the same quantitative confidence ramp the user asked for: `0%` is red, the configured `MIN_CONFIDENCE` cutoff is yellow, and `100%` is green. I parsed `MIN_CONFIDENCE` from the config snapshot in `App.tsx`, clamped it to `[0, 1]`, passed it into `PerformancePage` as `confidenceCutoff`, and switched the current-position `CONF` cell color from the old fixed blue to `cutoffRatioGradient(row.confidence, props.confidenceCutoff)`.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 00:41 CDT] codex-main
+Task: Make the `EXIT NOW` action button fill the entire current-position cell without leftover table padding.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained performance-table styling fix.
+Next: If any other action-style table cells need the same treatment later, reuse the shared flush-cell class instead of adding page-specific padding overrides.
+Decisions: The issue was not the button width but the surrounding table-cell padding from the shared compact-cell class. I added a dedicated `dashboard-table__cell--flush` class for the exit-action column and made the `performance-exit-button` itself fully block-level with zero margin and padding, so the colored action surface now fills the whole cell box.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 00:37 CDT] codex-main
+Task: Make default column widths content-sized with no initial truncation, and tighten the `TRACKER STATS` panel spacing on `PERFORMANCE`.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This stayed inside the shared table sizing hook and the performance-page styles.
+Next: If default widths still feel too wide on any specific list, the next refinement should be page-specific opt-outs for low-value columns, not weakening the shared measurement logic.
+Decisions: The shared resize hook now measures the widest visible content in each column on mount, including header text and body-cell content, and uses that as the default width set when there is no saved layout for that table. Saved widths still win when present and schema-valid. On `PERFORMANCE`, the `TRACKER STATS` metric grid no longer spreads rows out across the full panel height; it now packs from the top with a tighter row/column gap so the stats read like a dense terminal panel instead of a vertically stretched card.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 00:29 CDT] codex-main
+Task: Persist resized column widths across page switches and reloads without bringing back the old broken cross-table state.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This stayed isolated to the shared web dashboard resize hook.
+Next: If persistence ever needs a reset path, add an explicit per-table “reset widths” action instead of weakening the schema checks.
+Decisions: The drag-only resize hook now saves widths to `localStorage` per table id and reloads them on mount, so width changes survive page switches and full reloads. To avoid the earlier broken layouts, persisted values are only accepted when the saved column-key list exactly matches the current table schema and every saved width is valid; otherwise the stored entry is discarded. There is still no double-click fill behavior or other auto-sizing logic layered on top of this.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 00:24 CDT] codex-main
+Task: Make the resize affordance visible and consistent across all resizable dashboard lists.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. The shared resize path was already in place; this slice was just the affordance/visibility pass.
+Next: If resize UX still needs tuning, the next step should be adjusting grab-zone width or hover contrast, not changing the underlying table-width logic again.
+Decisions: Kept the shared drag-only resize system and added a persistent vertical grab indicator to every shared resize handle. The indicator is inset from the top and bottom so users can see exactly where to place the cursor without adding noisy full-height header rules. Because tracker, signals, and all generic dashboard tables use the same header handle class, this applies across all column-based lists in the dashboard.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 00:19 CDT] codex-main
+Task: Reintroduce column resizing with a safer drag-only implementation and no visible header scrollbars.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/signalsFeed.tsx`, `dashboard-web/src/styles.css`, `dashboard-web/src/trackerFeed.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was isolated to the web dashboard table layer.
+Next: If column UX still needs tuning, keep it incremental from this drag-only baseline instead of bringing back persistence or auto-fill behavior.
+Decisions: Brought back resizing with a much smaller surface area than before. Widths are not persisted, there is no double-click auto-fill, and there is no content-based min/max sizing logic. Tables start in their normal full-width layout, and only after the first drag do they lock all current column widths so resizing one column does not implicitly change the others. Horizontal scrollbars remain hidden on the scroll viewports and on the header wrappers, so only the table body viewport scrolls visually.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 00:12 CDT] codex-main
+Task: Roll back the web dashboard’s shared column-resize system and restore fixed full-width table layouts.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/signalsFeed.tsx`, `dashboard-web/src/styles.css`, `dashboard-web/src/trackerFeed.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was isolated to the frontend table layout system.
+Next: If we revisit column behavior later, keep it page-specific and opt-in instead of reintroducing a shared resize/persistence layer across all tables.
+Decisions: Removed the shared `useResizableColumns` path from tracker, signals, and the generic dashboard table, deleted the unused hook file, and returned all tables to `width: 100%` plus `table-layout: fixed`. Column sizing is now driven by simple static classes again: compact and numeric columns use fixed widths, while market/reason/wide columns absorb the remaining space inside each box. This restores the original behavior the user asked for: the table fills the box it sits in, cells truncate with ellipses, and there is no interactive width state or broken persisted layout to fight.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 23:06 CDT] codex-ui
+Task: Stop restoring persisted table widths on page load so columns start from fresh measured minimum widths instead of reopening in a broken collapsed state.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we revisit column UX again, the next question should be whether to offer an explicit “save layout” action instead of silently persisting widths across reloads.
+Decisions: The saved-width restore path was the main reason some columns were loading in a visibly broken state after the sizing model changed. I removed the localStorage persistence from the shared resize hook, so every page load now starts from the freshly measured minimum widths for the current table schema, while manual resizing still works normally for the current page session.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 22:58 CDT] codex-ui
+Task: Hard-lock resized table columns at the colgroup layer so one resized column cannot cause sibling columns to shift.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`
+Status: Completed
+Blockers: None.
+Next: If width behavior still feels off after this, the next thing to inspect is table-level viewport fill logic rather than the individual column width state itself.
+Decisions: The shared resize hook was already tracking per-column widths, but the rendered `<col>` elements only applied a `width`, which still left room for the browser’s table layout engine to redistribute space. I now apply `width`, `minWidth`, and `maxWidth` together on every interactive column, so the rendered table respects each column’s explicit width independently.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 22:51 CDT] codex-ui
+Task: Fix shared table headers so numeric headers align like their column entries, and stop resizing one column from re-clamping sibling columns.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None.
+Next: If resize behavior still needs work later, the next step should be deciding how aggressively widths should be re-measured when live data changes, not revisiting sibling-column coupling.
+Decisions: Numeric headers now inherit right alignment and right-justified header-label layout just like numeric cells, so headers visually line up with the column data. The shared resize hook no longer runs its width-initialization/clamp pass on every width update; measurement and initialization are now separated, which stops a drag on one column from implicitly changing others just because the hook re-ran its full clamp logic.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 22:42 CDT] codex-ui
+Task: Change shared table/list column sizing so default widths initialize from each column’s minimum readable header width, while drag growth is capped at the longest visible entry for that column.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we refine resizing again, the next step should be deciding whether persisted widths should ever auto-reset when the schema changes; the core measurement model itself should stay shared.
+Decisions: The shared resize hook now measures per-column defaults and maxima from real DOM content instead of only using header widths. Unset columns initialize to the compact header-based width on load, but users can still drag them smaller than cell content because truncation remains the lower-bound behavior. Growth is now capped at the widest visible entry in that column, and double-click fill respects those measured maxima. I also removed the old `min-width: 100%` override from performance tables because it was still fighting explicit measured widths.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 22:26 CDT] codex-ui
+Task: Restore the old React Ink CLI danger-zone actions on the web `CONFIG` page instead of the earlier single reset-only control.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, `dashboard-web/src/mockDashboard.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we keep iterating here, the next worthwhile step is adding explicit confirm affordances for the dangerous backend actions, but the actual CLI-equivalent action surface is now present and wired.
+Decisions: I ported the CLI-equivalent danger actions into the web `CONFIG` page: `LIVE TRADING`, `ARCHIVE TRADE LOG`, `RESTART SHADOW`, and `RECOVER DB`. The web page now uses existing backend endpoints instead of fake controls, and it reads the same bot-state flags the old CLI used for readiness, recovery-only mode, archive blocking, and pending shadow restarts. I also threaded `botState` into `ConfigPage` so mock mode can simulate these actions locally, including live-mode toggles, archive-batch updates, and queued shadow restart / DB recovery state. I kept the web-only `RESET CONFIG VALUES` action as a secondary row rather than the main danger-zone surface.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 22:03 CDT] codex-ui
+Task: Decrease row height across the shared list/table surfaces.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None.
+Next: Keep future density tweaks in the shared selectors unless a page has a genuinely different table role.
+Decisions: This stayed a pure row-density pass, not a typography rewrite. I reduced the shared cell padding and line height so tracker, signals, performance, wallets, and config lists all tightened together without page-specific overrides.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:57 CDT] codex-ui
+Task: Remove the remaining implicit minimum column widths by locking interactive tables to explicit measured column widths after resize begins.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If any remaining resize issue shows up, it should be treated as a shared table-layout bug, not a page-specific one.
+Decisions: The resize hook now materializes widths for every column on first interaction, and interactive tables are rendered with an explicit total width equal to the sum of those columns. I also added `max-width: 0` to the shared table cell/header selectors so narrow columns can truly collapse and ellipsize instead of being reopened by content width.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:52 CDT] codex-ui
+Task: Remove the redundant `OPEN P&L` column from `CURRENT POSITIONS` now that the `EXIT NOW` column already shows the immediate exit value.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Keep `CURRENT POSITIONS` to one immediate-exit value/action column instead of duplicating the same information.
+Decisions: `TRACKER STATS` still keeps the aggregate `OPEN P&L` metric, but the row-level `CURRENT POSITIONS` table now uses only the `EXIT NOW` column for immediate realized value.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:48 CDT] codex-ui
+Task: Remove reintroduced horizontal scrollbars from table/list headers after the shared auto-fill header behavior landed.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If header overflow shows up again, fix it in the shared header selectors rather than patching individual pages.
+Decisions: The list/table header row should never own its own scrollbars. I hardened the header cells plus the resize-head and label wrappers with explicit scrollbar suppression, while leaving viewport/body scrolling untouched.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:41 CDT] codex-ui
+Task: Add a header double-click auto-fill behavior for resizable list/table columns when a table is narrower than its viewport.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we add more auto-sizing behavior later, it should build on the same shared hook rather than attaching one-off DOM measurement code to individual pages.
+Decisions: Double-clicking any header in an underfilled table now proportionally expands all measured columns so the table fills the viewport width available to that box. This stays shared in `useResizableColumns`, so tracker, signals, and dashboard tables all behave the same way, while tables can still remain narrower than the viewport until that explicit double-click action is used.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:31 CDT] codex-ui
+Task: Add desktop number-key page switching and rename the tab labels to include `[1]` through `[6]`.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/mockDashboard.ts`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we add more keyboard navigation later, it should extend this same shell-level handler instead of scattering key listeners into each page.
+Decisions: The numbered tab labels now live in the page model, not in ad hoc render logic. The global key handler switches pages for `1` through `6`, but ignores focused inputs, textareas, selects, buttons, contenteditable regions, and modified key combos so config editing and future forms are not disrupted.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:23 CDT] codex-ui
+Task: Replace the fixed red/green monetary styling with a balance-aware red→yellow→green gradient system for financial metrics across the dashboard.
+Claims: `JOURNAL.md`, `dashboard-web/src/uiFormat.ts`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we keep refining the color system, the next step should be deciding which categorical states still deserve fixed semantic colors and which ones should become quantitative gradients. The shared monetary scale itself should stay centralized.
+Decisions: I’m using a shared “good trade P&L” scale of `max($10, bankroll * 0.08, trade_notional * 0.2)`. That makes `$2` on a `$3,000` bankroll stay close to yellow while allowing a few hundred dollars to approach full green, without relying on a fixed hardcoded `$100` threshold. All signed money/return colors now derive from that scale instead of simple sign checks, and wallet copy win / skip rates now use continuous gradients instead of discrete threshold bins.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:09 CDT] codex-ui
+Task: Add a working `EXIT NOW` action to `CURRENT POSITIONS` on `PERFORMANCE`, and finish tightening `CONFIG` so it is full-height, safer to edit, and free of the leftover summary tiles.
+Claims: `JOURNAL.md`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we refine the cash-out flow further, the next step should be a success/failure toast system and a refresh of live positions after the backend queues the manual trade, not another fake action path. On `CONFIG`, the next tuning should be field grouping or search, not reintroducing summary tiles.
+Decisions: The backend already exposes `/api/manual-trade` with `cash_out`, so the web UI now uses that instead of inventing a new endpoint. In mock mode, current-position exits are simulated locally so the action remains testable without the backend. The current-position action button now shows the immediate realized P&L amount rather than static text, with its background color derived from a red→yellow→green scale. I also removed the leftover config summary tile props for real, moved `WATCHED WALLETS` and `DANGER ZONE` into a dedicated right-side column, and kept both panes full-height with internal scrolling.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 20:38 CDT] codex-ui
+Task: Restructure the `MODEL` page into three compact columns with subsection subtitles in each column, closer to the original React Ink CLI layout.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we iterate further on `MODEL`, the next changes should be about which metrics belong in which subsection, not about widening the layout again.
+Decisions: I replaced the remaining panel-row layout on `MODEL` with a true three-column information grid. Each column now holds compact subsections with subtitle headers and tight left/right label-value rows, which makes the page read more like the original terminal version and removes the wide empty gutters.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 20:32 CDT] codex-ui
+Task: Change the `PERFORMANCE` page so `CURRENT POSITIONS` and `PAST POSITIONS` sit side by side instead of stacking vertically.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`
+Status: Completed
+Blockers: None.
+Next: If the performance page needs more density after this, the next likely step is reducing column counts or tightening the positions tables, not changing the overall panel structure again.
+Decisions: I kept the tables themselves unchanged and only moved them into a shared two-column panel row. That preserves the same content and internal scrolling behavior while matching the left/right layout you asked for.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 20:27 CDT] codex-ui
+Task: Compact the `MODEL` page so it reads more like the old React Ink CLI page, with labels and values much closer together and less wasted horizontal space.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If the model page still needs more CLI fidelity after this, the next pass should tune panel ordering and row wording, not widen the fields back out.
+Decisions: I replaced the widest model tables with a compact field-list component that renders tight label/value pairs and optional notes. `PREDICTION QUALITY`, `DECISION PATHS`, `SHADOW SNAPSHOT`, `TRAINING CYCLE`, and `MODEL STATUS` now use that denser layout, which keeps values visually close to their labels and removes the big empty gaps.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 20:20 CDT] codex-ui
+Task: Remove non-config storage diagnostics from `CONFIG` and tighten the wallet leaderboards by dropping the extra note column and color-coding copy win rate / skip percentage.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we keep refining page density, the next step should be pruning other low-signal summary tiles rather than adding more admin metadata back in.
+Decisions: `CONFIG` now keeps only actual config-adjacent summary tiles instead of storage/archive diagnostics. On `WALLETS`, `BEST WALLETS` and `WORST WALLETS` no longer waste width on a note column, and `COPY WR` / `SKIP %` now use green/yellow/red thresholds so leaderboard quality is readable at a glance.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 20:14 CDT] codex-ui
+Task: Fix the broken compressed `CONFIG` card layout after the viewport/panel refactor caused the metadata, buttons, and inputs to overlap.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If the config page still needs polish after this, the next change should be purely visual density tuning, not another structural rewrite.
+Decisions: The row now uses explicit grid areas instead of a fragile three-column squeeze. Each config card renders metadata across the top, then the value input and action buttons on a separate row, which preserves the dense layout without causing overlap.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 20:07 CDT] codex-ui
+Task: Remove page-level scrolling and wasted vertical space, starting with `CONFIG`, by making long content scroll inside bounded panels instead of across the whole dashboard page.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If any individual page still feels cramped after this, the next refinement should be page-specific panel height tuning rather than reverting to document-level scrolling.
+Decisions: I changed the app shell to be viewport-bound and hidden-overflow, then pushed scrolling down into long panel bodies. `CONFIG` now uses a denser two-column editor inside its own scroll viewport, with watched wallets beside it instead of far below it. The same containment rules now apply across the dashboard tables so long lists scroll inside their boxes rather than making the whole page grow.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 19:55 CDT] codex-ui
+Task: Rework the web `WALLETS` page so it behaves like the old operator page instead of reading like a generic registry admin table.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/mockDashboard.ts`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Once backend wallet-profile metrics are richer, keep this same structure and replace the current mock-derived leaderboard columns with the real copy/skip/trade-profile fields.
+Decisions: I made the page CLI-like again. `BEST WALLETS`, `WORST WALLETS`, `TRACKED WALLETS`, and `DROPPED WALLETS` are now the primary sections, with denser wallet-performance columns like copy win rate, skip rate, copied count, copy P&L, and recency. I also enriched the mock managed-wallet payload so those sections render meaningful data during local iteration instead of looking empty or generic.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 19:44 CDT] codex-ui
+Task: Expand the web `MODEL` page so it carries the dense runtime/model information the old CLI had instead of just a thin summary and one bucket table.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we deepen this page further, the next tranche should swap the current derived calibration/quality placeholders for real backend model metrics, but the section structure should already be stable enough to keep.
+Decisions: I kept the web layout compact but much denser. `MODEL` now includes `PREDICTION QUALITY`, `CONFIDENCE + MODES`, `DECISION PATHS`, `TRACKER HEALTH`, `SHADOW SNAPSHOT`, `TRAINING CYCLE`, and the lower-level `MODEL STATUS` table. The new sections are driven by existing bot-state fields plus derived signal-event metrics, and `App.tsx` now passes through the missing runtime/shadow/manual-request fields the page needed.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 19:33 CDT] codex-ui
+Task: Rework the `PERFORMANCE` page to match the old operator layout more closely by showing tracker stats, the existing balance graph, current positions, and past positions.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: The next useful step on this page is to swap the synthetic open/past position derivation for real backend position data once that API surface exists, but the web structure should stay the same.
+Decisions: I removed the earlier accepted-signals/decision-mix focus and rebuilt `PERFORMANCE` around the higher-signal operator views from the old CLI. The page now has a compact tracker-stats panel, the existing scrubbable balance chart, a current-positions table, and a past-positions table, all using semantic web layout instead of terminal-width hacks.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 19:24 CDT] codex-ui
+Task: Remove the wasted empty space in the `PERFORMANCE` page two-column section, especially the short `DECISION MIX` panel stretching to match the taller accepted-signals table.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If more pages end up with mixed-height side-by-side panels, keep using content-height alignment in the shared grid instead of adding page-specific hacks.
+Decisions: This was a shared layout issue, not a `PERFORMANCE`-specific data issue. The two-column dashboard grid now uses `align-items: start`, so shorter panels keep their own natural height instead of stretching to the tallest sibling in the row.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 19:18 CDT] codex-ui
+Task: Restore the old wallet leaderboard structure in the web dashboard so `WALLETS` includes best/worst/tracked/dropped sections instead of only registry and discovery tables.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/mockDashboard.ts`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we keep deepening `WALLETS`, the next useful tranche is adding the same richer ranking inputs from the backend payload so these tables can move from mock-derived ordering to runtime-backed ranking without changing the UI structure again.
+Decisions: I kept this web-native and data-driven. The wallet page now derives `BEST WALLETS`, `WORST WALLETS`, `TRACKED WALLETS`, and `DROPPED WALLETS` directly from the managed-wallet payload using copied P&L, resolved count, status, and timestamps instead of hard-coded layout strings. I also expanded the mock wallet set so the leaderboards have enough depth to judge the page properly during local iteration.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 19:03 CDT] codex-ui
+Task: Make the `PERFORMANCE` balance graph scrubbable so dragging across the line reveals the exact balance and timestamp at that point.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If we add any more charts, keep this same lightweight SVG interaction model instead of bringing in a charting library.
+Decisions: The balance chart now tracks pointer position, snaps to the nearest balance point, and shows a vertical cursor, marker, exact balance, and timestamp while scrubbing. I kept it fully SVG-based and local to the page so it remains easy to reason about and style.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 18:56 CDT] codex-ui
+Task: Expand the web `CONFIG` page to cover the full editable setting catalog and add real save/clear controls instead of the earlier short read-only subset.
+Claims: `JOURNAL.md`, `dashboard-web/src/configFields.ts`, `dashboard-web/src/api.ts`, `dashboard-web/src/mockDashboard.ts`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: If you want deeper polish here, the next step is grouping fields into sections, but the important functional gap is now closed: the full editable set is present and wired.
+Decisions: The web dashboard now has a dedicated config field registry covering the full editable catalog from the old CLI. The `CONFIG` page renders every field dynamically with key/label/kind/runtime metadata plus inline value editing and `SAVE` / `CLEAR` actions. In mock mode those edits update local state immediately; in API mode they call `/api/config/value` and `/api/config/clear`.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 10 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 18:46 CDT] codex-ui
+Task: Add a balance-over-time line graph to the `PERFORMANCE` page, with green segments for positive P&L and red segments for drawdowns.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Keep using the performance page as the place for higher-signal visual summaries; any future chart additions should stay sparse and terminal-like rather than turning the page into a card dashboard.
+Decisions: `PERFORMANCE` now includes an SVG balance chart built from a cumulative mock trade curve. The line is clipped against the starting-balance baseline so the same path renders green above baseline and red below it, which keeps the graph dense and readable without introducing chart-library overhead.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 9 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 18:41 CDT] codex-ui
+Task: Rename `MOEL` to `MODEL` and replace the remaining placeholder tabs with real mock-backed `PERFORMANCE`, `MODEL`, `WALLETS`, and `CONFIG` pages modeled on the old React Ink information layout.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/mockDashboard.ts`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Keep iterating on table density and page detail under this restored shell; the next UI tranche should deepen these pages rather than replacing the shell again.
+Decisions: The nav now says `MODEL`. `PERFORMANCE`, `MODEL`, `WALLETS`, and `CONFIG` are no longer placeholders; they render real responsive sections, stat grids, and semantic tables driven by existing mock/runtime data instead of hard-coded layout strings. The structure follows the old CLI’s dense, terminal-like information grouping, but uses browser-native spacing and overflow handling.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 9 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 18:39 CDT] codex-main
+Task: Add aggregate discovery summary counts so the wallet-finding tool can show stale, tracked, dropped, reactivated, and promoted lead volume at a glance.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `tests/test_wallet_backend_api.py`
+Status: Completed
+Blockers: This improves wallet-finding measurement only. The active ledger remains corrupt, recovery is still only `integrity_only`, and there is still no clean post-epoch routed evidence to justify live expectations.
+Next: Use these aggregate counts plus the per-candidate freshness/lifecycle fields to judge whether discovery is producing too many stale or previously dropped leads before touching ranking heuristics.
+Decisions: `_discovery_candidates_response()` now returns `stale_count`, `tracked_count`, `dropped_count`, `reactivated_count`, and `promoted_count`, all derived from the already-enriched candidate rows. This keeps the summary schema-free and avoids inventing new heuristics.
+Notes for other agents: Discovery response now has both row-level and aggregate trust signals. If you build review flows, use the aggregate counts for panel summaries and the row fields for drill-down instead of recomputing these counts elsewhere.
+Tests: `uv run python -m py_compile src/kelly_watcher/dashboard_api.py tests/test_wallet_backend_api.py` -> pending; `uv run pytest tests/test_wallet_backend_api.py -q` -> pending; `git diff --check -- JOURNAL.md src/kelly_watcher/dashboard_api.py tests/test_wallet_backend_api.py` -> pending
+
+[2026-04-16 18:31 CDT] codex-main
+Task: Make wallet-discovery candidate freshness explicit so stale candidate rows stop looking current.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `tests/test_wallet_backend_api.py`
+Status: Completed
+Blockers: This improves wallet-finding honesty only. The active ledger remains corrupt, recovery is still only `integrity_only`, and there is still no clean post-epoch routed evidence to justify live expectations.
+Next: Use the richer candidate freshness + lifecycle payload to judge scan quality. If discovery still surfaces weak wallets after that, the next slice should be ranking/scan heuristics in `runtime/wallet_discovery.py` or `watchlist_manager.py`, not more reporting.
+Decisions: `_discovery_candidates_response()` now reads `wallet_discovery_last_scan_at` from bot state and passes it into `_discovery_candidate_rows()`. Each candidate now exposes `candidate_updated_at`, `wallet_discovery_last_scan_at`, `candidate_age_seconds`, `candidate_is_stale`, and `candidate_stale_reason`. I kept this schema-free and heuristic-light: a row is only marked stale if it is missing a refresh timestamp or if it predates the latest completed discovery scan.
+Notes for other agents: Discovery candidates now carry trust/policy context, watch-state lifecycle context, and freshness context. If you build review flows, show stale candidates honestly instead of silently sorting them with fresh ones.
+Tests: `uv run python -m py_compile src/kelly_watcher/dashboard_api.py tests/test_wallet_backend_api.py` -> pending; `uv run pytest tests/test_wallet_backend_api.py -q` -> pending; `git diff --check -- JOURNAL.md src/kelly_watcher/dashboard_api.py tests/test_wallet_backend_api.py` -> pending
+
+[2026-04-16 18:25 CDT] codex-ui
+Task: Restore the tabbed mock dashboard shell after `App.tsx` was overwritten by an unrelated backend-wallet-discovery screen.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Continue the remaining page-port work from this restored shell instead of the backend-discovery screen; keep cross-agent changes away from `dashboard-web/src/App.tsx` unless coordinated.
+Decisions: The tabbed `kelly-watcher` shell is back, with `TRACKER` and `SIGNALS` rendering their existing feeds and the remaining tabs using lightweight placeholders instead of the wrong backend wallet-discovery UI. I also realigned the source test with the restored shell contract.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 8 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 18:24 CDT] codex-main
+Task: Surface watch-state lifecycle context on wallet-discovery candidates so the wallet-finding tool can show whether a candidate is already tracked, dropped, or recently reactivated.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `tests/test_wallet_backend_api.py`
+Status: Completed
+Blockers: This improves wallet-tracking honesty only. The active ledger remains corrupt, recovery is still only `integrity_only`, and there is still no clean post-epoch routed evidence to justify live expectations.
+Next: Use the richer candidate payload to distinguish “fresh discovery lead” from “previously tracked then dropped/reactivated wallet” before changing any scan heuristics. If discovery quality is still weak after that, the next slice should be in `watchlist_manager.py` ranking/scan logic.
+Decisions: `_discovery_candidate_rows()` now enriches each candidate with `watch_status`, `watch_status_reason`, `watch_dropped_at`, `watch_reactivated_at`, `watch_tracking_started_at`, `watch_last_source_ts_at_status`, and `watch_updated_at` from `_wallet_watch_state_map()`. This keeps discovery review aligned with the actual wallet lifecycle state instead of presenting every candidate as context-free.
+Notes for other agents: Discovery candidates now carry both trust/policy context and watch-state lifecycle context. If you build review or promotion flows, use these fields before inventing a separate “candidate status” layer.
+Tests: `uv run python -m py_compile src/kelly_watcher/dashboard_api.py tests/test_wallet_backend_api.py` -> pending; `uv run pytest tests/test_wallet_backend_api.py -q` -> pending; `git diff --check -- JOURNAL.md src/kelly_watcher/dashboard_api.py tests/test_wallet_backend_api.py` -> pending
+
+[2026-04-16 18:18 CDT] codex-ui
+Task: Hide visible scrollbars across the web dashboard while preserving mousepad/touch horizontal and vertical scrolling.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Keep scroll behavior functional but visually quiet as more page tables land, especially on mobile and narrow laptop widths.
+Decisions: Scrollbars are now suppressed with browser-specific CSS on the document and the table viewport containers. Overflow still uses normal scrolling; only the visible scrollbar chrome is removed.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 8 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 18:14 CDT] codex-ui
+Task: Expand the local mock event feeds so tracker/signals scrolling can be evaluated against a realistically long dataset.
+Claims: `JOURNAL.md`, `dashboard-web/src/mockDashboard.ts`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Use the larger mock feeds while porting the remaining pages so sticky headers, scroll containers, and table density can be judged under load before any push to Windows.
+Decisions: The mock dashboard now generates `200` linked incoming/signal rows in code instead of relying on six hand-written samples. Trade IDs, timestamps, prices, shares, decisions, and reasons all vary deterministically so the UI stays dynamic and repeatable while still exercising scrolling and overflow behavior.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 8 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 18:11 CDT] codex-main
+Task: Make wallet-finding candidates carry the same trust/family/local policy context the engine already has, so discovery review is based on real tracking state instead of a thinner payload.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `tests/test_wallet_backend_api.py`
+Status: Completed
+Blockers: This improves discovery/tracking honesty only. The active ledger remains corrupt, recovery is still only `integrity_only`, and there is still no clean post-epoch routed evidence to justify live expectations.
+Next: Use the richer candidate payload to judge whether discovery is surfacing the right wallets before adding more scan heuristics. If discovery quality is still poor after that, the next slice should be scan-quality logic in `watchlist_manager.py`, not more UI.
+Decisions: `_discovery_candidate_rows()` now enriches each candidate with `local_quality_score`, `local_weight`, `local_drop_ready`, `local_drop_reason`, and the current trust snapshot (`trust_tier`, `trust_size_multiplier`, `trust_note`, `wallet_family`, `wallet_family_multiplier`, `wallet_family_note`) via `_wallet_trust_snapshot_map()`. This keeps the wallet-finding tool aligned with the actual engine state that would govern tracking/sizing later.
+Notes for other agents: Discovery candidates are now much closer to managed-wallet rows in terms of trust context. If you build discovery review or promotion flows, prefer these backend-enriched fields over recomputing trust/family state again in another layer.
+Tests: `uv run python -m py_compile src/kelly_watcher/dashboard_api.py tests/test_wallet_backend_api.py` -> pending; `uv run pytest tests/test_wallet_backend_api.py -q` -> pending; `git diff --check -- JOURNAL.md src/kelly_watcher/dashboard_api.py tests/test_wallet_backend_api.py` -> pending
+
+[2026-04-16 18:03 CDT] codex-ui
+Task: Rename the web dashboard nav tabs to the requested labels, including the literal `MOEL` spelling.
+Claims: `JOURNAL.md`, `dashboard-web/src/mockDashboard.ts`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Resume the broader page-porting work after this label-only pass; keep the tab copy exactly aligned with product requests unless the names change again.
+Decisions: The page map now uses `TRACKER`, `SIGNALS`, `PERFORMANCE`, `MOEL`, `WALLETS`, and `CONFIG`. I also updated the source test so the nav-label contract stays explicit.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 8 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 17:56 CDT] codex-main
+Task: Expose wallet-family acted-to-resolved funnel coverage in the tracker/Telegram performance preview so operators can see how many family-attributed positions survive to resolution.
+Claims: `JOURNAL.md`, `src/kelly_watcher/runtime/performance_preview.py`, `tests/test_telegram_commands.py`
+Status: Completed
+Blockers: This is reporting only. The active ledger remains corrupt, recovery is still only `integrity_only`, and there is still no clean post-epoch routed evidence to justify live expectations.
+Next: Compare family-attributed acted -> resolved funnel changes after the recent family-aware gates. If classified acted volume collapses without better resolved outcomes, stop adding family-specific decision rules.
+Decisions: `render_tracker_preview_message()` now emits a `Wallet-family acted funnel:` line in shadow mode so Telegram/balance previews show how many classified acted positions survive to resolution, alongside how many unassigned acted positions were excluded. I explicitly kept this at the acted/resolved layer because tracker preview does not have raw signal-level history, and pretending otherwise would be dishonest.
+Notes for other agents: This keeps the operator path backend-only and measurement-driven. If you build more family reporting, prefer honest acted/resolved funnel lines over percent-only summaries, and do not label preview rows as signal-level coverage unless the source data is really there.
+Tests: `uv run python -m py_compile src/kelly_watcher/runtime/performance_preview.py tests/test_telegram_commands.py` -> pending; `uv run pytest tests/test_telegram_commands.py -q -k 'preview_blocked_message_still_reports_routed_shadow_context'` -> pending; `git diff --check -- JOURNAL.md src/kelly_watcher/runtime/performance_preview.py tests/test_telegram_commands.py` -> pending
+
+[2026-04-16 17:44 CDT] codex-ui
+Task: Swap the `Signals` page `CONF` and `DEC` columns so confidence appears before decision.
+Claims: `JOURNAL.md`, `dashboard-web/src/signalsFeed.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None.
+Next: Keep tightening the remaining page tables under the same semantic-table approach without reintroducing CLI width logic.
+Decisions: The `Signals` column definition now renders `CONF` before `DEC`, and the source test explicitly checks that ordering so the table does not regress in future edits.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 8 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 17:49 CDT] codex-main
+Task: Fill the remaining wallet-family bot-state measurement gap by persisting classified/unassigned signal and acted counts, not just resolved counts.
+Claims: `JOURNAL.md`, `src/kelly_watcher/main.py`, `tests/test_segment_shadow_report.py`
+Status: Completed
+Blockers: This is backend measurement only. The active ledger remains corrupt, recovery is still only `integrity_only`, and there is still no clean post-epoch routed evidence to justify live expectations.
+Next: Use these full-funnel family counters to judge whether the recent family-aware gates are changing admission/acted mix in a good way before adding more family-specific engine rules.
+Decisions: `_segment_shadow_state_payload()` now persists `shadow_wallet_family_classified_signals`, `shadow_wallet_family_classified_acted`, `shadow_wallet_family_unassigned_signals`, and `shadow_wallet_family_unassigned_acted`, and the error payload now zeros them explicitly. This keeps later API/UI/reporting work from having to reconstruct family funnel coverage from resolved-only state.
+Notes for other agents: Family bot-state now carries signal/acted/resolved coverage separately. If you build on wallet-family reporting, prefer these persisted counts over inferring funnel health from resolved rows alone.
+Tests: `uv run python -m py_compile src/kelly_watcher/main.py tests/test_segment_shadow_report.py` -> pending; `uv run pytest tests/test_segment_shadow_report.py -q -k 'report_summarizes_wallet_family_coverage_from_decision_context'` -> pending; `git diff --check -- JOURNAL.md src/kelly_watcher/main.py tests/test_segment_shadow_report.py` -> pending
+
 [2026-04-16 17:37 CDT] codex-main
 Task: Surface wallet-family evidence in the operator daily report so the recent family metrics are visible without opening raw shadow-state payloads.
 Claims: `JOURNAL.md`, `src/kelly_watcher/runtime/evaluator.py`, `tests/test_segment_shadow_report.py`
@@ -25,7 +608,7 @@ Status: Completed
 Blockers: None.
 Next: Continue tightening table proportions page by page, but keep row wrapping disabled so the dashboard reads like a dense market terminal rather than a document layout.
 Decisions: Long market names should truncate with ellipsis instead of increasing row height. I switched market links back to explicit single-line overflow handling and widened the `Signals` reason column from the previous narrow setting so more explanation text fits before truncation. The result keeps every visible row to one line while preserving compact density.
-Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> pending; `npm run build` in `dashboard-web` -> pending
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 8 passed; `npm run build` in `dashboard-web` -> passed
 
 [2026-04-16 17:36 CDT] codex-ui
 Task: Port the web `Signals` page to the same semantic-table layout used on `Tracker`, while keeping the CLI columns, values, and color rules.
@@ -631,3 +1214,93 @@ Blockers: Shared worktree is still dirty in `dashboard_api.py`, `README.md`, and
 Next: Implement the broadest honest backend finish: widen discovery seeding, add source/gate metadata, expose explicit registry/discovery truth in the API, add enable/disable wallet endpoints, and tighten docs around DB-backed shadow-only wallet discovery.
 Decisions: I am not going to fake a market-participant crawler the live API does not reliably support. The discovery expansion in this tranche will therefore be a real multi-source Polymarket pipeline based on broader leaderboard fan-out plus wallet-centric adjacency classification derived from recent activity, while keeping promotion/trust fully grounded in post-boundary shadow evidence.
 Tests: Pending
+
+[2026-04-16 22:39 CDT] codex-main
+Task: Complete the backend wallet-discovery finish tranche and close the remaining runtime/API integration regressions.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `src/kelly_watcher/main.py`, `src/kelly_watcher/runtime/performance_preview.py`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, `README.md`
+Status: Completed
+Blockers: The repo still has unrelated dirty browser/test files from other agents, so staging needs to stay patch-scoped. I fixed one incidental syntax blocker in `runtime/performance_preview.py` because it prevented the runtime regression suite from importing at all.
+Next: The remaining meaningful work is operational, not architectural: recover the live DB cleanly on the Windows shadow runtime and evaluate promoted-wallet cohorts from actual post-promotion evidence before any live-mode decision.
+Decisions: `_config_snapshot()` now preserves the old wrapper seam so callers/tests can still patch wallet-registry source/address lookups while the backend exposes explicit registry-health fields. `_runtime_managed_wallets()` now loads directly from `managed_wallets`, so bootstrap env state cannot leak back into steady-state runtime wallet membership. The browser app is now a minimal API-backed view of wallet registry, discovery, and membership events instead of a mock feed shell. README now states that the web dashboard is the supported place to review and manage the wallet registry.
+Tests: `python -m py_compile src/kelly_watcher/runtime/wallet_discovery.py src/kelly_watcher/tools/rank_copytrade_wallets.py src/kelly_watcher/dashboard_api.py src/kelly_watcher/main.py src/kelly_watcher/runtime/performance_preview.py tests/test_wallet_discovery.py tests/test_rank_copytrade_wallets.py tests/test_wallet_backend_api.py` -> passed; `uv run pytest tests/test_wallet_discovery.py tests/test_rank_copytrade_wallets.py tests/test_wallet_backend_api.py tests/test_db_recovery_api.py -q` -> 33 passed, 63 subtests passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'dashboard_config_snapshot_reports_live_wallet_registry_separately_from_bootstrap_env or runtime_managed_wallets_does_not_fallback_to_bootstrap_env or main_registry_sync_clears_runtime_wallets_when_managed_registry_becomes_empty or should_import_bootstrap_watched_wallets_only_when_registry_is_empty'` -> 4 passed; `node ./dashboard-web/node_modules/typescript/bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 20:48 CDT] codex-main
+Task: Add persistent column resizing across the dashboard tables.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: Shared browser files are dirty from parallel work, so this slice stays narrowly scoped to table resizing and its CSS/test coverage.
+Next: If the user wants more control than drag-resize, add reset-to-default widths or a double-click autosize action without changing the current compact terminal styling.
+Decisions: Resizing is implemented as a shared `useResizableColumns()` hook with localStorage persistence keyed per table, not a one-off performance-page hack. Every table gets a stable `tableId`, while tracker/signals now use the same resize handle markup as the reusable dashboard table so behavior stays consistent. Header cells keep `overflow: hidden` and the resize handle lives inside the header content, so the table viewports can scroll without surfacing scrollbar chrome in the headers themselves.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 20:56 CDT] codex-main
+Task: Tighten the new column resizing so every column can actually be dragged cleanly.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None for this slice; the issue was local to the new resize implementation rather than shared backend/runtime work.
+Next: Only add more table-resize affordances if the user asks for them. The current pass is intentionally minimal: drag edge, persist width, no extra UI chrome.
+Decisions: Removed the hook-level min/max width clamping so widths are no longer artificially bounded. Moved the resize handle to the actual right edge of each header cell instead of offsetting it with negative margins, which fixes the cursor/column gap and makes every header edge draggable. Also removed the remaining market/reason min/max width CSS constraints that were fighting manual resizing.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:07 CDT] codex-main
+Task: De-hectic the `MODEL` page layout and restore a cleaner terminal-style left/right rhythm.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None for this slice. The issue was visual density and poor information hierarchy on the model screen, not shared runtime state.
+Next: If the user still wants the model page tighter, the next lever is reducing or consolidating the top stats strip rather than shrinking the subsection rows further.
+Decisions: Shortened subsection header meta so long status text stops competing with the body rows. Tightened the three-column grid to narrower fixed tracks, switched the compact field rows to true left-label/right-value alignment, and let notes wrap underneath instead of forcing the main line wider. This keeps the page dense like the old Ink CLI without the current visual collision.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:16 CDT] codex-main
+Task: Rebalance the `WALLETS` page so tracked and dropped profiles stay in view.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None for this slice. The page was just over-allocating space to summary content instead of the actual wallet tables.
+Next: If the user wants the registry/discovery surfaces back, they should come back as a separate page or dedicated modal, not below the primary wallet workflow.
+Decisions: Removed the top stats strip entirely, trimmed the best/worst leaderboards to four visible rows each, and gave the tracked/dropped sections the vertical budget. I also removed the lower managed-registry and discovery-candidate panels from the `WALLETS` page so the primary tracked/dropped workflow stays on screen instead of being pushed below the fold.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:23 CDT] codex-main
+Task: Remove the remaining effective width floors from resizable table columns.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None for this slice. The resize hook was already unconstrained; the remaining problem was the table/cell rendering path still letting content dictate width.
+Next: If the user still finds any specific table resistant to narrow widths, the next thing to inspect is that table’s initial column-class defaults, not the shared resize mechanism.
+Decisions: Switched the table rendering path to use fixed table layout plus explicit truncation wrappers inside cells. That means dragging a column narrower now cuts text off with ellipses instead of letting long market/wallet strings force the column wider. Also removed the remaining default reason-column width rule that was biasing one column wide before any user resize.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:29 CDT] codex-main
+Task: Stop resizable tables from stretching to full width and compensating across sibling columns.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None for this slice. The compensation behavior was a layout rule problem, not a drag-hook problem.
+Next: If the user still sees a specific table redistribute widths, inspect that table’s explicit column classes or any remaining default width rules tied to that view.
+Decisions: Removed the table-level `min-width: 100%` fill rule from the shared table styles. The tables now keep their own width budget instead of being stretched to the viewport, so changing one resized column no longer forces another column to expand or contract just to occupy the remaining panel width.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:36 CDT] codex-main
+Task: Make the `PERFORMANCE` page fill the viewport cleanly without page scrolling.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None for this slice. The issue was page-grid allocation, not data volume or backend state.
+Next: If the user still wants the performance page tighter, the next lever is the balance-chart height rather than further shrinking the stats or table surfaces.
+Decisions: Added a dedicated `performance-page` layout with explicit top and bottom rows, so the page consumes the full viewport without overflowing. The tracker-stats panel now stretches to match the balance row, and the current/past positions panels now let their internal table viewports fill the entire half-width/height allocation while keeping any overflow inside the table box rather than on the page.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:42 CDT] codex-main
+Task: Make the `TRACKER` and `SIGNALS` feeds use the full tab height.
+Claims: `JOURNAL.md`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None for this slice. Those pages were still inheriting the shared capped table viewport height intended for smaller in-panel lists.
+Next: If the user wants a tighter feed density after this, adjust row height and font spacing separately rather than reducing the full-height viewport again.
+Decisions: Added dedicated page rows for `TRACKER` and `SIGNALS` so the header sits on top and the feed viewport owns the rest of the tab height. Their viewports now use `height: 100%` and `max-height: none`, so the feed itself scrolls internally instead of stopping after a handful of visible rows.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-16 21:52 CDT] codex-main
+Task: Rebuild the `CONFIG` page into a safer full-height settings surface.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None for this slice. The existing problem was purely UI/interaction debt on the config page.
+Next: If the user wants even stronger safeguards, the next step is field-specific confirmation flows for the most dangerous runtime settings rather than more generic input chrome.
+Decisions: Removed the top stats strip and all per-row `CLEAR` buttons. The editor now uses kind-aware controls with validation and save gating, so obvious bad values get blocked before save. The main editor and watched-wallets panes now consume the available height, and the destructive reset behavior has been moved into a dedicated red danger-zone panel with a single `RESET ALL TO DEFAULTS` action.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed

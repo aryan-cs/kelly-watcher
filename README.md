@@ -739,6 +739,7 @@ Packaging and entrypoints:
 
 - This is an operator system, not a fire-and-forget hosted service.
 - The supported operator interface is the web dashboard.
+- The web dashboard is the supported place to review and manage the wallet registry.
 - The wallet registry and discovery panels are the primary workflow; terminal wallet ops are legacy.
 - `dashboard-web` can be reached from any device that can hit the backend host and port.
 - A fresh clone starts on heuristics unless you later train and deploy a model artifact.

@@ -95,6 +95,9 @@ export interface BotState {
   wallet_discovery_scanned_count?: number
   wallet_discovery_candidate_count?: number
   wallet_discovery_last_scan_message?: string
+  managed_wallet_registry_status?: string
+  managed_wallet_registry_available?: boolean
+  managed_wallet_registry_error?: string
   trade_log_archive_enabled?: boolean
   trade_log_archive_state_known?: boolean
   trade_log_archive_status?: string
@@ -126,7 +129,22 @@ export interface BotState {
   storage_trade_log_archive_db_size_bytes?: number
   storage_trade_log_archive_db_allocated_bytes?: number
   storage_message?: string
+  training_runs?: ModelTrainingRun[]
   api_error?: string
+}
+
+export interface ModelTrainingRun {
+  run_id?: string
+  started_at?: number
+  finished_at?: number
+  scorer?: string
+  backend?: string
+  log_loss?: number
+  brier?: number
+  deployed?: boolean
+  deployed_at?: number
+  status?: string
+  note?: string
 }
 
 export interface BotStateResponse {
@@ -145,6 +163,9 @@ export interface ConfigSnapshot {
   live_wallets?: string[]
   live_wallet_count?: number
   wallet_registry_source?: string
+  managed_wallet_registry_status?: string
+  managed_wallet_registry_available?: boolean
+  managed_wallet_registry_error?: string
   legacy_bootstrap_watched_wallets?: string[]
   rows?: ConfigRow[]
   ok?: boolean
@@ -165,6 +186,7 @@ export interface LiveEvent {
   type: 'incoming' | 'signal'
   trade_id: string
   market_id: string
+  token_id?: string
   question: string
   market_url?: string
   side: string
@@ -213,6 +235,9 @@ export interface DiscoveryCandidatesResponse {
   review_count?: number
   candidates?: DiscoveryCandidate[]
   message?: string
+  managed_wallet_registry_status?: string
+  managed_wallet_registry_available?: boolean
+  managed_wallet_registry_error?: string
   scanned_count?: number
   accepted_count?: number
   stored_count?: number
@@ -272,6 +297,12 @@ export interface ManagedWalletsResponse {
   ok?: boolean
   source?: string
   count?: number
+  managed_wallet_registry_status?: string
+  managed_wallet_registry_available?: boolean
+  managed_wallet_registry_error?: string
+  managed_wallet_count?: number
+  managed_wallet_total_count?: number
+  managed_wallet_registry_updated_at?: number
   wallets?: ManagedWallet[]
   events?: WalletMembershipEvent[]
   event_source?: string
@@ -295,6 +326,18 @@ export interface WalletMembershipEventsResponse {
   events?: WalletMembershipEvent[]
   message?: string
 }
+
+export interface ManualTradeResponse {
+  ok?: boolean
+  message?: string
+}
+
+export interface DangerActionResponse {
+  ok?: boolean
+  message?: string
+}
+
+export type RestartShadowWalletMode = 'keep_active' | 'keep_all' | 'clear_all'
 
 export function getApiToken(): string {
   if (envApiToken) {
@@ -398,4 +441,90 @@ export async function postApiJson<T>(
     },
     token
   )
+}
+
+export async function fetchBotState(): Promise<BotState | null> {
+  const response = await fetchApiJson<BotStateResponse>('/api/bot-state')
+  return response.state || null
+}
+
+export async function fetchConfigSnapshot(): Promise<ConfigSnapshot | null> {
+  return fetchApiJson<ConfigSnapshot>('/api/config')
+}
+
+export async function fetchManagedWallets(): Promise<ManagedWalletsResponse | null> {
+  return fetchApiJson<ManagedWalletsResponse>('/api/wallets')
+}
+
+export async function fetchDiscoveryCandidates(): Promise<DiscoveryCandidatesResponse | null> {
+  return fetchApiJson<DiscoveryCandidatesResponse>('/api/discovery/candidates')
+}
+
+export async function saveConfigValue(key: string, value: string): Promise<ConfigSnapshot | null> {
+  return postApiJson<ConfigSnapshot>('/api/config/value', {key, value})
+}
+
+export async function clearConfigValue(key: string): Promise<ConfigSnapshot | null> {
+  return postApiJson<ConfigSnapshot>('/api/config/clear', {key})
+}
+
+export async function fetchWalletMembershipEvents(): Promise<WalletMembershipEventsResponse | null> {
+  return fetchApiJson<WalletMembershipEventsResponse>('/api/wallets/events')
+}
+
+export async function requestDiscoveryScan(): Promise<DiscoveryCandidatesResponse | null> {
+  return postApiJson<DiscoveryCandidatesResponse>('/api/discovery/scan', {})
+}
+
+export async function requestDropWallet(
+  walletAddress: string,
+  reason = 'manual dashboard drop'
+): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/wallets/drop', {
+    walletAddress,
+    reason
+  })
+}
+
+export async function requestReactivateWallet(
+  walletAddress: string
+): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/wallets/reactivate', {
+    walletAddress
+  })
+}
+
+export async function requestManualTradeCashOut(input: {
+  marketId: string
+  tokenId: string
+  side: string
+  question?: string
+  traderAddress?: string
+}): Promise<ManualTradeResponse | null> {
+  return postApiJson<ManualTradeResponse>('/api/manual-trade', {
+    action: 'cash_out',
+    marketId: input.marketId,
+    tokenId: input.tokenId,
+    side: input.side,
+    question: input.question,
+    traderAddress: input.traderAddress
+  })
+}
+
+export async function setLiveTradingEnabled(enabled: boolean): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/live-mode', {enabled})
+}
+
+export async function requestTradeLogArchive(): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/shadow/archive-trade-log', {})
+}
+
+export async function requestShadowRestart(
+  walletMode: RestartShadowWalletMode
+): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/shadow/restart', {walletMode})
+}
+
+export async function requestRecoverDb(): Promise<DangerActionResponse | null> {
+  return postApiJson<DangerActionResponse>('/api/shadow/recover-db', {})
 }

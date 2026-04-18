@@ -192,5 +192,40 @@ export function useResizableColumns(tableId: string, columns: ResizableColumnSpe
     window.addEventListener('pointerup', handlePointerUp)
   }
 
-  return {widths, tableWidth, startResize}
+  function fitColumnsToViewport() {
+    const measuredWidths = widths ?? measureTableWidths(tableId, columns)
+    if (!measuredWidths) {
+      return
+    }
+
+    const table = document.querySelector<HTMLTableElement>(`[data-resizable-table-id="${tableId}"]`)
+    const viewport = table?.parentElement as HTMLElement | null
+    const targetWidth = viewport?.clientWidth ?? 0
+    if (!targetWidth) {
+      return
+    }
+
+    const totalWidth = Object.values(measuredWidths).reduce((total, width) => total + width, 0)
+    if (!totalWidth) {
+      return
+    }
+
+    const ratio = targetWidth / totalWidth
+    let assignedWidth = 0
+    const nextWidths: ColumnWidths = {}
+
+    columns.forEach((column, index) => {
+      const currentWidth = measuredWidths[column.key] ?? 0
+      const nextWidth =
+        index === columns.length - 1
+          ? Math.max(0, targetWidth - assignedWidth)
+          : Math.max(0, Math.round(currentWidth * ratio))
+      nextWidths[column.key] = nextWidth
+      assignedWidth += nextWidth
+    })
+
+    setWidths(nextWidths)
+  }
+
+  return {widths, tableWidth, startResize, fitColumnsToViewport}
 }

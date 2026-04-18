@@ -140,7 +140,7 @@ function renderEmptyState(loading: boolean, error: string): string {
 
 export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
   const {events, error, loading} = useEventFeed(mode, mockEvents)
-  const {widths, tableWidth, startResize} = useResizableColumns('signals-feed', SIGNALS_COLUMNS)
+  const {widths, tableWidth, startResize, fitColumnsToViewport} = useResizableColumns('signals-feed', SIGNALS_COLUMNS)
   const allSignals = useMemo(
     () => events.filter((event) => event.type === 'signal').reverse(),
     [events]
@@ -196,6 +196,7 @@ export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
                   scope="col"
                   data-column-key={column.key}
                   className={joinClasses('signals-head', column.cellClassName)}
+                  onClick={() => fitColumnsToViewport()}
                 >
                   <div className="resize-head">
                     <span className="resize-head__label">{column.label}</span>
@@ -205,6 +206,7 @@ export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
                         className="resize-head__handle"
                         aria-label={`Resize ${column.label} column`}
                         onPointerDown={(event) => startResize(column, event)}
+                        onClick={(event) => event.stopPropagation()}
                       />
                     )}
                   </div>

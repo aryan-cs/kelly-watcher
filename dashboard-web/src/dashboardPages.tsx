@@ -1,4 +1,4 @@
-import {useEffect, useId, useMemo, useState, type PointerEvent as ReactPointerEvent, type ReactNode} from 'react'
+import {useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode} from 'react'
 import type {
   BotState,
   ConfigSnapshot,
@@ -23,7 +23,7 @@ import {
   setLiveTradingEnabled
 } from './api'
 import {useResizableColumns} from './columnResize'
-import {editableConfigFields} from './configFields'
+import {configFieldDescriptions, editableConfigFields} from './configFields'
 import {feedTheme} from './feedUtils'
 import {
   booleanTone,
@@ -81,7 +81,7 @@ function DashboardPageFrame({title, meta, children, className}: DashboardPageFra
     <section className={joinClasses('dashboard-page', className)}>
       <header className="dashboard-page__header">
         <div className="dashboard-page__title">{title}</div>
-        <div className="dashboard-page__meta">{meta}</div>
+        {meta ? <div className="dashboard-page__meta">{meta}</div> : null}
       </header>
       {children}
     </section>
@@ -139,7 +139,7 @@ function DashboardTable<T>({
   rows: T[]
   emptyMessage: string
 }) {
-  const {widths, tableWidth, startResize} = useResizableColumns(tableId, columns)
+  const {widths, tableWidth, startResize, fitColumnsToViewport} = useResizableColumns(tableId, columns)
 
   return (
     <div className="dashboard-table__viewport">
@@ -164,6 +164,7 @@ function DashboardTable<T>({
                 scope="col"
                 data-column-key={column.key}
                 className={joinClasses('dashboard-table__head', column.className)}
+                onClick={() => fitColumnsToViewport()}
               >
                 <div className="resize-head">
                   <span className="resize-head__label">{column.label}</span>
@@ -173,6 +174,7 @@ function DashboardTable<T>({
                       className="resize-head__handle"
                       aria-label={`Resize ${column.label} column`}
                       onPointerDown={(event) => startResize(column, event)}
+                      onClick={(event) => event.stopPropagation()}
                     />
                   )}
                 </div>
@@ -267,14 +269,14 @@ const PERFORMANCE_STAT_TOOLTIPS: Record<string, string> = {
   'TOTAL P&L': 'Total realized profit and loss from resolved tracked positions.',
   'NET P&L': 'Total realized profit and loss from resolved tracked positions.',
   'OPEN P&L': 'Unrealized profit and loss across positions that are still open.',
-  'RETURN %': 'Realized profit and loss expressed as a percentage of starting balance.',
+  'RETURN %': 'Net profit and loss expressed as a percentage of starting balance.',
   'WIN RATE': 'Share of resolved positions that closed with a positive profit and loss.',
   'PROFIT FACTOR': 'Gross profits divided by gross losses across resolved positions.',
   'EXPECTANCY': 'Average profit and loss per resolved position.',
   'TRACKED VOLUME': 'Total dollars allocated across all tracked trades.',
-  'EXPOSURE': 'Capital that is currently tied up in open positions.',
+  'EXPOSURE': 'Share of current balance that is currently tied up in open positions.',
   'AVAILABLE CASH': 'Current balance minus the capital still tied up in open positions.',
-  'MAX DD': 'Largest peak-to-trough equity drop seen in the tracked balance curve.',
+  'MAX DRAWDOWN': 'Largest peak-to-trough percentage drop seen in the tracked balance curve.',
   'RESOLVED': 'Number of tracked positions that have fully closed.',
   'OPEN POSITIONS': 'Number of tracked positions that are still open right now.',
   'AVG CONF': 'Average model confidence across the scored signal set.',
@@ -291,6 +293,11 @@ const MODEL_LABEL_TOOLTIPS: Record<string, string> = {
   ACTUAL: 'Observed accept rate across the scored signal set.',
   'AVG GAP': 'Difference between average confidence and realized accept rate.',
   BRIER: 'Calibration error score where lower values mean better probability quality.',
+  'SCORED TRADES': 'How many scored signal samples are included in these model stats.',
+  'AVG CONFIDENCE': 'Average confidence produced by the model across scored signals.',
+  'ACTUAL WIN RATE': 'Observed accept rate across the scored signal set.',
+  'CONFIDENCE GAP': 'Difference between average confidence and realized accept rate.',
+  'BRIER SCORE': 'Calibration error score where lower values mean better probability quality.',
   'LOG LOSS': 'Penalty on probability error where lower values mean better predictions.',
   LOADED: 'How long ago the current model was loaded into memory.',
   DETAIL: 'Short runtime note describing the current model state.',
@@ -306,12 +313,12 @@ const MODEL_LABEL_TOOLTIPS: Record<string, string> = {
   'ACCEPT PATH': 'How many signals cleared the acceptance path.',
   'REJECT PATH': 'How many signals were blocked by the rejection path.',
   'PAUSE/SKIP': 'How many signals were paused or skipped instead of executed.',
-  'LIVE REQ': 'Whether live trading currently requires shadow-history evidence.',
+  'LIVE GATE': 'Whether live trading currently requires shadow-history evidence.',
   'TOTAL READY': 'Whether the total shadow-history requirement has been met.',
   'POST-PROMO READY': 'Whether post-promotion routed evidence is ready for live gating.',
   SNAPSHOT: 'Current state of the shadow-history snapshot builder.',
   SCOPE: 'Which shadow-history scope is currently being evaluated.',
-  'BLOCK REASON': 'Why the live-shadow gate is still blocked, if it is not clear.',
+  'NEXT BLOCKER': 'What still needs to clear before the live-shadow gate can fully open.',
   RETRAIN: 'Status of the latest retraining cycle.',
   'LAST START': 'When the latest retraining or search run started.',
   'LAST FINISH': 'When the latest retraining or search run finished.',
@@ -329,47 +336,12 @@ const MODEL_LABEL_TOOLTIPS: Record<string, string> = {
   DEPLOYED: 'Whether this training run was promoted into live use.'
 }
 
-const CONFIG_FIELD_TOOLTIPS: Partial<Record<string, string>> = {
-  POLL_INTERVAL_SECONDS: 'How often the main loop polls markets and wallet activity.',
-  HOT_WALLET_COUNT: 'How many top-priority wallets stay in the fastest polling tier.',
-  WARM_WALLET_COUNT: 'How many additional wallets stay in the slower warm polling tier.',
-  WARM_POLL_INTERVAL_MULTIPLIER: 'How much slower warm-wallet polling is than the main poll interval.',
-  DISCOVERY_POLL_INTERVAL_MULTIPLIER: 'How much slower discovery polling is than the main poll interval.',
-  MAX_MARKET_HORIZON: 'Longest time-to-resolution allowed for a trade to be eligible.',
-  MAX_SOURCE_TRADE_AGE: 'Oldest copied source trade that can still be acted on.',
-  MAX_FEED_STALENESS: 'Maximum age allowed for market feed data before blocking execution.',
-  MAX_ORDERBOOK_STALENESS: 'Maximum age allowed for order book data before blocking execution.',
-  MIN_EXECUTION_WINDOW: 'Minimum time remaining before resolution needed to place a trade.',
-  WALLET_INACTIVITY_LIMIT: 'How long a wallet can stay inactive before it is considered stale.',
-  WALLET_SLOW_DROP_MAX_TRACKING_AGE: 'Longest tracking age allowed before slow wallets can be dropped.',
-  MIN_CONFIDENCE: 'Minimum model confidence required before a signal is eligible to trade.',
-  ALLOW_HEURISTIC: 'Whether the heuristic decision path is allowed to generate trades.',
-  ALLOW_XGBOOST: 'Whether the XGBoost model path is allowed to generate trades.',
-  MAX_BET_FRACTION: 'Maximum fraction of bankroll allowed on a single position.',
-  MAX_MARKET_EXPOSURE_FRACTION: 'Maximum fraction of bankroll allowed in one market.',
-  MAX_TRADER_EXPOSURE_FRACTION: 'Maximum fraction of bankroll allowed against one copied trader.',
-  MAX_TOTAL_OPEN_EXPOSURE_FRACTION: 'Maximum fraction of bankroll allowed across all open positions.',
-  SHADOW_BANKROLL_USD: 'Starting bankroll used for tracker sizing and performance calculations.',
-  STOP_LOSS_ENABLED: 'Whether stop-loss exits are enabled for tracked positions.',
-  STOP_LOSS_MAX_LOSS_PCT: 'Maximum tolerated loss before a stop-loss exit is triggered.',
-  LIVE_REQUIRE_SHADOW_HISTORY: 'Whether live mode requires enough shadow-history evidence first.',
-  LIVE_MIN_SHADOW_RESOLVED: 'Minimum resolved shadow trades required before live mode can run.',
-  RETRAIN_BASE_CADENCE: 'How often the model should run its regular retraining cycle.',
-  RETRAIN_HOUR_LOCAL: 'Which local hour the regular retraining cycle should start.',
-  LOG_LEVEL: 'How verbose the backend logging should be.',
-  MODEL_PATH: 'Filesystem path to the persisted model artifact the backend should load.'
-}
-
 function performanceStatTooltip(label: string): string {
   return PERFORMANCE_STAT_TOOLTIPS[label] || `${label.toLowerCase()} for the tracked strategy.`
 }
 
 function modelLabelTooltip(label: string): string {
   return MODEL_LABEL_TOOLTIPS[label] || `${label.toLowerCase()} for the current model state.`
-}
-
-function sentenceCase(value: string): string {
-  return value.replace(/_/g, ' ').toLowerCase()
 }
 
 interface PerformanceTradeRow {
@@ -469,36 +441,63 @@ function BalanceChart({
   baseline: number
 }) {
   const chartId = useId().replace(/:/g, '')
-  const width = 960
+  const viewportRef = useRef<HTMLDivElement | null>(null)
+  const minWidth = 960
+  const pointStep = 30
+  const width = Math.max(minWidth, 28 + Math.max(points.length - 1, 1) * pointStep)
   const height = 220
   const paddingX = 14
   const paddingY = 16
   const [isScrubbing, setIsScrubbing] = useState(false)
+  const [showReadout, setShowReadout] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(points.length ? points.length - 1 : 0)
 
   const values = points.map((point) => point.balance)
-  const minValue = Math.min(...values, baseline)
-  const maxValue = Math.max(...values, baseline)
-  const valueRange = Math.max(maxValue - minValue, 1)
+  const maxDeviation = Math.max(
+    1,
+    ...values.map((value) => Math.abs(value - baseline))
+  )
+  const centerY = height / 2
+  const usableHalfHeight = (height - paddingY * 2) / 2
+
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    viewport.scrollLeft = viewport.scrollWidth
+  }, [points.length, width])
 
   const chartPoints = points.map((point, index) => {
     const x =
       points.length <= 1
         ? width / 2
         : paddingX + (index / (points.length - 1)) * (width - paddingX * 2)
-    const y =
-      height - paddingY - ((point.balance - minValue) / valueRange) * (height - paddingY * 2)
+    const y = centerY - ((point.balance - baseline) / maxDeviation) * usableHalfHeight
     return {x, y}
   })
 
-  const baselineY =
-    height - paddingY - ((baseline - minValue) / valueRange) * (height - paddingY * 2)
+  const baselineY = centerY
   const path = pathFromPoints(chartPoints)
   const latest = points[points.length - 1]
-  const delta = latest ? latest.balance - baseline : 0
   const selectedPoint = points[selectedIndex] ?? latest
   const selectedChartPoint = chartPoints[selectedIndex] ?? chartPoints[chartPoints.length - 1]
-  const selectedDelta = selectedPoint ? selectedPoint.balance - baseline : delta
+  const scrubDate = selectedPoint ? new Date(selectedPoint.ts * 1000) : null
+  const scrubTimeText = scrubDate
+    ? new Intl.DateTimeFormat('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }).format(scrubDate)
+    : ''
+  const scrubDayText = scrubDate
+    ? new Intl.DateTimeFormat('en-US', {
+        month: '2-digit',
+        day: '2-digit'
+      }).format(scrubDate)
+    : ''
+  const scrubSummary = selectedPoint
+    ? `${formatMoney(selectedPoint.balance)} at ${scrubTimeText} on ${scrubDayText}`
+    : ''
 
   function updateSelection(event: ReactPointerEvent<SVGSVGElement>) {
     if (!points.length) return
@@ -511,59 +510,70 @@ function BalanceChart({
 
   return (
     <div className="balance-chart">
-      <svg
-        className="balance-chart__svg"
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        role="img"
-        aria-label="Balance over time"
-        onPointerDown={(event) => {
-          setIsScrubbing(true)
-          updateSelection(event)
+      {selectedPoint ? (
+        <div className="balance-chart__scrub">{scrubSummary}</div>
+      ) : null}
+      <div
+        ref={viewportRef}
+        className="balance-chart__viewport"
+        onPointerEnter={() => setShowReadout(true)}
+        onPointerLeave={() => {
+          setShowReadout(false)
+          setIsScrubbing(false)
         }}
-        onPointerMove={(event) => {
-          if (isScrubbing) {
-            updateSelection(event)
-          }
-        }}
-        onPointerUp={() => setIsScrubbing(false)}
-        onPointerLeave={() => setIsScrubbing(false)}
+        onScroll={() => setShowReadout(true)}
       >
-        <defs>
-          <clipPath id={`balance-positive-clip-${chartId}`}>
-            <rect x="0" y="0" width={width} height={Math.max(0, baselineY)} />
-          </clipPath>
-          <clipPath id={`balance-negative-clip-${chartId}`}>
-            <rect x="0" y={baselineY} width={width} height={Math.max(0, height - baselineY)} />
-          </clipPath>
-        </defs>
-        <line
-          x1={paddingX}
-          y1={baselineY}
-          x2={width - paddingX}
-          y2={baselineY}
-          className="balance-chart__baseline"
-        />
-        <path d={path} className="balance-chart__line balance-chart__line--positive" clipPath={`url(#balance-positive-clip-${chartId})`} />
-        <path d={path} className="balance-chart__line balance-chart__line--negative" clipPath={`url(#balance-negative-clip-${chartId})`} />
-        {selectedChartPoint ? (
-          <>
-            <line
-              x1={selectedChartPoint.x}
-              y1={paddingY}
-              x2={selectedChartPoint.x}
-              y2={height - paddingY}
-              className="balance-chart__cursor"
-            />
-            <circle
-              cx={selectedChartPoint.x}
-              cy={selectedChartPoint.y}
-              r="4"
-              className="balance-chart__marker"
-            />
-          </>
-        ) : null}
-      </svg>
+        <svg
+          className="balance-chart__svg"
+          width={width}
+          height={height}
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="Balance over time"
+          onPointerDown={(event) => {
+            setIsScrubbing(true)
+            setShowReadout(true)
+            updateSelection(event)
+          }}
+          onPointerMove={(event) => {
+            if (isScrubbing) {
+              setShowReadout(true)
+              updateSelection(event)
+            }
+          }}
+          onPointerUp={() => setIsScrubbing(false)}
+        >
+          <defs>
+            <clipPath id={`balance-positive-clip-${chartId}`}>
+              <rect x="0" y="0" width={width} height={Math.max(0, baselineY)} />
+            </clipPath>
+            <clipPath id={`balance-negative-clip-${chartId}`}>
+              <rect x="0" y={baselineY} width={width} height={Math.max(0, height - baselineY)} />
+            </clipPath>
+          </defs>
+          <line
+            x1={paddingX}
+            y1={baselineY}
+            x2={width - paddingX}
+            y2={baselineY}
+            className="balance-chart__baseline"
+          />
+          <path d={path} className="balance-chart__line balance-chart__line--positive" clipPath={`url(#balance-positive-clip-${chartId})`} />
+          <path d={path} className="balance-chart__line balance-chart__line--negative" clipPath={`url(#balance-negative-clip-${chartId})`} />
+          {showReadout && selectedChartPoint ? (
+            <>
+              <line
+                x1={selectedChartPoint.x}
+                y1={paddingY}
+                x2={selectedChartPoint.x}
+                y2={height - paddingY}
+                className="balance-chart__cursor"
+              />
+            </>
+          ) : null}
+        </svg>
+      </div>
     </div>
   )
 }
@@ -661,32 +671,93 @@ export function PerformancePage(props: PerformancePageProps) {
     () => Number((currentBalance - currentExposure).toFixed(2)),
     [currentBalance, currentExposure]
   )
-  const maxDrawdown = useMemo(() => {
+  const accountBankrollForGradient = currentBalance > 0 ? currentBalance : startingBalance
+  const exposureRatio = currentBalance > 0 ? currentExposure / currentBalance : null
+  const availableCashRatio = currentBalance > 0 ? availableBalance / currentBalance : null
+  const maxDrawdownRatio = useMemo(() => {
     if (!balanceCurve.length) return 0
     let peak = balanceCurve[0]?.balance ?? startingBalance
-    let maxDd = 0
+    let maxDdRatio = 0
     for (const point of balanceCurve) {
       peak = Math.max(peak, point.balance)
-      maxDd = Math.max(maxDd, peak - point.balance)
+      if (peak > 0) {
+        maxDdRatio = Math.max(maxDdRatio, (peak - point.balance) / peak)
+      }
     }
-    return Number(maxDd.toFixed(2))
+    return Number(maxDdRatio.toFixed(4))
   }, [balanceCurve, startingBalance])
   const returnRatio = startingBalance > 0 ? netPnl / startingBalance : null
-  const trackerStatsRows = [
-    {label: 'START BALANCE', value: formatMoney(startingBalance)},
-    {label: 'CURRENT BALANCE', value: formatMoney(currentBalance), tone: moneyMetricColor(currentBalance - startingBalance, startingBalance, paidVolume)},
-    {label: 'NET P&L', value: formatMoney(netPnl), tone: moneyMetricColor(netPnl, startingBalance, paidVolume || currentExposure)},
-    {label: 'REALIZED P&L', value: formatMoney(trackerPnl), tone: moneyMetricColor(trackerPnl, startingBalance, paidVolume)},
-    {label: 'OPEN P&L', value: formatMoney(currentMarkedPnl), tone: moneyMetricColor(currentMarkedPnl, startingBalance, currentExposure)},
-    {label: 'RETURN %', value: formatPercentFromRatio(returnRatio), tone: returnMetricColor(returnRatio, startingBalance, paidVolume)},
-    {label: 'EXPOSURE', value: formatMoney(currentExposure)},
-    {label: 'AVAILABLE CASH', value: formatMoney(availableBalance), tone: moneyMetricColor(availableBalance - startingBalance, startingBalance, currentExposure || paidVolume)},
-    {label: 'MAX DD', value: formatMoney(maxDrawdown), tone: moneyMetricColor(-maxDrawdown, startingBalance, paidVolume)},
-    {label: 'OPEN POSITIONS', value: formatInteger(currentPositions.length)},
-    {label: 'RESOLVED', value: formatInteger(pastPositions.length)},
-    {label: 'WIN RATE', value: formatPercentFromRatio(winRate)},
-    {label: 'PROFIT FACTOR', value: profitFactor == null ? '-' : profitFactor === Infinity ? 'INF' : formatDecimal(profitFactor, 2)},
-    {label: 'EXPECTANCY', value: expectancy == null ? '-' : formatMoney(expectancy), tone: moneyMetricColor(expectancy, startingBalance, currentExposure || paidVolume)}
+  const trackerStatsLeftRows = [
+    {label: 'START BALANCE', value: formatMoney(startingBalance), tone: moneyMetricColor(0, accountBankrollForGradient), tooltip: performanceStatTooltip('START BALANCE')},
+    {
+      label: 'PROFIT FACTOR',
+      value: profitFactor == null ? '-' : profitFactor === Infinity ? 'INF' : formatDecimal(profitFactor, 2),
+      tone: centeredRatioGradient(profitFactor, 1, 1),
+      tooltip: performanceStatTooltip('PROFIT FACTOR')
+    },
+    {
+      label: 'EXPOSURE',
+      value: formatPercentFromRatio(exposureRatio),
+      tone: centeredRatioGradient(exposureRatio, 0.5, 0.5, true),
+      tooltip: performanceStatTooltip('EXPOSURE')
+    },
+    {
+      label: 'EXPECTANCY',
+      value: expectancy == null ? '-' : formatMoney(expectancy),
+      tone: moneyMetricColor(expectancy, accountBankrollForGradient, currentExposure),
+      tooltip: performanceStatTooltip('EXPECTANCY')
+    },
+    {
+      label: 'AVAILABLE CASH',
+      value: formatMoney(availableBalance),
+      tone: centeredRatioGradient(availableCashRatio, 0.5, 0.5),
+      tooltip: performanceStatTooltip('AVAILABLE CASH')
+    }
+  ]
+  const trackerStatsRightRows = [
+    {
+      label: 'CURRENT BALANCE',
+      value: formatMoney(currentBalance),
+      tone: moneyMetricColor(currentBalance - startingBalance, accountBankrollForGradient, currentExposure),
+      tooltip: performanceStatTooltip('CURRENT BALANCE')
+    },
+    {
+      label: 'REALIZED P&L',
+      value: formatMoney(trackerPnl),
+      tone: moneyMetricColor(trackerPnl, accountBankrollForGradient, currentExposure),
+      tooltip: performanceStatTooltip('REALIZED P&L')
+    },
+    {
+      label: 'OPEN P&L',
+      value: formatMoney(currentMarkedPnl),
+      tone: moneyMetricColor(currentMarkedPnl, accountBankrollForGradient, currentExposure),
+      tooltip: performanceStatTooltip('OPEN P&L')
+    },
+    {
+      label: 'NET P&L',
+      value: formatMoney(netPnl),
+      tone: moneyMetricColor(netPnl, accountBankrollForGradient, currentExposure),
+      tooltip: performanceStatTooltip('NET P&L')
+    },
+    {
+      label: 'WIN RATE',
+      value: formatPercentFromRatio(winRate),
+      tone: cutoffRatioGradient(winRate, 0.5),
+      tooltip: performanceStatTooltip('WIN RATE')
+    },
+    {
+      label: 'RETURN %',
+      value: formatPercentFromRatio(returnRatio),
+      tone: returnMetricColor(returnRatio, accountBankrollForGradient, startingBalance),
+      tooltip: performanceStatTooltip('RETURN %')
+    },
+    {
+      label: 'MAX DRAWDOWN',
+      value: formatPercentFromRatio(maxDrawdownRatio),
+      tone: centeredRatioGradient(maxDrawdownRatio, 0.05, 0.05, true),
+      tooltip: performanceStatTooltip('MAX DRAWDOWN')
+    },
+    {label: 'RESOLVED', value: formatInteger(pastPositions.length), tooltip: performanceStatTooltip('RESOLVED')}
   ]
 
   async function handleExitNow(trade: PerformanceTradeRow): Promise<void> {
@@ -729,17 +800,28 @@ export function PerformancePage(props: PerformancePageProps) {
         <DashboardPanel
           className="dashboard-panel--performance-stats"
           title="TRACKER STATS"
-          meta={`${formatInteger(pastPositions.length)} RESOLVED • ${formatInteger(currentPositions.length)} OPEN • ${formatMoney(currentExposure)} EXPOSED`}
         >
           <div className="metric-grid">
-            {trackerStatsRows.map((row) => (
-              <div key={row.label} className="metric-grid__row">
-                <div className="metric-grid__label">{row.label}</div>
-                <div className="metric-grid__value" style={row.tone ? {color: row.tone} : undefined}>
-                  {row.value}
+            <div className="metric-grid__column">
+              {trackerStatsLeftRows.map((row) => (
+                <div key={row.label} className="metric-grid__row">
+                  <div className="metric-grid__label" title={row.tooltip || row.label}>{row.label}</div>
+                  <div className="metric-grid__value" style={row.tone ? {color: row.tone} : undefined}>
+                    {row.value}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            <div className="metric-grid__column">
+              {trackerStatsRightRows.map((row) => (
+                <div key={row.label} className="metric-grid__row">
+                  <div className="metric-grid__label" title={row.tooltip || row.label}>{row.label}</div>
+                  <div className="metric-grid__value" style={row.tone ? {color: row.tone} : undefined}>
+                    {row.value}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </DashboardPanel>
 
@@ -948,11 +1030,10 @@ export function ModelPage(props: ModelPageProps) {
       .sort((left, right) => right.count - left.count)
   }, [props.signalEvents])
 
-  const statusRows = [
+  const runtimeSummaryRows = [
     {
       item: 'SCORER',
-      value: String(props.loadedScorer || '-'),
-      note: props.modelPredictionMode || '-'
+      value: String(props.loadedScorer || '-')
     },
     {
       item: 'BACKEND',
@@ -960,47 +1041,28 @@ export function ModelPage(props: ModelPageProps) {
       note: props.modelRuntimeCompatible ? 'runtime ready' : 'fallback'
     },
     {
-      item: 'LAST RETRAIN',
-      value: formatTimestamp(props.lastRetrainFinishedAt),
-      note: String(props.lastRetrainStatus || '-')
+      item: 'STARTUP',
+      value: props.startupFailed ? 'FAILED' : props.startupValidationFailed ? 'VALIDATION' : 'READY',
+      note: String(props.startupDetail || props.modelFallbackReason || '-')
     },
     {
-      item: 'REPLAY SEARCH',
-      value: formatTimestamp(props.lastReplaySearchFinishedAt),
-      note: String(props.lastReplaySearchStatus || '-')
+      item: 'LOADED',
+      value: formatRelativeAge(props.modelLoadedAt),
+      note: formatTimestamp(props.modelLoadedAt)
     }
   ]
 
-  const predictionQualityRows = [
-    {label: 'LOADED SCORER', value: String(props.loadedScorer || '-'), tone: feedTheme.yellow},
-    {label: 'MODE', value: String(props.modelPredictionMode || '-')},
-    {label: 'BACKEND', value: String(props.modelBackend || '-')},
-    {
-      label: 'STARTUP',
-      value: props.startupFailed ? 'FAILED' : props.startupValidationFailed ? 'VALIDATION' : 'READY',
-      tone: props.startupFailed || props.startupValidationFailed ? feedTheme.red : feedTheme.green
-    },
-    {label: 'SAMPLES', value: formatInteger(props.signalEvents.length)},
-    {label: 'AVG CONF', value: formatPercentFromRatio(averageConfidence)},
-    {label: 'ACTUAL', value: formatPercentFromRatio(actualWinRate)},
-    {label: 'AVG GAP', value: formatPercentFromRatio(avgGap), tone: (avgGap ?? 0) <= 0 ? feedTheme.green : feedTheme.yellow},
-    {label: 'BRIER', value: formatDecimal(pseudoBrier, 3)},
-    {label: 'LOG LOSS', value: formatDecimal(pseudoLogLoss, 3)},
-    {label: 'LOADED', value: formatRelativeAge(props.modelLoadedAt)},
-    {label: 'DETAIL', value: String(props.startupDetail || props.modelFallbackReason || '-')}
-  ]
-
   const shadowGateRows = [
-    {item: 'LIVE REQ', value: props.liveRequireShadowHistoryEnabled ? 'ENABLED' : 'DISABLED', note: 'shadow-history gate'},
-    {item: 'TOTAL READY', value: props.liveShadowHistoryTotalReady ? 'READY' : 'BUILDING', note: 'overall live baseline'},
-    {item: 'POST-PROMO READY', value: props.liveShadowHistoryReady ? 'READY' : 'BUILDING', note: 'post-promotion routed evidence'},
+    {item: 'LIVE GATE', value: props.liveRequireShadowHistoryEnabled ? 'ENABLED' : 'DISABLED', note: 'requires enough shadow history before live mode can run'},
+    {item: 'TOTAL READY', value: props.liveShadowHistoryTotalReady ? 'READY' : 'BUILDING'},
+    {item: 'POST-PROMO READY', value: props.liveShadowHistoryReady ? 'READY' : 'BUILDING'},
     {
       item: 'SNAPSHOT',
       value: String(props.shadowSnapshotStatus || '-'),
       note: `${formatInteger(props.shadowSnapshotRoutedResolved)} routed / ${formatInteger(props.shadowSnapshotResolved)} resolved`
     },
-    {item: 'SCOPE', value: String(props.shadowSnapshotScope || '-'), note: props.shadowSnapshotReady ? 'gate ready' : String(props.shadowSnapshotBlockReason || '-')},
-    {item: 'BLOCK REASON', value: props.shadowSnapshotReady ? 'CLEAR' : 'WAIT', note: String(props.shadowSnapshotBlockReason || '-')}
+    {item: 'SCOPE', value: String(props.shadowSnapshotScope || '-')},
+    {item: 'NEXT BLOCKER', value: props.shadowSnapshotReady ? 'CLEAR' : String(props.shadowSnapshotBlockReason || '-')}
   ]
 
   const trainingRows = [
@@ -1022,41 +1084,14 @@ export function ModelPage(props: ModelPageProps) {
     [props.trainingRuns]
   )
 
-  const pathRows = [
-    {
-      item: 'PRIMARY PATH',
-      value: String(props.modelPredictionMode || props.loadedScorer || '-'),
-      note: props.modelRuntimeCompatible ? 'runtime compatible' : String(props.modelFallbackReason || 'fallback path')
-    },
-    {item: 'ACCEPT PATH', value: formatInteger(acceptedSignals.length), note: `${formatPercentFromRatio(props.signalEvents.length ? acceptedSignals.length / props.signalEvents.length : null)} of scored signals`},
-    {item: 'REJECT PATH', value: formatInteger(rejectedSignals.length), note: `${formatPercentFromRatio(props.signalEvents.length ? rejectedSignals.length / props.signalEvents.length : null)} blocked by decision flow`},
-    {item: 'PAUSE/SKIP', value: formatInteger(pausedSignals.length), note: `${formatPercentFromRatio(props.signalEvents.length ? pausedSignals.length / props.signalEvents.length : null)} delayed or ignored`}
-  ]
-
   const predictionQualityCompactRows: CompactFieldRow[] = [
-    {label: 'LOADED SCORER', value: String(props.loadedScorer || '-'), tone: feedTheme.yellow},
-    {label: 'MODE', value: String(props.modelPredictionMode || '-')},
-    {label: 'BACKEND', value: String(props.modelBackend || '-')},
-    {
-      label: 'STARTUP',
-      value: props.startupFailed ? 'FAILED' : props.startupValidationFailed ? 'VALIDATION' : 'READY',
-      tone: props.startupFailed || props.startupValidationFailed ? feedTheme.red : feedTheme.green
-    },
-    {label: 'SAMPLES', value: formatInteger(props.signalEvents.length)},
-    {label: 'AVG CONF', value: formatPercentFromRatio(averageConfidence)},
-    {label: 'ACTUAL', value: formatPercentFromRatio(actualWinRate)},
-    {label: 'AVG GAP', value: formatPercentFromRatio(avgGap), tone: (avgGap ?? 0) <= 0 ? feedTheme.green : feedTheme.yellow},
-    {label: 'BRIER', value: formatDecimal(pseudoBrier, 3)},
-    {label: 'LOG LOSS', value: formatDecimal(pseudoLogLoss, 3)},
-    {label: 'LOADED', value: formatRelativeAge(props.modelLoadedAt)},
-    {label: 'DETAIL', value: String(props.startupDetail || props.modelFallbackReason || '-')}
+    {label: 'SCORED TRADES', value: formatInteger(props.signalEvents.length), tooltip: modelLabelTooltip('SCORED TRADES')},
+    {label: 'AVG CONFIDENCE', value: formatPercentFromRatio(averageConfidence), tooltip: modelLabelTooltip('AVG CONFIDENCE')},
+    {label: 'ACTUAL WIN RATE', value: formatPercentFromRatio(actualWinRate), tooltip: modelLabelTooltip('ACTUAL WIN RATE')},
+    {label: 'CONFIDENCE GAP', value: formatPercentFromRatio(avgGap), tone: (avgGap ?? 0) <= 0 ? feedTheme.green : feedTheme.yellow, tooltip: modelLabelTooltip('CONFIDENCE GAP')},
+    {label: 'BRIER SCORE', value: formatDecimal(pseudoBrier, 3), tooltip: modelLabelTooltip('BRIER SCORE')},
+    {label: 'LOG LOSS', value: formatDecimal(pseudoLogLoss, 3), tooltip: modelLabelTooltip('LOG LOSS')}
   ]
-
-  const pathCompactRows: CompactFieldRow[] = pathRows.map((row) => ({
-    label: row.item,
-    value: row.value,
-    note: row.note
-  }))
 
   const shadowCompactRows: CompactFieldRow[] = shadowGateRows.map((row) => ({
     label: row.item,
@@ -1067,10 +1102,18 @@ export function ModelPage(props: ModelPageProps) {
         : row.value === 'BUILDING' || row.value === 'WAIT'
           ? feedTheme.yellow
           : undefined,
-    note: row.note
+    note: row.note,
+    tooltip: modelLabelTooltip(row.item)
   }))
 
-  const trainingCompactRows: CompactFieldRow[] = trainingRows.map((row) => ({
+  const trainingCompactRows: CompactFieldRow[] = [
+    trainingRows[0],
+    trainingRows[1],
+    trainingRows[2],
+    trainingRows[3],
+    trainingRows[4],
+    trainingRows[5]
+  ].map((row) => ({
     label: row.item,
     value: row.value,
     tone:
@@ -1079,19 +1122,30 @@ export function ModelPage(props: ModelPageProps) {
         : row.value === 'RUNNING' || row.value === 'PENDING'
           ? feedTheme.yellow
           : undefined,
-    note: row.note
+    note: row.note,
+    tooltip: modelLabelTooltip(row.item)
   }))
 
-  const statusCompactRows: CompactFieldRow[] = statusRows.map((row) => ({
+  const runtimeSummaryCompactRows: CompactFieldRow[] = runtimeSummaryRows.map((row) => ({
     label: row.item,
     value: row.value,
-    note: row.note
+    tone:
+      row.item === 'SCORER'
+        ? feedTheme.yellow
+        : row.item === 'STARTUP'
+          ? row.value === 'READY'
+            ? feedTheme.green
+            : feedTheme.red
+          : undefined,
+    note: row.note,
+    tooltip: modelLabelTooltip(row.item)
   }))
 
   const confidenceCompactRows: CompactFieldRow[] = confidenceBuckets.map((row) => ({
     label: row.bucket,
     value: `${formatInteger(row.signals)} / ${formatInteger(row.accepts)}`,
-    note: `ACC RATE ${formatPercentFromRatio(row.acceptRate)}`
+    note: `ACC RATE ${formatPercentFromRatio(row.acceptRate)}`,
+    tooltip: modelLabelTooltip(row.bucket)
   }))
 
   const trackerHealthCompactRows: CompactFieldRow[] = decisionRows.map((row) => ({
@@ -1102,25 +1156,22 @@ export function ModelPage(props: ModelPageProps) {
         ? feedTheme.green
         : row.decision === 'REJECT'
           ? feedTheme.red
-          : row.decision === 'PAUSE' || row.decision === 'SKIP'
+        : row.decision === 'PAUSE' || row.decision === 'SKIP'
             ? feedTheme.yellow
             : undefined,
-    note: `SHARE ${formatPercentFromRatio(row.share)}`
+    note: `SHARE ${formatPercentFromRatio(row.share)}`,
+    tooltip: modelLabelTooltip(row.decision)
   }))
 
   return (
     <DashboardPageFrame
       className="model-page"
       title="MODEL"
-      meta={`${String(props.loadedScorer || 'UNKNOWN').toUpperCase()} • ${String(props.modelPredictionMode || 'UNKNOWN').toUpperCase()}`}
+      meta=""
     >
       <div className="dashboard-columns model-columns">
         <section className="dashboard-column model-column">
-          <DashboardPanel
-            className="dashboard-panel--model"
-            title="PREDICTION QUALITY"
-            meta={`${formatInteger(props.signalEvents.length)} SAMPLES`}
-          >
+          <DashboardPanel className="dashboard-panel--model" title="MODEL QUALITY">
             <CompactFieldList rows={predictionQualityCompactRows} columns={1} />
           </DashboardPanel>
         </section>
@@ -1128,19 +1179,14 @@ export function ModelPage(props: ModelPageProps) {
         <section className="dashboard-column model-column">
           <DashboardPanel
             className="dashboard-panel--model"
-            title="CONFIDENCE + MODES"
-            meta={`${formatInteger(props.signalEvents.length)} SCORED SIGNALS`}
+            title="CONFIDENCE BANDS"
           >
             <CompactFieldList rows={confidenceCompactRows} columns={1} />
           </DashboardPanel>
         </section>
 
         <section className="dashboard-column model-column">
-          <DashboardPanel
-            className="dashboard-panel--model"
-            title="TRACKER HEALTH"
-            meta={`${formatInteger(acceptedSignals.length)} ACCEPTS • ${formatInteger(rejectedSignals.length)} REJECTS`}
-          >
+          <DashboardPanel className="dashboard-panel--model" title="DECISIONS">
             <CompactFieldList rows={trackerHealthCompactRows} columns={1} />
           </DashboardPanel>
         </section>
@@ -1148,34 +1194,19 @@ export function ModelPage(props: ModelPageProps) {
         <section className="dashboard-column model-column">
           <DashboardPanel
             className="dashboard-panel--model"
-            title="DECISION PATHS"
-            meta={`${formatInteger(pathRows.length)} PATHS`}
-          >
-            <CompactFieldList rows={pathCompactRows} columns={1} />
-          </DashboardPanel>
-        </section>
-
-        <section className="dashboard-column model-column">
-          <DashboardPanel
-            className="dashboard-panel--model"
-            title="SHADOW SNAPSHOT"
-            meta={String(props.shadowSnapshotStatus || '-')}
+            title="SHADOW GATE"
           >
             <CompactFieldList rows={shadowCompactRows} columns={1} />
           </DashboardPanel>
         </section>
 
         <section className="dashboard-column model-column">
-          <DashboardPanel
-            className="dashboard-panel--model"
-            title="TRAINING CYCLE"
-            meta={String(props.lastRetrainStatus || props.lastReplaySearchStatus || '-')}
-          >
+          <DashboardPanel className="dashboard-panel--model" title="TRAINING SUMMARY">
             <CompactFieldList rows={trainingCompactRows} columns={1} />
           </DashboardPanel>
         </section>
 
-        <section className="dashboard-column model-column">
+        <section className="dashboard-column model-column model-column--span-2">
           <DashboardPanel
             className="dashboard-panel--model dashboard-panel--model-runs"
             title="TRAINING RUNS"
@@ -1239,12 +1270,8 @@ export function ModelPage(props: ModelPageProps) {
         </section>
 
         <section className="dashboard-column model-column">
-          <DashboardPanel
-            className="dashboard-panel--model"
-            title="MODEL STATUS"
-            meta={String(props.modelPredictionMode || props.loadedScorer || '-')}
-          >
-            <CompactFieldList rows={statusCompactRows} columns={1} />
+          <DashboardPanel className="dashboard-panel--model" title="MODEL OVERVIEW">
+            <CompactFieldList rows={runtimeSummaryCompactRows} columns={1} />
           </DashboardPanel>
         </section>
       </div>
@@ -1460,6 +1487,7 @@ export function WalletsPage({
 
   return (
     <DashboardPageFrame
+      className={joinClasses('wallet-page', walletActionMessage ? 'wallet-page--with-status' : undefined)}
       title="WALLETS"
       meta={`${formatInteger(wallets.length)} MANAGED • ${formatInteger(candidates.length)} DISCOVERY CANDIDATES`}
     >
@@ -1544,7 +1572,7 @@ export function WalletsPage({
         </DashboardPanel>
       </div>
 
-      <div className="dashboard-panels dashboard-panels--stack">
+      <div className="dashboard-panels wallet-panels--detail">
         <DashboardPanel
           title="TRACKED WALLETS"
           meta={`${trackedWallets.length} ACTIVE PROFILES`}
@@ -1639,6 +1667,7 @@ interface ConfigEditorRow {
   liveApplies: boolean
   source: string
   value: string
+  description: string
 }
 
 const CONFIG_CHOICE_OPTIONS: Record<string, string[]> = {
@@ -1760,7 +1789,10 @@ export function ConfigPage({
         kind: field.kind,
         liveApplies: field.liveApplies,
         source: configSourceMap.get(field.key) || 'default',
-        value: configValueMap.get(field.key) ?? field.defaultValue
+        value: configValueMap.get(field.key) ?? field.defaultValue,
+        description:
+          configFieldDescriptions[field.key]
+          || `${field.label} controls that backend setting.`
       })),
     [configSourceMap, configValueMap]
   )
@@ -2135,14 +2167,8 @@ export function ConfigPage({
                 return (
                   <div key={row.key} className="config-editor__row">
                     <div className="config-editor__meta">
-                      <div className="config-editor__label">{row.label}</div>
-                      <div className="config-editor__submeta">
-                        <span>{row.key}</span>
-                        <span>{row.kind}</span>
-                        <span>{row.liveApplies ? 'LIVE' : 'RESTART'}</span>
-                        <span>{row.source}</span>
-                        <span>{configInputHint(row)}</span>
-                      </div>
+                      <div className="config-editor__label" title={row.description || row.label}>{row.label}</div>
+                      <div className="config-editor__submeta">{row.description}</div>
                     </div>
                     <div className="config-editor__controls">
                       {discreteOptions ? (

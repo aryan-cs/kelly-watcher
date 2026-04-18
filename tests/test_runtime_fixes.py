@@ -3633,6 +3633,39 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["db_recovery_inventory"][0]["path"], "/tmp/trading.db.bak")
         self.assertEqual(snapshot["db_recovery_inventory"][0]["kind"], "primary_backup")
 
+    def test_dashboard_bot_state_snapshot_backfills_recent_training_runs_when_missing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            bot_state_file = Path(tmpdir) / "bot_state.json"
+            bot_state_file.write_text(
+                json.dumps({"session_id": "abc123", "started_at": 100, "mode": "shadow"}),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(dashboard_api, "BOT_STATE_FILE", bot_state_file),
+                patch.object(
+                    dashboard_api,
+                    "_recent_training_runs",
+                    return_value=[
+                        {
+                            "run_id": "17",
+                            "started_at": 1700,
+                            "finished_at": 1750,
+                            "backend": "xgboost",
+                            "status": "deployed",
+                            "deployed": True,
+                            "note": "latest retrain",
+                        }
+                    ],
+                ),
+            ):
+                snapshot = dashboard_api._bot_state_snapshot()
+
+        self.assertEqual(len(snapshot["training_runs"]), 1)
+        self.assertEqual(snapshot["training_runs"][0]["run_id"], "17")
+        self.assertEqual(snapshot["training_runs"][0]["status"], "deployed")
+        self.assertTrue(snapshot["training_runs"][0]["deployed"])
+
     def test_dashboard_bot_state_snapshot_overlays_recent_manual_retrain_request(self) -> None:
         with TemporaryDirectory() as tmpdir:
             bot_state_file = Path(tmpdir) / "bot_state.json"

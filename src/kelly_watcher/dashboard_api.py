@@ -382,6 +382,56 @@ def _sqlite_fetch_rows(sql: str, params: list[Any]) -> list[dict[str, Any]]:
         conn.close()
 
 
+def _recent_training_runs(limit: int = 12) -> list[dict[str, Any]]:
+    conn = None
+    try:
+        conn = get_conn()
+        if not _sqlite_table_exists(conn, "retrain_runs"):
+            return []
+        columns = _sqlite_table_columns(conn, "retrain_runs")
+        if not columns:
+            return []
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM retrain_runs
+            ORDER BY
+                CASE
+                    WHEN finished_at > 0 THEN finished_at
+                    ELSE started_at
+                END DESC,
+                id DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+        payload: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            payload.append(
+                {
+                    "run_id": str(item.get("id") or ""),
+                    "started_at": int(item.get("started_at") or 0),
+                    "finished_at": int(item.get("finished_at") or 0),
+                    "scorer": str(item.get("scorer") or item.get("backend") or "xgboost"),
+                    "backend": str(item.get("backend") or "xgboost"),
+                    "log_loss": float(item.get("log_loss")) if item.get("log_loss") is not None else None,
+                    "brier": float(item.get("brier")) if item.get("brier") is not None else None,
+                    "deployed": bool(item.get("deployed")),
+                    "deployed_at": int(item.get("deployed_at") or 0) if "deployed_at" in columns else 0,
+                    "status": str(item.get("status") or ""),
+                    "note": str(item.get("message") or item.get("note") or ""),
+                }
+            )
+        return payload
+    except sqlite3.DatabaseError as exc:
+        logger.warning("Training run history unavailable: %s", exc)
+        return []
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def _managed_wallet_registry_snapshot() -> dict[str, Any]:
     try:
         return dict(managed_wallet_registry_state())
@@ -1352,6 +1402,8 @@ def _bot_state_snapshot() -> dict[str, Any]:
             bot_state["startup_block_reason"] = startup_failure_message or startup_detail
     if "db_recovery_inventory" not in bot_state or not isinstance(bot_state.get("db_recovery_inventory"), list):
         bot_state["db_recovery_inventory"] = []
+    if not isinstance(bot_state.get("training_runs"), list) or not bot_state.get("training_runs"):
+        bot_state["training_runs"] = _recent_training_runs()
     bot_state["db_recovery_inventory_count"] = max(int(bot_state.get("db_recovery_inventory_count") or 0), 0)
     needs_recovery_fallback = (
         not bot_state["db_recovery_inventory"]

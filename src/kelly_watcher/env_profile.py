@@ -63,7 +63,7 @@ def save_dir_for_repo(repo_root: Path = REPO_ROOT) -> Path:
 
 
 def env_path_for_profile(_profile: str, repo_root: Path = REPO_ROOT) -> Path:
-    return repo_root / ".env"
+    return save_dir_for_repo(repo_root) / ".env"
 
 
 def repo_env_path_for_profile(_profile: str, repo_root: Path = REPO_ROOT) -> Path:
@@ -78,11 +78,12 @@ def ensure_persistent_env_path(
     if preferred.exists():
         return preferred
 
-    legacy_save_env = save_dir_for_repo(repo_root) / ".env"
-    source = legacy_save_env if legacy_save_env.exists() else None
-    if source is None or source.resolve() == preferred.resolve():
+    repo_env = repo_env_path_for_profile(profile, repo_root)
+    source = repo_env if repo_env.exists() else LEGACY_ENV_PATH if LEGACY_ENV_PATH.exists() else None
+    if source is None:
         return preferred
 
+    preferred.parent.mkdir(parents=True, exist_ok=True)
     preferred.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     return preferred
 
@@ -93,7 +94,15 @@ def active_env_path(
     repo_root: Path = REPO_ROOT,
 ) -> Path:
     del argv, environ
-    return env_path_for_profile(DEFAULT_ENV_PROFILE, repo_root)
+    preferred = env_path_for_profile(DEFAULT_ENV_PROFILE, repo_root)
+    repo_env = repo_env_path_for_profile(DEFAULT_ENV_PROFILE, repo_root)
+    if preferred.exists():
+        return preferred
+    if repo_env.exists():
+        return repo_env
+    if LEGACY_ENV_PATH.exists():
+        return LEGACY_ENV_PATH
+    return preferred
 
 
 def active_env_flag(

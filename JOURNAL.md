@@ -8,15 +8,6 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
-[2026-04-17 21:33 CDT] codex-main
-Task: Collapse runtime env handling to a single repo-root `.env` and remove the old split between repo/save env files from the operator docs.
-Claims: `JOURNAL.md`, `README.md`, `src/kelly_watcher/env_profile.py`, `tests/test_env_profile_and_save_layout.py`
-Status: Completed
-Blockers: None. This was a contained config-path cleanup.
-Next: If we later touch env handling again, keep `.env` as the single canonical operator file and treat any old `save/.env` only as a one-time migration source.
-Decisions: I changed the active runtime env path to the repo-root `.env`, kept a one-time migration path from legacy `save/.env` into `.env`, and rewrote the README setup steps around one file instead of `save/.env.dev`. That should remove the Windows operator confusion about “which env file is the real one.”
-Tests: `uv run python -m py_compile src/kelly_watcher/env_profile.py` -> passed; `uv run pytest tests/test_env_profile_and_save_layout.py -q` -> 7 passed
-
 [2026-04-17 21:05 CDT] codex-main
 Task: Reconnect the web dashboard shell to the real backend data path and fix frontend/backend contract drift before deployment.
 Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, `dashboard-web/src/configFields.ts`, `src/kelly_watcher/dashboard_api.py`, `tests/test_dashboard_web_source.py`, `tests/test_runtime_fixes.py`

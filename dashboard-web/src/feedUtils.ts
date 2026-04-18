@@ -284,8 +284,16 @@ export function useEventFeed(mode: 'mock' | 'api', mockEvents: LiveEvent[]): Fee
   })
 
   useEffect(() => {
+    if (mode !== 'mock') {
+      return undefined
+    }
+
+    setState({events: mockEvents, error: '', loading: false})
+    return undefined
+  }, [mockEvents, mode])
+
+  useEffect(() => {
     if (mode !== 'api') {
-      setState({events: mockEvents, error: '', loading: false})
       return undefined
     }
 
@@ -345,7 +353,7 @@ export function useEventFeed(mode: 'mock' | 'api', mockEvents: LiveEvent[]): Fee
       }
       activeController?.abort()
     }
-  }, [mockEvents, mode])
+  }, [mode])
 
   return state
 }

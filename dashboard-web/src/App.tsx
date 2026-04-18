@@ -25,6 +25,10 @@ function resolveConfidenceCutoff(configSnapshot: {rows?: Array<{key?: string; va
 
 export function App() {
   const mode = dashboardDataMode
+  const mockPageEvents = useMemo(
+    () => [...dashboardModel.trackerEvents, ...dashboardModel.signalEvents],
+    []
+  )
   const [activePage, setActivePage] = useState(dashboardModel.pages[0]?.id ?? 'tracker')
   const [configSnapshot, setConfigSnapshot] = useState(
     mode === 'mock' ? dashboardModel.configSnapshot : {}
@@ -38,9 +42,9 @@ export function App() {
   const [discoveryCandidates, setDiscoveryCandidates] = useState(
     mode === 'mock' ? dashboardModel.discoveryCandidates : {candidates: [], count: 0}
   )
-  const {events: pageEvents} = useEventFeed(
+  const {events: pageEvents, loading: pageEventsLoading, error: pageEventsError} = useEventFeed(
     mode,
-    [...dashboardModel.trackerEvents, ...dashboardModel.signalEvents]
+    mockPageEvents
   )
   const trackerEvents = useMemo(
     () => (mode === 'api' ? pageEvents.filter((event) => event.type === 'incoming') : dashboardModel.trackerEvents),
@@ -183,13 +187,20 @@ export function App() {
       <main aria-label={`${activePage} page`} className="page-canvas">
         {activePage === 'tracker' ? (
           <TrackerFeed
-            mode={mode}
-            mockEvents={trackerEvents}
+            events={trackerEvents}
+            loading={pageEventsLoading}
+            error={pageEventsError}
             bankrollUsd={botState.bankroll_usd}
+            sourceLabel={mode === 'mock' ? 'MOCK FEED' : 'LIVE FEED'}
           />
         ) : null}
         {activePage === 'signals' ? (
-          <SignalsFeed mode={mode} mockEvents={signalEvents} />
+          <SignalsFeed
+            events={signalEvents}
+            loading={pageEventsLoading}
+            error={pageEventsError}
+            sourceLabel={mode === 'mock' ? 'MOCK FEED' : 'LIVE FEED'}
+          />
         ) : null}
         {activePage === 'perf' ? (
           <PerformancePage

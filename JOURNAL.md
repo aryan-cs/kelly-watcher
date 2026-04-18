@@ -8,6 +8,33 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-17 22:24 CDT] codex-main
+Task: Stop Chrome crashes and tab churn in the web dashboard after the earlier tab-state change.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/feedUtils.ts`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None for this slice. The crash pressure was frontend lifecycle and effect-dependency churn, not a backend API mismatch.
+Next: If the browser still feels heavy after this, the next place to tune is poll cadence and page-specific memoization, not another mount strategy rewrite.
+Decisions: I found two real problems. First, the shared event hook in `App.tsx` was being passed a fresh array literal every render, which caused `useEventFeed()` to tear down and restart its `/api/events` loop constantly in API mode. Second, the previous fix kept all six heavy pages mounted all the time, which increased DOM and rerender pressure enough to make Chrome unstable. I fixed the event hook so API polling no longer depends on mock-event identity, memoized the mock feed seed in `App.tsx`, and switched the shell back to conditional tab rendering now that the shared app-level feed/state caching is in place. That keeps cached data between visits without keeping the entire dashboard mounted forever.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `node ./dashboard-web/node_modules/typescript/bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 22:11 CDT] codex-main
+Task: Stop dashboard tabs from blanking and refetching when switching between Tracker, Signals, Performance, Model, Wallets, and Config.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None for this slice. The issue was frontend state ownership and page lifecycle, not backend API availability.
+Next: If the user still sees stale-feeling data after this, tune the poll cadence or add an explicit stale/read-through indicator instead of reworking tab mount behavior again.
+Decisions: I moved the live events poller back to the app shell as the single source of truth and passed that shared feed state into `TRACKER` and `SIGNALS` instead of letting each tab start its own `/api/events` loop on mount. I also changed the shell to keep all six major pages mounted behind tab-visibility wrappers, so tab switches preserve loaded data and local UI state like config drafts, wallet action messages, chart state, and table sizing instead of tearing each page down and rebuilding it from scratch.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `node ./dashboard-web/node_modules/typescript/bin/tsc -p dashboard-web/tsconfig.app.json --noEmit` -> passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 21:33 CDT] codex-main
+Task: Collapse runtime env handling to a single repo-root `.env` and remove the old split between repo/save env files from the operator docs.
+Claims: `JOURNAL.md`, `README.md`, `src/kelly_watcher/env_profile.py`, `tests/test_env_profile_and_save_layout.py`
+Status: Completed
+Blockers: None. This was a contained config-path cleanup.
+Next: If we later touch env handling again, keep `.env` as the single canonical operator file and treat any old `save/.env` only as a one-time migration source.
+Decisions: I changed the active runtime env path to the repo-root `.env`, kept a one-time migration path from legacy `save/.env` into `.env`, and rewrote the README setup steps around one file instead of `save/.env.dev`. That should remove the Windows operator confusion about “which env file is the real one.”
+Tests: `uv run python -m py_compile src/kelly_watcher/env_profile.py` -> passed; `uv run pytest tests/test_env_profile_and_save_layout.py -q` -> 7 passed
+
 [2026-04-17 21:05 CDT] codex-main
 Task: Reconnect the web dashboard shell to the real backend data path and fix frontend/backend contract drift before deployment.
 Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, `dashboard-web/src/configFields.ts`, `src/kelly_watcher/dashboard_api.py`, `tests/test_dashboard_web_source.py`, `tests/test_runtime_fixes.py`

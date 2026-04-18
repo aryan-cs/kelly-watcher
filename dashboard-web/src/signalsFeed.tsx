@@ -2,6 +2,7 @@ import {useMemo, type ReactNode} from 'react'
 import {type LiveEvent} from './api'
 import {useResizableColumns} from './columnResize'
 import {
+  type FeedEventsState,
   buildTradeIdLookup,
   decisionColor,
   feedTheme,
@@ -16,12 +17,13 @@ import {
   probabilityColor,
   resolveActionText,
   shortAddress,
-  useEventFeed
 } from './feedUtils'
 
 interface SignalsFeedProps {
-  mode: 'mock' | 'api'
-  mockEvents: LiveEvent[]
+  events: LiveEvent[]
+  loading: FeedEventsState['loading']
+  error: FeedEventsState['error']
+  sourceLabel?: string
 }
 
 type SignalsColumnKey =
@@ -138,8 +140,7 @@ function renderEmptyState(loading: boolean, error: string): string {
   return 'WAITING FOR SCORED SIGNALS...'
 }
 
-export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
-  const {events, error, loading} = useEventFeed(mode, mockEvents)
+export function SignalsFeed({events, error, loading, sourceLabel = 'LIVE FEED'}: SignalsFeedProps) {
   const {widths, tableWidth, startResize, fitColumnsToViewport} = useResizableColumns('signals-feed', SIGNALS_COLUMNS)
   const allSignals = useMemo(
     () => events.filter((event) => event.type === 'signal').reverse(),
@@ -162,7 +163,6 @@ export function SignalsFeed({mode, mockEvents}: SignalsFeedProps) {
       ),
     [allSignals, incomingActionByTradeId, tradeIdLookup]
   )
-  const sourceLabel = mode === 'mock' ? 'MOCK FEED' : 'LIVE FEED'
 
   return (
     <section className="signals-page">

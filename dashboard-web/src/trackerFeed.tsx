@@ -2,6 +2,7 @@ import {useMemo, type ReactNode} from 'react'
 import {type LiveEvent} from './api'
 import {useResizableColumns} from './columnResize'
 import {
+  type FeedEventsState,
   buildTradeIdLookup,
   formatClock,
   formatDisplayId,
@@ -12,15 +13,16 @@ import {
   probabilityColor,
   resolveActionText,
   shortAddress,
-  useEventFeed,
   feedTheme
 } from './feedUtils'
 import {moneyMetricColor} from './uiFormat'
 
 interface TrackerFeedProps {
-  mode: 'mock' | 'api'
-  mockEvents: LiveEvent[]
+  events: LiveEvent[]
+  loading: FeedEventsState['loading']
+  error: FeedEventsState['error']
   bankrollUsd?: number
+  sourceLabel?: string
 }
 
 type TrackerColumnKey =
@@ -129,8 +131,7 @@ function renderEmptyState(loading: boolean, error: string): string {
   return 'WAITING FOR INCOMING TRADE EVENTS...'
 }
 
-export function TrackerFeed({mode, mockEvents, bankrollUsd}: TrackerFeedProps) {
-  const {events, error, loading} = useEventFeed(mode, mockEvents)
+export function TrackerFeed({events, error, loading, bankrollUsd, sourceLabel = 'LIVE FEED'}: TrackerFeedProps) {
   const {widths, tableWidth, startResize, fitColumnsToViewport} = useResizableColumns('tracker-feed', TRACKER_COLUMNS)
   const allIncoming = useMemo(
     () => events.filter((event) => event.type === 'incoming').reverse(),
@@ -141,7 +142,6 @@ export function TrackerFeed({mode, mockEvents, bankrollUsd}: TrackerFeedProps) {
     () => allIncoming.map((event) => buildTrackerRow(event, tradeIdLookup.get(event.trade_id), bankrollUsd)),
     [allIncoming, bankrollUsd, tradeIdLookup]
   )
-  const sourceLabel = mode === 'mock' ? 'MOCK FEED' : 'LIVE FEED'
 
   return (
     <section className="tracker-page">

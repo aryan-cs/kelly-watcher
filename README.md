@@ -2,7 +2,7 @@
 
 Kelly Watcher is a local, operator-driven Polymarket copy-trading system. It watches selected wallets, scores incoming trades, sizes positions with Kelly-style logic, executes in shadow or live mode, records everything to SQLite, and exposes a web dashboard for monitoring and control in real time. Wallet registry state and discovery candidates are surfaced through the browser and backed by SQLite when the runtime has the needed tables.
 
-This repository is meant to be clonable by another developer without any private local state. Secrets, databases, logs, model artifacts, and other runtime files are intentionally excluded from git. A fresh clone should be able to install dependencies, create `save/.env.dev`, start in shadow mode, and begin operating from there.
+This repository is meant to be clonable by another developer without any private local state. Secrets, databases, logs, model artifacts, and other runtime files are intentionally excluded from git. A fresh clone should be able to install dependencies, create a single repo-root `.env`, start in shadow mode, and begin operating from there.
 
 ## What This Repository Includes
 
@@ -18,7 +18,7 @@ This repository is meant to be clonable by another developer without any private
 
 These are intentionally local-only and should stay out of version control:
 
-- `save/.env.*` and any other secret-bearing env files
+- `.env` and any other secret-bearing env files
 - `save/data/` runtime files and SQLite databases
 - `save/logs/`
 - `save/model.joblib`
@@ -109,23 +109,20 @@ cd ..
 
 ### 4. Create your local config
 
-Preferred location: copy `.env.example` to `save/.env.dev`.
+Preferred location: copy `.env.example` to `.env`.
 
 Examples:
 
 ```bash
-mkdir -p save
-cp .env.example save/.env.dev
+cp .env.example .env
 ```
 
 ```powershell
-New-Item -ItemType Directory -Force save | Out-Null
-Copy-Item .env.example save/.env.dev
+Copy-Item .env.example .env
 ```
 
 ```bat
-if not exist save mkdir save
-copy .env.example save\.env.dev
+copy .env.example .env
 ```
 
 At minimum for shadow mode, set:
@@ -136,7 +133,7 @@ If this is the first time you are bootstrapping the bot, you can seed `WATCHED_W
 
 ### 5. Populate a watchlist
 
-If you already know the wallets, you may paste them into `save/.env.dev` for the one-time bootstrap import. After that, the backend runs from the DB-backed managed wallet registry instead of the env file.
+If you already know the wallets, you may paste them into `.env` for the one-time bootstrap import. After that, the backend runs from the DB-backed managed wallet registry instead of the env file.
 
 If you only know Polymarket handles or profile URLs, use:
 
@@ -179,7 +176,7 @@ The backend will automatically:
 
 - create `save/data/` and `save/logs/`
 - initialize or migrate the SQLite schema
-- load `save/.env.dev` by default
+- load `.env` from the repo root
 - validate startup config
 - start the polling loop
 - run a background wallet-discovery scan on its own cadence when enabled
@@ -829,5 +826,5 @@ That updates `save/data/identity_cache.json`.
 - Shadow mode is the default for a reason.
 - Live mode should be treated as high risk and operationally supervised.
 - Test and validate watchlist quality before trusting bankroll results.
-- Keep secrets in `save/.env.*`, never in committed source files.
+- Keep secrets in `.env`, never in committed source files.
 - Do not treat the dashboard event stream as the canonical ledger; use SQLite for durable records.

@@ -1,8 +1,18 @@
 import {useEffect, useMemo, useState} from 'react'
+import {
+  fetchBotState,
+  fetchConfigSnapshot,
+  fetchDiscoveryCandidates,
+  fetchManagedWallets
+} from './api'
 import {ConfigPage, ModelPage, PerformancePage, WalletsPage} from './dashboardPages'
-import {dashboardModel} from './mockDashboard'
+import {dashboardDataMode, dashboardModel} from './mockDashboard'
+import {useEventFeed} from './feedUtils'
 import {SignalsFeed} from './signalsFeed'
 import {TrackerFeed} from './trackerFeed'
+
+const BOT_STATE_POLL_INTERVAL_MS = 2000
+const SNAPSHOT_POLL_INTERVAL_MS = 5000
 
 function resolveConfidenceCutoff(configSnapshot: {rows?: Array<{key?: string; value?: string}>; safe_values?: Record<string, string>}): number | undefined {
   const rowValue = configSnapshot.rows?.find((row) => row.key === 'MIN_CONFIDENCE')?.value
@@ -14,14 +24,111 @@ function resolveConfidenceCutoff(configSnapshot: {rows?: Array<{key?: string; va
 }
 
 export function App() {
+  const mode = dashboardDataMode
   const [activePage, setActivePage] = useState(dashboardModel.pages[0]?.id ?? 'tracker')
-  const [configSnapshot, setConfigSnapshot] = useState(dashboardModel.configSnapshot)
-  const [botState, setBotState] = useState(dashboardModel.botState)
-  const [managedWallets, setManagedWallets] = useState(dashboardModel.managedWallets)
+  const [configSnapshot, setConfigSnapshot] = useState(
+    mode === 'mock' ? dashboardModel.configSnapshot : {}
+  )
+  const [botState, setBotState] = useState(
+    mode === 'mock' ? dashboardModel.botState : {}
+  )
+  const [managedWallets, setManagedWallets] = useState(
+    mode === 'mock' ? dashboardModel.managedWallets : {wallets: [], count: 0}
+  )
+  const [discoveryCandidates, setDiscoveryCandidates] = useState(
+    mode === 'mock' ? dashboardModel.discoveryCandidates : {candidates: [], count: 0}
+  )
+  const {events: pageEvents} = useEventFeed(
+    mode,
+    [...dashboardModel.trackerEvents, ...dashboardModel.signalEvents]
+  )
+  const trackerEvents = useMemo(
+    () => (mode === 'api' ? pageEvents.filter((event) => event.type === 'incoming') : dashboardModel.trackerEvents),
+    [mode, pageEvents]
+  )
+  const signalEvents = useMemo(
+    () => (mode === 'api' ? pageEvents.filter((event) => event.type === 'signal') : dashboardModel.signalEvents),
+    [mode, pageEvents]
+  )
   const confidenceCutoff = useMemo(
     () => resolveConfidenceCutoff(configSnapshot),
     [configSnapshot]
   )
+
+  useEffect(() => {
+    if (mode !== 'api') {
+      return
+    }
+
+    let cancelled = false
+
+    async function refreshBotState() {
+      try {
+        const nextState = await fetchBotState()
+        if (!cancelled && nextState) {
+          setBotState(nextState)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Failed to refresh bot state', error)
+        }
+      }
+    }
+
+    void refreshBotState()
+    const timer = window.setInterval(() => {
+      void refreshBotState()
+    }, BOT_STATE_POLL_INTERVAL_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [mode])
+
+  useEffect(() => {
+    if (mode !== 'api') {
+      return
+    }
+
+    let cancelled = false
+
+    async function refreshSnapshots() {
+      try {
+        const [nextConfig, nextWallets, nextDiscovery] = await Promise.all([
+          fetchConfigSnapshot(),
+          fetchManagedWallets(),
+          fetchDiscoveryCandidates()
+        ])
+        if (cancelled) {
+          return
+        }
+        if (nextConfig) {
+          setConfigSnapshot(nextConfig)
+        }
+        if (nextWallets) {
+          setManagedWallets(nextWallets)
+        }
+        if (nextDiscovery) {
+          setDiscoveryCandidates(nextDiscovery)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Failed to refresh dashboard snapshots', error)
+        }
+      }
+    }
+
+    void refreshSnapshots()
+    const timer = window.setInterval(() => {
+      void refreshSnapshots()
+    }, SNAPSHOT_POLL_INTERVAL_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [mode])
 
   useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {
@@ -76,19 +183,19 @@ export function App() {
       <main aria-label={`${activePage} page`} className="page-canvas">
         {activePage === 'tracker' ? (
           <TrackerFeed
-            mode={dashboardModel.mode}
-            mockEvents={dashboardModel.trackerEvents}
+            mode={mode}
+            mockEvents={trackerEvents}
             bankrollUsd={botState.bankroll_usd}
           />
         ) : null}
         {activePage === 'signals' ? (
-          <SignalsFeed mode={dashboardModel.mode} mockEvents={dashboardModel.signalEvents} />
+          <SignalsFeed mode={mode} mockEvents={signalEvents} />
         ) : null}
         {activePage === 'perf' ? (
           <PerformancePage
-            mode={dashboardModel.mode}
-            trackerEvents={dashboardModel.trackerEvents}
-            signalEvents={dashboardModel.signalEvents}
+            mode={mode}
+            trackerEvents={trackerEvents}
+            signalEvents={signalEvents}
             resolvedShadowTradeCount={botState.resolved_shadow_trade_count}
             bankrollUsd={botState.bankroll_usd}
             confidenceCutoff={confidenceCutoff}
@@ -102,7 +209,7 @@ export function App() {
         ) : null}
         {activePage === 'models' ? (
           <ModelPage
-            signalEvents={dashboardModel.signalEvents}
+            signalEvents={signalEvents}
             loadedScorer={botState.loaded_scorer}
             modelBackend={botState.loaded_model_backend}
             modelPredictionMode={botState.model_prediction_mode}
@@ -137,16 +244,16 @@ export function App() {
         ) : null}
         {activePage === 'wallets' ? (
           <WalletsPage
-            mode={dashboardModel.mode}
+            mode={mode}
             bankrollUsd={botState.bankroll_usd}
             managedWallets={managedWallets}
-            discoveryCandidates={dashboardModel.discoveryCandidates}
+            discoveryCandidates={discoveryCandidates}
             onManagedWalletsChange={setManagedWallets}
           />
         ) : null}
         {activePage === 'config' ? (
           <ConfigPage
-            mode={dashboardModel.mode}
+            mode={mode}
             configSnapshot={configSnapshot}
             managedWallets={managedWallets}
             botState={botState}

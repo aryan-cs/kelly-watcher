@@ -233,6 +233,11 @@ export interface DiscoveryCandidatesResponse {
   count?: number
   ready_count?: number
   review_count?: number
+  stale_count?: number
+  tracked_count?: number
+  dropped_count?: number
+  reactivated_count?: number
+  promoted_count?: number
   candidates?: DiscoveryCandidate[]
   message?: string
   managed_wallet_registry_status?: string

@@ -8,13 +8,175 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-17 21:05 CDT] codex-main
+Task: Reconnect the web dashboard shell to the real backend data path and fix frontend/backend contract drift before deployment.
+Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/api.ts`, `dashboard-web/src/configFields.ts`, `src/kelly_watcher/dashboard_api.py`, `tests/test_dashboard_web_source.py`, `tests/test_runtime_fixes.py`
+Status: In Progress
+Blockers: GitHub push is still pending until auth is confirmed. The current worktree also has unrelated frontend edits, so I am verifying carefully before any publish step.
+Next: Finish verification, then push if GitHub auth is available. If auth is still missing, give the user exact Windows deploy commands plus the one required GitHub auth step.
+Decisions: I replaced the app-shell’s mock-only state flow with live API hydration/polling for `botState`, config, wallets, and discovery candidates, and I moved `PerformancePage` / `ModelPage` onto the real `/api/events` feed instead of leaving them synthetic in API mode. I also fixed the frontend config defaults that were using whole percentages where the backend expects `0..1` fractions, extended the discovery response type to match the backend aggregate counts, and added a backend `training_runs` fallback so the model page can populate recent retrain history from `retrain_runs` when `bot_state.json` does not already carry it.
+Tests: `uv run python -m py_compile src/kelly_watcher/dashboard_api.py tests/test_runtime_fixes.py tests/test_dashboard_web_source.py` -> passed; `uv run pytest tests/test_runtime_fixes.py -q -k 'dashboard_bot_state_snapshot_backfills_recent_training_runs_when_missing or dashboard_bot_state_snapshot_falls_back_to_cached_recovery_inventory_when_missing'` -> 2 passed; `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 20:44 CDT] codex-main
+Task: Simplify the `MODEL` page by removing repeated runtime/decision information and renaming panels/labels to read more like an operator dashboard than an internal debug dump.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This stayed inside the model-page composition and the source-contract test.
+Next: If the model page gets another pass later, the next improvement should be layout density and panel ordering only; avoid reintroducing duplicate status rows or overlapping decision summaries under different labels.
+Decisions: I removed the duplicate `DECISION SPLIT` panel and kept a single decision summary box. I renamed the main model panels to plainer, more operator-facing titles (`MODEL QUALITY`, `DECISIONS`, `SHADOW GATE`, `TRAINING SUMMARY`, `MODEL OVERVIEW`) and shortened the quality rows to the metrics that actually matter (`SCORED TRADES`, `AVG CONFIDENCE`, `ACTUAL WIN RATE`, `CONFIDENCE GAP`, `BRIER SCORE`, `LOG LOSS`). I also trimmed the training summary so it no longer surfaces the manual action flags by default and updated the shared source test to match the simplified layout.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 18:27 CDT] codex-main
+Task: Make the `MODEL` page `TRAINING RUNS` panel actually span double width in the five-column layout.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained model-page layout fix.
+Next: If the model page gets more layout tuning later, preserve the explicit `model-column--span-2` hook for wider panels instead of trying to infer width from panel content.
+Decisions: The panel was still wrapped in a normal single-column model grid item, so it never actually became wider. I changed the `TRAINING RUNS` wrapper section to use a dedicated `model-column--span-2` class and added the corresponding CSS `grid-column: span 2`, which makes that panel truly double width inside the five-column model grid.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 17:19 CDT] codex-main
+Task: Restore the always-visible top readout text in the `BALANCE` chart while keeping the cursor line as an interaction-only affordance.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`
+Status: Completed
+Blockers: None. This was a small balance-chart visibility fix.
+Next: If the chart interaction changes again later, keep the selected value/timestamp readout persistent so the chart always communicates the current point even when the cursor line is hidden.
+Decisions: I changed the scrub readout to render whenever a selected point exists, which effectively makes it always visible using the latest point by default and the scrubbed point during interaction. I kept the vertical cursor line gated on interaction state, so the chart no longer ends up in the awkward state where the selection exists but the text disappears.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 17:13 CDT] codex-main
+Task: Make the `TRACKED WALLETS` and `DROPPED WALLETS` panels use the full remaining wallet-page height instead of stopping at capped viewport heights.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained wallet-page layout/height fix.
+Next: If the wallet page gets another density pass later, preserve the dedicated wallet-page grid rows so the lower detail section keeps owning the remaining vertical space.
+Decisions: I gave the wallet page its own grid layout class with a real `minmax(0, 1fr)` detail row, plus a variant when the status line is present. I also removed the old hard `vh/rem` caps from the tracked/dropped table viewports and made the two detail panels plus their viewports stretch to `height: 100%`. That makes both lower wallet tables expand to fill the available area and scroll internally.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 16:57 CDT] codex-main
+Task: Restore visibility of the balance-chart scrub readout during actual chart interaction instead of only during a strict SVG drag state.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`
+Status: Completed
+Blockers: None. This was a small interaction-state fix in the balance chart component.
+Next: If the chart interaction gets another pass later, keep the readout tied to viewport hover/scroll/drag state so horizontal panning and scrubbing share the same feedback behavior.
+Decisions: The readout had disappeared because it was gated only on `isScrubbing`, which was set exclusively by pointer dragging on the SVG. Horizontal viewport scrolling did not count, so the top-right text vanished during the main interaction the user was doing. I added a separate `showReadout` state that turns on for pointer enter, pointer drag, and viewport scroll, and turns off on viewport leave. That keeps the readout visible while actually interacting with the chart, including horizontal scroll.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 16:27 CDT] codex-main
+Task: Clean up the `BALANCE` chart interaction by removing the marker circle and preventing the scrub text/chart surface from being text-selected while dragging.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained chart-interaction polish pass.
+Next: If the balance chart gets more interaction work later, keep it drag/scrub focused and avoid reintroducing visual markers or selectable overlay text unless there is a strong reason.
+Decisions: I removed the selected-point circle entirely and kept only the vertical cursor line during scrubbing. I also disabled text selection on the balance chart viewport, SVG surface, and scrub readout so dragging or scrolling the chart no longer highlights the overlay text.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 16:21 CDT] codex-main
+Task: Put the `TRACKED WALLETS` and `DROPPED WALLETS` panels side by side on the wallet page instead of stacking them vertically.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`
+Status: Completed
+Blockers: None. This was a contained wallet-page layout change.
+Next: If the wallet page gets another layout pass later, keep the tracked/dropped pair in the dedicated wallet detail grid rather than reusing the generic stack wrapper.
+Decisions: I replaced the stacked wrapper around the tracked and dropped wallet panels with a dedicated two-column wallet-detail grid. That keeps both panels left/right like the performance page bottom row while preserving their existing internal scroll behavior and panel sizing.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 16:17 CDT] codex-main
+Task: Remove the duplicate top-right `resolved / open / exposed` strip from the `PERFORMANCE` `TRACKER STATS` box.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`
+Status: Completed
+Blockers: None. This was a small contained cleanup on the tracker-stats panel header.
+Next: If the performance header content changes again later, keep the tracker-stats panel title clean and avoid reintroducing status text that is already shown elsewhere on the page.
+Decisions: I removed the `meta` prop from the `TRACKER STATS` panel so that top-right summary line no longer renders. The resolved/open/exposed info remains available in the surrounding performance layout, so the box now focuses only on the actual tracker statistics.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 16:13 CDT] codex-main
+Task: Make the `PERFORMANCE` balance chart horizontally scrollable for older history, keep the zero/start-balance line vertically centered, and ensure the line always stays inside the chart box.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This stayed inside the balance-chart rendering and CSS path.
+Next: If we tune the chart again later, the next useful step is deciding whether mouse-wheel vertical scrolling over the chart should also pan the horizontal viewport, not changing the centered-baseline math.
+Decisions: I wrapped the balance SVG in a dedicated horizontal viewport with hidden scrollbars, made the SVG width expand with history density instead of always squeezing into the box, and auto-scrolled that viewport to the newest data on mount/update. I also changed the vertical scaling from min/max fitting to symmetric scaling around the start-balance baseline, so the zero line stays in the vertical middle and the chart uses the max absolute deviation from baseline to guarantee the line stays inside the box without clipping.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 16:06 CDT] codex-main
+Task: Reapply the shared formulaic red/yellow/green gradients to `PERFORMANCE` `TRACKER STATS` so the account stats use sensible gradient references instead of mixed fixed or misleading colors.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`
+Status: Completed
+Blockers: None. This stayed inside the performance-page stat-row mapping.
+Next: If the tracker stats get another pass later, keep using the shared helpers from `uiFormat.ts` and tune the reference values per stat rather than adding one-off hardcoded colors.
+Decisions: I kept the existing balance-aware helpers and reapplied them more consistently across `TRACKER STATS`. Dollar deltas now use the bankroll-aware money gradient with the current balance/current exposure as the reference instead of total lifetime paid volume, which was making meaningful gains look too close to yellow. Ratio-style fields now use ratio gradients instead of money deltas: `WIN RATE` uses the cutoff gradient around 50%, `EXPOSURE` and `AVAILABLE CASH` use complementary ratio gradients, and `MAX DRAWDOWN` uses an inverted drawdown threshold gradient rather than pretending drawdown is a cash delta. I also made `START BALANCE` render as the neutral midpoint of the same color system instead of plain white.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 15:10 CDT] codex-main
+Task: Replace the raw config metadata subtitle with plain-English one-sentence descriptions for every config setting.
+Claims: `JOURNAL.md`, `dashboard-web/src/configFields.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This stayed inside the config field catalog and config-editor rendering path.
+Next: If config wording needs more refinement later, update the shared description catalog in `configFields.ts` so the visible subtitle text and hover labels stay aligned.
+Decisions: I added a shared `configFieldDescriptions` map that defines human-readable descriptions for the editable config keys, then changed the config editor to render that description directly as the subtitle line instead of the old internal schema dump (`KEY`, kind, source, etc.). The subtitle styling was also simplified so it behaves like wrapped descriptive copy rather than a token list.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 15:02 CDT] codex-main
+Task: Replace the raw config metadata subtitle line with real one-sentence descriptions for every config entry.
+Claims: `JOURNAL.md`, `dashboard-web/src/configFields.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This stayed inside the config field catalog and config-editor rendering path.
+Next: If we refine config copy later, keep the descriptions in the shared config field catalog so the visible subtitle text and hover help stay aligned.
+Decisions: I added a full `configFieldDescriptions` map in the config field catalog and switched the config editor to render that sentence directly as the subtitle line for each entry. The old raw metadata string (`KEY / kind / LIVE / source / hint`) is gone from the visible row body, so fields now read like actual settings instead of internal schema dumps. I also simplified the subtitle CSS so it behaves like normal wrapped descriptive text instead of a flex list of tokens.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 14:54 CDT] codex-main
+Task: Make the `BALANCE` graph fill more of its panel and show a scrub readout in the top-right with value and timestamp.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained chart/layout pass on the performance page.
+Next: If we tune the balance panel further later, the next step should be choosing whether the scrub readout should stay drag-only or also appear on simple hover, not changing the chart-height behavior again.
+Decisions: I changed the balance chart container to fill the panel body height instead of using the old capped SVG height, so the graph now uses the full box more cleanly. I also added a native scrub readout overlay in the chart’s top-right that appears while scrubbing and formats as `$X,XXX.XX at HH:MM:SS on MM/DD`, matching the user’s requested pattern without reintroducing the older text strip across the top of the panel.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 14:43 CDT] codex-main
+Task: Make clicking a table header auto-fit that table’s columns to the width of the containing box while keeping drag-resize behavior and hidden header scrollbars.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/trackerFeed.tsx`, `dashboard-web/src/signalsFeed.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. The shared resizable-column hook already existed, so this stayed contained to the web table layer.
+Next: If we refine column behavior again later, keep the fit action in the shared hook instead of re-adding table-specific autosize logic.
+Decisions: I added a `fitColumnsToViewport` action to the shared column-resize hook. Clicking any header cell now rescales all columns in that table so the table fits the box width exactly, whether that means growing or shrinking. I kept the drag handle as a separate control and stopped its click from bubbling so a drag or handle click does not also trigger the fit action. This was wired into the shared dashboard tables plus the tracker and signals feeds, so it applies across the list/table surfaces without bringing back visible horizontal scrollbars in the headers.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 14:34 CDT] codex-main
+Task: Re-layout the `PERFORMANCE` tracker stats box into explicit left/right columns and remove `OPEN POSITIONS`.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained stats-layout follow-up.
+Next: If we tune this panel again, the next useful step is deciding whether the header meta should mirror the new stat ordering instead of still mentioning open count and exposed dollars.
+Decisions: I split the stat grid into explicit left and right columns so the left side now anchors bankroll/risk quality stats (`START BALANCE`, `PROFIT FACTOR`, `EXPOSURE`, `EXPECTANCY`, `AVAILABLE CASH`) and the right side carries account-state/P&L outcomes (`CURRENT BALANCE`, `REALIZED P&L`, `OPEN P&L`, `NET P&L`, `WIN RATE`, plus the remaining outcome rows). I also removed `OPEN POSITIONS` from the box entirely.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> pending; `npm run build` in `dashboard-web` -> pending
+
+[2026-04-17 14:30 CDT] codex-main
+Task: Add native browser hover tooltips to labels on `PERFORMANCE`, `MODEL`, and `CONFIG` so metric and setting names explain themselves in-place.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. The shared field-list path already existed, so this stayed contained to label rendering and tooltip metadata.
+Next: If we expand the tooltip system later, keep it in the shared helper maps rather than sprinkling ad hoc `title` strings inline throughout the page markup.
+Decisions: I added shared tooltip dictionaries for performance stats, model labels, and config fields, then wired them into the actual label renderers instead of changing any visible UI styling. `TRACKER STATS` labels on page 3 now use `title` attributes with one-sentence explanations, all compact model field labels on page 4 now do the same through the shared `CompactFieldList` path, and config labels on page 6 now pull from a description field with a generic fallback for unmapped settings. This keeps the feature native and low-friction: hover a label, get a short browser tooltip, no custom popup component needed.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-17 14:15 CDT] codex-main
+Task: Tighten the `PERFORMANCE` tracker risk rows so `EXPOSURE` and `MAX DRAWDOWN` are shown on the same percentage scale.
+Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. This was a contained follow-up on the tracker-stats cleanup.
+Next: If we refine the box again later, the next meaningful step is deciding whether the panel meta should also switch from dollar exposure to percent exposure for consistency.
+Decisions: I renamed `MAX DD` to `MAX DRAWDOWN`, changed both `EXPOSURE` and drawdown to percentage values, and clarified the `RETURN %` tooltip so it matches the current net-P&L-based calculation. That keeps the risk rows on one scale instead of mixing dollars and percentages.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> pending; `npm run build` in `dashboard-web` -> pending
+
 [2026-04-17 14:08 CDT] codex-main
 Task: Rework the `PERFORMANCE` page `TRACKER STATS` box so it shows the small set of account and trading stats that actually matter for operating decisions.
 Claims: `JOURNAL.md`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
 Status: Completed
 Blockers: None. This was a contained performance-page stats pass.
 Next: If we refine `PERFORMANCE` further later, the next meaningful step is deciding whether `AVAILABLE CASH` and `CURRENT BALANCE` should come from a backend account-equity snapshot instead of mock-derived math, not adding more rows back.
-Decisions: I removed low-signal rows (`TRACKED VOLUME`, `AVG CONF`, `AVG TOTAL`) and clarified the P&L split. The box now emphasizes: `START BALANCE`, `CURRENT BALANCE`, `NET P&L`, `REALIZED P&L`, `OPEN P&L`, `RETURN %`, `EXPOSURE`, `AVAILABLE CASH`, `MAX DD`, `OPEN POSITIONS`, `RESOLVED`, `WIN RATE`, `PROFIT FACTOR`, and `EXPECTANCY`. I also changed `RETURN %` to use net P&L instead of realized-only P&L and changed the panel meta to `resolved / open / exposed`, which is more actionable than tracked volume.
+Decisions: I removed low-signal rows (`TRACKED VOLUME`, `AVG CONF`, `AVG TOTAL`) and clarified the P&L split. The box now emphasizes: `START BALANCE`, `CURRENT BALANCE`, `NET P&L`, `REALIZED P&L`, `OPEN P&L`, `RETURN %`, `EXPOSURE`, `AVAILABLE CASH`, `MAX DRAWDOWN`, `OPEN POSITIONS`, `RESOLVED`, `WIN RATE`, `PROFIT FACTOR`, and `EXPECTANCY`. I also changed `RETURN %` to use net P&L instead of realized-only P&L and changed the panel meta to `resolved / open / exposed`, which is more actionable than tracked volume.
 Notes for other agents: Keep this box focused on account state, realized/open split, risk, and trading quality. If you add another metric later, it should displace an existing one rather than turning the panel back into a dump of every available stat.
 Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> pending; `npm run build` in `dashboard-web` -> pending
 

@@ -120,6 +120,7 @@ button {
 
 .tracker-page,
 .signals-page,
+.wallet-page,
 .dashboard-page {
   display: grid;
   gap: 0.5rem;
@@ -133,6 +134,15 @@ button {
 .tracker-page,
 .signals-page {
   grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.wallet-page {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: stretch;
+}
+
+.wallet-page--with-status {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
 }
 
 .tracker-page__header,
@@ -205,6 +215,12 @@ button {
   display: grid;
   grid-template-columns: repeat(2, minmax(14rem, 1fr));
   gap: 0.25rem 1.5rem;
+}
+
+.metric-grid__column {
+  display: grid;
+  gap: 0.25rem;
+  align-content: start;
 }
 
 .metric-grid__row {
@@ -342,30 +358,53 @@ button {
 }
 
 .balance-chart {
-  display: grid;
-  gap: 0.5rem;
+  position: relative;
+  height: 100%;
+  min-height: 0;
 }
 
-.balance-chart__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem 1rem;
+.balance-chart__viewport {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.balance-chart__label {
+.balance-chart__viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.balance-chart__scrub {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.35rem;
+  z-index: 1;
+  padding-left: 0.4rem;
   color: var(--muted);
   font-size: 0.76rem;
   line-height: 1.2;
+  pointer-events: none;
+  background: var(--bg);
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .balance-chart__svg {
-  width: 100%;
-  height: 14rem;
+  width: auto;
+  height: 100%;
+  min-height: 0;
   display: block;
   border: 1px solid var(--border);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
   touch-action: none;
   cursor: ew-resize;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .balance-chart__baseline {
@@ -393,12 +432,6 @@ button {
   stroke: rgba(255, 255, 255, 0.18);
   stroke-width: 1;
   stroke-dasharray: 3 4;
-}
-
-.balance-chart__marker {
-  fill: var(--bg);
-  stroke: #ffffff;
-  stroke-width: 1.5;
 }
 
 .dashboard-panels--two {
@@ -429,6 +462,10 @@ button {
   display: block;
   min-height: 0;
   min-width: 0;
+}
+
+.model-column--span-2 {
+  grid-column: span 2;
 }
 
 .dashboard-panel--model .dashboard-panel__body {
@@ -474,6 +511,19 @@ button {
 
 .dashboard-panels--stack > .dashboard-panel--wallet-secondary {
   min-height: 0;
+}
+
+.wallet-panels--detail {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 0;
+  height: 100%;
+}
+
+.wallet-panels--detail > .dashboard-panel--wallet-primary,
+.wallet-panels--detail > .dashboard-panel--wallet-secondary {
+  min-height: 0;
+  height: 100%;
 }
 
 .dashboard-panels--config {
@@ -559,10 +609,8 @@ button {
 }
 
 .config-editor__submeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.5rem;
-  line-height: 1.28;
+  line-height: 1.35;
+  white-space: normal;
 }
 
 .config-editor__controls {
@@ -815,8 +863,9 @@ button {
   max-height: none;
 }
 
+.dashboard-panel__body > .balance-chart .balance-chart__viewport,
 .dashboard-panel__body > .balance-chart .balance-chart__svg {
-  height: min(26vh, 14rem);
+  height: 100%;
 }
 
 .dashboard-panel--wallet-summary .dashboard-table__viewport {
@@ -824,11 +873,13 @@ button {
 }
 
 .dashboard-panel--wallet-primary .dashboard-table__viewport {
-  max-height: min(34vh, 22rem);
+  height: 100%;
+  max-height: none;
 }
 
 .dashboard-panel--wallet-secondary .dashboard-table__viewport {
-  max-height: min(22vh, 12rem);
+  height: 100%;
+  max-height: none;
 }
 
 .dashboard-panel--performance-stats,
@@ -850,6 +901,11 @@ button {
 
 .dashboard-panel--performance-balance .dashboard-panel__body,
 .dashboard-panel--performance-positions .dashboard-panel__body {
+  height: 100%;
+  min-height: 0;
+}
+
+.dashboard-panel--performance-balance .dashboard-panel__body > .balance-chart {
   height: 100%;
   min-height: 0;
 }

@@ -131,7 +131,7 @@ function renderEmptyState(loading: boolean, error: string): string {
 
 export function TrackerFeed({mode, mockEvents, bankrollUsd}: TrackerFeedProps) {
   const {events, error, loading} = useEventFeed(mode, mockEvents)
-  const {widths, tableWidth, startResize} = useResizableColumns('tracker-feed', TRACKER_COLUMNS)
+  const {widths, tableWidth, startResize, fitColumnsToViewport} = useResizableColumns('tracker-feed', TRACKER_COLUMNS)
   const allIncoming = useMemo(
     () => events.filter((event) => event.type === 'incoming').reverse(),
     [events]
@@ -175,6 +175,7 @@ export function TrackerFeed({mode, mockEvents, bankrollUsd}: TrackerFeedProps) {
                   scope="col"
                   data-column-key={column.key}
                   className={joinClasses('tracker-head', column.cellClassName)}
+                  onClick={() => fitColumnsToViewport()}
                 >
                   <div className="resize-head">
                     <span className="resize-head__label">{column.label}</span>
@@ -184,6 +185,7 @@ export function TrackerFeed({mode, mockEvents, bankrollUsd}: TrackerFeedProps) {
                         className="resize-head__handle"
                         aria-label={`Resize ${column.label} column`}
                         onPointerDown={(event) => startResize(column, event)}
+                        onClick={(event) => event.stopPropagation()}
                       />
                     )}
                   </div>

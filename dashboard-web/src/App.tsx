@@ -3,7 +3,9 @@ import {
   fetchBotState,
   fetchConfigSnapshot,
   fetchDiscoveryCandidates,
-  fetchManagedWallets
+  fetchManagedWallets,
+  fetchPerformanceSnapshot,
+  type PerformanceSnapshot
 } from './api'
 import {ConfigPage, ModelPage, PerformancePage, WalletsPage} from './dashboardPages'
 import {dashboardDataMode, dashboardModel} from './mockDashboard'
@@ -42,6 +44,7 @@ export function App() {
   const [discoveryCandidates, setDiscoveryCandidates] = useState(
     mode === 'mock' ? dashboardModel.discoveryCandidates : {candidates: [], count: 0}
   )
+  const [performanceSnapshot, setPerformanceSnapshot] = useState<PerformanceSnapshot | null>(null)
   const {events: pageEvents, loading: pageEventsLoading, error: pageEventsError} = useEventFeed(
     mode,
     mockPageEvents
@@ -119,6 +122,17 @@ export function App() {
       } catch (error) {
         if (!cancelled) {
           console.warn('Failed to refresh dashboard snapshots', error)
+        }
+      }
+
+      try {
+        const nextPerformance = await fetchPerformanceSnapshot()
+        if (!cancelled && nextPerformance) {
+          setPerformanceSnapshot(nextPerformance)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Failed to refresh performance snapshot', error)
         }
       }
     }
@@ -216,6 +230,7 @@ export function App() {
             shadowSnapshotStatus={botState.shadow_snapshot_status}
             shadowSnapshotResolved={botState.shadow_snapshot_resolved}
             shadowSnapshotRoutedResolved={botState.shadow_snapshot_routed_resolved}
+            performanceSnapshot={performanceSnapshot}
           />
         ) : null}
         {activePage === 'models' ? (

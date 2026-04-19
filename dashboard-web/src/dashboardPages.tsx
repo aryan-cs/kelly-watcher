@@ -8,6 +8,8 @@ import type {
   ManagedWallet,
   ManagedWalletsResponse,
   ModelTrainingRun,
+  PerformancePosition,
+  PerformanceSnapshot,
   RestartShadowWalletMode
 } from './api'
 import {
@@ -359,7 +361,46 @@ interface PerformanceTradeRow {
   confidence: number | null
   pnl: number
   returnRatio: number | null
+  potentialProfit: number | null
   status: 'current' | 'past'
+}
+
+function finiteNumberOrNull(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function normalizePerformancePosition(
+  row: PerformancePosition,
+  fallbackStatus: 'current' | 'past'
+): PerformanceTradeRow {
+  return {
+    tradeId: String(row.trade_id || ''),
+    marketId: String(row.market_id || ''),
+    tokenId: String(row.token_id || ''),
+    traderAddress: String(row.trader_address || ''),
+    question: String(row.question || row.market_id || '').trim() || '-',
+    username: String(row.username || '-').trim() || '-',
+    side: String(row.side || '').trim().toUpperCase() || '-',
+    entryTs: Math.max(0, Number(row.entry_ts || 0)),
+    exitTs: Math.max(0, Number(row.exit_ts || 0)) || undefined,
+    price: finiteNumberOrNull(row.price) ?? 0,
+    total: finiteNumberOrNull(row.total) ?? 0,
+    confidence: finiteNumberOrNull(row.confidence),
+    pnl: finiteNumberOrNull(row.pnl) ?? 0,
+    returnRatio: finiteNumberOrNull(row.return_ratio),
+    potentialProfit: finiteNumberOrNull(row.potential_profit),
+    status: row.status === 'current' || row.status === 'past' ? row.status : fallbackStatus
+  }
+}
+
+function normalizeBalanceCurve(points: PerformanceSnapshot['balance_curve'] | undefined): BalancePoint[] {
+  return (points || [])
+    .map((point) => ({
+      ts: Math.max(0, Number(point?.ts || 0)),
+      balance: Number(point?.balance || 0)
+    }))
+    .filter((point) => point.ts > 0 && Number.isFinite(point.balance))
+    .sort((left, right) => left.ts - right.ts)
 }
 
 function buildBalanceCurve(signalEvents: LiveEvent[], startingBalance: number): BalancePoint[] {
@@ -411,6 +452,7 @@ function buildPerformanceTrades(signalEvents: LiveEvent[]): PerformanceTradeRow[
       confidence: event.confidence ?? null,
       pnl: realizedPnl,
       returnRatio: total > 0 ? realizedPnl / total : null,
+      potentialProfit: event.price > 0 ? Number(((total / event.price) - total).toFixed(2)) : null,
       status: isCurrent ? 'current' : 'past'
     }
   })
@@ -582,6 +624,7 @@ interface PerformancePageProps {
   mode: 'mock' | 'api'
   trackerEvents: LiveEvent[]
   signalEvents: LiveEvent[]
+  performanceSnapshot?: PerformanceSnapshot | null
   resolvedShadowTradeCount?: number
   bankrollUsd?: number
   confidenceCutoff?: number
@@ -597,22 +640,41 @@ export function PerformancePage(props: PerformancePageProps) {
   const [mockClosedTradeIds, setMockClosedTradeIds] = useState<Record<string, number>>({})
   const [pendingExitTradeId, setPendingExitTradeId] = useState('')
   const [exitStatusMessage, setExitStatusMessage] = useState('')
-  const startingBalance = props.bankrollUsd ?? 0
+  const useApiPerformance = props.mode === 'api' && Boolean(props.performanceSnapshot?.ok)
+  const startingBalance = useApiPerformance
+    ? finiteNumberOrNull(props.performanceSnapshot?.starting_balance_usd) ?? (props.bankrollUsd ?? 0)
+    : (props.bankrollUsd ?? 0)
   const paidVolume = useMemo(
     () => props.trackerEvents.reduce((total, event) => total + (event.amount_usd ?? 0), 0),
     [props.trackerEvents]
   )
+  const apiCurrentPositions = useMemo(
+    () => (props.performanceSnapshot?.current_positions || []).map((row) => normalizePerformancePosition(row, 'current')),
+    [props.performanceSnapshot]
+  )
+  const apiPastPositions = useMemo(
+    () => (props.performanceSnapshot?.past_positions || []).map((row) => normalizePerformancePosition(row, 'past')),
+    [props.performanceSnapshot]
+  )
   const balanceCurve = useMemo(
-    () => buildBalanceCurve(props.signalEvents, startingBalance),
-    [props.signalEvents, startingBalance]
+    () =>
+      useApiPerformance
+        ? normalizeBalanceCurve(props.performanceSnapshot?.balance_curve)
+        : buildBalanceCurve(props.signalEvents, startingBalance),
+    [props.performanceSnapshot, props.signalEvents, startingBalance, useApiPerformance]
   )
   const performanceTrades = useMemo(
-    () => buildPerformanceTrades(props.signalEvents),
-    [props.signalEvents]
+    () =>
+      useApiPerformance
+        ? [...apiCurrentPositions, ...apiPastPositions]
+        : buildPerformanceTrades(props.signalEvents),
+    [apiCurrentPositions, apiPastPositions, props.signalEvents, useApiPerformance]
   )
   const visiblePerformanceTrades = useMemo(
-    () =>
-      performanceTrades.map((trade) => {
+    () => (
+      useApiPerformance
+        ? performanceTrades
+        : performanceTrades.map((trade) => {
         const closedAt = mockClosedTradeIds[trade.tradeId]
         if (!closedAt || trade.status === 'past') return trade
         return {
@@ -621,8 +683,9 @@ export function PerformancePage(props: PerformancePageProps) {
           exitTs: closedAt,
           returnRatio: trade.total > 0 ? trade.pnl / trade.total : null
         }
-      }),
-    [mockClosedTradeIds, performanceTrades]
+      })
+    ),
+    [mockClosedTradeIds, performanceTrades, useApiPerformance]
   )
   const currentPositions = useMemo(
     () => visiblePerformanceTrades.filter((trade) => trade.status === 'current').slice(0, 8),
@@ -633,14 +696,20 @@ export function PerformancePage(props: PerformancePageProps) {
     [visiblePerformanceTrades]
   )
   const trackerPnl = useMemo(
-    () => pastPositions.reduce((total, trade) => total + trade.pnl, 0),
-    [pastPositions]
+    () =>
+      useApiPerformance
+        ? finiteNumberOrNull(props.performanceSnapshot?.realized_pnl_usd) ?? 0
+        : pastPositions.reduce((total, trade) => total + trade.pnl, 0),
+    [pastPositions, props.performanceSnapshot, useApiPerformance]
   )
   const winRate = useMemo(() => {
+    if (useApiPerformance) {
+      return finiteNumberOrNull(props.performanceSnapshot?.win_rate)
+    }
     if (!pastPositions.length) return null
     const wins = pastPositions.filter((trade) => trade.pnl > 0).length
     return wins / pastPositions.length
-  }, [pastPositions])
+  }, [pastPositions, props.performanceSnapshot, useApiPerformance])
   const grossProfit = useMemo(
     () => pastPositions.filter((trade) => trade.pnl > 0).reduce((total, trade) => total + trade.pnl, 0),
     [pastPositions]
@@ -649,32 +718,54 @@ export function PerformancePage(props: PerformancePageProps) {
     () => pastPositions.filter((trade) => trade.pnl < 0).reduce((total, trade) => total + Math.abs(trade.pnl), 0),
     [pastPositions]
   )
-  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : null
-  const expectancy = pastPositions.length ? trackerPnl / pastPositions.length : null
+  const profitFactor = useApiPerformance
+    ? finiteNumberOrNull(props.performanceSnapshot?.profit_factor)
+    : grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : null
+  const expectancy = useApiPerformance
+    ? finiteNumberOrNull(props.performanceSnapshot?.expectancy_usd)
+    : pastPositions.length ? trackerPnl / pastPositions.length : null
   const currentExposure = useMemo(
-    () => currentPositions.reduce((total, trade) => total + trade.total, 0),
-    [currentPositions]
+    () =>
+      useApiPerformance
+        ? finiteNumberOrNull(props.performanceSnapshot?.current_exposure_usd) ?? 0
+        : currentPositions.reduce((total, trade) => total + trade.total, 0),
+    [currentPositions, props.performanceSnapshot, useApiPerformance]
   )
   const currentMarkedPnl = useMemo(
-    () => currentPositions.reduce((total, trade) => total + trade.pnl, 0),
-    [currentPositions]
+    () =>
+      useApiPerformance
+        ? finiteNumberOrNull(props.performanceSnapshot?.open_pnl_usd) ?? 0
+        : currentPositions.reduce((total, trade) => total + trade.pnl, 0),
+    [currentPositions, props.performanceSnapshot, useApiPerformance]
   )
   const netPnl = useMemo(
-    () => Number((trackerPnl + currentMarkedPnl).toFixed(2)),
-    [trackerPnl, currentMarkedPnl]
+    () =>
+      useApiPerformance
+        ? Number((finiteNumberOrNull(props.performanceSnapshot?.net_pnl_usd) ?? 0).toFixed(2))
+        : Number((trackerPnl + currentMarkedPnl).toFixed(2)),
+    [currentMarkedPnl, props.performanceSnapshot, trackerPnl, useApiPerformance]
   )
   const currentBalance = useMemo(
-    () => Number((startingBalance + trackerPnl + currentMarkedPnl).toFixed(2)),
-    [startingBalance, trackerPnl, currentMarkedPnl]
+    () =>
+      useApiPerformance
+        ? Number((finiteNumberOrNull(props.performanceSnapshot?.current_balance_usd) ?? (startingBalance + trackerPnl + currentMarkedPnl)).toFixed(2))
+        : Number((startingBalance + trackerPnl + currentMarkedPnl).toFixed(2)),
+    [currentMarkedPnl, props.performanceSnapshot, startingBalance, trackerPnl, useApiPerformance]
   )
   const availableBalance = useMemo(
-    () => Number((currentBalance - currentExposure).toFixed(2)),
-    [currentBalance, currentExposure]
+    () =>
+      useApiPerformance
+        ? Number((finiteNumberOrNull(props.performanceSnapshot?.available_cash_usd) ?? (currentBalance - currentExposure)).toFixed(2))
+        : Number((currentBalance - currentExposure).toFixed(2)),
+    [currentBalance, currentExposure, props.performanceSnapshot, useApiPerformance]
   )
   const accountBankrollForGradient = currentBalance > 0 ? currentBalance : startingBalance
   const exposureRatio = currentBalance > 0 ? currentExposure / currentBalance : null
   const availableCashRatio = currentBalance > 0 ? availableBalance / currentBalance : null
   const maxDrawdownRatio = useMemo(() => {
+    if (useApiPerformance) {
+      return finiteNumberOrNull(props.performanceSnapshot?.max_drawdown_pct) ?? 0
+    }
     if (!balanceCurve.length) return 0
     let peak = balanceCurve[0]?.balance ?? startingBalance
     let maxDdRatio = 0
@@ -685,8 +776,10 @@ export function PerformancePage(props: PerformancePageProps) {
       }
     }
     return Number(maxDdRatio.toFixed(4))
-  }, [balanceCurve, startingBalance])
-  const returnRatio = startingBalance > 0 ? netPnl / startingBalance : null
+  }, [balanceCurve, props.performanceSnapshot, startingBalance, useApiPerformance])
+  const returnRatio = useApiPerformance
+    ? finiteNumberOrNull(props.performanceSnapshot?.return_pct)
+    : startingBalance > 0 ? netPnl / startingBalance : null
   const trackerStatsLeftRows = [
     {label: 'START BALANCE', value: formatMoney(startingBalance), tone: moneyMetricColor(0, accountBankrollForGradient), tooltip: performanceStatTooltip('START BALANCE')},
     {
@@ -757,7 +850,11 @@ export function PerformancePage(props: PerformancePageProps) {
       tone: centeredRatioGradient(maxDrawdownRatio, 0.05, 0.05, true),
       tooltip: performanceStatTooltip('MAX DRAWDOWN')
     },
-    {label: 'RESOLVED', value: formatInteger(pastPositions.length), tooltip: performanceStatTooltip('RESOLVED')}
+    {
+      label: 'RESOLVED',
+      value: formatInteger(useApiPerformance ? (props.performanceSnapshot?.resolved_count ?? pastPositions.length) : pastPositions.length),
+      tooltip: performanceStatTooltip('RESOLVED')
+    }
   ]
 
   async function handleExitNow(trade: PerformanceTradeRow): Promise<void> {
@@ -832,7 +929,11 @@ export function PerformancePage(props: PerformancePageProps) {
           {balanceCurve.length ? (
             <BalanceChart points={balanceCurve} baseline={startingBalance} />
           ) : (
-            <div className="dashboard-table__empty">NO ACCEPTED TRADES AVAILABLE FOR BALANCE GRAPH.</div>
+            <div className="dashboard-table__empty">
+              {useApiPerformance
+                ? 'NO RESOLVED TRADES AVAILABLE FOR BALANCE GRAPH.'
+                : 'NO ACCEPTED TRADES AVAILABLE FOR BALANCE GRAPH.'}
+            </div>
           )}
         </DashboardPanel>
       </div>
@@ -858,8 +959,8 @@ export function PerformancePage(props: PerformancePageProps) {
                 key: 'profit',
                 label: 'PROFIT',
                 className: 'dashboard-table__cell--numeric',
-                render: (row) => formatMoney(potentialProfitForPosition(row)),
-                color: (row) => moneyMetricColor(potentialProfitForPosition(row), startingBalance, row.total)
+                render: (row) => formatMoney(row.potentialProfit ?? potentialProfitForPosition(row)),
+                color: (row) => moneyMetricColor(row.potentialProfit ?? potentialProfitForPosition(row), startingBalance, row.total)
               },
               {
                 key: 'conf',

@@ -12,8 +12,10 @@ interface PersistedColumnWidths {
   widths: ColumnWidths
 }
 
+const COLUMN_WIDTHS_STORAGE_VERSION = 2
+
 function storageKeyForTable(tableId: string): string {
-  return `kelly-watcher:column-widths:${tableId}`
+  return `kelly-watcher:column-widths:v${COLUMN_WIDTHS_STORAGE_VERSION}:${tableId}`
 }
 
 function widthsMatchColumns(widths: ColumnWidths, columns: ResizableColumnSpec[]): boolean {

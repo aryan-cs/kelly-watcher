@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -39,6 +40,7 @@ from kelly_watcher.data.db import (
 from kelly_watcher.env_profile import ENV_ONLY_KEYS, LEGACY_ENV_PATH, active_env_path
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 from kelly_watcher.engine.wallet_trust import get_wallet_trust_state
+from kelly_watcher.runtime import performance_preview as performance_preview_runtime
 from kelly_watcher.runtime.wallet_discovery import (
     load_wallet_discovery_candidates,
     refresh_wallet_discovery_candidates,
@@ -430,6 +432,243 @@ def _recent_training_runs(limit: int = 12) -> list[dict[str, Any]]:
     finally:
         if conn is not None:
             conn.close()
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _trade_log_context_map(trade_log_ids: list[int]) -> dict[int, dict[str, Any]]:
+    ids = sorted({int(value) for value in trade_log_ids if int(value or 0) > 0})
+    if not ids:
+        return {}
+
+    conn = get_trade_log_read_conn()
+    try:
+        rows_by_id: dict[int, dict[str, Any]] = {}
+        for start in range(0, len(ids), 400):
+            chunk = ids[start : start + 400]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT
+                  id,
+                  trade_id,
+                  question,
+                  COALESCE(trader_name, '') AS trader_name,
+                  COALESCE(trader_address, '') AS trader_address
+                FROM trade_log
+                WHERE id IN ({placeholders})
+                """,
+                tuple(chunk),
+            ).fetchall()
+            rows_by_id.update(
+                {
+                    int(row["id"]): {
+                        "trade_id": str(row["trade_id"] or "").strip(),
+                        "question": str(row["question"] or "").strip(),
+                        "trader_name": str(row["trader_name"] or "").strip(),
+                        "trader_address": str(row["trader_address"] or "").strip(),
+                    }
+                    for row in rows
+                }
+            )
+        return rows_by_id
+    finally:
+        conn.close()
+
+
+def _performance_position_payload(
+    row: dict[str, Any],
+    context_map: dict[int, dict[str, Any]],
+    *,
+    status: str,
+) -> dict[str, Any]:
+    source_trade_log_id = int(row.get("source_trade_log_id") or 0)
+    context = context_map.get(source_trade_log_id, {})
+    entry_price = _finite_float_or_none(row.get("entry_price")) or 0.0
+    size_usd = _finite_float_or_none(row.get("size_usd")) or 0.0
+    shares = _finite_float_or_none(row.get("shares"))
+    confidence = _finite_float_or_none(row.get("confidence"))
+    pnl_usd = _finite_float_or_none(row.get("pnl_usd"))
+    side_raw = str(row.get("side") or "").strip()
+    normalized_side = side_raw.lower()
+    if normalized_side in {"yes", "up", "buy", "long"}:
+        display_side = "YES"
+    elif normalized_side in {"no", "down", "sell", "short"}:
+        display_side = "NO"
+    else:
+        display_side = side_raw.upper() if len(side_raw) <= 6 else side_raw
+    potential_profit = (shares - size_usd) if shares is not None else None
+    return_ratio = (pnl_usd / size_usd) if pnl_usd is not None and size_usd > 0 else None
+    return {
+        "trade_id": str(context.get("trade_id") or source_trade_log_id or "").strip(),
+        "market_id": str(row.get("market_id") or "").strip(),
+        "token_id": str(row.get("token_id") or "").strip(),
+        "trader_address": str(context.get("trader_address") or "").strip(),
+        "question": str(context.get("question") or row.get("market_id") or "").strip(),
+        "username": str(context.get("trader_name") or "-").strip() or "-",
+        "side": display_side,
+        "entry_ts": int(row.get("entered_at") or 0),
+        "exit_ts": int(row.get("resolution_ts") or row.get("market_close_ts") or 0),
+        "price": round(entry_price, 6),
+        "total": round(size_usd, 3),
+        "confidence": confidence,
+        "pnl": round(pnl_usd, 3) if pnl_usd is not None else 0.0,
+        "return_ratio": round(return_ratio, 6) if return_ratio is not None else None,
+        "potential_profit": round(float(potential_profit), 3) if potential_profit is not None else None,
+        "status": status,
+    }
+
+
+def _performance_snapshot() -> dict[str, Any]:
+    bot_state = _bot_state_snapshot()
+    now_ts = time.time()
+    requested_mode = str(bot_state.get("mode") or "").strip().lower() or "shadow"
+    preview = performance_preview_runtime.compute_tracker_preview_summary(
+        now_ts=now_ts,
+        mode=requested_mode,
+    )
+    active_real_money = 1 if preview.mode == "live" else 0
+
+    conn = get_trade_log_read_conn()
+    try:
+        shadow_open_positions = performance_preview_runtime._safe_fetch_dicts(
+            conn,
+            performance_preview_runtime._SHADOW_OPEN_POSITIONS_SQL,
+        )
+        live_positions = performance_preview_runtime._safe_fetch_dicts(
+            conn,
+            performance_preview_runtime._LIVE_POSITIONS_SQL,
+        )
+        resolved_positions = performance_preview_runtime._safe_fetch_dicts(
+            conn,
+            performance_preview_runtime._RESOLVED_POSITIONS_SQL,
+        )
+        trade_log_edits = {
+            int(row["trade_log_id"]): row
+            for row in performance_preview_runtime._safe_fetch_dicts(
+                conn,
+                performance_preview_runtime._TRADE_LOG_MANUAL_EDITS_SQL,
+            )
+            if row.get("trade_log_id") is not None
+        }
+        position_edits = {
+            performance_preview_runtime._position_edit_key(
+                row.get("market_id"),
+                row.get("token_id"),
+                row.get("side"),
+                row.get("real_money"),
+            ): row
+            for row in performance_preview_runtime._safe_fetch_dicts(
+                conn,
+                performance_preview_runtime._POSITION_MANUAL_EDITS_SQL,
+            )
+        }
+    finally:
+        conn.close()
+
+    active_open_positions = (
+        [row for row in live_positions if int(row.get("real_money") or 0) == active_real_money]
+        if preview.mode == "live"
+        else shadow_open_positions
+    )
+    active_resolved_positions = [
+        row for row in resolved_positions if int(row.get("real_money") or 0) == active_real_money
+    ]
+    effective_positions = [
+        performance_preview_runtime._normalize_effective_position(
+            row,
+            now_ts,
+            trade_log_edits,
+            position_edits,
+        )
+        for row in [*active_open_positions, *active_resolved_positions]
+    ]
+    current_rows = [row for row in effective_positions if row.get("status") in {"open", "waiting"}]
+    past_rows = [row for row in effective_positions if row.get("status") in {"win", "lose", "exit"}]
+    context_map = _trade_log_context_map(
+        [
+            int(row.get("source_trade_log_id") or 0)
+            for row in effective_positions
+            if int(row.get("source_trade_log_id") or 0) > 0
+        ]
+    )
+
+    current_positions = [
+        _performance_position_payload(row, context_map, status="current")
+        for row in sorted(
+            current_rows,
+            key=lambda item: (
+                int(item.get("entered_at") or 0),
+                str(item.get("market_id") or ""),
+            ),
+            reverse=True,
+        )
+    ]
+    past_positions = [
+        _performance_position_payload(row, context_map, status="past")
+        for row in sorted(
+            past_rows,
+            key=performance_preview_runtime._position_sort_key,
+            reverse=True,
+        )
+    ]
+
+    current_exposure_usd = round(sum(float(row.get("total") or 0.0) for row in current_positions), 3)
+    open_pnl_usd = round(sum(float(row.get("pnl") or 0.0) for row in current_positions), 3)
+    realized_pnl_usd = _finite_float_or_none(preview.total_pnl) or 0.0
+    current_balance_usd = _finite_float_or_none(preview.current_equity)
+    available_cash_usd = _finite_float_or_none(preview.current_balance)
+    if current_balance_usd is None and available_cash_usd is not None:
+        current_balance_usd = round(available_cash_usd + current_exposure_usd, 3)
+    if available_cash_usd is None and current_balance_usd is not None:
+        available_cash_usd = round(current_balance_usd - current_exposure_usd, 3)
+    starting_balance_usd = (
+        round(current_balance_usd - realized_pnl_usd - open_pnl_usd, 3)
+        if current_balance_usd is not None
+        else None
+    )
+
+    balance_curve: list[dict[str, Any]] = []
+    running_balance = starting_balance_usd
+    if running_balance is not None:
+        for row in sorted(past_rows, key=performance_preview_runtime._position_sort_key):
+            running_balance = round(running_balance + float(row.get("pnl_usd") or 0.0), 3)
+            balance_curve.append(
+                {
+                    "ts": int(row.get("resolution_ts") or row.get("market_close_ts") or row.get("entered_at") or 0),
+                    "balance": running_balance,
+                }
+            )
+
+    return {
+        "ok": True,
+        "mode": preview.mode,
+        "starting_balance_usd": starting_balance_usd,
+        "current_balance_usd": current_balance_usd,
+        "available_cash_usd": available_cash_usd,
+        "current_exposure_usd": current_exposure_usd,
+        "realized_pnl_usd": realized_pnl_usd,
+        "open_pnl_usd": open_pnl_usd,
+        "net_pnl_usd": round(realized_pnl_usd + open_pnl_usd, 3),
+        "return_pct": _finite_float_or_none(preview.return_pct),
+        "win_rate": _finite_float_or_none(preview.win_rate),
+        "profit_factor": _finite_float_or_none(preview.profit_factor),
+        "expectancy_usd": _finite_float_or_none(preview.expectancy_usd),
+        "max_drawdown_pct": _finite_float_or_none(preview.max_drawdown_pct),
+        "avg_confidence": _finite_float_or_none(preview.avg_confidence),
+        "resolved_count": int(preview.resolved or 0),
+        "current_position_count": len(current_positions),
+        "current_positions": current_positions,
+        "past_positions": past_positions,
+        "balance_curve": balance_curve,
+        "data_warning": str(preview.data_warning or "").strip(),
+    }
 
 
 def _managed_wallet_registry_snapshot() -> dict[str, Any]:
@@ -2988,6 +3227,10 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
 
         if path == "/api/bot-state":
             self._send_json(200, {"state": _bot_state_snapshot()})
+            return
+
+        if path == "/api/performance":
+            self._send_json(200, _performance_snapshot())
             return
 
         if path == "/api/identities":

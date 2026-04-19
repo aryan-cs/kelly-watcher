@@ -8,6 +8,24 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-19 17:37 CDT] codex-main
+Task: Fix the web `PERFORMANCE` page so API mode uses the backend’s real trade-log performance snapshot instead of deriving everything from the recent signal feed.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None in repo code. Operators still need the Windows backend checkout restarted on the updated code so `/api/performance` exists there.
+Next: If page `3` still looks empty after the backend restart, inspect the Windows backend version first; the frontend now expects `/api/performance` and will correctly show resolved/open history when that endpoint is present.
+Decisions: The existing performance page was building the balance graph, tracker stats, and current/past positions from `signalEvents.filter(decision === 'ACCEPT')`, which means API mode went blank whenever the recent feed had no accepted signals even though the backend DB contained hundreds of resolved trades. I added a backend `_performance_snapshot()` endpoint that exposes current positions, past positions, summary stats, and balance-curve history from the real trade log, then wired the frontend app shell to poll that snapshot and page `3` to use it in API mode. The synthetic signal-based path remains only as the mock/dev fallback.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed; `uv run python -m py_compile src/kelly_watcher/dashboard_api.py` -> passed; direct `_performance_snapshot()` smoke check -> `resolved_count 801`, `past_positions 801`, `balance_curve 801`
+
+[2026-04-19 17:11 CDT] codex-main
+Task: Fix broken default table widths by forcing the dashboard to ignore stale saved column layouts and fall back to measured content widths on load.
+Claims: `JOURNAL.md`, `dashboard-web/src/columnResize.ts`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: None. The issue was stale frontend persistence, not a new sizing algorithm bug.
+Next: If column sizing gets another pass later, keep the measured-on-load behavior as the default and version any future persistence changes so old layouts cannot corrupt the tables again.
+Decisions: The resize hook was already measuring widest visible header/body content correctly, but old `localStorage` widths were still winning on mount and reopening tables in bad states like the oversized `ID` column. I versioned the saved-width storage key so legacy layouts are ignored and the dashboard starts from fresh measured widths again, while still preserving persistence for new resize operations going forward.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 12 passed; `npm run build` in `dashboard-web` -> passed
+
 [2026-04-19 00:09 CDT] codex-main
 Task: Validate and launch the split dev workflow with the web frontend on the Mac and the backend on the Windows machine.
 Claims: `JOURNAL.md`

@@ -147,6 +147,54 @@ export interface ModelTrainingRun {
   note?: string
 }
 
+export interface PerformancePosition {
+  trade_id?: string
+  market_id?: string
+  token_id?: string
+  trader_address?: string
+  question?: string
+  username?: string
+  side?: string
+  entry_ts?: number
+  exit_ts?: number
+  price?: number
+  total?: number
+  confidence?: number | null
+  pnl?: number
+  return_ratio?: number | null
+  potential_profit?: number | null
+  status?: 'current' | 'past'
+}
+
+export interface PerformanceBalancePoint {
+  ts?: number
+  balance?: number
+}
+
+export interface PerformanceSnapshot {
+  ok?: boolean
+  mode?: 'shadow' | 'live' | string
+  starting_balance_usd?: number | null
+  current_balance_usd?: number | null
+  available_cash_usd?: number | null
+  current_exposure_usd?: number | null
+  realized_pnl_usd?: number | null
+  open_pnl_usd?: number | null
+  net_pnl_usd?: number | null
+  return_pct?: number | null
+  win_rate?: number | null
+  profit_factor?: number | null
+  expectancy_usd?: number | null
+  max_drawdown_pct?: number | null
+  avg_confidence?: number | null
+  resolved_count?: number
+  current_position_count?: number
+  current_positions?: PerformancePosition[]
+  past_positions?: PerformancePosition[]
+  balance_curve?: PerformanceBalancePoint[]
+  data_warning?: string
+}
+
 export interface BotStateResponse {
   state?: BotState
 }
@@ -463,6 +511,10 @@ export async function fetchManagedWallets(): Promise<ManagedWalletsResponse | nu
 
 export async function fetchDiscoveryCandidates(): Promise<DiscoveryCandidatesResponse | null> {
   return fetchApiJson<DiscoveryCandidatesResponse>('/api/discovery/candidates')
+}
+
+export async function fetchPerformanceSnapshot(): Promise<PerformanceSnapshot | null> {
+  return fetchApiJson<PerformanceSnapshot>('/api/performance')
 }
 
 export async function saveConfigValue(key: string, value: string): Promise<ConfigSnapshot | null> {

@@ -8,6 +8,15 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-19 00:09 CDT] codex-main
+Task: Validate and launch the split dev workflow with the web frontend on the Mac and the backend on the Windows machine.
+Claims: `JOURNAL.md`
+Status: Completed
+Blockers: None for this slice. This was runtime/operator setup only, not a repo code change.
+Next: Use the Mac Vite frontend against the Windows API while iterating on UI, and keep Windows serving only the backend/API unless we intentionally return to the bundled single-host deployment mode.
+Decisions: I confirmed the frontend already supports a remote backend via `VITE_DASHBOARD_DATA_MODE=api` and `VITE_KELLY_API_BASE_URL`, and the backend already exposes permissive API CORS headers. I then launched the Mac frontend against `http://100.91.53.63:8765` and verified Vite bound to `http://100.104.250.54:5173`.
+Tests: Frontend dev server started successfully on Mac Vite at `http://100.104.250.54:5173`
+
 [2026-04-17 22:24 CDT] codex-main
 Task: Stop Chrome crashes and tab churn in the web dashboard after the earlier tab-state change.
 Claims: `JOURNAL.md`, `dashboard-web/src/App.tsx`, `dashboard-web/src/feedUtils.ts`, `dashboard-web/src/styles.css`, `tests/test_dashboard_web_source.py`

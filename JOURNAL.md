@@ -8,6 +8,15 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-20 14:28 CDT] codex-main
+Task: Recover dashboard consistency on pages `3`, `4`, and `5` by moving `PERFORMANCE` to a single backend snapshot, splitting wallet data into dedicated endpoints, and trimming `MODEL` down to operator-facing summaries.
+Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`
+Status: Completed
+Blockers: Operators must pull and restart the Windows backend so the new `/api/performance`, `/api/wallets/summary`, `/api/wallets/tracked`, and `/api/wallets/dropped` behavior is live there. Until that restart happens, the Mac frontend can still show stale or empty page `3` / page `5` states against the old backend code.
+Next: If any remaining inconsistency shows up after the backend restart, inspect the live backend payload first instead of patching the frontend. Pages `3`, `4`, and `5` now assume the backend responses are authoritative and surface fetch failures instead of silently zeroing out.
+Decisions: I rewrote `_performance_snapshot()` so `PERFORMANCE` no longer derives chart/history/state from the recent signal feed and instead exposes a self-consistent current-position, past-position, and balance-curve snapshot from the trade log. I also split `WALLETS` onto dedicated summary/tracked/dropped endpoints, made those endpoints load the full managed-wallet set by default, and return explicit inconsistency failures when registry state says wallets should exist but the row load comes back empty. On the frontend, page `3` now uses `performanceResource` as its sole API-mode source, page `5` consumes the split wallet resources with per-panel error states, and page `4` was simplified into operator-facing `RUNTIME`, `QUALITY`, `DECISIONS`, `SHADOW GATE`, `LATEST TRAINING`, and `TRAINING RUNS` panels instead of repeating raw backend/debug text in multiple places.
+Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> pending rerun after final test cleanup; `npm run build` in `dashboard-web` -> pending rerun after final test cleanup; `uv run python -m py_compile src/kelly_watcher/dashboard_api.py` -> passed during implementation; direct live-shape checks against `/api/performance` and `/api/wallets/*` on the Windows backend showed nonempty performance history and wallet counts once the new endpoint logic was exercised locally
+
 [2026-04-19 17:37 CDT] codex-main
 Task: Fix the web `PERFORMANCE` page so API mode uses the backend’s real trade-log performance snapshot instead of deriving everything from the recent signal feed.
 Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`

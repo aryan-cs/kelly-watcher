@@ -529,6 +529,16 @@ export async function fetchBotState(): Promise<BotState | null> {
   return response.state || null
 }
 
+function requireOkPayload<T extends {ok?: boolean; message?: string}>(payload: T | null): T | null {
+  if (payload && payload.ok === false) {
+    throw new ApiError(
+      String(payload.message || 'Backend API reported a failed dashboard payload.').trim(),
+      200
+    )
+  }
+  return payload
+}
+
 export async function fetchConfigSnapshot(): Promise<ConfigSnapshot | null> {
   return fetchApiJson<ConfigSnapshot>('/api/config')
 }
@@ -538,15 +548,15 @@ export async function fetchManagedWallets(): Promise<ManagedWalletsResponse | nu
 }
 
 export async function fetchWalletSummary(): Promise<WalletSummaryResponse | null> {
-  return fetchApiJson<WalletSummaryResponse>('/api/wallets/summary')
+  return requireOkPayload(await fetchApiJson<WalletSummaryResponse>('/api/wallets/summary'))
 }
 
 export async function fetchTrackedWallets(): Promise<WalletRowsResponse | null> {
-  return fetchApiJson<WalletRowsResponse>('/api/wallets/tracked')
+  return requireOkPayload(await fetchApiJson<WalletRowsResponse>('/api/wallets/tracked'))
 }
 
 export async function fetchDroppedWallets(): Promise<WalletRowsResponse | null> {
-  return fetchApiJson<WalletRowsResponse>('/api/wallets/dropped')
+  return requireOkPayload(await fetchApiJson<WalletRowsResponse>('/api/wallets/dropped'))
 }
 
 export async function fetchDiscoveryCandidates(): Promise<DiscoveryCandidatesResponse | null> {
@@ -554,7 +564,7 @@ export async function fetchDiscoveryCandidates(): Promise<DiscoveryCandidatesRes
 }
 
 export async function fetchPerformanceSnapshot(): Promise<PerformanceSnapshot | null> {
-  return fetchApiJson<PerformanceSnapshot>('/api/performance')
+  return requireOkPayload(await fetchApiJson<PerformanceSnapshot>('/api/performance'))
 }
 
 export async function saveConfigValue(key: string, value: string): Promise<ConfigSnapshot | null> {

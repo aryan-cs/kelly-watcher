@@ -712,7 +712,7 @@ export function PerformancePage(props: PerformancePageProps) {
   const trackerPnl = useMemo(
     () =>
       useApiPerformance
-        ? finiteNumberOrNull(props.performanceSnapshot?.realized_pnl_usd) ?? 0
+        ? finiteNumberOrNull(snapshot?.realized_pnl_usd) ?? 0
         : pastPositions.reduce((total, trade) => total + trade.pnl, 0),
     [pastPositions, snapshot, useApiPerformance]
   )
@@ -1112,14 +1112,96 @@ export function ModelPage(props: ModelPageProps) {
     () => [...(props.trainingRuns || [])].sort((left, right) => Number(right.started_at || 0) - Number(left.started_at || 0)),
     [props.trainingRuns]
   )
+  const scoredSignals = props.signalEvents || []
+  const scoredCount = scoredSignals.length
+  const decisionCounts = useMemo(() => {
+    const counts = {
+      ACCEPT: 0,
+      REJECT: 0,
+      PAUSE: 0,
+      SKIP: 0,
+      IGNORE: 0,
+    }
+    for (const event of scoredSignals) {
+      const decision = String(event.decision || '').trim().toUpperCase()
+      if (decision in counts) {
+        counts[decision as keyof typeof counts] += 1
+      }
+    }
+    return counts
+  }, [scoredSignals])
+  const confidenceStats = useMemo(() => {
+    const clipped = scoredSignals
+      .map((event) => finiteNumberOrNull(event.confidence))
+      .filter((value): value is number => value !== null)
+      .map((value) => Math.min(0.999, Math.max(0.001, value)))
+    if (!clipped.length) {
+      return {
+        average: null,
+        acceptRate: null,
+        gap: null,
+        brier: null,
+        logLoss: null,
+        bandText: 'NO SCORED SIGNALS YET.'
+      }
+    }
+    let brierTotal = 0
+    let logLossTotal = 0
+    let bandLow = 0
+    let bandMid = 0
+    let bandHigh = 0
+    let accepted = 0
+    scoredSignals.forEach((event) => {
+      const confidence = finiteNumberOrNull(event.confidence)
+      if (confidence === null) return
+      const clippedConfidence = Math.min(0.999, Math.max(0.001, confidence))
+      const outcome = String(event.decision || '').trim().toUpperCase() === 'ACCEPT' ? 1 : 0
+      accepted += outcome
+      brierTotal += (clippedConfidence - outcome) ** 2
+      logLossTotal += -(outcome * Math.log(clippedConfidence) + (1 - outcome) * Math.log(1 - clippedConfidence))
+      if (clippedConfidence < 0.55) {
+        bandLow += 1
+      } else if (clippedConfidence < 0.7) {
+        bandMid += 1
+      } else {
+        bandHigh += 1
+      }
+    })
+    const average = clipped.reduce((total, value) => total + value, 0) / clipped.length
+    const acceptRate = accepted / clipped.length
+    return {
+      average: Number(average.toFixed(3)),
+      acceptRate: Number(acceptRate.toFixed(3)),
+      gap: Number((average - acceptRate).toFixed(3)),
+      brier: Number((brierTotal / clipped.length).toFixed(3)),
+      logLoss: Number((logLossTotal / clipped.length).toFixed(3)),
+      bandText: `40-55% ${bandLow} • 55-70% ${bandMid} • 70%+ ${bandHigh}`
+    }
+  }, [scoredSignals])
   const latestTrainingRun = trainingRunRows[0]
   const retrainStatus = props.retrainInProgress ? 'RUNNING' : String(props.lastRetrainStatus || latestTrainingRun?.status || '-').toUpperCase()
   const replayStatus = String(props.lastReplaySearchStatus || '-').toUpperCase()
   const startupStatus = props.startupFailed ? 'FAILED' : props.startupValidationFailed ? 'VALIDATION' : 'READY'
+  const latestTrainingReason = summarizeModelMessage(
+    props.lastRetrainMessage || latestTrainingRun?.note || props.lastReplaySearchMessage,
+    'NO EXTRA TRAINING NOTE.'
+  )
+  const latestRunStatus = String(latestTrainingRun?.status || retrainStatus || '-').toUpperCase()
+  const latestRunDeployed = Boolean(latestTrainingRun?.deployed)
+  const latestRunStatusTone =
+    latestRunDeployed
+      ? feedTheme.green
+      : /REJECT|FAIL|ERROR/.test(latestRunStatus)
+        ? feedTheme.red
+        : /RUNNING|PENDING/.test(latestRunStatus)
+          ? feedTheme.yellow
+          : latestRunStatus.includes('DEPLOY')
+            ? feedTheme.yellow
+            : undefined
   const runtimeRows: CompactFieldRow[] = [
     {label: 'SCORER', value: String(props.loadedScorer || '-'), tone: feedTheme.yellow, tooltip: modelLabelTooltip('LOADED SCORER')},
     {label: 'BACKEND', value: String(props.modelBackend || '-'), tooltip: modelLabelTooltip('BACKEND')},
-    {label: 'PREDICTION PATH', value: String(props.modelPredictionMode || '-'), tooltip: modelLabelTooltip('PRIMARY PATH')},
+    {label: 'MODE', value: String(props.modelPredictionMode || '-'), tooltip: modelLabelTooltip('MODE')},
     {
       label: 'STARTUP',
       value: startupStatus,
@@ -1130,41 +1212,53 @@ export function ModelPage(props: ModelPageProps) {
     {label: 'LOADED', value: formatRelativeAge(props.modelLoadedAt), note: formatTimestamp(props.modelLoadedAt), tooltip: modelLabelTooltip('LOADED')}
   ]
   const qualityRows: CompactFieldRow[] = [
-    {label: 'LATEST STATUS', value: String(latestTrainingRun?.status || retrainStatus || '-').toUpperCase(), tooltip: modelLabelTooltip('STATUS')},
     {
-      label: 'DEPLOYED',
-      value: latestTrainingRun?.deployed ? 'YES' : 'NO',
-      tone: latestTrainingRun?.deployed ? feedTheme.green : feedTheme.red,
-      tooltip: modelLabelTooltip('DEPLOYED')
+      label: 'SCORED TRADES',
+      value: formatInteger(scoredCount),
+      note: confidenceStats.bandText,
+      tooltip: modelLabelTooltip('SCORED TRADES')
     },
-    {label: 'LOG LOSS', value: formatDecimal(latestTrainingRun?.log_loss, 3), tooltip: modelLabelTooltip('LOG LOSS')},
-    {label: 'BRIER', value: formatDecimal(latestTrainingRun?.brier, 3), tooltip: modelLabelTooltip('BRIER SCORE')},
-    {label: 'LATEST RUN', value: formatRelativeAge(latestTrainingRun?.started_at), note: formatTimestamp(latestTrainingRun?.started_at), tooltip: modelLabelTooltip('STARTED')}
+    {label: 'AVG CONFIDENCE', value: formatPercentFromRatio(confidenceStats.average), tone: cutoffRatioGradient(confidenceStats.average, 0.5), tooltip: modelLabelTooltip('AVG CONFIDENCE')},
+    {label: 'ACCEPT RATE', value: formatPercentFromRatio(confidenceStats.acceptRate), tone: centeredRatioGradient(confidenceStats.acceptRate, 0.5, 0.25), tooltip: modelLabelTooltip('ACTUAL WIN RATE')},
+    {label: 'CONFIDENCE GAP', value: formatPercentFromRatio(confidenceStats.gap), tone: centeredRatioGradient(confidenceStats.gap, 0, 0.15), tooltip: modelLabelTooltip('CONFIDENCE GAP')},
+    {label: 'BRIER SCORE', value: formatDecimal(confidenceStats.brier, 3), tooltip: modelLabelTooltip('BRIER SCORE')},
+    {label: 'LOG LOSS', value: formatDecimal(confidenceStats.logLoss, 3), tooltip: modelLabelTooltip('LOG LOSS')}
   ]
   const decisionRows: CompactFieldRow[] = [
     {
-      label: 'RUNTIME',
-      value: props.modelRuntimeCompatible ? 'COMPATIBLE' : 'FALLBACK',
-      tone: props.modelRuntimeCompatible ? feedTheme.green : feedTheme.yellow,
-      note: summarizeModelMessage(props.modelFallbackReason, 'runtime is compatible'),
-      tooltip: modelLabelTooltip('RUNTIME COMPATIBLE')
+      label: 'ACCEPT',
+      value: formatInteger(decisionCounts.ACCEPT),
+      note: `${formatPercentFromRatio(scoredCount ? decisionCounts.ACCEPT / scoredCount : null)} OF SCORED SIGNALS`,
+      tone: feedTheme.green,
+      tooltip: modelLabelTooltip('ACCEPT')
     },
     {
-      label: 'RETRAIN',
-      value: retrainStatus,
-      tone: retrainStatus === 'SUCCESS' || retrainStatus === 'COMPLETED' ? feedTheme.green : retrainStatus === 'RUNNING' ? feedTheme.yellow : undefined,
-      note: summarizeModelMessage(props.lastRetrainMessage),
-      tooltip: modelLabelTooltip('RETRAIN')
+      label: 'REJECT',
+      value: formatInteger(decisionCounts.REJECT),
+      note: `${formatPercentFromRatio(scoredCount ? decisionCounts.REJECT / scoredCount : null)} BLOCKED BY DECISION FLOW`,
+      tone: feedTheme.red,
+      tooltip: modelLabelTooltip('REJECT')
     },
     {
-      label: 'SEARCH',
-      value: replayStatus,
-      tone: replayStatus === 'SUCCESS' || replayStatus === 'COMPLETED' ? feedTheme.green : replayStatus === 'RUNNING' ? feedTheme.yellow : undefined,
-      note: summarizeModelMessage(props.lastReplaySearchMessage),
-      tooltip: modelLabelTooltip('SEARCH STATUS')
+      label: 'PAUSE',
+      value: formatInteger(decisionCounts.PAUSE),
+      note: `${formatPercentFromRatio(scoredCount ? decisionCounts.PAUSE / scoredCount : null)} DELAYED FOR LATER REVIEW`,
+      tone: feedTheme.yellow,
+      tooltip: modelLabelTooltip('PAUSE')
     },
-    {label: 'MANUAL RETRAIN', value: props.manualRetrainPending ? 'PENDING' : 'IDLE', tooltip: modelLabelTooltip('MANUAL RETRAIN')},
-    {label: 'MANUAL TRADE', value: props.manualTradePending ? 'PENDING' : 'IDLE', tooltip: modelLabelTooltip('MANUAL TRADE')}
+    {
+      label: 'SKIP',
+      value: formatInteger(decisionCounts.SKIP),
+      note: `${formatPercentFromRatio(scoredCount ? decisionCounts.SKIP / scoredCount : null)} IGNORED AFTER SCORING`,
+      tone: feedTheme.yellow,
+      tooltip: modelLabelTooltip('SKIP')
+    },
+    {
+      label: 'IGNORE',
+      value: formatInteger(decisionCounts.IGNORE),
+      note: `${formatPercentFromRatio(scoredCount ? decisionCounts.IGNORE / scoredCount : null)} LEFT UNCHANGED`,
+      tooltip: modelLabelTooltip('IGNORE')
+    }
   ]
   const shadowRows: CompactFieldRow[] = [
     {
@@ -1191,20 +1285,46 @@ export function ModelPage(props: ModelPageProps) {
       note: `${formatInteger(props.shadowSnapshotRoutedResolved)} ROUTED / ${formatInteger(props.shadowSnapshotResolved)} RESOLVED`,
       tooltip: modelLabelTooltip('SNAPSHOT')
     },
-    {label: 'SCOPE', value: String(props.shadowSnapshotScope || '-').toUpperCase(), tooltip: modelLabelTooltip('SCOPE')},
     {
       label: 'NEXT BLOCKER',
       value: props.shadowSnapshotReady ? 'CLEAR' : summarizeModelMessage(props.shadowSnapshotBlockReason),
       tone: props.shadowSnapshotReady ? feedTheme.green : feedTheme.yellow,
+      note: String(props.shadowSnapshotScope || '').trim()
+        ? `SCOPE ${String(props.shadowSnapshotScope || '-').toUpperCase()}`
+        : undefined,
       tooltip: modelLabelTooltip('NEXT BLOCKER')
     }
   ]
   const latestTrainingRows: CompactFieldRow[] = [
-    {label: 'LAST START', value: formatTimestamp(props.lastRetrainStartedAt), note: formatRelativeAge(props.lastRetrainStartedAt), tooltip: modelLabelTooltip('LAST START')},
-    {label: 'LAST FINISH', value: formatTimestamp(props.lastRetrainFinishedAt), note: formatRelativeAge(props.lastRetrainFinishedAt), tooltip: modelLabelTooltip('LAST FINISH')},
-    {label: 'SEARCH START', value: formatTimestamp(props.lastReplaySearchStartedAt), note: formatRelativeAge(props.lastReplaySearchStartedAt), tooltip: modelLabelTooltip('SEARCH START')},
-    {label: 'SEARCH FINISH', value: formatTimestamp(props.lastReplaySearchFinishedAt), note: formatRelativeAge(props.lastReplaySearchFinishedAt), tooltip: modelLabelTooltip('SEARCH FINISH')},
-    {label: 'LATEST NOTE', value: summarizeModelMessage(props.lastRetrainMessage || props.lastReplaySearchMessage), tooltip: modelLabelTooltip('LATEST STATUS')}
+    {
+      label: 'LATEST RUN',
+      value: formatTimestamp(latestTrainingRun?.started_at || props.lastRetrainStartedAt),
+      note: formatRelativeAge(latestTrainingRun?.started_at || props.lastRetrainStartedAt),
+      tooltip: modelLabelTooltip('STARTED')
+    },
+    {label: 'RETRAIN', value: latestRunStatus, tone: latestRunStatusTone, tooltip: modelLabelTooltip('RETRAIN')},
+    {
+      label: 'DEPLOYED',
+      value: latestRunDeployed ? 'YES' : 'NO',
+      tone: latestRunDeployed ? feedTheme.green : feedTheme.red,
+      tooltip: modelLabelTooltip('DEPLOYED')
+    },
+    {
+      label: 'SEARCH',
+      value: replayStatus,
+      tone: replayStatus === 'SUCCESS' || replayStatus === 'COMPLETED' ? feedTheme.green : replayStatus === 'RUNNING' ? feedTheme.yellow : undefined,
+      note: summarizeModelMessage(props.lastReplaySearchMessage),
+      tooltip: modelLabelTooltip('SEARCH STATUS')
+    },
+    {
+      label: 'WHY',
+      value: latestTrainingReason,
+      note:
+        props.manualRetrainPending || props.manualTradePending
+          ? `MANUAL RETRAIN ${props.manualRetrainPending ? 'PENDING' : 'IDLE'} • MANUAL TRADE ${props.manualTradePending ? 'PENDING' : 'IDLE'}`
+          : undefined,
+      tooltip: modelLabelTooltip('DETAIL')
+    }
   ]
   const modelStatusMessage =
     props.botStateStatus === 'loading'
@@ -1316,31 +1436,6 @@ export function ModelPage(props: ModelPageProps) {
           </DashboardPanel>
         </section>
 
-        <section className="dashboard-column model-column">
-          <DashboardPanel className="dashboard-panel--model" title="MODEL OVERVIEW">
-            <CompactFieldList
-              rows={[
-                {
-                  label: 'SCORER',
-                  value: String(props.loadedScorer || '-'),
-                  tone: feedTheme.yellow,
-                  tooltip: modelLabelTooltip('SCORER')
-                },
-                {
-                  label: 'MODE',
-                  value: String(props.modelPredictionMode || '-'),
-                  tooltip: modelLabelTooltip('MODE')
-                },
-                {
-                  label: 'BACKEND',
-                  value: String(props.modelBackend || '-'),
-                  tooltip: modelLabelTooltip('BACKEND')
-                }
-              ]}
-              columns={1}
-            />
-          </DashboardPanel>
-        </section>
       </div>
     </DashboardPageFrame>
   )
@@ -1357,8 +1452,9 @@ interface WalletsPageProps {
 }
 
 function walletTone(wallet: ManagedWallet): string | undefined {
-  if (wallet.status === 'active') return feedTheme.green
-  if (wallet.status === 'disabled') return feedTheme.red
+  const status = String(wallet.status || '').trim().toLowerCase()
+  if (status === 'active') return feedTheme.green
+  if (status === 'disabled' || status === 'dropped') return feedTheme.red
   return undefined
 }
 
@@ -1569,7 +1665,7 @@ export function WalletsPage({
                 className: 'dashboard-table__cell--wide',
                 render: (row) => row.username || row.wallet_address || '-',
                 title: (row) => row.wallet_address,
-                color: (row) => (row.status === 'disabled' ? feedTheme.red : undefined)
+                color: (row) => (walletTone(row) === feedTheme.red ? feedTheme.red : undefined)
               },
               {
                 key: 'copywr',
@@ -1614,7 +1710,7 @@ export function WalletsPage({
                 className: 'dashboard-table__cell--wide',
                 render: (row) => row.username || row.wallet_address || '-',
                 title: (row) => row.wallet_address,
-                color: (row) => (row.status === 'disabled' ? feedTheme.red : undefined)
+                color: (row) => (walletTone(row) === feedTheme.red ? feedTheme.red : undefined)
               },
               {
                 key: 'copywr',

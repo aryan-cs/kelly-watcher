@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from kelly_watcher.config import (
+    shadow_bankroll_usd,
     trade_log_archive_batch_rows,
     trade_log_archive_enabled,
     trade_log_archive_min_age_days,
@@ -621,17 +622,27 @@ def _performance_snapshot() -> dict[str, Any]:
 
     current_exposure_usd = round(sum(float(row.get("total") or 0.0) for row in current_positions), 3)
     open_pnl_usd = round(sum(float(row.get("pnl") or 0.0) for row in current_positions), 3)
-    realized_pnl_usd = _finite_float_or_none(preview.total_pnl) or 0.0
-    current_balance_usd = _finite_float_or_none(preview.current_equity)
-    available_cash_usd = _finite_float_or_none(preview.current_balance)
-    if current_balance_usd is None and available_cash_usd is not None:
-        current_balance_usd = round(available_cash_usd + current_exposure_usd, 3)
-    if available_cash_usd is None and current_balance_usd is not None:
-        available_cash_usd = round(current_balance_usd - current_exposure_usd, 3)
-    starting_balance_usd = (
-        round(current_balance_usd - realized_pnl_usd - open_pnl_usd, 3)
-        if current_balance_usd is not None
+    realized_pnl_usd = round(sum(float(row.get("pnl") or 0.0) for row in past_positions), 3)
+    preview_equity = _finite_float_or_none(preview.current_equity)
+    preview_cash = _finite_float_or_none(preview.current_balance)
+    if preview_equity is not None:
+        starting_balance_usd = round(preview_equity - realized_pnl_usd, 3)
+    elif preview_cash is not None:
+        starting_balance_usd = round(preview_cash + current_exposure_usd - realized_pnl_usd, 3)
+    elif preview.mode == "shadow":
+        starting_balance_usd = round(shadow_bankroll_usd(), 3)
+    else:
+        starting_balance_usd = None
+
+    current_balance_usd = (
+        round(starting_balance_usd + realized_pnl_usd + open_pnl_usd, 3)
+        if starting_balance_usd is not None
         else None
+    )
+    available_cash_usd = (
+        round(current_balance_usd - current_exposure_usd, 3)
+        if current_balance_usd is not None
+        else preview_cash
     )
 
     balance_curve: list[dict[str, Any]] = []
@@ -646,6 +657,29 @@ def _performance_snapshot() -> dict[str, Any]:
                 }
             )
 
+    derived_summary = performance_preview_runtime._slice_summary(
+        past_rows,
+        starting_bankroll=starting_balance_usd,
+    )
+    avg_confidence = None
+    confidence_values = [
+        float(row.get("confidence"))
+        for row in effective_positions
+        if row.get("confidence") is not None
+    ]
+    if confidence_values:
+        avg_confidence = round(sum(confidence_values) / len(confidence_values), 3)
+
+    return_pct = (
+        round((realized_pnl_usd + open_pnl_usd) / starting_balance_usd, 4)
+        if starting_balance_usd is not None and starting_balance_usd > 0
+        else None
+    )
+    max_drawdown_pct = performance_preview_runtime._compute_max_drawdown_pct(
+        starting_balance_usd,
+        past_rows,
+    )
+
     return {
         "ok": True,
         "mode": preview.mode,
@@ -656,13 +690,13 @@ def _performance_snapshot() -> dict[str, Any]:
         "realized_pnl_usd": realized_pnl_usd,
         "open_pnl_usd": open_pnl_usd,
         "net_pnl_usd": round(realized_pnl_usd + open_pnl_usd, 3),
-        "return_pct": _finite_float_or_none(preview.return_pct),
-        "win_rate": _finite_float_or_none(preview.win_rate),
-        "profit_factor": _finite_float_or_none(preview.profit_factor),
-        "expectancy_usd": _finite_float_or_none(preview.expectancy_usd),
-        "max_drawdown_pct": _finite_float_or_none(preview.max_drawdown_pct),
-        "avg_confidence": _finite_float_or_none(preview.avg_confidence),
-        "resolved_count": int(preview.resolved or 0),
+        "return_pct": return_pct,
+        "win_rate": _finite_float_or_none(derived_summary.get("win_rate")),
+        "profit_factor": _finite_float_or_none(derived_summary.get("profit_factor")),
+        "expectancy_usd": _finite_float_or_none(derived_summary.get("expectancy_usd")),
+        "max_drawdown_pct": _finite_float_or_none(max_drawdown_pct),
+        "avg_confidence": _finite_float_or_none(avg_confidence),
+        "resolved_count": len(past_positions),
         "current_position_count": len(current_positions),
         "current_positions": current_positions,
         "past_positions": past_positions,
@@ -995,9 +1029,12 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
                 + "\nFROM managed_wallets\n"
                 + "ORDER BY COALESCE(tracking_enabled, 0) DESC, "
                 + "COALESCE(updated_at, added_at, 0) DESC, wallet_address ASC\n"
-                + "LIMIT ?"
             )
-            rows = conn.execute(query, (max(int(limit or 250), 1),)).fetchall()
+            params: tuple[Any, ...] = ()
+            if limit is not None:
+                query += "LIMIT ?"
+                params = (max(int(limit), 1),)
+            rows = conn.execute(query, params).fetchall()
             registry_source = "managed_wallets"
         else:
             return []
@@ -1207,6 +1244,7 @@ def _wallet_page_unavailable_payload(
     registry_state: dict[str, Any],
     *,
     category: str | None = None,
+    message: str | None = None,
 ) -> dict[str, Any]:
     source = _wallet_registry_source_from_state(registry_state)
     payload = {
@@ -1218,7 +1256,8 @@ def _wallet_page_unavailable_payload(
         "managed_wallet_count": int(registry_state.get("managed_wallet_count") or 0),
         "managed_wallet_total_count": int(registry_state.get("managed_wallet_total_count") or 0),
         "managed_wallet_registry_updated_at": int(registry_state.get("managed_wallet_registry_updated_at") or 0),
-        "message": (
+        "message": message
+        or (
             "Managed wallet data is unavailable because the canonical managed_wallets table is missing or unreadable. "
             "Recover or reset the DB before trusting wallet inventory."
         ),
@@ -1228,18 +1267,52 @@ def _wallet_page_unavailable_payload(
     return payload
 
 
+def _wallet_status_is_dropped(status: Any) -> bool:
+    normalized = str(status or "").strip().lower()
+    return normalized in {"disabled", "dropped"}
+
+
+def _wallet_row_consistency_message(
+    registry_state: dict[str, Any],
+    wallets: list[dict[str, Any]],
+    *,
+    limit: int | None,
+) -> str:
+    registry_total = int(registry_state.get("managed_wallet_total_count") or 0)
+    if registry_total <= 0:
+        return ""
+    if not wallets:
+        return (
+            "Managed wallet registry reports tracked wallets, but no wallet rows could be loaded from the canonical "
+            "managed_wallets table. Treat wallet inventory as unavailable until the DB is recovered."
+        )
+    if limit is None and len(wallets) < registry_total:
+        return (
+            "Managed wallet registry count does not match the rows loaded from the canonical managed_wallets table. "
+            "Treat wallet inventory as unavailable until the DB is recovered."
+        )
+    return ""
+
+
 def _wallet_page_rows_response(category: str, limit: int | None = None) -> dict[str, Any]:
     registry_state = _managed_wallet_registry_snapshot()
     source = _wallet_registry_source_from_state(registry_state)
     if source != "managed_wallets":
         return _wallet_page_unavailable_payload(registry_state, category=category)
 
-    wallets = _managed_wallet_panel_rows(limit=max(int(limit or 1000), 1))
+    wallets = _managed_wallet_rows(limit)
+    consistency_message = _wallet_row_consistency_message(registry_state, wallets, limit=limit)
+    if consistency_message:
+        return _wallet_page_unavailable_payload(
+            registry_state,
+            category=category,
+            message=consistency_message,
+        )
     if category == "tracked":
         filtered = [
             row
             for row in wallets
-            if str(row.get("status") or "").strip().lower() != "disabled"
+            if not _wallet_status_is_dropped(row.get("status"))
         ]
         filtered.sort(
             key=lambda row: (
@@ -1253,7 +1326,7 @@ def _wallet_page_rows_response(category: str, limit: int | None = None) -> dict[
         filtered = [
             row
             for row in wallets
-            if str(row.get("status") or "").strip().lower() == "disabled"
+            if _wallet_status_is_dropped(row.get("status"))
         ]
         filtered.sort(
             key=lambda row: (
@@ -1293,16 +1366,27 @@ def _wallet_summary_response(limit: int | None = None) -> dict[str, Any]:
         )
         return payload
 
-    wallets = _managed_wallet_panel_rows(limit=max(int(limit or 1000), 1))
+    wallets = _managed_wallet_rows(limit)
+    consistency_message = _wallet_row_consistency_message(registry_state, wallets, limit=limit)
+    if consistency_message:
+        payload = _wallet_page_unavailable_payload(registry_state, message=consistency_message)
+        payload.update(
+            tracked_count=0,
+            dropped_count=0,
+            discovery_candidate_count=int(_bot_state_snapshot().get("wallet_discovery_candidate_count") or 0),
+            best_wallets=[],
+            worst_wallets=[],
+        )
+        return payload
     tracked_count = sum(
         1
         for row in wallets
-        if str(row.get("status") or "").strip().lower() != "disabled"
+        if not _wallet_status_is_dropped(row.get("status"))
     )
     dropped_count = sum(
         1
         for row in wallets
-        if str(row.get("status") or "").strip().lower() == "disabled"
+        if _wallet_status_is_dropped(row.get("status"))
     )
 
     def _best_key(row: dict[str, Any]) -> tuple[float, int, str]:
@@ -3474,10 +3558,14 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
                 self._send_json(409, blocked)
                 return
             query = parse_qs(parsed.query)
-            try:
-                limit = max(1, min(int(query.get("limit", ["250"])[0]), 1000))
-            except (TypeError, ValueError):
-                limit = 250
+            limit_param = query.get("limit", [None])[0]
+            if limit_param in {None, ""}:
+                limit = None
+            else:
+                try:
+                    limit = max(1, min(int(limit_param), 1000))
+                except (TypeError, ValueError):
+                    limit = None
             if path == "/api/wallets":
                 self._send_json(200, _wallet_registry_summary(limit))
                 return

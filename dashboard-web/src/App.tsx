@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useState} from 'react'
+import {useEffect, useMemo, useState, type Dispatch, type SetStateAction} from 'react'
 import {
   type BotState,
   fetchBotState,
@@ -70,13 +70,18 @@ function walletResolvedCount(wallet: ManagedWallet): number {
   return Number(wallet.post_promotion_resolved_copied_count || 0)
 }
 
+function walletIsDropped(wallet: ManagedWallet): boolean {
+  const status = String(wallet.status || '').trim().toLowerCase()
+  return status === 'disabled' || status === 'dropped'
+}
+
 function buildMockWalletSummary(
   managedWallets: ManagedWalletsResponse,
   discoveryCandidateCount: number
 ): WalletSummaryResponse {
   const wallets = managedWallets.wallets || []
-  const tracked = wallets.filter((wallet) => wallet.status !== 'disabled')
-  const dropped = wallets.filter((wallet) => wallet.status === 'disabled')
+  const tracked = wallets.filter((wallet) => !walletIsDropped(wallet))
+  const dropped = wallets.filter((wallet) => walletIsDropped(wallet))
   const bestWallets = [...wallets]
     .sort((left, right) => {
       const pnlDelta = walletPnl(right) - walletPnl(left)
@@ -107,7 +112,7 @@ function buildMockWalletSummary(
 
 function buildMockWalletRows(category: 'tracked' | 'dropped', managedWallets: ManagedWalletsResponse): WalletRowsResponse {
   const wallets = (managedWallets.wallets || []).filter((wallet) =>
-    category === 'tracked' ? wallet.status !== 'disabled' : wallet.status === 'disabled'
+    category === 'tracked' ? !walletIsDropped(wallet) : walletIsDropped(wallet)
   )
   return {
     ok: true,
@@ -224,10 +229,7 @@ export function App() {
     setBotStateResource((current) => failureResource(current, error))
   }
 
-  function applySnapshotError<T>(
-    setter: React.Dispatch<React.SetStateAction<ResourceState<T>>>,
-    error: unknown
-  ): void {
+  function applySnapshotError<T>(setter: Dispatch<SetStateAction<ResourceState<T>>>, error: unknown): void {
     setter((current) => failureResource(current, error))
   }
 
@@ -433,7 +435,7 @@ export function App() {
             mode={mode}
             botStateStatus={botStateResource.status}
             botStateError={botStateResource.error}
-            signalEvents={mode === 'mock' ? signalEvents : []}
+            signalEvents={signalEvents}
             loadedScorer={botState.loaded_scorer}
             modelBackend={botState.loaded_model_backend}
             modelPredictionMode={botState.model_prediction_mode}

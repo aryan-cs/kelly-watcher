@@ -1124,6 +1124,221 @@ def _managed_wallet_rows(limit: int | None = None) -> list[dict[str, Any]]:
     return payloads
 
 
+def _managed_wallet_panel_rows(limit: int | None = None) -> list[dict[str, Any]]:
+    conn = get_conn()
+    try:
+        if not _sqlite_table_exists(conn, "managed_wallets"):
+            return []
+        columns = _sqlite_table_columns(conn, "managed_wallets")
+        select_parts = [
+            "wallet_address",
+            "tracking_enabled" if "tracking_enabled" in columns else "1 AS tracking_enabled",
+            "added_at" if "added_at" in columns else "0 AS added_at",
+            "updated_at" if "updated_at" in columns else "0 AS updated_at",
+            "disabled_at" if "disabled_at" in columns else "0 AS disabled_at",
+            "disabled_reason" if "disabled_reason" in columns else "'' AS disabled_reason",
+        ]
+        query = (
+            "SELECT\n  "
+            + ", ".join(select_parts)
+            + "\nFROM managed_wallets\n"
+            + "ORDER BY COALESCE(tracking_enabled, 0) DESC, "
+            + "COALESCE(updated_at, added_at, 0) DESC, wallet_address ASC\n"
+            + "LIMIT ?"
+        )
+        rows = conn.execute(query, (max(int(limit or 1000), 1),)).fetchall()
+    finally:
+        conn.close()
+
+    wallets = [
+        str(row["wallet_address"] or "").strip().lower()
+        for row in rows
+        if str(row["wallet_address"] or "").strip()
+    ]
+    identities = _identity_lookup()
+    watch_state_map = _wallet_watch_state_map(wallets)
+    policy_metrics_map = _wallet_policy_metrics_rows(wallets)
+
+    payloads: list[dict[str, Any]] = []
+    for row in rows:
+        row_dict = dict(row)
+        wallet = str(row_dict.get("wallet_address") or "").strip().lower()
+        if not wallet:
+            continue
+        watch_state = watch_state_map.get(wallet, {})
+        policy_metrics = policy_metrics_map.get(wallet, {})
+        tracking_enabled = bool(row_dict.get("tracking_enabled"))
+        status = str(watch_state.get("status") or "").strip().lower()
+        if not status:
+            status = "active" if tracking_enabled else "disabled"
+        payloads.append(
+            {
+                "wallet_address": wallet,
+                "username": identities.get(wallet, ""),
+                "tracking_enabled": tracking_enabled,
+                "status": status,
+                "status_reason": str(watch_state.get("status_reason") or row_dict.get("disabled_reason") or "").strip(),
+                "added_at": int(row_dict.get("added_at") or 0),
+                "updated_at": int(row_dict.get("updated_at") or 0),
+                "disabled_at": int(row_dict.get("disabled_at") or watch_state.get("dropped_at") or 0),
+                "disabled_reason": str(row_dict.get("disabled_reason") or watch_state.get("status_reason") or "").strip(),
+                "tracking_started_at": int(watch_state.get("tracking_started_at") or row_dict.get("added_at") or 0),
+                "last_source_ts_at_status": int(watch_state.get("last_source_ts_at_status") or 0),
+                "post_promotion_uncopyable_skip_rate": (
+                    float(policy_metrics.get("post_promotion_uncopyable_skip_rate"))
+                    if policy_metrics.get("post_promotion_uncopyable_skip_rate") is not None
+                    else None
+                ),
+                "post_promotion_resolved_copied_count": int(policy_metrics.get("post_promotion_resolved_copied_count") or 0),
+                "post_promotion_resolved_copied_win_rate": (
+                    float(policy_metrics.get("post_promotion_resolved_copied_win_rate"))
+                    if policy_metrics.get("post_promotion_resolved_copied_win_rate") is not None
+                    else None
+                ),
+                "post_promotion_resolved_copied_total_pnl_usd": float(
+                    policy_metrics.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0
+                ),
+            }
+        )
+    return payloads
+
+
+def _wallet_page_unavailable_payload(
+    registry_state: dict[str, Any],
+    *,
+    category: str | None = None,
+) -> dict[str, Any]:
+    source = _wallet_registry_source_from_state(registry_state)
+    payload = {
+        "ok": False,
+        "source": source,
+        "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+        "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+        "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+        "managed_wallet_count": int(registry_state.get("managed_wallet_count") or 0),
+        "managed_wallet_total_count": int(registry_state.get("managed_wallet_total_count") or 0),
+        "managed_wallet_registry_updated_at": int(registry_state.get("managed_wallet_registry_updated_at") or 0),
+        "message": (
+            "Managed wallet data is unavailable because the canonical managed_wallets table is missing or unreadable. "
+            "Recover or reset the DB before trusting wallet inventory."
+        ),
+    }
+    if category:
+        payload.update(category=category, wallets=[], count=0)
+    return payload
+
+
+def _wallet_page_rows_response(category: str, limit: int | None = None) -> dict[str, Any]:
+    registry_state = _managed_wallet_registry_snapshot()
+    source = _wallet_registry_source_from_state(registry_state)
+    if source != "managed_wallets":
+        return _wallet_page_unavailable_payload(registry_state, category=category)
+
+    wallets = _managed_wallet_panel_rows(limit=max(int(limit or 1000), 1))
+    if category == "tracked":
+        filtered = [
+            row
+            for row in wallets
+            if str(row.get("status") or "").strip().lower() != "disabled"
+        ]
+        filtered.sort(
+            key=lambda row: (
+                int(row.get("tracking_started_at") or 0),
+                float(row.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0),
+                str(row.get("wallet_address") or ""),
+            ),
+            reverse=True,
+        )
+    else:
+        filtered = [
+            row
+            for row in wallets
+            if str(row.get("status") or "").strip().lower() == "disabled"
+        ]
+        filtered.sort(
+            key=lambda row: (
+                int(row.get("disabled_at") or 0),
+                int(row.get("updated_at") or 0),
+                str(row.get("wallet_address") or ""),
+            ),
+            reverse=True,
+        )
+
+    return {
+        "ok": True,
+        "category": category,
+        "source": source,
+        "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+        "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+        "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+        "managed_wallet_count": int(registry_state.get("managed_wallet_count") or 0),
+        "managed_wallet_total_count": int(registry_state.get("managed_wallet_total_count") or 0),
+        "managed_wallet_registry_updated_at": int(registry_state.get("managed_wallet_registry_updated_at") or 0),
+        "wallets": filtered,
+        "count": len(filtered),
+    }
+
+
+def _wallet_summary_response(limit: int | None = None) -> dict[str, Any]:
+    registry_state = _managed_wallet_registry_snapshot()
+    source = _wallet_registry_source_from_state(registry_state)
+    if source != "managed_wallets":
+        payload = _wallet_page_unavailable_payload(registry_state)
+        payload.update(
+            tracked_count=0,
+            dropped_count=0,
+            discovery_candidate_count=int(_bot_state_snapshot().get("wallet_discovery_candidate_count") or 0),
+            best_wallets=[],
+            worst_wallets=[],
+        )
+        return payload
+
+    wallets = _managed_wallet_panel_rows(limit=max(int(limit or 1000), 1))
+    tracked_count = sum(
+        1
+        for row in wallets
+        if str(row.get("status") or "").strip().lower() != "disabled"
+    )
+    dropped_count = sum(
+        1
+        for row in wallets
+        if str(row.get("status") or "").strip().lower() == "disabled"
+    )
+
+    def _best_key(row: dict[str, Any]) -> tuple[float, int, str]:
+        return (
+            float(row.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0),
+            int(row.get("post_promotion_resolved_copied_count") or 0),
+            str(row.get("username") or row.get("wallet_address") or ""),
+        )
+
+    def _worst_key(row: dict[str, Any]) -> tuple[float, int, str]:
+        return (
+            float(row.get("post_promotion_resolved_copied_total_pnl_usd") or 0.0),
+            -int(row.get("post_promotion_resolved_copied_count") or 0),
+            str(row.get("username") or row.get("wallet_address") or ""),
+        )
+
+    best_wallets = sorted(wallets, key=_best_key, reverse=True)[:8]
+    worst_wallets = sorted(wallets, key=_worst_key)[:8]
+    bot_state = _bot_state_snapshot()
+    return {
+        "ok": True,
+        "source": source,
+        "managed_wallet_registry_status": str(registry_state.get("managed_wallet_registry_status") or "unknown"),
+        "managed_wallet_registry_available": bool(registry_state.get("managed_wallet_registry_available")),
+        "managed_wallet_registry_error": str(registry_state.get("managed_wallet_registry_error") or "").strip(),
+        "managed_wallet_count": len(wallets),
+        "managed_wallet_total_count": int(registry_state.get("managed_wallet_total_count") or len(wallets)),
+        "managed_wallet_registry_updated_at": int(registry_state.get("managed_wallet_registry_updated_at") or 0),
+        "tracked_count": tracked_count,
+        "dropped_count": dropped_count,
+        "discovery_candidate_count": int(bot_state.get("wallet_discovery_candidate_count") or 0),
+        "best_wallets": best_wallets,
+        "worst_wallets": worst_wallets,
+    }
+
+
 def _wallet_membership_events(limit: int | None = None) -> tuple[list[dict[str, Any]], str]:
     conn = get_conn()
     try:
@@ -3246,7 +3461,14 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"events": _recent_events(max_events)})
             return
 
-        if path in {"/api/wallets", "/api/wallets/events", "/api/discovery/candidates"}:
+        if path in {
+            "/api/wallets",
+            "/api/wallets/summary",
+            "/api/wallets/tracked",
+            "/api/wallets/dropped",
+            "/api/wallets/events",
+            "/api/discovery/candidates",
+        }:
             blocked = _blocked_query_response()
             if blocked:
                 self._send_json(409, blocked)
@@ -3258,6 +3480,15 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
                 limit = 250
             if path == "/api/wallets":
                 self._send_json(200, _wallet_registry_summary(limit))
+                return
+            if path == "/api/wallets/summary":
+                self._send_json(200, _wallet_summary_response(limit))
+                return
+            if path == "/api/wallets/tracked":
+                self._send_json(200, _wallet_page_rows_response("tracked", limit))
+                return
+            if path == "/api/wallets/dropped":
+                self._send_json(200, _wallet_page_rows_response("dropped", limit))
                 return
             if path == "/api/wallets/events":
                 events, source = _wallet_membership_events(limit)

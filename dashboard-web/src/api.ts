@@ -363,6 +363,34 @@ export interface ManagedWalletsResponse {
   message?: string
 }
 
+export interface WalletSummaryResponse {
+  ok?: boolean
+  source?: string
+  managed_wallet_registry_status?: string
+  managed_wallet_registry_available?: boolean
+  managed_wallet_registry_error?: string
+  managed_wallet_count?: number
+  managed_wallet_total_count?: number
+  tracked_count?: number
+  dropped_count?: number
+  discovery_candidate_count?: number
+  best_wallets?: ManagedWallet[]
+  worst_wallets?: ManagedWallet[]
+  message?: string
+}
+
+export interface WalletRowsResponse {
+  ok?: boolean
+  source?: string
+  category?: 'tracked' | 'dropped' | string
+  managed_wallet_registry_status?: string
+  managed_wallet_registry_available?: boolean
+  managed_wallet_registry_error?: string
+  count?: number
+  wallets?: ManagedWallet[]
+  message?: string
+}
+
 export interface WalletMembershipEvent {
   wallet_address?: string
   action?: string
@@ -507,6 +535,18 @@ export async function fetchConfigSnapshot(): Promise<ConfigSnapshot | null> {
 
 export async function fetchManagedWallets(): Promise<ManagedWalletsResponse | null> {
   return fetchApiJson<ManagedWalletsResponse>('/api/wallets')
+}
+
+export async function fetchWalletSummary(): Promise<WalletSummaryResponse | null> {
+  return fetchApiJson<WalletSummaryResponse>('/api/wallets/summary')
+}
+
+export async function fetchTrackedWallets(): Promise<WalletRowsResponse | null> {
+  return fetchApiJson<WalletRowsResponse>('/api/wallets/tracked')
+}
+
+export async function fetchDroppedWallets(): Promise<WalletRowsResponse | null> {
+  return fetchApiJson<WalletRowsResponse>('/api/wallets/dropped')
 }
 
 export async function fetchDiscoveryCandidates(): Promise<DiscoveryCandidatesResponse | null> {

@@ -2,19 +2,18 @@ import {useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactP
 import type {
   BotState,
   ConfigSnapshot,
-  DiscoveryCandidate,
-  DiscoveryCandidatesResponse,
   LiveEvent,
   ManagedWallet,
   ManagedWalletsResponse,
   ModelTrainingRun,
   PerformancePosition,
   PerformanceSnapshot,
-  RestartShadowWalletMode
+  RestartShadowWalletMode,
+  WalletRowsResponse,
+  WalletSummaryResponse
 } from './api'
 import {
   clearConfigValue,
-  fetchManagedWallets,
   requestManualTradeCashOut,
   requestDropWallet,
   requestReactivateWallet,
@@ -48,6 +47,14 @@ interface DashboardPageFrameProps {
   meta: string
   children: ReactNode
   className?: string
+}
+
+type ResourceStatus = 'loading' | 'ready' | 'stale' | 'error'
+
+interface LoadableResource<T> {
+  status: ResourceStatus
+  data: T | null
+  error: string
 }
 
 interface StatItem {
@@ -128,6 +135,16 @@ function DashboardPanel({
       <div className="dashboard-panel__body">{children}</div>
     </section>
   )
+}
+
+function DashboardPanelNotice({
+  tone = 'muted',
+  children
+}: {
+  tone?: 'muted' | 'warning' | 'error'
+  children: ReactNode
+}) {
+  return <div className={`dashboard-panel__notice dashboard-panel__notice--${tone}`}>{children}</div>
 }
 
 function DashboardTable<T>({
@@ -624,7 +641,7 @@ interface PerformancePageProps {
   mode: 'mock' | 'api'
   trackerEvents: LiveEvent[]
   signalEvents: LiveEvent[]
-  performanceSnapshot?: PerformanceSnapshot | null
+  performanceResource: LoadableResource<PerformanceSnapshot>
   resolvedShadowTradeCount?: number
   bankrollUsd?: number
   confidenceCutoff?: number
@@ -640,28 +657,25 @@ export function PerformancePage(props: PerformancePageProps) {
   const [mockClosedTradeIds, setMockClosedTradeIds] = useState<Record<string, number>>({})
   const [pendingExitTradeId, setPendingExitTradeId] = useState('')
   const [exitStatusMessage, setExitStatusMessage] = useState('')
-  const useApiPerformance = props.mode === 'api' && Boolean(props.performanceSnapshot?.ok)
+  const snapshot = props.performanceResource.data
+  const useApiPerformance = props.mode === 'api'
   const startingBalance = useApiPerformance
-    ? finiteNumberOrNull(props.performanceSnapshot?.starting_balance_usd) ?? (props.bankrollUsd ?? 0)
+    ? finiteNumberOrNull(snapshot?.starting_balance_usd) ?? (props.bankrollUsd ?? 0)
     : (props.bankrollUsd ?? 0)
-  const paidVolume = useMemo(
-    () => props.trackerEvents.reduce((total, event) => total + (event.amount_usd ?? 0), 0),
-    [props.trackerEvents]
-  )
   const apiCurrentPositions = useMemo(
-    () => (props.performanceSnapshot?.current_positions || []).map((row) => normalizePerformancePosition(row, 'current')),
-    [props.performanceSnapshot]
+    () => (snapshot?.current_positions || []).map((row) => normalizePerformancePosition(row, 'current')),
+    [snapshot]
   )
   const apiPastPositions = useMemo(
-    () => (props.performanceSnapshot?.past_positions || []).map((row) => normalizePerformancePosition(row, 'past')),
-    [props.performanceSnapshot]
+    () => (snapshot?.past_positions || []).map((row) => normalizePerformancePosition(row, 'past')),
+    [snapshot]
   )
   const balanceCurve = useMemo(
     () =>
       useApiPerformance
-        ? normalizeBalanceCurve(props.performanceSnapshot?.balance_curve)
+        ? normalizeBalanceCurve(snapshot?.balance_curve)
         : buildBalanceCurve(props.signalEvents, startingBalance),
-    [props.performanceSnapshot, props.signalEvents, startingBalance, useApiPerformance]
+    [snapshot, props.signalEvents, startingBalance, useApiPerformance]
   )
   const performanceTrades = useMemo(
     () =>
@@ -700,16 +714,16 @@ export function PerformancePage(props: PerformancePageProps) {
       useApiPerformance
         ? finiteNumberOrNull(props.performanceSnapshot?.realized_pnl_usd) ?? 0
         : pastPositions.reduce((total, trade) => total + trade.pnl, 0),
-    [pastPositions, props.performanceSnapshot, useApiPerformance]
+    [pastPositions, snapshot, useApiPerformance]
   )
   const winRate = useMemo(() => {
     if (useApiPerformance) {
-      return finiteNumberOrNull(props.performanceSnapshot?.win_rate)
+      return finiteNumberOrNull(snapshot?.win_rate)
     }
     if (!pastPositions.length) return null
     const wins = pastPositions.filter((trade) => trade.pnl > 0).length
     return wins / pastPositions.length
-  }, [pastPositions, props.performanceSnapshot, useApiPerformance])
+  }, [pastPositions, snapshot, useApiPerformance])
   const grossProfit = useMemo(
     () => pastPositions.filter((trade) => trade.pnl > 0).reduce((total, trade) => total + trade.pnl, 0),
     [pastPositions]
@@ -719,52 +733,52 @@ export function PerformancePage(props: PerformancePageProps) {
     [pastPositions]
   )
   const profitFactor = useApiPerformance
-    ? finiteNumberOrNull(props.performanceSnapshot?.profit_factor)
+    ? finiteNumberOrNull(snapshot?.profit_factor)
     : grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : null
   const expectancy = useApiPerformance
-    ? finiteNumberOrNull(props.performanceSnapshot?.expectancy_usd)
+    ? finiteNumberOrNull(snapshot?.expectancy_usd)
     : pastPositions.length ? trackerPnl / pastPositions.length : null
   const currentExposure = useMemo(
     () =>
       useApiPerformance
-        ? finiteNumberOrNull(props.performanceSnapshot?.current_exposure_usd) ?? 0
+        ? finiteNumberOrNull(snapshot?.current_exposure_usd) ?? 0
         : currentPositions.reduce((total, trade) => total + trade.total, 0),
-    [currentPositions, props.performanceSnapshot, useApiPerformance]
+    [currentPositions, snapshot, useApiPerformance]
   )
   const currentMarkedPnl = useMemo(
     () =>
       useApiPerformance
-        ? finiteNumberOrNull(props.performanceSnapshot?.open_pnl_usd) ?? 0
+        ? finiteNumberOrNull(snapshot?.open_pnl_usd) ?? 0
         : currentPositions.reduce((total, trade) => total + trade.pnl, 0),
-    [currentPositions, props.performanceSnapshot, useApiPerformance]
+    [currentPositions, snapshot, useApiPerformance]
   )
   const netPnl = useMemo(
     () =>
       useApiPerformance
-        ? Number((finiteNumberOrNull(props.performanceSnapshot?.net_pnl_usd) ?? 0).toFixed(2))
+        ? Number((finiteNumberOrNull(snapshot?.net_pnl_usd) ?? 0).toFixed(2))
         : Number((trackerPnl + currentMarkedPnl).toFixed(2)),
-    [currentMarkedPnl, props.performanceSnapshot, trackerPnl, useApiPerformance]
+    [currentMarkedPnl, snapshot, trackerPnl, useApiPerformance]
   )
   const currentBalance = useMemo(
     () =>
       useApiPerformance
-        ? Number((finiteNumberOrNull(props.performanceSnapshot?.current_balance_usd) ?? (startingBalance + trackerPnl + currentMarkedPnl)).toFixed(2))
+        ? Number((finiteNumberOrNull(snapshot?.current_balance_usd) ?? (startingBalance + trackerPnl + currentMarkedPnl)).toFixed(2))
         : Number((startingBalance + trackerPnl + currentMarkedPnl).toFixed(2)),
-    [currentMarkedPnl, props.performanceSnapshot, startingBalance, trackerPnl, useApiPerformance]
+    [currentMarkedPnl, snapshot, startingBalance, trackerPnl, useApiPerformance]
   )
   const availableBalance = useMemo(
     () =>
       useApiPerformance
-        ? Number((finiteNumberOrNull(props.performanceSnapshot?.available_cash_usd) ?? (currentBalance - currentExposure)).toFixed(2))
+        ? Number((finiteNumberOrNull(snapshot?.available_cash_usd) ?? (currentBalance - currentExposure)).toFixed(2))
         : Number((currentBalance - currentExposure).toFixed(2)),
-    [currentBalance, currentExposure, props.performanceSnapshot, useApiPerformance]
+    [currentBalance, currentExposure, snapshot, useApiPerformance]
   )
   const accountBankrollForGradient = currentBalance > 0 ? currentBalance : startingBalance
   const exposureRatio = currentBalance > 0 ? currentExposure / currentBalance : null
   const availableCashRatio = currentBalance > 0 ? availableBalance / currentBalance : null
   const maxDrawdownRatio = useMemo(() => {
     if (useApiPerformance) {
-      return finiteNumberOrNull(props.performanceSnapshot?.max_drawdown_pct) ?? 0
+      return finiteNumberOrNull(snapshot?.max_drawdown_pct) ?? 0
     }
     if (!balanceCurve.length) return 0
     let peak = balanceCurve[0]?.balance ?? startingBalance
@@ -776,10 +790,20 @@ export function PerformancePage(props: PerformancePageProps) {
       }
     }
     return Number(maxDdRatio.toFixed(4))
-  }, [balanceCurve, props.performanceSnapshot, startingBalance, useApiPerformance])
+  }, [balanceCurve, snapshot, startingBalance, useApiPerformance])
   const returnRatio = useApiPerformance
-    ? finiteNumberOrNull(props.performanceSnapshot?.return_pct)
+    ? finiteNumberOrNull(snapshot?.return_pct)
     : startingBalance > 0 ? netPnl / startingBalance : null
+  const performanceMeta = useApiPerformance && snapshot
+    ? `${formatInteger(snapshot.resolved_count)} RESOLVED • ${formatInteger(snapshot.current_position_count)} OPEN • ${formatMoney(snapshot.current_exposure_usd)} EXPOSED`
+    : ''
+  const performanceStatusMessage = useMemo(() => {
+    if (!useApiPerformance) return ''
+    if (props.performanceResource.status === 'loading') return 'LOADING PERFORMANCE SNAPSHOT...'
+    if (props.performanceResource.status === 'error') return props.performanceResource.error || 'PERFORMANCE SNAPSHOT UNAVAILABLE.'
+    if (props.performanceResource.status === 'stale') return `STALE PERFORMANCE SNAPSHOT • ${props.performanceResource.error || 'USING LAST GOOD DATA.'}`
+    return ''
+  }, [props.performanceResource.error, props.performanceResource.status, useApiPerformance])
   const trackerStatsLeftRows = [
     {label: 'START BALANCE', value: formatMoney(startingBalance), tone: moneyMetricColor(0, accountBankrollForGradient), tooltip: performanceStatTooltip('START BALANCE')},
     {
@@ -852,9 +876,9 @@ export function PerformancePage(props: PerformancePageProps) {
     },
     {
       label: 'RESOLVED',
-      value: formatInteger(useApiPerformance ? (props.performanceSnapshot?.resolved_count ?? pastPositions.length) : pastPositions.length),
-      tooltip: performanceStatTooltip('RESOLVED')
-    }
+        value: formatInteger(useApiPerformance ? (snapshot?.resolved_count ?? pastPositions.length) : pastPositions.length),
+        tooltip: performanceStatTooltip('RESOLVED')
+      }
   ]
 
   async function handleExitNow(trade: PerformanceTradeRow): Promise<void> {
@@ -891,8 +915,9 @@ export function PerformancePage(props: PerformancePageProps) {
     <DashboardPageFrame
       className="performance-page"
       title="PERFORMANCE"
-      meta={`${formatInteger(props.signalEvents.length)} SIGNALS • ${formatInteger(props.trackerEvents.length)} INCOMING EVENTS`}
+      meta={performanceMeta}
     >
+      {performanceStatusMessage ? <div className="dashboard-page__status">{performanceStatusMessage}</div> : null}
       <div className="dashboard-panels dashboard-panels--two performance-panels performance-panels--top">
         <DashboardPanel
           className="dashboard-panel--performance-stats"
@@ -926,14 +951,18 @@ export function PerformancePage(props: PerformancePageProps) {
           className="dashboard-panel--performance-balance"
           title="BALANCE"
         >
-          {balanceCurve.length ? (
+          {useApiPerformance && props.performanceResource.status === 'error' && !snapshot ? (
+            <DashboardPanelNotice tone="error">{props.performanceResource.error || 'PERFORMANCE SNAPSHOT UNAVAILABLE.'}</DashboardPanelNotice>
+          ) : useApiPerformance && props.performanceResource.status === 'loading' && !snapshot ? (
+            <DashboardPanelNotice>LOADING PERFORMANCE SNAPSHOT...</DashboardPanelNotice>
+          ) : balanceCurve.length ? (
             <BalanceChart points={balanceCurve} baseline={startingBalance} />
           ) : (
-            <div className="dashboard-table__empty">
+            <DashboardPanelNotice>
               {useApiPerformance
                 ? 'NO RESOLVED TRADES AVAILABLE FOR BALANCE GRAPH.'
                 : 'NO ACCEPTED TRADES AVAILABLE FOR BALANCE GRAPH.'}
-            </div>
+            </DashboardPanelNotice>
           )}
         </DashboardPanel>
       </div>
@@ -944,11 +973,16 @@ export function PerformancePage(props: PerformancePageProps) {
           title="CURRENT POSITIONS"
           meta={`${formatInteger(currentPositions.length)} OPEN • ${formatMoney(currentExposure)} EXPOSED`}
         >
-          <DashboardTable
-            tableId="performance-current-positions"
-            rows={currentPositions}
-            emptyMessage="NO OPEN POSITIONS RIGHT NOW."
-            columns={[
+          {useApiPerformance && props.performanceResource.status === 'error' && !snapshot ? (
+            <DashboardPanelNotice tone="error">{props.performanceResource.error || 'CURRENT POSITIONS UNAVAILABLE.'}</DashboardPanelNotice>
+          ) : useApiPerformance && props.performanceResource.status === 'loading' && !snapshot ? (
+            <DashboardPanelNotice>LOADING CURRENT POSITIONS...</DashboardPanelNotice>
+          ) : (
+            <DashboardTable
+              tableId="performance-current-positions"
+              rows={currentPositions}
+              emptyMessage="NO OPEN POSITIONS RIGHT NOW."
+              columns={[
               {key: 'time', label: 'OPENED', className: 'dashboard-table__cell--compact', render: (row) => formatTimestamp(row.entryTs)},
               {key: 'user', label: 'USERNAME', className: 'dashboard-table__cell--compact', render: (row) => row.username},
               {key: 'market', label: 'MARKET', className: 'dashboard-table__cell--wide', render: (row) => row.question, title: (row) => row.question},
@@ -985,8 +1019,9 @@ export function PerformancePage(props: PerformancePageProps) {
                   </button>
                 )
               }
-            ]}
-          />
+              ]}
+            />
+          )}
           {exitStatusMessage ? <div className="performance-exit-status">{exitStatusMessage}</div> : null}
         </DashboardPanel>
 
@@ -995,11 +1030,16 @@ export function PerformancePage(props: PerformancePageProps) {
           title="PAST POSITIONS"
           meta={`${formatInteger(pastPositions.length)} RESOLVED • ${formatMoney(trackerPnl)} TOTAL`}
         >
-          <DashboardTable
-            tableId="performance-past-positions"
-            rows={pastPositions}
-            emptyMessage="NO PAST POSITIONS YET."
-            columns={[
+          {useApiPerformance && props.performanceResource.status === 'error' && !snapshot ? (
+            <DashboardPanelNotice tone="error">{props.performanceResource.error || 'PAST POSITIONS UNAVAILABLE.'}</DashboardPanelNotice>
+          ) : useApiPerformance && props.performanceResource.status === 'loading' && !snapshot ? (
+            <DashboardPanelNotice>LOADING PAST POSITIONS...</DashboardPanelNotice>
+          ) : (
+            <DashboardTable
+              tableId="performance-past-positions"
+              rows={pastPositions}
+              emptyMessage="NO PAST POSITIONS YET."
+              columns={[
               {key: 'entry', label: 'ENTRY', className: 'dashboard-table__cell--compact', render: (row) => formatTimestamp(row.entryTs)},
               {key: 'exit', label: 'EXIT', className: 'dashboard-table__cell--compact', render: (row) => formatTimestamp(row.exitTs)},
               {key: 'user', label: 'USERNAME', className: 'dashboard-table__cell--compact', render: (row) => row.username},
@@ -1008,8 +1048,9 @@ export function PerformancePage(props: PerformancePageProps) {
               {key: 'price', label: 'PRICE', className: 'dashboard-table__cell--numeric', render: (row) => row.price.toFixed(3)},
               {key: 'total', label: 'TOTAL', className: 'dashboard-table__cell--numeric', render: (row) => formatMoney(row.total)},
               {key: 'pnl', label: 'P&L', className: 'dashboard-table__cell--numeric', render: (row) => formatMoney(row.pnl), color: (row) => moneyMetricColor(row.pnl, startingBalance, row.total)}
-            ]}
-          />
+              ]}
+            />
+          )}
         </DashboardPanel>
       </div>
     </DashboardPageFrame>
@@ -1017,6 +1058,9 @@ export function PerformancePage(props: PerformancePageProps) {
 }
 
 interface ModelPageProps {
+  mode: 'mock' | 'api'
+  botStateStatus: ResourceStatus
+  botStateError: string
   signalEvents: LiveEvent[]
   loadedScorer?: string
   modelBackend?: string
@@ -1050,219 +1094,126 @@ interface ModelPageProps {
   shadowSnapshotBlockReason?: string
 }
 
+function summarizeModelMessage(rawValue: string | undefined, fallback = '-'): string {
+  const text = String(rawValue || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text) return fallback
+  const lowered = text.toLowerCase()
+  if (lowered.includes('did not beat the deployed model')) return 'challenger did not beat the deployed model'
+  if (lowered.includes('failed deployment checks')) return 'failed deployment checks'
+  if (lowered.includes('evidence gate')) return 'waiting on shadow evidence gate'
+  if (lowered.includes('completed')) return 'completed'
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text
+}
+
 export function ModelPage(props: ModelPageProps) {
-  const acceptedSignals = useMemo(
-    () => props.signalEvents.filter((event) => event.decision === 'ACCEPT'),
-    [props.signalEvents]
-  )
-  const rejectedSignals = useMemo(
-    () => props.signalEvents.filter((event) => event.decision === 'REJECT'),
-    [props.signalEvents]
-  )
-  const pausedSignals = useMemo(
-    () => props.signalEvents.filter((event) => event.decision === 'PAUSE' || event.decision === 'SKIP'),
-    [props.signalEvents]
-  )
-  const confidenceBuckets = useMemo(() => {
-    const rows = [
-      {label: '40-55%', min: 0.4, max: 0.55},
-      {label: '55-70%', min: 0.55, max: 0.7},
-      {label: '70%+', min: 0.7, max: 2}
-    ]
-    return rows.map((bucket) => {
-      const events = props.signalEvents.filter((event) => {
-        const confidence = event.confidence ?? 0
-        return confidence >= bucket.min && confidence < bucket.max
-      })
-      const accepts = events.filter((event) => event.decision === 'ACCEPT').length
-      return {
-        bucket: bucket.label,
-        signals: events.length,
-        accepts,
-        acceptRate: events.length ? accepts / events.length : 0
-      }
-    })
-  }, [props.signalEvents])
-
-  const averageConfidence = useMemo(() => {
-    const values = props.signalEvents.map((event) => event.confidence).filter((value): value is number => value != null)
-    if (!values.length) return null
-    return values.reduce((total, value) => total + value, 0) / values.length
-  }, [props.signalEvents])
-
-  const actualWinRate = props.signalEvents.length ? acceptedSignals.length / props.signalEvents.length : null
-  const avgGap = averageConfidence != null && actualWinRate != null ? averageConfidence - actualWinRate : null
-  const pseudoBrier = useMemo(() => {
-    const values = props.signalEvents
-      .map((event) => {
-        if (event.confidence == null) return null
-        const actual = event.decision === 'ACCEPT' ? 1 : 0
-        return (event.confidence - actual) ** 2
-      })
-      .filter((value): value is number => value != null)
-    if (!values.length) return null
-    return values.reduce((total, value) => total + value, 0) / values.length
-  }, [props.signalEvents])
-  const pseudoLogLoss = useMemo(() => {
-    const values = props.signalEvents
-      .map((event) => {
-        if (event.confidence == null) return null
-        const actual = event.decision === 'ACCEPT' ? 1 : 0
-        const p = Math.min(0.999, Math.max(0.001, event.confidence))
-        return -(actual * Math.log(p) + (1 - actual) * Math.log(1 - p))
-      })
-      .filter((value): value is number => value != null)
-    if (!values.length) return null
-    return values.reduce((total, value) => total + value, 0) / values.length
-  }, [props.signalEvents])
-
-  const decisionRows = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const event of props.signalEvents) {
-      const key = String(event.decision || 'UNKNOWN')
-      counts.set(key, (counts.get(key) || 0) + 1)
-    }
-    return Array.from(counts.entries())
-      .map(([decision, count]) => ({
-        decision,
-        count,
-        share: props.signalEvents.length ? count / props.signalEvents.length : 0
-      }))
-      .sort((left, right) => right.count - left.count)
-  }, [props.signalEvents])
-
-  const runtimeSummaryRows = [
-    {
-      item: 'SCORER',
-      value: String(props.loadedScorer || '-')
-    },
-    {
-      item: 'BACKEND',
-      value: String(props.modelBackend || '-'),
-      note: props.modelRuntimeCompatible ? 'runtime ready' : 'fallback'
-    },
-    {
-      item: 'STARTUP',
-      value: props.startupFailed ? 'FAILED' : props.startupValidationFailed ? 'VALIDATION' : 'READY',
-      note: String(props.startupDetail || props.modelFallbackReason || '-')
-    },
-    {
-      item: 'LOADED',
-      value: formatRelativeAge(props.modelLoadedAt),
-      note: formatTimestamp(props.modelLoadedAt)
-    }
-  ]
-
-  const shadowGateRows = [
-    {item: 'LIVE GATE', value: props.liveRequireShadowHistoryEnabled ? 'ENABLED' : 'DISABLED', note: 'requires enough shadow history before live mode can run'},
-    {item: 'TOTAL READY', value: props.liveShadowHistoryTotalReady ? 'READY' : 'BUILDING'},
-    {item: 'POST-PROMO READY', value: props.liveShadowHistoryReady ? 'READY' : 'BUILDING'},
-    {
-      item: 'SNAPSHOT',
-      value: String(props.shadowSnapshotStatus || '-'),
-      note: `${formatInteger(props.shadowSnapshotRoutedResolved)} routed / ${formatInteger(props.shadowSnapshotResolved)} resolved`
-    },
-    {item: 'SCOPE', value: String(props.shadowSnapshotScope || '-')},
-    {item: 'NEXT BLOCKER', value: props.shadowSnapshotReady ? 'CLEAR' : String(props.shadowSnapshotBlockReason || '-')}
-  ]
-
-  const trainingRows = [
-    {item: 'RETRAIN', value: props.retrainInProgress ? 'RUNNING' : String(props.lastRetrainStatus || '-'), note: props.lastRetrainMessage || '-'},
-    {item: 'LAST START', value: formatTimestamp(props.lastRetrainStartedAt), note: formatRelativeAge(props.lastRetrainStartedAt)},
-    {item: 'LAST FINISH', value: formatTimestamp(props.lastRetrainFinishedAt), note: formatRelativeAge(props.lastRetrainFinishedAt)},
-    {item: 'SEARCH STATUS', value: String(props.lastReplaySearchStatus || '-'), note: props.lastReplaySearchMessage || '-'},
-    {item: 'SEARCH START', value: formatTimestamp(props.lastReplaySearchStartedAt), note: formatRelativeAge(props.lastReplaySearchStartedAt)},
-    {item: 'SEARCH FINISH', value: formatTimestamp(props.lastReplaySearchFinishedAt), note: formatRelativeAge(props.lastReplaySearchFinishedAt)},
-    {item: 'MANUAL RETRAIN', value: props.manualRetrainPending ? 'PENDING' : 'IDLE', note: 'manual retrain request flag'},
-    {item: 'MANUAL TRADE', value: props.manualTradePending ? 'PENDING' : 'IDLE', note: 'manual trade request flag'}
-  ]
-
   const trainingRunRows = useMemo(
-    () =>
-      [...(props.trainingRuns || [])].sort(
-        (left, right) => Number(right.started_at || 0) - Number(left.started_at || 0)
-      ),
+    () => [...(props.trainingRuns || [])].sort((left, right) => Number(right.started_at || 0) - Number(left.started_at || 0)),
     [props.trainingRuns]
   )
-
-  const predictionQualityCompactRows: CompactFieldRow[] = [
-    {label: 'SCORED TRADES', value: formatInteger(props.signalEvents.length), tooltip: modelLabelTooltip('SCORED TRADES')},
-    {label: 'AVG CONFIDENCE', value: formatPercentFromRatio(averageConfidence), tooltip: modelLabelTooltip('AVG CONFIDENCE')},
-    {label: 'ACTUAL WIN RATE', value: formatPercentFromRatio(actualWinRate), tooltip: modelLabelTooltip('ACTUAL WIN RATE')},
-    {label: 'CONFIDENCE GAP', value: formatPercentFromRatio(avgGap), tone: (avgGap ?? 0) <= 0 ? feedTheme.green : feedTheme.yellow, tooltip: modelLabelTooltip('CONFIDENCE GAP')},
-    {label: 'BRIER SCORE', value: formatDecimal(pseudoBrier, 3), tooltip: modelLabelTooltip('BRIER SCORE')},
-    {label: 'LOG LOSS', value: formatDecimal(pseudoLogLoss, 3), tooltip: modelLabelTooltip('LOG LOSS')}
+  const latestTrainingRun = trainingRunRows[0]
+  const retrainStatus = props.retrainInProgress ? 'RUNNING' : String(props.lastRetrainStatus || latestTrainingRun?.status || '-').toUpperCase()
+  const replayStatus = String(props.lastReplaySearchStatus || '-').toUpperCase()
+  const startupStatus = props.startupFailed ? 'FAILED' : props.startupValidationFailed ? 'VALIDATION' : 'READY'
+  const runtimeRows: CompactFieldRow[] = [
+    {label: 'SCORER', value: String(props.loadedScorer || '-'), tone: feedTheme.yellow, tooltip: modelLabelTooltip('LOADED SCORER')},
+    {label: 'BACKEND', value: String(props.modelBackend || '-'), tooltip: modelLabelTooltip('BACKEND')},
+    {label: 'PREDICTION PATH', value: String(props.modelPredictionMode || '-'), tooltip: modelLabelTooltip('PRIMARY PATH')},
+    {
+      label: 'STARTUP',
+      value: startupStatus,
+      tone: startupStatus === 'READY' ? feedTheme.green : feedTheme.red,
+      note: summarizeModelMessage(props.startupDetail || props.modelFallbackReason),
+      tooltip: modelLabelTooltip('STARTUP')
+    },
+    {label: 'LOADED', value: formatRelativeAge(props.modelLoadedAt), note: formatTimestamp(props.modelLoadedAt), tooltip: modelLabelTooltip('LOADED')}
   ]
-
-  const shadowCompactRows: CompactFieldRow[] = shadowGateRows.map((row) => ({
-    label: row.item,
-    value: row.value,
-    tone:
-      row.value === 'READY' || row.value === 'ENABLED' || row.value === 'CLEAR'
-        ? feedTheme.green
-        : row.value === 'BUILDING' || row.value === 'WAIT'
-          ? feedTheme.yellow
-          : undefined,
-    note: row.note,
-    tooltip: modelLabelTooltip(row.item)
-  }))
-
-  const trainingCompactRows: CompactFieldRow[] = [
-    trainingRows[0],
-    trainingRows[1],
-    trainingRows[2],
-    trainingRows[3],
-    trainingRows[4],
-    trainingRows[5]
-  ].map((row) => ({
-    label: row.item,
-    value: row.value,
-    tone:
-      row.value === 'SUCCESS' || row.value === 'IDLE'
-        ? feedTheme.green
-        : row.value === 'RUNNING' || row.value === 'PENDING'
-          ? feedTheme.yellow
-          : undefined,
-    note: row.note,
-    tooltip: modelLabelTooltip(row.item)
-  }))
-
-  const runtimeSummaryCompactRows: CompactFieldRow[] = runtimeSummaryRows.map((row) => ({
-    label: row.item,
-    value: row.value,
-    tone:
-      row.item === 'SCORER'
-        ? feedTheme.yellow
-        : row.item === 'STARTUP'
-          ? row.value === 'READY'
-            ? feedTheme.green
-            : feedTheme.red
-          : undefined,
-    note: row.note,
-    tooltip: modelLabelTooltip(row.item)
-  }))
-
-  const confidenceCompactRows: CompactFieldRow[] = confidenceBuckets.map((row) => ({
-    label: row.bucket,
-    value: `${formatInteger(row.signals)} / ${formatInteger(row.accepts)}`,
-    note: `ACC RATE ${formatPercentFromRatio(row.acceptRate)}`,
-    tooltip: modelLabelTooltip(row.bucket)
-  }))
-
-  const trackerHealthCompactRows: CompactFieldRow[] = decisionRows.map((row) => ({
-    label: row.decision,
-    value: formatInteger(row.count),
-    tone:
-      row.decision === 'ACCEPT'
-        ? feedTheme.green
-        : row.decision === 'REJECT'
-          ? feedTheme.red
-        : row.decision === 'PAUSE' || row.decision === 'SKIP'
-            ? feedTheme.yellow
-            : undefined,
-    note: `SHARE ${formatPercentFromRatio(row.share)}`,
-    tooltip: modelLabelTooltip(row.decision)
-  }))
+  const qualityRows: CompactFieldRow[] = [
+    {label: 'LATEST STATUS', value: String(latestTrainingRun?.status || retrainStatus || '-').toUpperCase(), tooltip: modelLabelTooltip('STATUS')},
+    {
+      label: 'DEPLOYED',
+      value: latestTrainingRun?.deployed ? 'YES' : 'NO',
+      tone: latestTrainingRun?.deployed ? feedTheme.green : feedTheme.red,
+      tooltip: modelLabelTooltip('DEPLOYED')
+    },
+    {label: 'LOG LOSS', value: formatDecimal(latestTrainingRun?.log_loss, 3), tooltip: modelLabelTooltip('LOG LOSS')},
+    {label: 'BRIER', value: formatDecimal(latestTrainingRun?.brier, 3), tooltip: modelLabelTooltip('BRIER SCORE')},
+    {label: 'LATEST RUN', value: formatRelativeAge(latestTrainingRun?.started_at), note: formatTimestamp(latestTrainingRun?.started_at), tooltip: modelLabelTooltip('STARTED')}
+  ]
+  const decisionRows: CompactFieldRow[] = [
+    {
+      label: 'RUNTIME',
+      value: props.modelRuntimeCompatible ? 'COMPATIBLE' : 'FALLBACK',
+      tone: props.modelRuntimeCompatible ? feedTheme.green : feedTheme.yellow,
+      note: summarizeModelMessage(props.modelFallbackReason, 'runtime is compatible'),
+      tooltip: modelLabelTooltip('RUNTIME COMPATIBLE')
+    },
+    {
+      label: 'RETRAIN',
+      value: retrainStatus,
+      tone: retrainStatus === 'SUCCESS' || retrainStatus === 'COMPLETED' ? feedTheme.green : retrainStatus === 'RUNNING' ? feedTheme.yellow : undefined,
+      note: summarizeModelMessage(props.lastRetrainMessage),
+      tooltip: modelLabelTooltip('RETRAIN')
+    },
+    {
+      label: 'SEARCH',
+      value: replayStatus,
+      tone: replayStatus === 'SUCCESS' || replayStatus === 'COMPLETED' ? feedTheme.green : replayStatus === 'RUNNING' ? feedTheme.yellow : undefined,
+      note: summarizeModelMessage(props.lastReplaySearchMessage),
+      tooltip: modelLabelTooltip('SEARCH STATUS')
+    },
+    {label: 'MANUAL RETRAIN', value: props.manualRetrainPending ? 'PENDING' : 'IDLE', tooltip: modelLabelTooltip('MANUAL RETRAIN')},
+    {label: 'MANUAL TRADE', value: props.manualTradePending ? 'PENDING' : 'IDLE', tooltip: modelLabelTooltip('MANUAL TRADE')}
+  ]
+  const shadowRows: CompactFieldRow[] = [
+    {
+      label: 'LIVE GATE',
+      value: props.liveRequireShadowHistoryEnabled ? 'ENABLED' : 'DISABLED',
+      tone: props.liveRequireShadowHistoryEnabled ? feedTheme.green : undefined,
+      tooltip: modelLabelTooltip('LIVE GATE')
+    },
+    {
+      label: 'TOTAL READY',
+      value: props.liveShadowHistoryTotalReady ? 'READY' : 'BUILDING',
+      tone: props.liveShadowHistoryTotalReady ? feedTheme.green : feedTheme.yellow,
+      tooltip: modelLabelTooltip('TOTAL READY')
+    },
+    {
+      label: 'POST-PROMO READY',
+      value: props.liveShadowHistoryReady ? 'READY' : 'BUILDING',
+      tone: props.liveShadowHistoryReady ? feedTheme.green : feedTheme.yellow,
+      tooltip: modelLabelTooltip('POST-PROMO READY')
+    },
+    {
+      label: 'SNAPSHOT',
+      value: String(props.shadowSnapshotStatus || '-').toUpperCase(),
+      note: `${formatInteger(props.shadowSnapshotRoutedResolved)} ROUTED / ${formatInteger(props.shadowSnapshotResolved)} RESOLVED`,
+      tooltip: modelLabelTooltip('SNAPSHOT')
+    },
+    {label: 'SCOPE', value: String(props.shadowSnapshotScope || '-').toUpperCase(), tooltip: modelLabelTooltip('SCOPE')},
+    {
+      label: 'NEXT BLOCKER',
+      value: props.shadowSnapshotReady ? 'CLEAR' : summarizeModelMessage(props.shadowSnapshotBlockReason),
+      tone: props.shadowSnapshotReady ? feedTheme.green : feedTheme.yellow,
+      tooltip: modelLabelTooltip('NEXT BLOCKER')
+    }
+  ]
+  const latestTrainingRows: CompactFieldRow[] = [
+    {label: 'LAST START', value: formatTimestamp(props.lastRetrainStartedAt), note: formatRelativeAge(props.lastRetrainStartedAt), tooltip: modelLabelTooltip('LAST START')},
+    {label: 'LAST FINISH', value: formatTimestamp(props.lastRetrainFinishedAt), note: formatRelativeAge(props.lastRetrainFinishedAt), tooltip: modelLabelTooltip('LAST FINISH')},
+    {label: 'SEARCH START', value: formatTimestamp(props.lastReplaySearchStartedAt), note: formatRelativeAge(props.lastReplaySearchStartedAt), tooltip: modelLabelTooltip('SEARCH START')},
+    {label: 'SEARCH FINISH', value: formatTimestamp(props.lastReplaySearchFinishedAt), note: formatRelativeAge(props.lastReplaySearchFinishedAt), tooltip: modelLabelTooltip('SEARCH FINISH')},
+    {label: 'LATEST NOTE', value: summarizeModelMessage(props.lastRetrainMessage || props.lastReplaySearchMessage), tooltip: modelLabelTooltip('LATEST STATUS')}
+  ]
+  const modelStatusMessage =
+    props.botStateStatus === 'loading'
+      ? 'LOADING MODEL SNAPSHOT...'
+      : props.botStateStatus === 'error'
+        ? props.botStateError || 'MODEL SNAPSHOT UNAVAILABLE.'
+        : props.botStateStatus === 'stale'
+          ? `STALE MODEL SNAPSHOT • ${props.botStateError || 'USING LAST GOOD DATA.'}`
+          : ''
 
   return (
     <DashboardPageFrame
@@ -1270,40 +1221,35 @@ export function ModelPage(props: ModelPageProps) {
       title="MODEL"
       meta=""
     >
+      {modelStatusMessage ? <div className="dashboard-page__status">{modelStatusMessage}</div> : null}
       <div className="dashboard-columns model-columns">
         <section className="dashboard-column model-column">
-          <DashboardPanel className="dashboard-panel--model" title="MODEL QUALITY">
-            <CompactFieldList rows={predictionQualityCompactRows} columns={1} />
+          <DashboardPanel className="dashboard-panel--model" title="RUNTIME">
+            <CompactFieldList rows={runtimeRows} columns={1} />
           </DashboardPanel>
         </section>
 
         <section className="dashboard-column model-column">
-          <DashboardPanel
-            className="dashboard-panel--model"
-            title="CONFIDENCE BANDS"
-          >
-            <CompactFieldList rows={confidenceCompactRows} columns={1} />
+          <DashboardPanel className="dashboard-panel--model" title="QUALITY">
+            <CompactFieldList rows={qualityRows} columns={1} />
           </DashboardPanel>
         </section>
 
         <section className="dashboard-column model-column">
           <DashboardPanel className="dashboard-panel--model" title="DECISIONS">
-            <CompactFieldList rows={trackerHealthCompactRows} columns={1} />
+            <CompactFieldList rows={decisionRows} columns={1} />
           </DashboardPanel>
         </section>
 
         <section className="dashboard-column model-column">
-          <DashboardPanel
-            className="dashboard-panel--model"
-            title="SHADOW GATE"
-          >
-            <CompactFieldList rows={shadowCompactRows} columns={1} />
+          <DashboardPanel className="dashboard-panel--model" title="SHADOW GATE">
+            <CompactFieldList rows={shadowRows} columns={1} />
           </DashboardPanel>
         </section>
 
         <section className="dashboard-column model-column">
-          <DashboardPanel className="dashboard-panel--model" title="TRAINING SUMMARY">
-            <CompactFieldList rows={trainingCompactRows} columns={1} />
+          <DashboardPanel className="dashboard-panel--model" title="LATEST TRAINING">
+            <CompactFieldList rows={latestTrainingRows} columns={1} />
           </DashboardPanel>
         </section>
 
@@ -1372,7 +1318,27 @@ export function ModelPage(props: ModelPageProps) {
 
         <section className="dashboard-column model-column">
           <DashboardPanel className="dashboard-panel--model" title="MODEL OVERVIEW">
-            <CompactFieldList rows={runtimeSummaryCompactRows} columns={1} />
+            <CompactFieldList
+              rows={[
+                {
+                  label: 'SCORER',
+                  value: String(props.loadedScorer || '-'),
+                  tone: feedTheme.yellow,
+                  tooltip: modelLabelTooltip('SCORER')
+                },
+                {
+                  label: 'MODE',
+                  value: String(props.modelPredictionMode || '-'),
+                  tooltip: modelLabelTooltip('MODE')
+                },
+                {
+                  label: 'BACKEND',
+                  value: String(props.modelBackend || '-'),
+                  tooltip: modelLabelTooltip('BACKEND')
+                }
+              ]}
+              columns={1}
+            />
           </DashboardPanel>
         </section>
       </div>
@@ -1383,19 +1349,17 @@ export function ModelPage(props: ModelPageProps) {
 interface WalletsPageProps {
   mode: 'mock' | 'api'
   bankrollUsd?: number
-  managedWallets: ManagedWalletsResponse
-  discoveryCandidates: DiscoveryCandidatesResponse
-  onManagedWalletsChange?: (nextWallets: ManagedWalletsResponse) => void
+  walletSummaryResource: LoadableResource<WalletSummaryResponse>
+  trackedWalletsResource: LoadableResource<WalletRowsResponse>
+  droppedWalletsResource: LoadableResource<WalletRowsResponse>
+  onMockManagedWalletsChange?: (nextWallets: ManagedWalletsResponse) => void
+  refreshWalletResources?: () => Promise<void>
 }
 
 function walletTone(wallet: ManagedWallet): string | undefined {
   if (wallet.status === 'active') return feedTheme.green
   if (wallet.status === 'disabled') return feedTheme.red
   return undefined
-}
-
-function discoveryTone(candidate: DiscoveryCandidate): string | undefined {
-  return candidate.accepted ? feedTheme.green : feedTheme.red
 }
 
 function walletPnl(wallet: ManagedWallet): number {
@@ -1431,72 +1395,67 @@ function walletSkipRate(wallet: ManagedWallet): number | null {
 export function WalletsPage({
   mode,
   bankrollUsd,
-  managedWallets,
-  discoveryCandidates,
-  onManagedWalletsChange
+  walletSummaryResource,
+  trackedWalletsResource,
+  droppedWalletsResource,
+  onMockManagedWalletsChange,
+  refreshWalletResources
 }: WalletsPageProps) {
-  const wallets = managedWallets.wallets || []
-  const candidates = discoveryCandidates.candidates || []
+  const walletSummary = walletSummaryResource.data
+  const trackedWallets = trackedWalletsResource.data?.wallets || []
+  const droppedWallets = droppedWalletsResource.data?.wallets || []
+  const wallets = [...trackedWallets, ...droppedWallets]
   const [walletActionMessage, setWalletActionMessage] = useState('')
   const [walletBusyKey, setWalletBusyKey] = useState('')
-  const bestWallets = useMemo(
-    () =>
-      [...wallets]
-        .sort((left, right) => {
-          const pnlDelta = walletPnl(right) - walletPnl(left)
-          if (pnlDelta !== 0) return pnlDelta
-          const resolvedDelta = walletResolvedCount(right) - walletResolvedCount(left)
-          if (resolvedDelta !== 0) return resolvedDelta
-          return walletScore(right) - walletScore(left)
-        })
-        .slice(0, 8),
-    [wallets]
-  )
+  const bestWallets = walletSummary?.best_wallets || []
   const bestWalletRows = useMemo(
     () => bestWallets.map((wallet, index) => ({...wallet, walletRank: index + 1})),
     [bestWallets]
   )
   const bestSummaryRows = useMemo(() => bestWalletRows.slice(0, 4), [bestWalletRows])
-  const worstWallets = useMemo(
-    () =>
-      [...wallets]
-        .sort((left, right) => {
-          const pnlDelta = walletPnl(left) - walletPnl(right)
-          if (pnlDelta !== 0) return pnlDelta
-          const resolvedDelta = walletResolvedCount(right) - walletResolvedCount(left)
-          if (resolvedDelta !== 0) return resolvedDelta
-          return walletScore(left) - walletScore(right)
-        })
-        .slice(0, 8),
-    [wallets]
-  )
+  const worstWallets = walletSummary?.worst_wallets || []
   const worstWalletRows = useMemo(
     () => worstWallets.map((wallet, index) => ({...wallet, walletRank: index + 1})),
     [worstWallets]
   )
   const worstSummaryRows = useMemo(() => worstWalletRows.slice(0, 4), [worstWalletRows])
-  const trackedWallets = useMemo(
-    () =>
-      wallets
-        .filter((wallet) => wallet.status !== 'disabled')
-        .sort((left, right) => {
-          const trackingDelta = Number(right.tracking_started_at || 0) - Number(left.tracking_started_at || 0)
-          if (trackingDelta !== 0) return trackingDelta
-          return walletPnl(right) - walletPnl(left)
-        }),
-    [wallets]
-  )
-  const droppedWallets = useMemo(
-    () =>
-      wallets
-        .filter((wallet) => wallet.status === 'disabled')
-        .sort((left, right) => Number(right.disabled_at || 0) - Number(left.disabled_at || 0)),
-    [wallets]
-  )
+  const walletMeta = walletSummary
+    ? `${formatInteger(walletSummary.tracked_count ?? trackedWallets.length)} TRACKED • ${formatInteger(walletSummary.dropped_count ?? droppedWallets.length)} DROPPED • ${formatInteger(walletSummary.discovery_candidate_count)} DISCOVERY CANDIDATES`
+    : ''
+  const resourceStatusMessage = useMemo(() => {
+    const staleMessages = [
+      walletSummaryResource.status === 'stale' ? walletSummaryResource.error : '',
+      trackedWalletsResource.status === 'stale' ? trackedWalletsResource.error : '',
+      droppedWalletsResource.status === 'stale' ? droppedWalletsResource.error : ''
+    ].filter(Boolean)
+    if (staleMessages.length) {
+      return `STALE WALLET DATA • ${staleMessages[0]}`
+    }
+    const errorMessages = [
+      walletSummaryResource.status === 'error' ? walletSummaryResource.error : '',
+      trackedWalletsResource.status === 'error' ? trackedWalletsResource.error : '',
+      droppedWalletsResource.status === 'error' ? droppedWalletsResource.error : ''
+    ].filter(Boolean)
+    if (errorMessages.length && !walletSummary && !trackedWallets.length && !droppedWallets.length) {
+      return errorMessages[0]
+    }
+    return ''
+  }, [
+    droppedWallets.length,
+    droppedWalletsResource.error,
+    droppedWalletsResource.status,
+    trackedWallets.length,
+    trackedWalletsResource.error,
+    trackedWalletsResource.status,
+    walletSummary,
+    walletSummaryResource.error,
+    walletSummaryResource.status
+  ])
 
   function applyManagedWalletRows(nextWalletRows: ManagedWallet[]) {
-    onManagedWalletsChange?.({
-      ...managedWallets,
+    onMockManagedWalletsChange?.({
+      ok: true,
+      source: 'mock',
       count: nextWalletRows.length,
       managed_wallet_count: nextWalletRows.length,
       managed_wallet_total_count: nextWalletRows.length,
@@ -1534,10 +1493,7 @@ export function WalletsPage({
       }
 
       const response = await requestDropWallet(walletAddress)
-      const refreshedWallets = await fetchManagedWallets()
-      if (refreshedWallets) {
-        onManagedWalletsChange?.(refreshedWallets)
-      }
+      await refreshWalletResources?.()
       setWalletActionMessage(
         String(response?.message || `DROPPED ${String(wallet.username || walletAddress).toUpperCase()}.`).toUpperCase()
       )
@@ -1571,10 +1527,7 @@ export function WalletsPage({
       }
 
       const response = await requestReactivateWallet(walletAddress)
-      const refreshedWallets = await fetchManagedWallets()
-      if (refreshedWallets) {
-        onManagedWalletsChange?.(refreshedWallets)
-      }
+      await refreshWalletResources?.()
       setWalletActionMessage(
         String(response?.message || `REACTIVATED ${String(wallet.username || walletAddress).toUpperCase()}.`).toUpperCase()
       )
@@ -1590,20 +1543,25 @@ export function WalletsPage({
     <DashboardPageFrame
       className={joinClasses('wallet-page', walletActionMessage ? 'wallet-page--with-status' : undefined)}
       title="WALLETS"
-      meta={`${formatInteger(wallets.length)} MANAGED • ${formatInteger(candidates.length)} DISCOVERY CANDIDATES`}
+      meta={walletMeta}
     >
-      {walletActionMessage ? <div className="dashboard-page__status">{walletActionMessage}</div> : null}
+      {walletActionMessage || resourceStatusMessage ? <div className="dashboard-page__status">{walletActionMessage || resourceStatusMessage}</div> : null}
       <div className="dashboard-panels dashboard-panels--two">
         <DashboardPanel
           title="BEST WALLETS"
-          meta={`TOP ${bestSummaryRows.length} SHOWN OF ${wallets.length}`}
+          meta={`TOP ${bestSummaryRows.length} SHOWN OF ${formatInteger(walletSummary?.managed_wallet_total_count ?? wallets.length)}`}
           className="dashboard-panel--wallet-summary"
         >
-          <DashboardTable
-            tableId="wallets-best"
-            rows={bestSummaryRows}
-            emptyMessage="NO WALLET LEADERS AVAILABLE."
-            columns={[
+          {walletSummaryResource.status === 'error' && !walletSummary ? (
+            <DashboardPanelNotice tone="error">{walletSummaryResource.error || 'WALLET SUMMARY UNAVAILABLE.'}</DashboardPanelNotice>
+          ) : walletSummaryResource.status === 'loading' && !walletSummary ? (
+            <DashboardPanelNotice>LOADING WALLET SUMMARY...</DashboardPanelNotice>
+          ) : (
+            <DashboardTable
+              tableId="wallets-best"
+              rows={bestSummaryRows}
+              emptyMessage="NO WALLET LEADERS AVAILABLE."
+              columns={[
               {key: 'rank', label: '#', className: 'dashboard-table__cell--compact', render: (row) => formatInteger(row.walletRank)},
               {
                 key: 'username',
@@ -1629,20 +1587,26 @@ export function WalletsPage({
               },
               {key: 'copied', label: 'COPIED', className: 'dashboard-table__cell--numeric', render: (row) => formatInteger(row.post_promotion_resolved_copied_count)},
               {key: 'pnl', label: 'COPY P&L', className: 'dashboard-table__cell--numeric', render: (row) => formatMoney(row.post_promotion_resolved_copied_total_pnl_usd), color: (row) => moneyMetricColor(walletPnl(row), bankrollUsd, row.post_promotion_resolved_copied_count)}
-            ]}
-          />
+              ]}
+            />
+          )}
         </DashboardPanel>
 
         <DashboardPanel
           title="WORST WALLETS"
-          meta={`BOTTOM ${worstSummaryRows.length} SHOWN OF ${wallets.length}`}
+          meta={`BOTTOM ${worstSummaryRows.length} SHOWN OF ${formatInteger(walletSummary?.managed_wallet_total_count ?? wallets.length)}`}
           className="dashboard-panel--wallet-summary"
         >
-          <DashboardTable
-            tableId="wallets-worst"
-            rows={worstSummaryRows}
-            emptyMessage="NO WALLET LAGGARDS AVAILABLE."
-            columns={[
+          {walletSummaryResource.status === 'error' && !walletSummary ? (
+            <DashboardPanelNotice tone="error">{walletSummaryResource.error || 'WALLET SUMMARY UNAVAILABLE.'}</DashboardPanelNotice>
+          ) : walletSummaryResource.status === 'loading' && !walletSummary ? (
+            <DashboardPanelNotice>LOADING WALLET SUMMARY...</DashboardPanelNotice>
+          ) : (
+            <DashboardTable
+              tableId="wallets-worst"
+              rows={worstSummaryRows}
+              emptyMessage="NO WALLET LAGGARDS AVAILABLE."
+              columns={[
               {key: 'rank', label: '#', className: 'dashboard-table__cell--compact', render: (row) => formatInteger(row.walletRank)},
               {
                 key: 'username',
@@ -1668,8 +1632,9 @@ export function WalletsPage({
               },
               {key: 'copied', label: 'COPIED', className: 'dashboard-table__cell--numeric', render: (row) => formatInteger(row.post_promotion_resolved_copied_count)},
               {key: 'pnl', label: 'COPY P&L', className: 'dashboard-table__cell--numeric', render: (row) => formatMoney(row.post_promotion_resolved_copied_total_pnl_usd), color: (row) => moneyMetricColor(walletPnl(row), bankrollUsd, row.post_promotion_resolved_copied_count)}
-            ]}
-          />
+              ]}
+            />
+          )}
         </DashboardPanel>
       </div>
 
@@ -1679,11 +1644,16 @@ export function WalletsPage({
           meta={`${trackedWallets.length} ACTIVE PROFILES`}
           className="dashboard-panel--wallet-primary"
         >
-          <DashboardTable
-            tableId="wallets-tracked"
-            rows={trackedWallets}
-            emptyMessage="NO TRACKED WALLETS AVAILABLE."
-            columns={[
+          {trackedWalletsResource.status === 'error' && !trackedWallets.length ? (
+            <DashboardPanelNotice tone="error">{trackedWalletsResource.error || 'TRACKED WALLETS UNAVAILABLE.'}</DashboardPanelNotice>
+          ) : trackedWalletsResource.status === 'loading' && !trackedWallets.length ? (
+            <DashboardPanelNotice>LOADING TRACKED WALLETS...</DashboardPanelNotice>
+          ) : (
+            <DashboardTable
+              tableId="wallets-tracked"
+              rows={trackedWallets}
+              emptyMessage="NO TRACKED WALLETS AVAILABLE."
+              columns={[
               {key: 'username', label: 'USERNAME', className: 'dashboard-table__cell--compact', render: (row) => row.username || '-'},
               {key: 'wallet', label: 'WALLET', className: 'dashboard-table__cell--wide', render: (row) => row.wallet_address || '-', title: (row) => row.wallet_address},
               {key: 'since', label: 'SINCE', className: 'dashboard-table__cell--compact', render: (row) => formatRelativeAge(row.tracking_started_at)},
@@ -1709,8 +1679,9 @@ export function WalletsPage({
                   </button>
                 )
               }
-            ]}
-          />
+              ]}
+            />
+          )}
         </DashboardPanel>
 
         <DashboardPanel
@@ -1718,11 +1689,16 @@ export function WalletsPage({
           meta={`${droppedWallets.length} DROPPED PROFILES`}
           className="dashboard-panel--wallet-secondary"
         >
-          <DashboardTable
-            tableId="wallets-dropped"
-            rows={droppedWallets}
-            emptyMessage="NO DROPPED WALLETS AVAILABLE."
-            columns={[
+          {droppedWalletsResource.status === 'error' && !droppedWallets.length ? (
+            <DashboardPanelNotice tone="error">{droppedWalletsResource.error || 'DROPPED WALLETS UNAVAILABLE.'}</DashboardPanelNotice>
+          ) : droppedWalletsResource.status === 'loading' && !droppedWallets.length ? (
+            <DashboardPanelNotice>LOADING DROPPED WALLETS...</DashboardPanelNotice>
+          ) : (
+            <DashboardTable
+              tableId="wallets-dropped"
+              rows={droppedWallets}
+              emptyMessage="NO DROPPED WALLETS AVAILABLE."
+              columns={[
               {key: 'username', label: 'USERNAME', className: 'dashboard-table__cell--compact', render: (row) => row.username || '-', color: () => resolveToneColor('negative')},
               {key: 'wallet', label: 'WALLET', className: 'dashboard-table__cell--wide', render: (row) => row.wallet_address || '-', title: (row) => row.wallet_address},
               {key: 'reason', label: 'REASON', className: 'dashboard-table__cell--wide', render: (row) => walletStatusReason(row), title: (row) => walletStatusReason(row)},
@@ -1744,8 +1720,9 @@ export function WalletsPage({
                   </button>
                 )
               }
-            ]}
-          />
+              ]}
+            />
+          )}
         </DashboardPanel>
       </div>
     </DashboardPageFrame>

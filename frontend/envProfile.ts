@@ -42,4 +42,4 @@ if (localMode) {
   process.env.KELLY_LOCAL_MODE = '1'
 }
 
-export const envFileName = 'config.env'
+export const envFileName = 'kelly-config.env'

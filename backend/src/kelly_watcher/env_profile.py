@@ -8,9 +8,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-ENV_EXAMPLE_PATH = REPO_ROOT / "config.env.example"
-CONFIG_ENV_PATH = REPO_ROOT / "config.env"
-SECRETS_ENV_PATH = REPO_ROOT / "secrets.env"
+ENV_EXAMPLE_PATH = REPO_ROOT / "kelly-config.env.example"
+CONFIG_ENV_PATH = REPO_ROOT / "kelly-config.env"
+SECRETS_ENV_PATH = REPO_ROOT / "kelly-secrets.env"
 ENV_PROFILE_ENV_VAR = "KELLY_ENV"
 LOCAL_MODE_ENV_VAR = "KELLY_LOCAL_MODE"
 DISABLE_ENV_FILE_LOADING_ENV_VAR = "KELLY_DISABLE_ENV_FILE_LOADING"
@@ -42,12 +42,12 @@ def save_dir_for_repo(repo_root: Path = REPO_ROOT) -> Path:
 
 def env_path_for_profile(profile: str, repo_root: Path = REPO_ROOT) -> Path:
     del profile
-    return repo_root / "config.env"
+    return repo_root / "kelly-config.env"
 
 
 def secrets_env_path_for_profile(profile: str, repo_root: Path = REPO_ROOT) -> Path:
     del profile
-    return repo_root / "secrets.env"
+    return repo_root / "kelly-secrets.env"
 
 
 def env_paths_for_profile(profile: str, repo_root: Path = REPO_ROOT) -> tuple[Path, Path]:
@@ -74,7 +74,7 @@ def active_env_path(
     repo_root: Path = REPO_ROOT,
 ) -> Path:
     del argv, environ
-    return repo_root / "config.env"
+    return repo_root / "kelly-config.env"
 
 
 def active_env_paths(

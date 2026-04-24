@@ -15,11 +15,11 @@ class EnvProfileTests(unittest.TestCase):
             repo_root = Path(tmpdir)
             self.assertEqual(
                 env_profile.env_path_for_profile("prod", repo_root=repo_root),
-                repo_root / "config.env",
+                repo_root / "kelly-config.env",
             )
             self.assertEqual(
                 env_profile.secrets_env_path_for_profile("prod", repo_root=repo_root),
-                repo_root / "secrets.env",
+                repo_root / "kelly-secrets.env",
             )
 
     def test_flags_and_env_do_not_select_profile_specific_files(self) -> None:
@@ -32,17 +32,17 @@ class EnvProfileTests(unittest.TestCase):
             )
             self.assertEqual(
                 env_profile.active_env_path(argv=["--prod"], environ={}, repo_root=repo_root),
-                repo_root / "config.env",
+                repo_root / "kelly-config.env",
             )
             self.assertEqual(
                 env_profile.active_env_path(argv=["--dev"], environ={}, repo_root=repo_root),
-                repo_root / "config.env",
+                repo_root / "kelly-config.env",
             )
 
     def test_ensure_persistent_env_path_does_not_copy_to_save_folder(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
-            repo_env = repo_root / "config.env"
+            repo_env = repo_root / "kelly-config.env"
             repo_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
 
             env_path = env_profile.ensure_persistent_env_path("dev", repo_root=repo_root)
@@ -54,8 +54,8 @@ class EnvProfileTests(unittest.TestCase):
     def test_init_env_profile_loads_config_and_secrets_files(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
-            config_env = repo_root / "config.env"
-            secrets_env = repo_root / "secrets.env"
+            config_env = repo_root / "kelly-config.env"
+            secrets_env = repo_root / "kelly-secrets.env"
             config_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
             secrets_env.write_text("TELEGRAM_CHAT_ID=123\n", encoding="utf-8")
 
@@ -80,7 +80,7 @@ class EnvProfileTests(unittest.TestCase):
             ):
                 _profile, env_path = env_profile.init_env_profile()
 
-                self.assertEqual(env_path, repo_root / "config.env")
+                self.assertEqual(env_path, repo_root / "kelly-config.env")
                 self.assertNotIn("USE_REAL_MONEY", env_profile.os.environ)
 
     def test_local_mode_overrides_network_endpoints_without_editing_env_files(self) -> None:

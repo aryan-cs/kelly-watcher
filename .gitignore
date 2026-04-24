@@ -2,9 +2,10 @@
 .env
 .env.*
 secrets.env
-!config.env
-!config.env.example
-!secrets.env.example
+kelly-secrets.env
+!kelly-config.env
+!kelly-config.env.example
+!kelly-secrets.env.example
 
 # Python environments and caches
 .venv/

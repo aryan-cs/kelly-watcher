@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
-ENV_EXAMPLE_PATH = REPO_ROOT / "config.env.example"
+ENV_EXAMPLE_PATH = REPO_ROOT / "kelly-config.env.example"
 IDENTITY_FILE = IDENTITY_CACHE_PATH
 
 SAFE_ENV_KEYS = {

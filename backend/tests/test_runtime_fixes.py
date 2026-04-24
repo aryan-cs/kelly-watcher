@@ -513,7 +513,7 @@ class RuntimeFixesTest(unittest.TestCase):
     def test_dashboard_config_snapshot_includes_max_market_horizon_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
             env_path = Path(tmpdir) / ".env"
-            env_example_path = Path(tmpdir) / "config.env.example"
+            env_example_path = Path(tmpdir) / "kelly-config.env.example"
             env_path.write_text("MAX_MARKET_HORIZON=365d\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
 
@@ -531,7 +531,7 @@ class RuntimeFixesTest(unittest.TestCase):
     def test_dashboard_config_snapshot_includes_open_exposure_cap_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
             env_path = Path(tmpdir) / ".env"
-            env_example_path = Path(tmpdir) / "config.env.example"
+            env_example_path = Path(tmpdir) / "kelly-config.env.example"
             env_path.write_text("MAX_TOTAL_OPEN_EXPOSURE_FRACTION=0.60\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
 
@@ -549,7 +549,7 @@ class RuntimeFixesTest(unittest.TestCase):
     def test_dashboard_config_snapshot_includes_heuristic_min_entry_price_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
             env_path = Path(tmpdir) / ".env"
-            env_example_path = Path(tmpdir) / "config.env.example"
+            env_example_path = Path(tmpdir) / "kelly-config.env.example"
             env_path.write_text("HEURISTIC_MIN_ENTRY_PRICE=0.35\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
 
@@ -567,7 +567,7 @@ class RuntimeFixesTest(unittest.TestCase):
     def test_dashboard_config_snapshot_includes_replay_search_constraints_file_after_write(self) -> None:
         with TemporaryDirectory() as tmpdir:
             env_path = Path(tmpdir) / ".env"
-            env_example_path = Path(tmpdir) / "config.env.example"
+            env_example_path = Path(tmpdir) / "kelly-config.env.example"
             env_path.write_text("REPLAY_SEARCH_CONSTRAINTS_FILE=old.json\n", encoding="utf-8")
             env_example_path.write_text("", encoding="utf-8")
 

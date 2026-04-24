@@ -733,7 +733,7 @@ def main(argv: list[str] | None = None) -> int:
     wallet_mode_group.add_argument(
         "--clear-wallets",
         action="store_true",
-        help="Clear WATCHED_WALLETS in config.env before restarting shadow mode.",
+        help="Clear WATCHED_WALLETS in kelly-config.env before restarting shadow mode.",
     )
     args = parser.parse_args(argv)
     wallet_mode: RestartWalletMode = (

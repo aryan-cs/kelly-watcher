@@ -2,7 +2,6 @@
 .env
 .env.*
 secrets.env
-!.env.example
 !config.env
 !config.env.example
 !secrets.env.example
@@ -33,6 +32,8 @@ htmlcov/
 *.pid
 nohup.out
 results.json
+.shadow_wallet_registry_snapshot.json
+.shadow_wallet_registry_clear_all
 *.joblib
 *.db
 *.db-*

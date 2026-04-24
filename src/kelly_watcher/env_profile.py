@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
+ENV_EXAMPLE_PATH = REPO_ROOT / "config.env.example"
 CONFIG_ENV_PATH = REPO_ROOT / "config.env"
 SECRETS_ENV_PATH = REPO_ROOT / "secrets.env"
-LEGACY_ENV_PATH = REPO_ROOT / ".env"
 ENV_PROFILE_ENV_VAR = "KELLY_ENV"
+LOCAL_MODE_ENV_VAR = "KELLY_LOCAL_MODE"
 DISABLE_ENV_FILE_LOADING_ENV_VAR = "KELLY_DISABLE_ENV_FILE_LOADING"
 DEFAULT_ENV_PROFILE = "default"
 SUPPORTED_ENV_PROFILES = (DEFAULT_ENV_PROFILE,)
@@ -89,12 +90,42 @@ def active_env_flag(
     argv: list[str] | tuple[str, ...] | None = None,
     environ: dict[str, str] | None = None,
 ) -> str:
-    del argv, environ
-    return ""
+    return "--local" if local_mode_requested(argv, environ) else ""
 
 
 def env_file_loading_disabled() -> bool:
     return os.getenv(DISABLE_ENV_FILE_LOADING_ENV_VAR, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_argv(argv: list[str] | tuple[str, ...] | None = None) -> list[str]:
+    if argv is not None:
+        return list(argv)
+    return list(sys.argv[1:])
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def local_mode_requested(
+    argv: list[str] | tuple[str, ...] | None = None,
+    environ: dict[str, str] | None = None,
+) -> bool:
+    env = os.environ if environ is None else environ
+    return "--local" in _runtime_argv(argv) or _truthy(env.get(LOCAL_MODE_ENV_VAR))
+
+
+def apply_local_runtime_overrides(environ: dict[str, str] | None = None) -> None:
+    env = os.environ if environ is None else environ
+    env[LOCAL_MODE_ENV_VAR] = "1"
+    port = str(env.get("DASHBOARD_API_PORT") or "8765").strip() or "8765"
+    env["DASHBOARD_API_HOST"] = "127.0.0.1"
+    env["KELLY_API_BASE_URL"] = f"http://127.0.0.1:{port}"
+    env["DASHBOARD_WEB_URL"] = f"http://127.0.0.1:{port}"
+    if not str(env.get("KELLY_API_TOKEN") or "").strip() and str(env.get("DASHBOARD_API_TOKEN") or "").strip():
+        env["KELLY_API_TOKEN"] = str(env["DASHBOARD_API_TOKEN"]).strip()
+    if not str(env.get("DASHBOARD_API_TOKEN") or "").strip() and str(env.get("KELLY_API_TOKEN") or "").strip():
+        env["DASHBOARD_API_TOKEN"] = str(env["KELLY_API_TOKEN"]).strip()
 
 
 def init_env_profile(
@@ -103,23 +134,22 @@ def init_env_profile(
     *,
     override: bool = False,
 ) -> tuple[str, Path]:
-    del argv, environ
+    del environ
     profile = DEFAULT_ENV_PROFILE
     paths = active_env_paths(repo_root=REPO_ROOT)
     os.environ[ENV_PROFILE_ENV_VAR] = profile
     if env_file_loading_disabled():
         return profile, paths[0]
-    loaded_any = False
     for path in paths:
         if path.exists():
             load_dotenv(path, override=override)
-            loaded_any = True
-    if not loaded_any and LEGACY_ENV_PATH.exists():
-        load_dotenv(LEGACY_ENV_PATH, override=override)
+    if local_mode_requested(argv, os.environ):
+        apply_local_runtime_overrides(os.environ)
     return profile, paths[0]
 
 
 def add_env_profile_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--local", action="store_true", help="Run backend/dashboard API on localhost without editing env files.")
     # Older commands may still pass these flags. Keep accepting them as no-ops,
     # but do not create or read .env.dev/.env.prod anymore.
     parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)

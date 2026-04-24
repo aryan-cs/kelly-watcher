@@ -9292,10 +9292,10 @@ class ReplaySearchTest(unittest.TestCase):
         self.assertEqual(rejected["constraint_failures"], ["total_pnl_usd"])
         self.assertIn("reject total_pnl_usd", stderr.getvalue())
 
-    def test_main_accepts_checked_in_replay_search_specs_from_env_example_paths(self) -> None:
+    def test_main_accepts_checked_in_replay_search_specs_from_config_env_example_paths(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         env_example_values: dict[str, str] = {}
-        for raw_line in (repo_root / ".env.example").read_text(encoding="utf-8").splitlines():
+        for raw_line in (repo_root / "config.env.example").read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue

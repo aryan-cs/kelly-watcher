@@ -2,7 +2,7 @@
 
 Kelly Watcher is a local, operator-driven Polymarket copy-trading system. It watches selected wallets, scores incoming trades, sizes positions with Kelly-style logic, executes in shadow or live mode, records everything to SQLite, and exposes a terminal dashboard for monitoring the bot in real time.
 
-This repository is meant to be clonable by another developer without any private local state. Secrets, databases, logs, model artifacts, and other runtime files are intentionally excluded from git. A fresh clone should be able to install dependencies, create `config.env` and `secrets.env`, start in shadow mode, and begin operating from there.
+This repository is meant to be clonable by another developer without private local runtime state. `config.env` is committed because it contains non-secret operator settings. `secrets.env`, databases, logs, model artifacts, and other runtime files are intentionally excluded from git.
 
 ## What This Repository Includes
 
@@ -18,12 +18,18 @@ This repository is meant to be clonable by another developer without any private
 
 These are intentionally local-only and should stay out of version control:
 
-- `config.env`, `secrets.env`, `.env`, and any other local env files
+- `secrets.env`, `.env`, and any other secret-bearing env files
 - `save/` runtime files, SQLite databases, logs, and model artifacts
 - Python caches and Node modules
 - one-off local artifacts such as `nohup.out` and `results.json`
 
 The bot creates its runtime directories automatically on startup.
+
+## Repository Layout
+
+The Python runtime intentionally lives under `src/kelly_watcher/`. That directory is the importable Python package used by `pyproject.toml` and all `kelly_watcher.*` imports. Do not flatten those files directly into `src/`; doing so breaks packaging and console scripts.
+
+The supported operator UI is `dashboard-cli/`, the React Ink terminal dashboard. The old browser dashboard is not part of the supported workflow.
 
 ## High-Level Architecture
 
@@ -123,12 +129,12 @@ cd ..
 
 ### 4. Create your local config
 
-Create two repo-root env files. Kelly Watcher reads `config.env` first and `secrets.env` second. Legacy `.env`, `.env.dev`, `.env.prod`, and `save/.env.*` files are only fallback/migration inputs and should not be used for normal operation.
+Use two repo-root env files. Kelly Watcher reads `config.env` first and `secrets.env` second. Do not put env files in `save/`; `save/` is disposable runtime state and can be reset or rebuilt.
 
 Examples:
 
 ```bash
-cp config.env.example config.env
+cp config.env.example config.env  # only if config.env is missing
 cp secrets.env.example secrets.env
 ```
 
@@ -142,7 +148,7 @@ copy config.env.example config.env
 copy secrets.env.example secrets.env
 ```
 
-At minimum for shadow mode, set:
+At minimum for shadow mode, confirm:
 
 - `WATCHED_WALLETS`
 - `USE_REAL_MONEY=false`
@@ -173,13 +179,13 @@ Both tools print a ready-to-paste `WATCHED_WALLETS=...` line.
 Preferred:
 
 ```bash
-uv run main
+uv run main --local
 ```
 
 Equivalent:
 
 ```bash
-uv run python main.py
+uv run python main.py --local
 ```
 
 The backend will automatically:
@@ -192,6 +198,8 @@ The backend will automatically:
 - emit `save/data/events.jsonl` and `save/data/bot_state.json`
 - start the dashboard API on `http://127.0.0.1:8765` by default
 
+`--local` is a process-only override for same-machine Mac testing. It does not edit `config.env` or `secrets.env`; it forces this run to use localhost. Omit it when running the backend on Windows for the Mac dashboard over Tailscale.
+
 If you want to run the dashboard on another computer, set:
 
 - `DASHBOARD_API_HOST=100.91.53.63` on the Windows backend
@@ -203,7 +211,7 @@ In a second terminal:
 
 ```bash
 cd dashboard-cli
-npm start
+npm run dev:local
 ```
 
 To run the dashboard on another computer, point it at the backend API:
@@ -234,18 +242,6 @@ For dashboard development from the TypeScript sources instead of the checked-in 
 ```bash
 cd dashboard-cli
 npm run dev
-```
-
-Windows helper:
-
-```bat
-start-backend-windows.cmd
-```
-
-Mac helper:
-
-```bash
-./start-dashboard-mac.sh
 ```
 
 ## Runtime Modes
@@ -566,14 +562,14 @@ Page-specific:
 Start the bot:
 
 ```bash
-uv run main
+uv run main --local
 ```
 
 Start the dashboard:
 
 ```bash
 cd dashboard-cli
-npm start
+npm run dev:local
 ```
 
 Run the full test suite:

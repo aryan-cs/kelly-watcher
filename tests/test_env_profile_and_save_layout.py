@@ -68,6 +68,37 @@ class EnvProfileTests(unittest.TestCase):
                 self.assertEqual(env_profile.os.environ.get("USE_REAL_MONEY"), "false")
                 self.assertEqual(env_profile.os.environ.get("TELEGRAM_CHAT_ID"), "123")
 
+    def test_init_env_profile_ignores_save_env_files(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            save_env = repo_root / "save" / ".env"
+            save_env.parent.mkdir()
+            save_env.write_text("USE_REAL_MONEY=true\n", encoding="utf-8")
+
+            with mock.patch.object(env_profile, "REPO_ROOT", repo_root), mock.patch.dict(
+                "os.environ", {}, clear=True
+            ):
+                _profile, env_path = env_profile.init_env_profile()
+
+                self.assertEqual(env_path, repo_root / "config.env")
+                self.assertNotIn("USE_REAL_MONEY", env_profile.os.environ)
+
+    def test_local_mode_overrides_network_endpoints_without_editing_env_files(self) -> None:
+        env = {
+            "DASHBOARD_API_HOST": "0.0.0.0",
+            "DASHBOARD_API_PORT": "9999",
+            "KELLY_API_BASE_URL": "http://100.91.53.63:9999",
+            "DASHBOARD_WEB_URL": "http://100.91.53.63:9999",
+            "DASHBOARD_API_TOKEN": "token",
+        }
+
+        env_profile.apply_local_runtime_overrides(env)
+
+        self.assertEqual(env["DASHBOARD_API_HOST"], "127.0.0.1")
+        self.assertEqual(env["KELLY_API_BASE_URL"], "http://127.0.0.1:9999")
+        self.assertEqual(env["DASHBOARD_WEB_URL"], "http://127.0.0.1:9999")
+        self.assertEqual(env["KELLY_API_TOKEN"], "token")
+
 
 class RuntimeSaveLayoutTests(unittest.TestCase):
     def test_migrate_runtime_state_moves_legacy_files_into_save_folder(self) -> None:

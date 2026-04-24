@@ -16,11 +16,9 @@ from urllib.parse import parse_qs, urlparse
 from kelly_watcher.config import use_real_money
 from kelly_watcher.data.db import DB_PATH, db_recovery_state, get_conn
 from kelly_watcher.env_profile import (
-    LEGACY_ENV_PATH,
     active_env_profile,
     env_path_for_profile,
     env_paths_for_profile,
-    repo_env_path_for_profile,
 )
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 from kelly_watcher.runtime_paths import (
@@ -39,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 ENV_PROFILE = active_env_profile()
 ENV_PATH = env_path_for_profile(ENV_PROFILE)
-ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
+ENV_EXAMPLE_PATH = REPO_ROOT / "config.env.example"
 IDENTITY_FILE = IDENTITY_CACHE_PATH
 
 SAFE_ENV_KEYS = {
@@ -195,13 +193,6 @@ def _source_env_path() -> Path:
     paths = [path for path in env_paths_for_profile(ENV_PROFILE, REPO_ROOT) if path.exists()]
     if paths:
         return paths[0]
-    if ENV_PATH.exists():
-        return ENV_PATH
-    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
-    if repo_env_path.exists():
-        return repo_env_path
-    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
-        return LEGACY_ENV_PATH
     return ENV_EXAMPLE_PATH
 
 

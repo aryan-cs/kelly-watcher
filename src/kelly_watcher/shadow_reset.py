@@ -17,13 +17,11 @@ from kelly_watcher.config import shadow_bankroll_usd, use_real_money
 import kelly_watcher.data.db as db
 from kelly_watcher.env_profile import (
     ENV_EXAMPLE_PATH,
-    LEGACY_ENV_PATH,
     active_env_flag,
     active_env_profile,
     add_env_profile_flags,
     env_path_for_profile,
     env_paths_for_profile,
-    repo_env_path_for_profile,
 )
 from kelly_watcher.runtime_paths import (
     BACKGROUND_LOG_PATH,
@@ -52,13 +50,6 @@ def _source_env_path() -> Path:
     paths = [path for path in env_paths_for_profile(ENV_PROFILE, REPO_ROOT) if path.exists()]
     if paths:
         return paths[0]
-    if ENV_PATH.exists():
-        return ENV_PATH
-    repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
-    if repo_env_path.exists():
-        return repo_env_path
-    if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
-        return LEGACY_ENV_PATH
     return ENV_EXAMPLE_PATH
 
 

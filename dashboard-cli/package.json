@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "node bootstrap.js",
-    "dev": "tsx bootstrap.ts"
+    "start:local": "node bootstrap.js --local",
+    "dev": "tsx bootstrap.ts",
+    "dev:local": "tsx bootstrap.ts --local"
   },
   "dependencies": {
     "ink": "^5.0.1",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 import httpx
 
 from kelly_watcher.integrations.alerter import send_telegram_message
-from kelly_watcher.config import telegram_bot_token, telegram_chat_id
+from kelly_watcher.config import dashboard_api_port, dashboard_url, telegram_bot_token, telegram_chat_id
 from kelly_watcher.runtime.performance_preview import render_tracker_preview_message
 from kelly_watcher.tools.rank_copytrade_wallets import fetch_leaderboard
 from kelly_watcher.runtime_paths import BOT_STATE_FILE, MANUAL_RETRAIN_REQUEST_FILE, TELEGRAM_STATE_FILE
@@ -160,11 +161,60 @@ def render_leaderboards_message() -> str:
     return "\n".join(lines)
 
 
+def _tailscale_magicdns_name() -> str:
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return ""
+    self_payload = payload.get("Self") if isinstance(payload, dict) else None
+    if not isinstance(self_payload, dict):
+        return ""
+    dns_name = str(self_payload.get("DNSName") or "").strip().rstrip(".")
+    if dns_name:
+        return dns_name
+    host_name = str(self_payload.get("HostName") or "").strip()
+    magicdns_suffix = str(payload.get("MagicDNSSuffix") or "").strip().strip(".")
+    if host_name and magicdns_suffix:
+        return f"{host_name}.{magicdns_suffix}"
+    return host_name
+
+
+def _tailscale_dashboard_url() -> str:
+    dns_name = _tailscale_magicdns_name()
+    if not dns_name:
+        return ""
+    return f"http://{dns_name}:{dashboard_api_port()}"
+
+
+def _dashboard_link_message() -> str:
+    url = dashboard_url() or _tailscale_dashboard_url()
+    if not url:
+        return (
+            "dashboard link unavailable. set DASHBOARD_WEB_URL or make sure tailscale is running "
+            "so the bot can detect its MagicDNS name."
+        )
+    return f"dashboard: {url}"
+
+
 def _build_command_reply(command: str) -> str | None:
     if command == "/balance":
         # Keep the command name for compatibility, but make the reply explicit
         # that this is a shadow/paper preview rather than a live wallet balance.
         return render_tracker_preview_message()
+    if command == "/link":
+        return _dashboard_link_message()
     if command == "/train":
         return _request_manual_retrain(source="telegram")
     if command in {"/leaderboard", "/leaderboards"}:
@@ -219,7 +269,7 @@ def service_telegram_commands() -> int:
             continue
 
         command = _normalize_message_command(str(message.get("text") or ""))
-        if command not in {"/balance", "/train", "/leaderboard", "/leaderboards"}:
+        if command not in {"/balance", "/link", "/train", "/leaderboard", "/leaderboards"}:
             continue
 
         chat = message.get("chat")

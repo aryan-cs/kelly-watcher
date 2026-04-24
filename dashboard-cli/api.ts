@@ -1,4 +1,5 @@
 import fs from 'fs'
+import {localMode} from './envProfile.js'
 import {envExamplePath, envReadPaths} from './paths.js'
 
 export class ApiError extends Error {
@@ -11,9 +12,8 @@ export class ApiError extends Error {
   }
 }
 
-function sourceEnvPaths(): string[] {
-  const existing = envReadPaths.filter((candidate) => fs.existsSync(candidate))
-  return existing.length > 0 ? existing : [envExamplePath]
+function sourceEnvPath(): string {
+  return envReadPaths.find((candidate) => fs.existsSync(candidate)) || envExamplePath
 }
 
 function stripMatchingQuotes(value: string): string {
@@ -24,9 +24,9 @@ function stripMatchingQuotes(value: string): string {
 }
 
 function readEnvFileValue(key: string): string {
-  for (const sourceEnvPath of sourceEnvPaths()) {
+  for (const envPath of envReadPaths.length ? envReadPaths : [sourceEnvPath()]) {
     try {
-      const lines = fs.readFileSync(sourceEnvPath, 'utf8').split(/\r?\n/)
+      const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/)
       for (const rawLine of lines) {
         const line = rawLine.trim()
         if (!line || line.startsWith('#') || !line.includes('=')) {
@@ -54,9 +54,14 @@ function readRuntimeEnv(key: string, fallback = ''): string {
   return fileValue || fallback
 }
 
-const rawApiBaseUrl = readRuntimeEnv('KELLY_API_BASE_URL', 'http://127.0.0.1:8765')
+function localApiBaseUrl(): string {
+  const port = readRuntimeEnv('DASHBOARD_API_PORT', '8765')
+  return `http://127.0.0.1:${port}`
+}
+
+const rawApiBaseUrl = localMode ? localApiBaseUrl() : readRuntimeEnv('KELLY_API_BASE_URL', 'http://127.0.0.1:8765')
 export const apiBaseUrl = rawApiBaseUrl.replace(/\/+$/, '')
-const apiToken = readRuntimeEnv('KELLY_API_TOKEN')
+const apiToken = readRuntimeEnv('KELLY_API_TOKEN') || readRuntimeEnv('DASHBOARD_API_TOKEN')
 
 function apiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) {

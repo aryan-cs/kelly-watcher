@@ -135,7 +135,7 @@ from evaluator import (
 )
 from executor import PolymarketExecutor
 from kelly import size_signal
-from kelly_watcher.shadow_reset import (
+from shadow_reset import (
     apply_wallet_mode_for_reset,
     exec_restarted_bot,
     reset_shadow_runtime,

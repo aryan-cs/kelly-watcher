@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import db
-from kelly_watcher import shadow_reset
+import shadow_reset
 
 
 class ShadowResetTest(unittest.TestCase):

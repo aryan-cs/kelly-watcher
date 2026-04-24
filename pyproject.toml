@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-main = "kelly_watcher.cli:main"
+main = "cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -30,4 +30,7 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["kelly_watcher"]
+include = [
+    "*.py",
+    "replay_search_specs/*.json",
+]

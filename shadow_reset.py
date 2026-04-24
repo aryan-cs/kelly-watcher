@@ -138,7 +138,7 @@ def _looks_like_bot_command(command: str) -> bool:
         f"python {repo_root}/main.py",
         f"python3 {repo_root}/main.py",
         f"python.exe {repo_root}/main.py",
-        "-m kelly_watcher.cli",
+        "-m cli",
         "uv run main",
         "uv run python main.py",
         "python main.py",

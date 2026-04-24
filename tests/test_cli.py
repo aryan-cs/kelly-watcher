@@ -6,13 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kelly_watcher import cli
+import cli
 
 
 class CliTest(unittest.TestCase):
     def test_main_launcher_ignores_extra_args_and_invokes_bot(self) -> None:
         original_argv = sys.argv[:]
-        repo_root = str(Path(cli.__file__).resolve().parents[1])
+        repo_root = str(Path(cli.__file__).resolve().parent)
         path_was_present = repo_root in sys.path
 
         bot_module = types.SimpleNamespace(main=lambda: None)

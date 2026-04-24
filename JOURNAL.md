@@ -8,6 +8,15 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-24 12:13 CDT] codex-main
+Task: Flatten the remaining `kelly_watcher/` package into the repo root source files after the rollback, so there is no nested package folder.
+Claims: `JOURNAL.md`, `cli.py`, `shadow_reset.py`, removed `kelly_watcher/`, `main.py`, `restart_shadow.py`, `pyproject.toml`, `README.md`, CLI/shadow reset tests
+Status: Completed locally; pending commit and push.
+Blockers: None.
+Next: Push `master`, then Windows/Mac operators should pull the flattened launcher tree.
+Decisions: Moved `kelly_watcher/cli.py` to `cli.py`, moved `kelly_watcher/shadow_reset.py` to `shadow_reset.py`, removed the empty package initializer, updated imports and the console entry point to `cli:main`, and updated stale command detection so restart tooling recognizes the flattened launcher.
+Tests: `uv run python -m py_compile cli.py shadow_reset.py main.py restart_shadow.py tests/test_cli.py tests/test_shadow_reset.py tests/test_runtime_fixes.py` -> passed; `uv run python -c "import cli, shadow_reset, main, restart_shadow; print('imports ok')"` -> passed; `uv run pytest tests/test_cli.py tests/test_shadow_reset.py -q` -> 14 passed; `uv run pytest tests/test_runtime_fixes.py -q -k "shadow_reset or restart or cli"` -> 25 passed, 188 deselected; `UV_CACHE_DIR=/tmp/uv-cache-kelly uv build` -> passed; `git diff --check` -> passed.
+
 [2026-04-24 12:25 CDT] codex-main
 Task: Preserve the split Tailscale runtime after rollback: Windows runs backend/API, Mac runs only the React Ink dashboard.
 Claims: `JOURNAL.md`, `.env.example`, `README.md`, `start-backend-windows.cmd`, `start-dashboard-mac.sh`, removed `start-dashboard.cmd`

@@ -86,7 +86,7 @@ import httpx
 import identity_cache
 import main
 import performance_preview
-from kelly_watcher import shadow_reset
+import shadow_reset
 import shadow_evidence
 import tracker
 import trader_scorer

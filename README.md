@@ -712,7 +712,7 @@ Dashboard:
 Packaging and entrypoints:
 
 - `pyproject.toml`: project metadata and the `main` console script
-- `kelly_watcher/cli.py`: lightweight launcher so `uv run main` works cleanly
+- `cli.py`: lightweight launcher so `uv run main` works cleanly
 - `restart_shadow.py`: cross-platform shadow reset and restart helper
 
 ## Operational Notes

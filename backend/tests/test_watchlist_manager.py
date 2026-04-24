@@ -342,6 +342,48 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_tracker_poll_caps_candidates_before_enrichment(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                tracker = PolymarketTracker(["0xhot"])
+                now_ts = 1_700_000_100
+                rows = [
+                    {
+                        "id": f"trade-{index}",
+                        "conditionId": f"market-{index}",
+                        "side": "BUY",
+                        "asset": f"token-{index}",
+                        "size": 10,
+                        "price": 0.5,
+                        "timestamp": now_ts - (3 - index),
+                    }
+                    for index in range(1, 4)
+                ]
+                metadata_calls: list[tuple[str, ...]] = []
+                orderbook_calls: list[tuple[str, ...]] = []
+                tracker._fetch_wallet_trades_batch = lambda wallets, limit=50: {"0xhot": rows}
+                tracker._fetch_market_metadata_batch = lambda condition_ids: metadata_calls.append(
+                    tuple(condition_ids)
+                ) or {}
+                tracker._fetch_orderbook_snapshots_batch = lambda token_ids: orderbook_calls.append(
+                    tuple(token_ids)
+                ) or {}
+                tracker._parse_raw_trade = lambda *args, **kwargs: None
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts):
+                        events = tracker.poll(["0xhot"], max_events=2)
+                finally:
+                    tracker.close()
+
+                self.assertEqual(events, [])
+                self.assertEqual(metadata_calls, [("market-2", "market-3")])
+                self.assertEqual(orderbook_calls, [("token-2", "token-3")])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_poll_batches_apply_tier_specific_trade_limits(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

@@ -650,6 +650,26 @@ def max_source_trade_age_seconds() -> int:
     return max(int(seconds), 30)
 
 
+def max_events_per_poll() -> int:
+    return _get_bounded_int("MAX_EVENTS_PER_POLL", "25", minimum=1, maximum=500)
+
+
+def max_poll_processing_seconds() -> int:
+    raw = _get_env_file_value("MAX_POLL_PROCESSING_TIME") or _get("MAX_POLL_PROCESSING_TIME", "45s")
+    seconds = _parse_duration(raw, 45.0)
+    if seconds == float("inf"):
+        return 45
+    return max(int(seconds), 1)
+
+
+def telegram_balance_cache_max_age_seconds() -> int:
+    raw = _get_env_file_value("TELEGRAM_BALANCE_CACHE_MAX_AGE") or _get("TELEGRAM_BALANCE_CACHE_MAX_AGE", "15m")
+    seconds = _parse_duration(raw, 15 * 60.0)
+    if seconds == float("inf"):
+        return 15 * 60
+    return max(int(seconds), 0)
+
+
 def max_feed_staleness_seconds() -> int:
     raw = _get_env_file_value("MAX_FEED_STALENESS") or _get("MAX_FEED_STALENESS", "3m")
     seconds = _parse_duration(raw, 3 * 60.0)

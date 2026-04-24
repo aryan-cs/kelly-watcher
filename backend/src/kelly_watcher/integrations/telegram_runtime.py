@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 import time
@@ -11,7 +12,13 @@ from typing import Any
 import httpx
 
 from kelly_watcher.integrations.alerter import send_telegram_message
-from kelly_watcher.config import dashboard_api_port, dashboard_url, telegram_bot_token, telegram_chat_id
+from kelly_watcher.config import (
+    dashboard_api_port,
+    dashboard_url,
+    telegram_balance_cache_max_age_seconds,
+    telegram_bot_token,
+    telegram_chat_id,
+)
 from kelly_watcher.runtime.performance_preview import render_tracker_preview_message
 from kelly_watcher.tools.rank_copytrade_wallets import fetch_leaderboard
 from kelly_watcher.runtime_paths import BOT_STATE_FILE, MANUAL_RETRAIN_REQUEST_FILE, TELEGRAM_STATE_FILE
@@ -118,6 +125,142 @@ def _format_usd(value: float) -> str:
     return f"${float(value):.2f}"
 
 
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _optional_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_optional_usd(value: Any, *, signed: bool = False) -> str:
+    numeric = _optional_float(value)
+    if numeric is None:
+        return "-"
+    return _format_signed_usd(numeric) if signed else _format_usd(numeric)
+
+
+def _format_optional_pct(value: Any) -> str:
+    numeric = _optional_float(value)
+    if numeric is None:
+        return "-"
+    return f"{numeric * 100:.2f}%"
+
+
+def _format_optional_ratio(value: Any) -> str:
+    numeric = _optional_float(value)
+    if numeric is None:
+        return "-"
+    return "inf" if math.isinf(numeric) else f"{numeric:.2f}"
+
+
+def _seconds_ago(value: Any, *, now_ts: int | None = None) -> str:
+    timestamp = _optional_int(value)
+    if timestamp <= 0:
+        return "-"
+    now = int(now_ts if now_ts is not None else time.time())
+    elapsed = max(now - timestamp, 0)
+    if elapsed < 60:
+        return f"{elapsed}s ago"
+    if elapsed < 3600:
+        return f"{elapsed // 60}m ago"
+    return f"{elapsed // 3600}h {(elapsed % 3600) // 60}m ago"
+
+
+def render_cached_tracker_preview_message() -> str | None:
+    bot_state = _load_bot_state()
+    if not bot_state:
+        return None
+
+    mode = "live" if str(bot_state.get("mode") or "").strip().lower() == "live" else "shadow"
+    snapshot_known = bool(bot_state.get("shadow_snapshot_state_known")) or bool(
+        bot_state.get("routed_shadow_state_known")
+    )
+    bankroll = _optional_float(bot_state.get("bankroll_usd"))
+    if not snapshot_known and bankroll is None:
+        return None
+
+    now_ts = int(time.time())
+    freshness_anchor = max(_optional_int(bot_state.get("last_poll_at")), _optional_int(bot_state.get("last_activity_at")))
+    max_age = telegram_balance_cache_max_age_seconds()
+    if max_age > 0 and freshness_anchor > 0 and (now_ts - freshness_anchor) > max_age:
+        freshness = f"cached state is stale ({_seconds_ago(freshness_anchor, now_ts=now_ts)})"
+    else:
+        freshness = f"cached state updated {_seconds_ago(freshness_anchor, now_ts=now_ts)}"
+
+    balance_label = "Current balance" if mode == "live" else "Estimated shadow bankroll"
+    title = "Live tracker performance" if mode == "live" else "Shadow tracker performance"
+    total_pnl = bot_state.get("shadow_snapshot_total_pnl_usd")
+    return_pct = bot_state.get("shadow_snapshot_return_pct")
+    resolved = _optional_int(
+        bot_state.get("shadow_snapshot_resolved")
+        or bot_state.get("resolved_shadow_trade_count")
+        or bot_state.get("shadow_history_all_time_resolved")
+    )
+    routed_resolved = _optional_int(bot_state.get("routed_shadow_routed_resolved"))
+    routed_legacy_resolved = _optional_int(bot_state.get("routed_shadow_legacy_resolved"))
+    routed_total_resolved = _optional_int(bot_state.get("routed_shadow_total_resolved"))
+    loop_started_at = _optional_int(bot_state.get("last_loop_started_at"))
+    loop_in_progress = bool(bot_state.get("loop_in_progress"))
+    poll_duration = _optional_float(bot_state.get("last_poll_duration_s"))
+    routed_gate = str(bot_state.get("routed_shadow_block_reason") or "").strip()
+    data_warning = str(
+        bot_state.get("shadow_snapshot_block_reason")
+        or bot_state.get("routed_shadow_data_warning")
+        or ""
+    ).strip()
+
+    lines = [
+        title,
+        "Shadow/paper estimates only; /balance does not read a live wallet balance."
+        if mode == "shadow"
+        else "Live balance and equity are shown where available.",
+        freshness,
+        f"Total P&L: {_format_optional_usd(total_pnl, signed=True)}",
+        f"Return %: {_format_optional_pct(return_pct)}",
+        f"{balance_label}: {_format_optional_usd(bankroll)}",
+        f"Profit factor: {_format_optional_ratio(bot_state.get('shadow_snapshot_profit_factor'))}",
+        f"Expectancy: {_format_optional_usd(bot_state.get('shadow_snapshot_expectancy_usd'), signed=True)}",
+        f"Resolved: {resolved}",
+        (
+            "Poll: "
+            f"last {_seconds_ago(bot_state.get('last_poll_at'), now_ts=now_ts)}"
+            + (f", duration {poll_duration:.1f}s" if poll_duration is not None else "")
+        ),
+    ]
+    if loop_in_progress and loop_started_at > 0:
+        lines.append(f"Loop: in progress for {_seconds_ago(loop_started_at, now_ts=now_ts).replace(' ago', '')}")
+    if mode == "shadow":
+        lines.extend(
+            [
+                "Routed fixed-segment shadow only",
+                (
+                    f"Routed coverage: {_format_optional_pct(bot_state.get('routed_shadow_coverage_pct'))} "
+                    f"({routed_resolved} routed resolved, {routed_legacy_resolved} legacy/unassigned resolved excluded)"
+                ),
+                f"Routed total resolved: {routed_total_resolved}",
+                f"Routed P&L: {_format_optional_usd(bot_state.get('routed_shadow_total_pnl_usd'), signed=True)}",
+                f"Routed P&L / bankroll: {_format_optional_pct(bot_state.get('routed_shadow_return_pct'))}",
+                f"Routed profit factor: {_format_optional_ratio(bot_state.get('routed_shadow_profit_factor'))}",
+                f"Routed expectancy: {_format_optional_usd(bot_state.get('routed_shadow_expectancy_usd'), signed=True)}",
+            ]
+        )
+    if routed_gate:
+        lines.append(f"Routed gate: {routed_gate}")
+    elif data_warning:
+        lines.append(f"State note: {data_warning}")
+    return "\n".join(line for line in lines if line)
+
+
 def _leaderboard_entry_line(entry: Any, *, fallback_rank: int) -> str:
     rank = int(getattr(entry, "rank", 0) or fallback_rank)
     username = str(getattr(entry, "username", "") or "").strip()
@@ -210,9 +353,10 @@ def _dashboard_link_message() -> str:
 
 def _build_command_reply(command: str) -> str | None:
     if command == "/balance":
-        # Keep the command name for compatibility, but make the reply explicit
-        # that this is a shadow/paper preview rather than a live wallet balance.
-        return render_tracker_preview_message()
+        # Keep /balance responsive under DB contention by replying from the
+        # cached bot-state snapshot. Fall back to the full DB preview only when
+        # no cached runtime state exists yet.
+        return render_cached_tracker_preview_message() or render_tracker_preview_message()
     if command == "/link":
         return _dashboard_link_message()
     if command == "/train":

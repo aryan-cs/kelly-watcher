@@ -566,6 +566,7 @@ class PolymarketTracker:
         *,
         trade_limit: int = 50,
         watch_tier: str = "",
+        max_events: int | None = None,
     ) -> list[TradeEvent]:
         new_events: list[TradeEvent] = []
         poll_started_at = int(time.time())
@@ -622,6 +623,18 @@ class PolymarketTracker:
                             raw=dict(raw),
                         )
                     )
+
+            event_cap = int(max_events or 0)
+            if event_cap > 0 and len(candidates) > event_cap:
+                dropped = len(candidates) - event_cap
+                candidates.sort(key=lambda candidate: candidate.timestamp)
+                candidates = candidates[-event_cap:]
+                logger.warning(
+                    "Poll candidate cap kept newest %d %s event(s), dropped %d older candidate(s) before enrichment",
+                    event_cap,
+                    str(watch_tier or "watched"),
+                    dropped,
+                )
 
             metadata_by_condition = self._fetch_market_metadata_batch(
                 [candidate.condition_id for candidate in candidates]

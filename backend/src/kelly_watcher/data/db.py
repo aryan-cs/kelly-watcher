@@ -51,8 +51,17 @@ def _startup_heavy_maintenance_enabled(path: Path) -> bool:
 
 def _connect_sqlite(path: Path, *, apply_runtime_pragmas: bool) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    try:
+        connect_timeout_s = max(float(os.getenv("SQLITE_CONNECT_TIMEOUT_SECONDS", "30") or 30), 1.0)
+    except ValueError:
+        connect_timeout_s = 30.0
+    try:
+        busy_timeout_ms = max(int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "30000") or 30000), 1000)
+    except ValueError:
+        busy_timeout_ms = 30000
+    conn = sqlite3.connect(path, timeout=connect_timeout_s, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
     if apply_runtime_pragmas:
         conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(path)}")
         conn.execute("PRAGMA foreign_keys=ON")

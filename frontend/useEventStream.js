@@ -3,6 +3,7 @@ import { fetchApiJson } from './api.js';
 import { useRefreshToken } from './refresh.js';
 import { isShadowRestartPending } from './useBotState.js';
 const eventCache = new Map();
+const EVENT_POLL_INTERVAL_MS = 2000;
 export function clearEventStreamCache() {
     eventCache.clear();
 }
@@ -20,7 +21,7 @@ export function useEventStream(maxEvents = 50) {
             }
             timer = setTimeout(() => {
                 void read();
-            }, 500);
+            }, EVENT_POLL_INTERVAL_MS);
         };
         const read = async () => {
             if (isShadowRestartPending()) {

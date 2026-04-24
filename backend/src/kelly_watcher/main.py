@@ -47,6 +47,7 @@ from kelly_watcher.config import (
     live_require_shadow_history,
     max_bet_fraction,
     max_daily_loss_pct,
+    max_events_per_poll,
     max_feed_staleness_seconds,
     model_edge_high_confidence,
     model_edge_high_threshold,
@@ -56,6 +57,7 @@ from kelly_watcher.config import (
     max_live_drawdown_pct,
     max_live_health_failures,
     max_market_horizon_seconds,
+    max_poll_processing_seconds,
     max_source_trade_age_seconds,
     max_market_exposure_fraction,
     max_total_open_exposure_fraction,
@@ -537,7 +539,10 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "last_poll_duration_s": 0.0,
         "bankroll_usd": None,
         "last_event_count": 0,
+        "dropped_event_count": 0,
+        "timed_out_event_count": 0,
         "polled_wallet_count": 0,
+        "poll_stage": "",
         "retrain_in_progress": False,
         "retrain_started_at": 0,
         "last_retrain_started_at": 0,
@@ -6631,21 +6636,27 @@ def main() -> None:
                 bankroll = 0.0
                 account_equity = 0.0
                 entry_block_reason = None
+                dropped_event_count = 0
+                timed_out_event_count = 0
                 try:
+                    _persist_bot_state(poll_stage="checking_balance")
                     bankroll = executor.get_usdc_balance()
                     account_equity = executor.get_account_equity_usd()
                     if bankroll < 1.0:
                         logger.warning("Low balance: $%.2f - skipping poll", bankroll)
                     else:
                         _heartbeat()
+                        _persist_bot_state(poll_stage="refreshing_watchlist")
                         watchlist.refresh(run_auto_drop=False)
                         poll_batches = watchlist.poll_batches()
                         polled_wallet_count = sum(len(batch.wallets) for batch in poll_batches)
                         _persist_bot_state(
                             polled_wallet_count=polled_wallet_count,
+                            poll_stage="fetching_wallet_trades",
                             **watchlist.state_fields(),
                         )
                         events = []
+                        max_events = max_events_per_poll()
                         for batch in poll_batches:
                             if shutdown_event.is_set():
                                 break
@@ -6656,9 +6667,25 @@ def main() -> None:
                                     list(batch.wallets),
                                     trade_limit=batch.trade_limit,
                                     watch_tier=batch.watch_tier,
+                                    max_events=max_events,
                                 )
                             )
+                        events.sort(key=lambda event: int(getattr(event, "timestamp", 0) or 0))
+                        if len(events) > max_events:
+                            dropped_event_count = len(events) - max_events
+                            logger.warning(
+                                "Poll returned %d fresh events; processing newest %d and dropping %d older events",
+                                len(events),
+                                max_events,
+                                dropped_event_count,
+                            )
+                            events = events[-max_events:]
                         event_count = len(events)
+                        _persist_bot_state(
+                            last_event_count=event_count,
+                            dropped_event_count=dropped_event_count,
+                            poll_stage="evaluating_entry_guards",
+                        )
                         entry_pause_state = _entry_pause_state(
                             tracker,
                             executor,
@@ -6690,10 +6717,20 @@ def main() -> None:
                                     ),
                                     kind="status",
                                 )
-                        for event in events:
+                        processing_budget_s = max_poll_processing_seconds()
+                        for event_index, event in enumerate(events):
                             if shutdown_event.is_set():
                                 break
+                            if processing_budget_s > 0 and (time.time() - loop_start) >= processing_budget_s:
+                                timed_out_event_count += len(events) - event_index
+                                logger.warning(
+                                    "Poll processing budget %.1fs exhausted; dropping %d unprocessed event(s)",
+                                    float(processing_budget_s),
+                                    len(events) - event_index,
+                                )
+                                break
                             _heartbeat()
+                            _persist_bot_state(poll_stage=f"processing_event:{event.trade_id[:12]}")
                             try:
                                 bankroll = max(
                                     bankroll
@@ -6744,8 +6781,11 @@ def main() -> None:
                     "last_poll_duration_s": round(elapsed, 3),
                     "bankroll_usd": round(bankroll, 2),
                     "last_event_count": event_count,
+                    "dropped_event_count": dropped_event_count,
+                    "timed_out_event_count": timed_out_event_count,
                     "polled_wallet_count": polled_wallet_count,
                     "loop_in_progress": False,
+                    "poll_stage": "",
                     **watchlist.state_fields(),
                 }
                 current_loop_started_at = 0

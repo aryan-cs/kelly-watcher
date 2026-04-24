@@ -75,6 +75,22 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: true
   },
   {
+    key: 'MAX_EVENTS_PER_POLL',
+    label: 'Max Events / Poll',
+    kind: 'int',
+    description: 'Hard cap on fresh source events processed in one loop. Newest events are kept; older overflow is dropped to prevent stalled loops.',
+    defaultValue: '20',
+    liveApplies: true
+  },
+  {
+    key: 'MAX_POLL_PROCESSING_TIME',
+    label: 'Poll Time Budget',
+    kind: 'duration',
+    description: 'Maximum wall-clock time one poll loop may spend processing events before dropping the remaining batch.',
+    defaultValue: '45s',
+    liveApplies: true
+  },
+  {
     key: 'MAX_MARKET_HORIZON',
     label: 'Max Market Horizon',
     kind: 'duration',

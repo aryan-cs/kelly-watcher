@@ -272,6 +272,88 @@ class TelegramCommandTest(unittest.TestCase):
                 telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
                 telegram_runtime._next_command_poll_at = original_next_poll_at
 
+    def test_balance_command_uses_cached_bot_state_without_db_preview(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = telegram_runtime.TELEGRAM_STATE_FILE
+            original_bot_state_file = telegram_runtime.BOT_STATE_FILE
+            original_retrain_request_file = telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE
+            original_next_poll_at = telegram_runtime._next_command_poll_at
+            try:
+                tmp_path = Path(tmpdir)
+                telegram_runtime.TELEGRAM_STATE_FILE = tmp_path / "telegram_state.json"
+                telegram_runtime.BOT_STATE_FILE = tmp_path / "bot_state.json"
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = tmp_path / "manual_retrain_request.json"
+                telegram_runtime._next_command_poll_at = 0.0
+                telegram_runtime.BOT_STATE_FILE.write_text(
+                    json.dumps(
+                        {
+                            "mode": "shadow",
+                            "bankroll_usd": 2546.27,
+                            "last_poll_at": 1_700_000_390,
+                            "last_activity_at": 1_700_000_395,
+                            "last_poll_duration_s": 3.112,
+                            "loop_in_progress": True,
+                            "last_loop_started_at": 1_700_000_380,
+                            "shadow_snapshot_state_known": True,
+                            "shadow_snapshot_total_pnl_usd": -459.027,
+                            "shadow_snapshot_return_pct": -0.153,
+                            "shadow_snapshot_profit_factor": 0.916,
+                            "shadow_snapshot_expectancy_usd": -0.681,
+                            "shadow_snapshot_resolved": 674,
+                            "routed_shadow_state_known": True,
+                            "routed_shadow_coverage_pct": 0.0549,
+                            "routed_shadow_routed_resolved": 37,
+                            "routed_shadow_legacy_resolved": 637,
+                            "routed_shadow_total_resolved": 674,
+                            "routed_shadow_total_pnl_usd": -116.602,
+                            "routed_shadow_return_pct": -0.0389,
+                            "routed_shadow_profit_factor": 0.488,
+                            "routed_shadow_expectancy_usd": -3.151,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                client = _HttpClient(
+                    {
+                        "ok": True,
+                        "result": [
+                            {
+                                "update_id": 1501,
+                                "message": {
+                                    "message_id": 45,
+                                    "chat": {"id": 123},
+                                    "text": "/balance",
+                                },
+                            }
+                        ],
+                    }
+                )
+
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
+                    "kelly_watcher.integrations.telegram_runtime.render_tracker_preview_message",
+                    side_effect=AssertionError("full DB preview should not run for cached balance"),
+                ), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_balance_cache_max_age_seconds",
+                    return_value=900,
+                ), patch("kelly_watcher.integrations.telegram_runtime.time.time", return_value=1_700_000_400), patch(
+                    "kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True
+                ) as send_message:
+                    handled = telegram_runtime.service_telegram_commands()
+
+                self.assertEqual(handled, 1)
+                reply = send_message.call_args.args[0]
+                self.assertIn("Estimated shadow bankroll: $2546.27", reply)
+                self.assertIn("Total P&L: -$459.03", reply)
+                self.assertIn("Poll: last 10s ago, duration 3.1s", reply)
+                self.assertIn("Loop: in progress for 20s", reply)
+            finally:
+                telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
+                telegram_runtime.BOT_STATE_FILE = original_bot_state_file
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
+                telegram_runtime._next_command_poll_at = original_next_poll_at
+
     def test_service_telegram_commands_replies_to_train_and_writes_request(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_state_file = telegram_runtime.TELEGRAM_STATE_FILE

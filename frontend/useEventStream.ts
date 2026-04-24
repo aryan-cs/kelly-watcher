@@ -30,6 +30,7 @@ interface EventsResponse {
 }
 
 const eventCache = new Map<number, LiveEvent[]>()
+const EVENT_POLL_INTERVAL_MS = 2000
 
 export function clearEventStreamCache(): void {
   eventCache.clear()
@@ -52,7 +53,7 @@ export function useEventStream(maxEvents = 50): LiveEvent[] {
       }
       timer = setTimeout(() => {
         void read()
-      }, Math.max(500, 250))
+      }, EVENT_POLL_INTERVAL_MS)
     }
 
     const read = async () => {

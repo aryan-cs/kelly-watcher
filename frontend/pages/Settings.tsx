@@ -154,6 +154,8 @@ const CONFIG_BLURBS: Record<string, string> = {
   WARM_WALLET_COUNT: 'Sets how many additional wallets stay in the warm polling tier.',
   WARM_POLL_INTERVAL_MULTIPLIER: 'Sets the warm-tier polling slowdown versus hot wallets.',
   DISCOVERY_POLL_INTERVAL_MULTIPLIER: 'Sets the discovery-tier polling slowdown versus hot wallets.',
+  MAX_EVENTS_PER_POLL: 'Caps fresh events processed per loop to prevent stalls.',
+  MAX_POLL_PROCESSING_TIME: 'Caps event-processing time per poll loop.',
   MAX_MARKET_HORIZON: 'Limits how far out copied markets may resolve.',
   MAX_SOURCE_TRADE_AGE: 'Skips source trades that are too old to copy.',
   MAX_FEED_STALENESS: 'Rejects stale market-data snapshots.',

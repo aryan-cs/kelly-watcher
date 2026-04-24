@@ -47,7 +47,6 @@ from kelly_watcher.config import (
     live_require_shadow_history,
     max_bet_fraction,
     max_daily_loss_pct,
-    max_events_per_poll,
     max_feed_staleness_seconds,
     model_edge_high_confidence,
     model_edge_high_threshold,
@@ -57,7 +56,6 @@ from kelly_watcher.config import (
     max_live_drawdown_pct,
     max_live_health_failures,
     max_market_horizon_seconds,
-    max_poll_processing_seconds,
     max_source_trade_age_seconds,
     max_market_exposure_fraction,
     max_total_open_exposure_fraction,
@@ -95,6 +93,7 @@ from kelly_watcher.config import (
     stop_loss_enabled,
     stop_loss_max_loss_pct,
     stop_loss_min_hold_seconds,
+    source_event_process_batch_size,
     use_real_money,
     wallet_inactivity_limit_seconds,
     wallet_slow_drop_max_tracking_age_seconds,
@@ -539,8 +538,13 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "last_poll_duration_s": 0.0,
         "bankroll_usd": None,
         "last_event_count": 0,
-        "dropped_event_count": 0,
-        "timed_out_event_count": 0,
+        "source_events_fetched": 0,
+        "source_events_queued": 0,
+        "source_events_malformed": 0,
+        "source_events_duplicate": 0,
+        "source_events_pending": 0,
+        "source_events_failed": 0,
+        "source_events_processing": 0,
         "polled_wallet_count": 0,
         "poll_stage": "",
         "retrain_in_progress": False,
@@ -2237,6 +2241,27 @@ def process_event(
     if entry_block_reason:
         dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
         _pause_event(event, 0.0, entry_block_reason)
+        return 0.0
+
+    max_source_age = max_source_trade_age_seconds()
+    source_age_s = int(time.time()) - int(getattr(event, "timestamp", 0) or int(time.time()))
+    if max_source_age > 0 and source_age_s > max_source_age:
+        reason = _humanize_reason(f"source trade is stale ({source_age_s}s old, limit {max_source_age}s)")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=0.0,
+            kelly_f=0.0,
+            reason=reason,
+            event=event,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, 0.0, 0.0, reason)
         return 0.0
 
     market_data_ok, market_data_reason = executor.refresh_event_market_data(event)
@@ -5161,6 +5186,7 @@ def _validate_startup() -> None:
     _capture_config(warm_wallet_count)
     _capture_config(warm_poll_interval_multiplier)
     _capture_config(discovery_poll_interval_multiplier)
+    _capture_config(source_event_process_batch_size)
     _capture_config(wallet_inactivity_limit_seconds)
     _capture_config(wallet_slow_drop_max_tracking_age_seconds)
     _capture_config(wallet_performance_drop_min_trades)
@@ -6636,8 +6662,11 @@ def main() -> None:
                 bankroll = 0.0
                 account_equity = 0.0
                 entry_block_reason = None
-                dropped_event_count = 0
-                timed_out_event_count = 0
+                source_events_fetched = 0
+                source_events_queued = 0
+                source_events_malformed = 0
+                source_events_duplicate = 0
+                queue_counts: dict[str, int] = {}
                 try:
                     _persist_bot_state(poll_stage="checking_balance")
                     bankroll = executor.get_usdc_balance()
@@ -6655,35 +6684,36 @@ def main() -> None:
                             poll_stage="fetching_wallet_trades",
                             **watchlist.state_fields(),
                         )
-                        events = []
-                        max_events = max_events_per_poll()
+                        _persist_bot_state(poll_stage="staging_source_events")
                         for batch in poll_batches:
                             if shutdown_event.is_set():
                                 break
                             if not batch.wallets:
                                 continue
-                            events.extend(
-                                tracker.poll(
-                                    list(batch.wallets),
-                                    trade_limit=batch.trade_limit,
-                                    watch_tier=batch.watch_tier,
-                                    max_events=max_events,
-                                )
+                            ingestion = tracker.stage_source_events(
+                                list(batch.wallets),
+                                trade_limit=batch.trade_limit,
+                                watch_tier=batch.watch_tier,
                             )
-                        events.sort(key=lambda event: int(getattr(event, "timestamp", 0) or 0))
-                        if len(events) > max_events:
-                            dropped_event_count = len(events) - max_events
-                            logger.warning(
-                                "Poll returned %d fresh events; processing newest %d and dropping %d older events",
-                                len(events),
-                                max_events,
-                                dropped_event_count,
-                            )
-                            events = events[-max_events:]
+                            source_events_fetched += ingestion.fetched
+                            source_events_queued += ingestion.queued
+                            source_events_malformed += ingestion.malformed
+                            source_events_duplicate += ingestion.duplicate
+                        queue_counts = tracker.source_queue_counts()
+                        _persist_bot_state(
+                            source_events_fetched=source_events_fetched,
+                            source_events_queued=source_events_queued,
+                            source_events_malformed=source_events_malformed,
+                            source_events_duplicate=source_events_duplicate,
+                            source_events_pending=queue_counts.get("pending", 0),
+                            source_events_failed=queue_counts.get("failed", 0),
+                            source_events_processing=queue_counts.get("processing", 0),
+                            poll_stage="loading_source_queue",
+                        )
+                        events = tracker.load_queued_events(limit=source_event_process_batch_size())
                         event_count = len(events)
                         _persist_bot_state(
                             last_event_count=event_count,
-                            dropped_event_count=dropped_event_count,
                             poll_stage="evaluating_entry_guards",
                         )
                         entry_pause_state = _entry_pause_state(
@@ -6717,17 +6747,8 @@ def main() -> None:
                                     ),
                                     kind="status",
                                 )
-                        processing_budget_s = max_poll_processing_seconds()
-                        for event_index, event in enumerate(events):
+                        for event in events:
                             if shutdown_event.is_set():
-                                break
-                            if processing_budget_s > 0 and (time.time() - loop_start) >= processing_budget_s:
-                                timed_out_event_count += len(events) - event_index
-                                logger.warning(
-                                    "Poll processing budget %.1fs exhausted; dropping %d unprocessed event(s)",
-                                    float(processing_budget_s),
-                                    len(events) - event_index,
-                                )
                                 break
                             _heartbeat()
                             _persist_bot_state(poll_stage=f"processing_event:{event.trade_id[:12]}")
@@ -6745,6 +6766,7 @@ def main() -> None:
                                     ),
                                     0.0,
                                 )
+                                tracker.mark_source_event_processed(event.trade_id)
                                 account_equity = executor.get_account_equity_usd()
                             except Exception as exc:
                                 logger.error(
@@ -6753,6 +6775,7 @@ def main() -> None:
                                     exc,
                                     exc_info=True,
                                 )
+                                tracker.mark_source_event_failed(event.trade_id, str(exc))
                                 send_alert(
                                     build_market_error_alert(
                                         "event processing failed",
@@ -6767,6 +6790,7 @@ def main() -> None:
                             finally:
                                 if event.trade_id in dedup.seen_ids:
                                     tracker.seen_ids.add(event.trade_id)
+                        queue_counts = tracker.source_queue_counts()
                 except Exception as exc:
                     logger.error("Main loop error: %s", exc, exc_info=True)
                     send_alert(build_lines("bot loop error", str(exc)), kind="error")
@@ -6781,8 +6805,13 @@ def main() -> None:
                     "last_poll_duration_s": round(elapsed, 3),
                     "bankroll_usd": round(bankroll, 2),
                     "last_event_count": event_count,
-                    "dropped_event_count": dropped_event_count,
-                    "timed_out_event_count": timed_out_event_count,
+                    "source_events_fetched": source_events_fetched,
+                    "source_events_queued": source_events_queued,
+                    "source_events_malformed": source_events_malformed,
+                    "source_events_duplicate": source_events_duplicate,
+                    "source_events_pending": queue_counts.get("pending", 0),
+                    "source_events_failed": queue_counts.get("failed", 0),
+                    "source_events_processing": queue_counts.get("processing", 0),
                     "polled_wallet_count": polled_wallet_count,
                     "loop_in_progress": False,
                     "poll_stage": "",

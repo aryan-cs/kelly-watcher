@@ -710,6 +710,22 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             seen_at    INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS source_event_queue (
+            trade_id            TEXT PRIMARY KEY,
+            wallet_address      TEXT NOT NULL,
+            watch_tier          TEXT NOT NULL DEFAULT '',
+            condition_id        TEXT NOT NULL DEFAULT '',
+            token_id            TEXT NOT NULL DEFAULT '',
+            source_ts           INTEGER NOT NULL DEFAULT 0,
+            source_trade_json   TEXT NOT NULL DEFAULT '{}',
+            status              TEXT NOT NULL DEFAULT 'pending',
+            attempts            INTEGER NOT NULL DEFAULT 0,
+            first_seen_at       INTEGER NOT NULL,
+            observed_at         INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL,
+            last_error          TEXT NOT NULL DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS trade_log (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             trade_id            TEXT NOT NULL,
@@ -1237,11 +1253,16 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
         );
 
         CREATE INDEX IF NOT EXISTS idx_seen_trades_seen_at ON seen_trades(seen_at);
+        CREATE INDEX IF NOT EXISTS idx_source_event_queue_status_ts ON source_event_queue(status, source_ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_source_event_queue_wallet_status ON source_event_queue(wallet_address, status);
         CREATE INDEX IF NOT EXISTS idx_trade_log_placed_at ON trade_log(placed_at);
         CREATE INDEX IF NOT EXISTS idx_trade_log_outcome ON trade_log(outcome);
         CREATE INDEX IF NOT EXISTS idx_trade_log_trader ON trade_log(trader_address);
         CREATE INDEX IF NOT EXISTS idx_trade_log_real_money ON trade_log(real_money);
         CREATE INDEX IF NOT EXISTS idx_trade_log_skipped ON trade_log(skipped);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_real_trader_placed ON trade_log(real_money, trader_address, placed_at);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_real_market_position ON trade_log(real_money, market_id, token_id, side);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_trader_action_skipped ON trade_log(trader_address, source_action, skipped);
         CREATE INDEX IF NOT EXISTS idx_belief_updates_applied_at ON belief_updates(applied_at);
         CREATE INDEX IF NOT EXISTS idx_wallet_watch_state_status ON wallet_watch_state(status);
         CREATE INDEX IF NOT EXISTS idx_wallet_policy_metrics_drop_ready ON wallet_policy_metrics(local_drop_ready);

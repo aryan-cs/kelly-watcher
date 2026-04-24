@@ -75,19 +75,11 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: true
   },
   {
-    key: 'MAX_EVENTS_PER_POLL',
-    label: 'Max Events / Poll',
+    key: 'SOURCE_EVENT_PROCESS_BATCH_SIZE',
+    label: 'Queue Batch Size',
     kind: 'int',
-    description: 'Hard cap on fresh source events processed in one loop. Newest events are kept; older overflow is dropped to prevent stalled loops.',
-    defaultValue: '20',
-    liveApplies: true
-  },
-  {
-    key: 'MAX_POLL_PROCESSING_TIME',
-    label: 'Poll Time Budget',
-    kind: 'duration',
-    description: 'Maximum wall-clock time one poll loop may spend processing events before dropping the remaining batch.',
-    defaultValue: '45s',
+    description: 'How many durable queued source events the worker claims per loop. Extra events remain pending; they are not dropped.',
+    defaultValue: '75',
     liveApplies: true
   },
   {

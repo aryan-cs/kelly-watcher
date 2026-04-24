@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import random
 import sqlite3
 import time
@@ -13,7 +14,7 @@ from typing import Any, Callable
 import httpx
 
 from kelly_watcher.config import max_source_trade_age_seconds
-from kelly_watcher.data.db import get_conn
+from kelly_watcher.data.db import get_conn, init_db
 from kelly_watcher.data.identity_cache import hydrate_observed_identity, resolve_username_for_wallet
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ ORDERBOOK_REQUEST_TIMEOUT_S = 3.0
 PRICE_HISTORY_REQUEST_TIMEOUT_S = 4.0
 WALLET_TRADE_FETCH_WORKERS = 6
 ENRICHMENT_FETCH_WORKERS = 6
+WALLET_TRADE_FETCH_MAX_PAGES = 50
 MARKET_METADATA_CACHE_TTL_S = 300
 ORDERBOOK_CACHE_TTL_S = 2
 PRICE_HISTORY_CACHE_TTL_S = 60
@@ -79,6 +81,17 @@ class RawTradeCandidate:
     condition_id: str
     token_id: str
     raw: dict[str, Any]
+    watch_tier: str = ""
+    first_seen_at: int = 0
+    observed_at: int = 0
+
+
+@dataclass(frozen=True)
+class SourceEventIngestionResult:
+    fetched: int = 0
+    queued: int = 0
+    malformed: int = 0
+    duplicate: int = 0
 
 
 class PolymarketTracker:
@@ -246,6 +259,316 @@ class PolymarketTracker:
     def _advance_wallet_cursor(self, wallet: str, event: TradeEvent) -> None:
         self._advance_wallet_cursor_state(wallet, event.timestamp, event.trade_id)
 
+    def _stage_source_rows(self, rows: list[tuple[str, str, str, str, str, int, str, str, int, int, int, str]]) -> None:
+        if not rows:
+            return
+        sql = """
+            INSERT INTO source_event_queue (
+                trade_id, wallet_address, watch_tier, condition_id, token_id,
+                source_ts, source_trade_json, status, attempts, first_seen_at,
+                observed_at, updated_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            ON CONFLICT(trade_id) DO UPDATE SET
+                wallet_address=excluded.wallet_address,
+                watch_tier=excluded.watch_tier,
+                condition_id=excluded.condition_id,
+                token_id=excluded.token_id,
+                source_ts=excluded.source_ts,
+                source_trade_json=excluded.source_trade_json,
+                observed_at=excluded.observed_at,
+                updated_at=excluded.updated_at,
+                status=CASE
+                    WHEN source_event_queue.status='processed' THEN source_event_queue.status
+                    ELSE excluded.status
+                END,
+                last_error=CASE
+                    WHEN source_event_queue.status='processed' THEN source_event_queue.last_error
+                    ELSE excluded.last_error
+                END
+            """
+        conn = get_conn()
+        try:
+            conn.executemany(sql, rows)
+            conn.commit()
+        except sqlite3.OperationalError as exc:
+            conn.close()
+            if "source_event_queue" not in str(exc):
+                raise
+            init_db()
+            conn = get_conn()
+            conn.executemany(sql, rows)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def stage_source_events(
+        self,
+        wallet_addresses: list[str] | None = None,
+        *,
+        trade_limit: int = 50,
+        watch_tier: str = "",
+    ) -> SourceEventIngestionResult:
+        targets = self.wallets if wallet_addresses is None else wallet_addresses
+        normalized_targets = [str(address or "").strip().lower() for address in targets if str(address or "").strip()]
+        if not normalized_targets:
+            return SourceEventIngestionResult()
+
+        poll_started_at = int(time.time())
+        wallet_trades = self._fetch_wallet_trades_batch(normalized_targets, limit=trade_limit)
+        poll_seen: set[str] = set()
+        rows_to_stage: list[tuple[str, str, str, str, str, int, str, str, int, int, int, str]] = []
+        cursor_advances: list[tuple[str, int, str]] = []
+        fetched = 0
+        malformed = 0
+        duplicate = 0
+
+        for address in normalized_targets:
+            self._touch_activity()
+            cursor = self.wallet_cursors.get(address)
+            rows = sorted(
+                wallet_trades.get(address, []),
+                key=self._raw_trade_timestamp,
+                reverse=True,
+            )
+            fetched += len(rows)
+            for raw in rows:
+                trade_id = self._raw_trade_id(raw)
+                missing_trade_id = False
+                if not trade_id:
+                    raw_fingerprint = json.dumps(dict(raw), separators=(",", ":"), sort_keys=True, default=str)
+                    trade_id = f"malformed:{address}:{hashlib.sha256(raw_fingerprint.encode('utf-8')).hexdigest()[:24]}"
+                    missing_trade_id = True
+                    logger.warning("Recording malformed source trade without a stable trade id for wallet %s", address[:10])
+                if trade_id in self.seen_ids or trade_id in poll_seen:
+                    duplicate += 1
+                    continue
+
+                source_ts = self._raw_trade_timestamp(raw)
+                if cursor is not None and source_ts > 0 and source_ts < cursor.last_source_ts:
+                    break
+                if cursor is not None and source_ts == cursor.last_source_ts and trade_id in cursor.last_trade_ids:
+                    duplicate += 1
+                    continue
+
+                condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip().lower()
+                token_id = str(
+                    raw.get("asset")
+                    or raw.get("asset_id")
+                    or raw.get("tokenId")
+                    or raw.get("token_id")
+                    or ""
+                ).strip()
+                error = ""
+                status = "pending"
+                if missing_trade_id:
+                    error = "missing stable trade id"
+                elif source_ts <= 0:
+                    error = "missing source timestamp"
+                elif not condition_id:
+                    error = "missing condition id"
+                elif not token_id:
+                    error = "missing token id"
+                if error:
+                    malformed += 1
+                    status = "malformed"
+
+                poll_seen.add(trade_id)
+                observed_at = int(time.time())
+                rows_to_stage.append(
+                    (
+                        trade_id,
+                        address,
+                        str(watch_tier or ""),
+                        condition_id,
+                        token_id,
+                        int(source_ts or 0),
+                        json.dumps(dict(raw), separators=(",", ":"), sort_keys=True),
+                        status,
+                        poll_started_at,
+                        observed_at,
+                        observed_at,
+                        error,
+                    )
+                )
+                if source_ts > 0:
+                    cursor_advances.append((address, int(source_ts), trade_id))
+
+        self._stage_source_rows(rows_to_stage)
+        for wallet, source_ts, trade_id in cursor_advances:
+            self._advance_wallet_cursor_state(wallet, source_ts, trade_id)
+        self._flush_dirty_wallet_cursors()
+        return SourceEventIngestionResult(
+            fetched=fetched,
+            queued=len(rows_to_stage),
+            malformed=malformed,
+            duplicate=duplicate,
+        )
+
+    def source_queue_counts(self) -> dict[str, int]:
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS n
+                FROM source_event_queue
+                GROUP BY status
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        return {str(row["status"] or ""): int(row["n"] or 0) for row in rows}
+
+    def _claim_source_queue_rows(self, *, limit: int | None = None) -> list[sqlite3.Row]:
+        now_ts = int(time.time())
+        stale_processing_cutoff = now_ts - 300
+        limit_clause = ""
+        params: list[Any] = [stale_processing_cutoff]
+        if limit is not None and int(limit) > 0:
+            limit_clause = " LIMIT ?"
+            params.append(int(limit))
+
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM source_event_queue
+                WHERE status='pending'
+                   OR (status='failed' AND attempts < 5)
+                   OR (status='processing' AND updated_at < ?)
+                ORDER BY source_ts DESC, first_seen_at ASC
+                {limit_clause}
+                """,
+                params,
+            ).fetchall()
+            if rows:
+                conn.executemany(
+                    """
+                    UPDATE source_event_queue
+                    SET status='processing',
+                        attempts=attempts + 1,
+                        updated_at=?,
+                        last_error=''
+                    WHERE trade_id=?
+                    """,
+                    [(now_ts, str(row["trade_id"])) for row in rows],
+                )
+                conn.commit()
+            return list(rows)
+        finally:
+            conn.close()
+
+    def load_queued_events(self, *, limit: int | None = None) -> list[TradeEvent]:
+        rows = self._claim_source_queue_rows(limit=limit)
+        if not rows:
+            return []
+
+        candidates: list[RawTradeCandidate] = []
+        for row in rows:
+            trade_id = str(row["trade_id"] or "").strip()
+            try:
+                raw_payload = json.loads(str(row["source_trade_json"] or "{}"))
+            except json.JSONDecodeError as exc:
+                self.mark_source_event_failed(trade_id, f"malformed source json: {exc}", terminal=True)
+                continue
+            if not isinstance(raw_payload, dict):
+                self.mark_source_event_failed(trade_id, "source json was not an object", terminal=True)
+                continue
+            candidates.append(
+                RawTradeCandidate(
+                    wallet=str(row["wallet_address"] or "").strip().lower(),
+                    trade_id=trade_id,
+                    timestamp=int(row["source_ts"] or 0),
+                    condition_id=str(row["condition_id"] or "").strip().lower(),
+                    token_id=str(row["token_id"] or "").strip(),
+                    raw=dict(raw_payload),
+                    watch_tier=str(row["watch_tier"] or ""),
+                    first_seen_at=int(row["first_seen_at"] or 0),
+                    observed_at=int(row["observed_at"] or 0),
+                )
+            )
+
+        metadata_by_condition = self._fetch_market_metadata_batch(
+            [candidate.condition_id for candidate in candidates]
+        )
+        orderbooks_by_token = self._fetch_orderbook_snapshots_batch(
+            [candidate.token_id for candidate in candidates]
+        )
+
+        events: list[TradeEvent] = []
+        for candidate in candidates:
+            meta, metadata_fetched_at = metadata_by_condition.get(candidate.condition_id, ({}, 0))
+            event = self._parse_raw_trade(
+                candidate.raw,
+                candidate.wallet,
+                candidate.first_seen_at or int(time.time()),
+                market_meta=meta,
+                metadata_fetched_at=metadata_fetched_at,
+                watch_tier=candidate.watch_tier,
+            )
+            if event is None:
+                self.mark_source_event_failed(candidate.trade_id, "source event could not be parsed", terminal=True)
+                continue
+
+            snap, raw_book, orderbook_fetched_at = orderbooks_by_token.get(
+                candidate.token_id,
+                (None, None, 0),
+            )
+            merged_snapshot = dict(snap or {})
+            if event.snapshot:
+                merged_snapshot.update(event.snapshot)
+
+            event.snapshot = merged_snapshot or None
+            event.raw_orderbook = raw_book
+            if candidate.observed_at > 0:
+                event.observed_at = candidate.observed_at
+            event.orderbook_fetched_at = orderbook_fetched_at
+            event.watch_tier = candidate.watch_tier or event.watch_tier or ""
+            events.append(event)
+
+        events.sort(key=lambda event: event.timestamp)
+        return events
+
+    def mark_source_event_processed(self, trade_id: str) -> None:
+        normalized = str(trade_id or "").strip()
+        if not normalized:
+            return
+        conn = get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE source_event_queue
+                SET status='processed',
+                    updated_at=?,
+                    last_error=''
+                WHERE trade_id=?
+                """,
+                (int(time.time()), normalized),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_source_event_failed(self, trade_id: str, error: str, *, terminal: bool = False) -> None:
+        normalized = str(trade_id or "").strip()
+        if not normalized:
+            return
+        conn = get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE source_event_queue
+                SET status=?,
+                    updated_at=?,
+                    last_error=?
+                WHERE trade_id=?
+                """,
+                ("malformed" if terminal else "failed", int(time.time()), str(error or "")[:500], normalized),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def _record_trade_feed_result(self, ok: bool) -> None:
         if ok:
             self.last_trade_poll_ok_at = int(time.time())
@@ -270,7 +593,11 @@ class PolymarketTracker:
                 request_kwargs: dict[str, Any] = {"params": params}
                 if timeout_s is not None:
                     request_kwargs["timeout"] = timeout_s
-                with self._new_http_client() as client:
+                client = getattr(self, "client", None)
+                if client is None:
+                    with self._new_http_client() as client:
+                        response = client.get(url, **request_kwargs)
+                else:
                     response = client.get(url, **request_kwargs)
                 if response.status_code == 404 and suppress_404:
                     self._touch_activity()
@@ -364,18 +691,60 @@ class PolymarketTracker:
                 self.add_wallet(address)
         logger.info("Watchlist updated from leaderboard: %s wallets total", len(self.wallets))
 
-    def get_wallet_trades(self, address: str, limit: int = 50) -> list[dict]:
-        payload, ok = self._request_json(
-            f"{DATA_API}/trades",
-            params={"user": address, "limit": limit},
-            failure_log=f"Trade fetch failed for {address[:10]}",
-            timeout_s=TRADE_REQUEST_TIMEOUT_S,
-            max_attempts=TRADE_FETCH_MAX_ATTEMPTS,
-        )
-        self._record_trade_feed_result(ok)
-        if payload is None:
-            return []
-        return payload if isinstance(payload, list) else payload.get("trades", [])
+    def get_wallet_trades(
+        self,
+        address: str,
+        limit: int = 50,
+        cursor: WalletCursor | None = None,
+    ) -> list[dict]:
+        page_limit = max(1, min(int(limit or 50), 100))
+        rows: list[dict] = []
+        seen_ids: set[str] = set()
+        reached_cursor = False
+
+        for page in range(WALLET_TRADE_FETCH_MAX_PAGES):
+            params: dict[str, Any] = {"user": address, "limit": page_limit}
+            if page > 0:
+                params["offset"] = page * page_limit
+            payload, ok = self._request_json(
+                f"{DATA_API}/trades",
+                params=params,
+                failure_log=f"Trade fetch failed for {address[:10]}",
+                timeout_s=TRADE_REQUEST_TIMEOUT_S,
+                max_attempts=TRADE_FETCH_MAX_ATTEMPTS,
+            )
+            self._record_trade_feed_result(ok)
+            if payload is None:
+                break
+
+            batch = payload if isinstance(payload, list) else payload.get("trades", [])
+            if not isinstance(batch, list) or not batch:
+                break
+
+            added = 0
+            for raw in batch:
+                if not isinstance(raw, dict):
+                    continue
+                trade_id = self._raw_trade_id(raw)
+                source_ts = self._raw_trade_timestamp(raw)
+                if cursor is not None and source_ts > 0:
+                    if source_ts < cursor.last_source_ts:
+                        reached_cursor = True
+                        break
+                    if source_ts == cursor.last_source_ts and trade_id in cursor.last_trade_ids:
+                        reached_cursor = True
+                        break
+                if trade_id and trade_id in seen_ids:
+                    continue
+                if trade_id:
+                    seen_ids.add(trade_id)
+                rows.append(raw)
+                added += 1
+
+            if reached_cursor or len(batch) < page_limit or added == 0:
+                break
+
+        return rows
 
     def get_wallet_positions(self, address: str) -> list[dict] | None:
         if not address:
@@ -483,18 +852,26 @@ class PolymarketTracker:
         *,
         limit: int = 50,
     ) -> dict[str, list[dict]]:
+        def fetch_for_wallet(wallet: str) -> list[dict]:
+            try:
+                return self.get_wallet_trades(wallet, limit=limit, cursor=self.wallet_cursors.get(wallet))
+            except TypeError:
+                # Some tests monkeypatch get_wallet_trades with the old two-arg
+                # shape. Keep that compatibility while production uses cursors.
+                return self.get_wallet_trades(wallet, limit=limit)
+
         targets = [str(address or "").strip().lower() for address in wallet_addresses if str(address or "").strip()]
         if not targets:
             return {}
         if len(targets) == 1:
             wallet = targets[0]
-            return {wallet: self.get_wallet_trades(wallet, limit=limit)}
+            return {wallet: fetch_for_wallet(wallet)}
 
         results: dict[str, list[dict]] = {}
         worker_count = min(WALLET_TRADE_FETCH_WORKERS, len(targets))
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             future_map = {
-                pool.submit(self.get_wallet_trades, wallet, limit): wallet
+                pool.submit(fetch_for_wallet, wallet): wallet
                 for wallet in targets
             }
             for future in as_completed(future_map):
@@ -566,115 +943,13 @@ class PolymarketTracker:
         *,
         trade_limit: int = 50,
         watch_tier: str = "",
-        max_events: int | None = None,
     ) -> list[TradeEvent]:
-        new_events: list[TradeEvent] = []
-        poll_started_at = int(time.time())
-        poll_seen: set[str] = set()
-        self._touch_activity()
-
-        targets = self.wallets if wallet_addresses is None else wallet_addresses
-        wallet_trades = self._fetch_wallet_trades_batch(list(targets), limit=trade_limit)
-        candidates: list[RawTradeCandidate] = []
-
-        try:
-            for address in targets:
-                self._touch_activity()
-                cursor = self.wallet_cursors.get(str(address or "").strip().lower())
-                rows = sorted(
-                    wallet_trades.get(address, []),
-                    key=self._raw_trade_timestamp,
-                    reverse=True,
-                )
-                for raw in rows:
-                    trade_id = self._raw_trade_id(raw)
-                    if not trade_id or trade_id in self.seen_ids or trade_id in poll_seen:
-                        continue
-
-                    source_ts = self._raw_trade_timestamp(raw)
-                    if cursor is not None and source_ts > 0 and source_ts < cursor.last_source_ts:
-                        break
-                    if cursor is not None and source_ts == cursor.last_source_ts and trade_id in cursor.last_trade_ids:
-                        continue
-                    if source_ts <= 0:
-                        continue
-                    if self._is_stale_source_timestamp(source_ts, poll_started_at):
-                        continue
-
-                    condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip().lower()
-                    token_id = str(
-                        raw.get("asset")
-                        or raw.get("asset_id")
-                        or raw.get("tokenId")
-                        or raw.get("token_id")
-                        or ""
-                    ).strip()
-                    if not condition_id or not token_id:
-                        continue
-
-                    poll_seen.add(trade_id)
-                    candidates.append(
-                        RawTradeCandidate(
-                            wallet=str(address or "").strip().lower(),
-                            trade_id=trade_id,
-                            timestamp=source_ts,
-                            condition_id=condition_id,
-                            token_id=token_id,
-                            raw=dict(raw),
-                        )
-                    )
-
-            event_cap = int(max_events or 0)
-            if event_cap > 0 and len(candidates) > event_cap:
-                dropped = len(candidates) - event_cap
-                candidates.sort(key=lambda candidate: candidate.timestamp)
-                candidates = candidates[-event_cap:]
-                logger.warning(
-                    "Poll candidate cap kept newest %d %s event(s), dropped %d older candidate(s) before enrichment",
-                    event_cap,
-                    str(watch_tier or "watched"),
-                    dropped,
-                )
-
-            metadata_by_condition = self._fetch_market_metadata_batch(
-                [candidate.condition_id for candidate in candidates]
-            )
-            orderbooks_by_token = self._fetch_orderbook_snapshots_batch(
-                [candidate.token_id for candidate in candidates]
-            )
-
-            for candidate in candidates:
-                meta, metadata_fetched_at = metadata_by_condition.get(candidate.condition_id, ({}, 0))
-                event = self._parse_raw_trade(
-                    candidate.raw,
-                    candidate.wallet,
-                    poll_started_at,
-                    market_meta=meta,
-                    metadata_fetched_at=metadata_fetched_at,
-                    watch_tier=watch_tier,
-                )
-                if event is None:
-                    continue
-
-                self._touch_activity()
-                snap, raw_book, orderbook_fetched_at = orderbooks_by_token.get(
-                    candidate.token_id,
-                    (None, None, 0),
-                )
-                merged_snapshot = dict(snap or {})
-                if event.snapshot:
-                    merged_snapshot.update(event.snapshot)
-
-                event.snapshot = merged_snapshot or None
-                event.raw_orderbook = raw_book
-                event.orderbook_fetched_at = orderbook_fetched_at
-                new_events.append(event)
-                self._advance_wallet_cursor(candidate.wallet, event)
-        finally:
-            self._flush_dirty_wallet_cursors()
-
-        new_events.sort(key=lambda event: event.timestamp)
-        return new_events
+        self.stage_source_events(
+            wallet_addresses,
+            trade_limit=trade_limit,
+            watch_tier=watch_tier,
+        )
+        return self.load_queued_events()
 
     def _is_new_for_wallet(self, wallet: str, event: TradeEvent) -> bool:
         cursor = self.wallet_cursors.get(wallet.lower())

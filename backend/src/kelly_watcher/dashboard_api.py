@@ -49,8 +49,7 @@ SAFE_ENV_KEYS = {
     "WARM_WALLET_COUNT",
     "WARM_POLL_INTERVAL_MULTIPLIER",
     "DISCOVERY_POLL_INTERVAL_MULTIPLIER",
-    "MAX_EVENTS_PER_POLL",
-    "MAX_POLL_PROCESSING_TIME",
+    "SOURCE_EVENT_PROCESS_BATCH_SIZE",
     "WALLET_INACTIVITY_LIMIT",
     "WALLET_SLOW_DROP_MAX_TRACKING_AGE",
     "WALLET_PERFORMANCE_DROP_MIN_TRADES",
@@ -801,8 +800,7 @@ def _query_rows(sql: str, params: list[Any]) -> list[dict[str, Any]]:
     if not DB_PATH.exists():
         return []
 
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn()
     try:
         conn.execute("PRAGMA query_only=ON")
         rows = conn.execute(sql, tuple(params)).fetchall()

@@ -236,6 +236,12 @@ def render_cached_tracker_preview_message() -> str | None:
             f"last {_seconds_ago(bot_state.get('last_poll_at'), now_ts=now_ts)}"
             + (f", duration {poll_duration:.1f}s" if poll_duration is not None else "")
         ),
+        (
+            "Source queue: "
+            f"{_optional_int(bot_state.get('source_events_pending'))} pending, "
+            f"{_optional_int(bot_state.get('source_events_processing'))} processing, "
+            f"{_optional_int(bot_state.get('source_events_failed'))} retry"
+        ),
     ]
     if loop_in_progress and loop_started_at > 0:
         lines.append(f"Loop: in progress for {_seconds_ago(loop_started_at, now_ts=now_ts).replace(' ago', '')}")

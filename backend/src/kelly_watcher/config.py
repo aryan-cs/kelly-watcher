@@ -650,16 +650,8 @@ def max_source_trade_age_seconds() -> int:
     return max(int(seconds), 30)
 
 
-def max_events_per_poll() -> int:
-    return _get_bounded_int("MAX_EVENTS_PER_POLL", "25", minimum=1, maximum=500)
-
-
-def max_poll_processing_seconds() -> int:
-    raw = _get_env_file_value("MAX_POLL_PROCESSING_TIME") or _get("MAX_POLL_PROCESSING_TIME", "45s")
-    seconds = _parse_duration(raw, 45.0)
-    if seconds == float("inf"):
-        return 45
-    return max(int(seconds), 1)
+def source_event_process_batch_size() -> int:
+    return _get_bounded_int("SOURCE_EVENT_PROCESS_BATCH_SIZE", "75", minimum=1, maximum=1000)
 
 
 def telegram_balance_cache_max_age_seconds() -> int:

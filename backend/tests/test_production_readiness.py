@@ -325,47 +325,51 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_tracker_poll_does_not_advance_cursor_for_stale_rows(self) -> None:
-        tracker_obj = tracker.PolymarketTracker(["0xabc"])
-        now_ts = 1_700_000_100
-        tracker_obj.wallet_cursors = {"0xabc": tracker.WalletCursor()}
-        tracker_obj._flush_dirty_wallet_cursors = lambda: None
-        tracker_obj._fetch_wallet_trades_batch = lambda wallets, limit=50: {
-            "0xabc": [
-                {
-                    "id": "stale-1",
-                    "conditionId": "market-old",
-                    "side": "BUY",
-                    "asset": "token-old",
-                    "size": 10,
-                    "price": 0.41,
-                    "timestamp": now_ts - 120,
+    def test_tracker_stages_stale_rows_instead_of_dropping_before_ledger(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                tracker_obj = tracker.PolymarketTracker(["0xabc"])
+                now_ts = 1_700_000_100
+                tracker_obj.wallet_cursors = {"0xabc": tracker.WalletCursor()}
+                tracker_obj._fetch_wallet_trades_batch = lambda wallets, limit=50: {
+                    "0xabc": [
+                        {
+                            "id": "stale-1",
+                            "conditionId": "market-old",
+                            "side": "BUY",
+                            "asset": "token-old",
+                            "size": 10,
+                            "price": 0.41,
+                            "timestamp": now_ts - 120,
+                        }
+                    ]
                 }
-            ]
-        }
-        tracker_obj._fetch_market_metadata_batch = lambda condition_ids: (
-            {}
-            if not condition_ids
-            else (_ for _ in ()).throw(AssertionError("stale rows should be filtered before metadata fetch"))
-        )
-        tracker_obj._fetch_orderbook_snapshots_batch = lambda token_ids: (
-            {}
-            if not token_ids
-            else (_ for _ in ()).throw(AssertionError("stale rows should be filtered before orderbook fetch"))
-        )
 
-        try:
-            with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
-                "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=30
-            ):
-                events = tracker_obj.poll(["0xabc"], trade_limit=50)
-        finally:
-            tracker_obj.close()
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=30
+                    ):
+                        ingestion = tracker_obj.stage_source_events(["0xabc"], trade_limit=50)
+                finally:
+                    tracker_obj.close()
 
-        self.assertEqual(events, [])
-        self.assertEqual(tracker_obj.wallet_cursors["0xabc"].last_source_ts, 0)
-        self.assertEqual(tracker_obj.wallet_cursors["0xabc"].last_trade_ids, set())
-        self.assertEqual(tracker_obj._dirty_wallet_cursors, set())
+                self.assertEqual(ingestion.queued, 1)
+                conn = db.get_conn()
+                try:
+                    row = conn.execute(
+                        "SELECT trade_id, status, source_ts FROM source_event_queue WHERE trade_id='stale-1'"
+                    ).fetchone()
+                finally:
+                    conn.close()
+                self.assertIsNotNone(row)
+                self.assertEqual(row["status"], "pending")
+                self.assertEqual(row["source_ts"], now_ts - 120)
+                self.assertEqual(tracker_obj.wallet_cursors["0xabc"].last_source_ts, now_ts - 120)
+            finally:
+                db.DB_PATH = original_db_path
 
     def test_load_training_data_sql_executes(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -342,7 +342,7 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_tracker_poll_caps_candidates_before_enrichment(self) -> None:
+    def test_tracker_poll_queues_all_candidates_before_enrichment(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -374,13 +374,13 @@ class WatchlistManagerTest(unittest.TestCase):
                 tracker._parse_raw_trade = lambda *args, **kwargs: None
                 try:
                     with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts):
-                        events = tracker.poll(["0xhot"], max_events=2)
+                        events = tracker.poll(["0xhot"])
                 finally:
                     tracker.close()
 
                 self.assertEqual(events, [])
-                self.assertEqual(metadata_calls, [("market-2", "market-3")])
-                self.assertEqual(orderbook_calls, [("token-2", "token-3")])
+                self.assertEqual(set(metadata_calls[0]), {"market-1", "market-2", "market-3"})
+                self.assertEqual(set(orderbook_calls[0]), {"token-1", "token-2", "token-3"})
             finally:
                 db.DB_PATH = original_db_path
 

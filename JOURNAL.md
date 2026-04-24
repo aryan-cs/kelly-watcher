@@ -8,6 +8,15 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-24 12:25 CDT] codex-main
+Task: Preserve the split Tailscale runtime after rollback: Windows runs backend/API, Mac runs only the React Ink dashboard.
+Claims: `JOURNAL.md`, `.env.example`, `README.md`, `start-backend-windows.cmd`, `start-dashboard-mac.sh`, removed `start-dashboard.cmd`
+Status: Completed locally; pending commit and push.
+Blockers: None.
+Next: Windows should pull and run `start-backend-windows.cmd`; Mac should pull and run `./start-dashboard-mac.sh` after `dashboard/npm install`.
+Decisions: Set the documented backend API bind address to Windows Tailscale IP `100.91.53.63`, pointed the dashboard client default at `http://100.91.53.63:8765`, added explicit helper scripts so the backend is not accidentally launched on the Mac, and removed the old Windows dashboard launcher.
+Tests: `bash -n start-dashboard-mac.sh` -> passed; `git diff --check` -> passed.
+
 [2026-04-24 12:05 CDT] codex-main
 Task: Roll back Kelly Watcher to commit `f1fd6bbb1309cbd50478b24a2f481db00302cf0f` after the web-dashboard era made production unstable, while preserving the single repo-root `.env` convention.
 Claims: `JOURNAL.md`, rollback tree, `env_profile.py`, `dashboard/envProfile.*`, `dashboard/paths.*`, `dashboard/package.json`, `kelly_watcher/cli.py`, `kelly_watcher/shadow_reset.py`, `README.md`, env/profile tests

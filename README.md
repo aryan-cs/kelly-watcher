@@ -68,6 +68,31 @@ Notes:
 - The dashboard talks to the backend over HTTP, so it no longer needs direct SQLite access.
 - The repository includes `uv.lock` and `dashboard/package-lock.json` so installs are reproducible.
 
+## Split Mac/Windows Runtime
+
+Production is intended to run split across the two Tailscale-connected machines:
+
+- Windows backend/API: `100.91.53.63`
+- Mac Ink dashboard frontend: `100.104.250.54`
+
+Run the trading backend only on Windows. Run the React Ink terminal dashboard only on the Mac.
+
+Use one repo-root `.env` per checkout. On the Windows backend `.env`, keep:
+
+```env
+DASHBOARD_API_HOST=100.91.53.63
+DASHBOARD_API_PORT=8765
+KELLY_API_BASE_URL=http://100.91.53.63:8765
+```
+
+On the Mac frontend `.env`, keep:
+
+```env
+KELLY_API_BASE_URL=http://100.91.53.63:8765
+```
+
+If you set `DASHBOARD_API_TOKEN` on Windows, set the same value as `KELLY_API_TOKEN` on the Mac.
+
 ## Quick Start
 
 ### 1. Clone the repository
@@ -161,7 +186,7 @@ The backend will automatically:
 
 If you want to run the dashboard on another computer, set:
 
-- `DASHBOARD_API_HOST=0.0.0.0`
+- `DASHBOARD_API_HOST=100.91.53.63` on the Windows backend
 - optionally `DASHBOARD_API_TOKEN=some-shared-secret`
 
 ### 7. Start the dashboard
@@ -177,20 +202,20 @@ To run the dashboard on another computer, point it at the backend API:
 
 ```bash
 cd dashboard
-KELLY_API_BASE_URL=http://BACKEND_HOST:8765 npm start
+KELLY_API_BASE_URL=http://100.91.53.63:8765 npm start
 ```
 
 If the backend sets `DASHBOARD_API_TOKEN`, also set:
 
 ```bash
 cd dashboard
-KELLY_API_BASE_URL=http://BACKEND_HOST:8765 KELLY_API_TOKEN=some-shared-secret npm start
+KELLY_API_BASE_URL=http://100.91.53.63:8765 KELLY_API_TOKEN=some-shared-secret npm start
 ```
 
 You can also put those in the dashboard machine's repo-level `.env` instead of exporting them every time:
 
 ```env
-KELLY_API_BASE_URL=http://windows-box.tailnet-name.ts.net:8765
+KELLY_API_BASE_URL=http://100.91.53.63:8765
 KELLY_API_TOKEN=some-shared-secret
 ```
 
@@ -206,7 +231,13 @@ npm run dev
 Windows helper:
 
 ```bat
-start-dashboard.cmd
+start-backend-windows.cmd
+```
+
+Mac helper:
+
+```bash
+./start-dashboard-mac.sh
 ```
 
 ## Runtime Modes
@@ -399,7 +430,7 @@ The dashboard is a terminal app, not a web app. It reads backend state through t
 - `save/data/bot_state.json`
 - `save/data/identity_cache.json`
 
-Run it in the same repository checkout by default. If it runs on another machine, set `KELLY_API_BASE_URL` in that machine's `.env`.
+In production, run it on the Mac checkout and set `KELLY_API_BASE_URL=http://100.91.53.63:8765` in the Mac `.env`.
 
 ## Runtime Files
 

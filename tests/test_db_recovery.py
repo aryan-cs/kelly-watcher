@@ -6,8 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import db
-import main
+import kelly_watcher.data.db as db
+import kelly_watcher.main as main
 
 
 def _recovery_state_fn():

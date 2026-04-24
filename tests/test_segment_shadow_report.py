@@ -6,11 +6,11 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-import db
-import evaluator
-import main
-import shadow_evidence
-from segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
+import kelly_watcher.data.db as db
+import kelly_watcher.runtime.evaluator as evaluator
+import kelly_watcher.main as main
+import kelly_watcher.engine.shadow_evidence as shadow_evidence
+from kelly_watcher.engine.segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
 
 
 def _insert_trade(
@@ -299,14 +299,14 @@ class SegmentShadowReportTest(TestCase):
 
     def test_daily_report_skips_when_db_integrity_fails(self) -> None:
         with patch(
-            "evaluator.database_integrity_state",
+            "kelly_watcher.runtime.evaluator.database_integrity_state",
             return_value={
                 "db_integrity_known": True,
                 "db_integrity_ok": False,
                 "db_integrity_message": "database disk image is malformed",
             },
-        ), patch("evaluator.send_alert") as send_alert, patch(
-            "evaluator.resolve_shadow_trades"
+        ), patch("kelly_watcher.runtime.evaluator.send_alert") as send_alert, patch(
+            "kelly_watcher.runtime.evaluator.resolve_shadow_trades"
         ) as resolve_shadow_trades:
             evaluator.daily_report()
 
@@ -358,24 +358,24 @@ class SegmentShadowReportTest(TestCase):
             "legacy_resolved_excluded": 0,
         }
         with patch(
-            "evaluator.database_integrity_state",
+            "kelly_watcher.runtime.evaluator.database_integrity_state",
             return_value={
                 "db_integrity_known": True,
                 "db_integrity_ok": True,
                 "db_integrity_message": "",
             },
-        ), patch("evaluator.resolve_shadow_trades"), patch(
-            "evaluator.compute_performance_report",
+        ), patch("kelly_watcher.runtime.evaluator.resolve_shadow_trades"), patch(
+            "kelly_watcher.runtime.evaluator.compute_performance_report",
             side_effect=[shadow_report, live_report],
         ) as compute_report, patch(
-            "evaluator._current_shadow_segment_report_since_ts",
+            "kelly_watcher.runtime.evaluator._current_shadow_segment_report_since_ts",
             return_value=1_700_123_456,
         ), patch(
-            "evaluator.compute_segment_shadow_report",
+            "kelly_watcher.runtime.evaluator.compute_segment_shadow_report",
             return_value={"total_segments": 1, "status": "blocked", "summary": "need more resolved"},
         ) as segment_report, patch(
-            "evaluator.persist_performance_snapshot"
-        ) as persist_snapshot, patch("evaluator.send_alert") as send_alert:
+            "kelly_watcher.runtime.evaluator.persist_performance_snapshot"
+        ) as persist_snapshot, patch("kelly_watcher.runtime.evaluator.send_alert") as send_alert:
             evaluator.daily_report()
 
         compute_report.assert_any_call("shadow", apply_shadow_evidence_epoch=True)

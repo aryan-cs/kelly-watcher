@@ -7,9 +7,9 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import db
-import performance_preview
-import telegram_runtime
+import kelly_watcher.data.db as db
+import kelly_watcher.runtime.performance_preview as performance_preview
+import kelly_watcher.integrations.telegram_runtime as telegram_runtime
 
 
 class _HttpResponse:
@@ -252,11 +252,11 @@ class TelegramCommandTest(unittest.TestCase):
                     }
                 )
 
-                with patch("telegram_runtime.telegram_bot_token", return_value="token"), patch(
-                    "telegram_runtime.telegram_chat_id", return_value="123"
-                ), patch("telegram_runtime.httpx.Client", return_value=client), patch(
-                    "telegram_runtime.render_tracker_preview_message", return_value="reply"
-                ), patch("telegram_runtime.send_telegram_message", return_value=True) as send_message:
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
+                    "kelly_watcher.integrations.telegram_runtime.render_tracker_preview_message", return_value="reply"
+                ), patch("kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True) as send_message:
                     handled = telegram_runtime.service_telegram_commands()
 
                 self.assertEqual(handled, 2)
@@ -311,11 +311,11 @@ class TelegramCommandTest(unittest.TestCase):
                     }
                 )
 
-                with patch("telegram_runtime.telegram_bot_token", return_value="token"), patch(
-                    "telegram_runtime.telegram_chat_id", return_value="123"
-                ), patch("telegram_runtime.httpx.Client", return_value=client), patch(
-                    "telegram_runtime.send_telegram_message", return_value=True
-                ) as send_message, patch("telegram_runtime.time.time", return_value=1_700_000_400):
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
+                    "kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True
+                ) as send_message, patch("kelly_watcher.integrations.telegram_runtime.time.time", return_value=1_700_000_400):
                     handled = telegram_runtime.service_telegram_commands()
 
                 self.assertEqual(handled, 1)
@@ -365,11 +365,11 @@ class TelegramCommandTest(unittest.TestCase):
                     }
                 )
 
-                with patch("telegram_runtime.telegram_bot_token", return_value="token"), patch(
-                    "telegram_runtime.telegram_chat_id", return_value="123"
-                ), patch("telegram_runtime.httpx.Client", return_value=client), patch(
-                    "telegram_runtime.render_leaderboards_message", return_value="leaders"
-                ), patch("telegram_runtime.send_telegram_message", return_value=True) as send_message:
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
+                    "kelly_watcher.integrations.telegram_runtime.render_leaderboards_message", return_value="leaders"
+                ), patch("kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True) as send_message:
                     handled = telegram_runtime.service_telegram_commands()
 
                 self.assertEqual(handled, 1)
@@ -400,8 +400,8 @@ class TelegramCommandTest(unittest.TestCase):
                 ]
             return []
 
-        with patch("telegram_runtime.httpx.Client", return_value=_ContextClient()), patch(
-            "telegram_runtime.fetch_leaderboard",
+        with patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=_ContextClient()), patch(
+            "kelly_watcher.integrations.telegram_runtime.fetch_leaderboard",
             side_effect=_fake_fetch,
         ):
             message = telegram_runtime.render_leaderboards_message()

@@ -9,8 +9,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-import db
-import replay_search
+import kelly_watcher.data.db as db
+import kelly_watcher.research.replay_search as replay_search
 
 
 class ReplaySearchTest(unittest.TestCase):
@@ -257,12 +257,12 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps(
                 {
-                    "min_confidence": [0.55, 0.65],
-                    "max_bet_fraction": [0.02, 0.05],
+                    "min_confidence": [0.56, 0.65],
+                    "max_bet_fraction": [0.02, 0.04],
                 }
             ),
             "--drawdown-penalty",
@@ -520,7 +520,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--window-days",
@@ -644,7 +644,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--window-days",
@@ -686,7 +686,7 @@ class ReplaySearchTest(unittest.TestCase):
 
         stdout = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--base-policy-json",
             json.dumps({"allow_heuristic": False}),
             "--grid-json",
@@ -2937,7 +2937,7 @@ class ReplaySearchTest(unittest.TestCase):
 
         stdout = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--base-policy-json",
             json.dumps({"min_confidence": 0.60}),
             "--grid-json",
@@ -9139,7 +9139,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--base-policy-json",
             json.dumps({"allow_heuristic": False}),
             "--grid-json",
@@ -9231,7 +9231,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--constraints-json",
@@ -9271,7 +9271,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--grid-json",
                 json.dumps({"min_confidence": [0.60, 0.65]}),
                 "--constraints-file",
@@ -9331,7 +9331,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--base-policy-file",
@@ -9385,7 +9385,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--grid-json",
                 json.dumps({"min_confidence": [0.60, 0.65]}),
                 "--constraints-file",
@@ -9434,7 +9434,7 @@ class ReplaySearchTest(unittest.TestCase):
 
         stdout = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--score-weights-json",
@@ -9466,7 +9466,7 @@ class ReplaySearchTest(unittest.TestCase):
             db_path = Path(tmpdir) / "replay_search_request_token.db"
             stdout = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--request-token",
@@ -9524,7 +9524,7 @@ class ReplaySearchTest(unittest.TestCase):
             weights_path.write_text(json.dumps({"worst_window_penalty": 1.0}), encoding="utf-8")
             stdout = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--grid-json",
                 json.dumps({"min_confidence": [0.60, 0.65]}),
                 "--score-weights-file",
@@ -9569,7 +9569,7 @@ class ReplaySearchTest(unittest.TestCase):
 
         stdout = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--score-weights-json",
@@ -9590,7 +9590,7 @@ class ReplaySearchTest(unittest.TestCase):
 
     def test_main_rejects_unknown_score_weight_payload_keys(self) -> None:
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--score-weights-json",
@@ -9604,7 +9604,7 @@ class ReplaySearchTest(unittest.TestCase):
 
     def test_main_rejects_invalid_score_weight_payload_values(self) -> None:
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--score-weights-json",
@@ -9617,7 +9617,7 @@ class ReplaySearchTest(unittest.TestCase):
             replay_search.main()
 
         negative_argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--score-weights-json",
@@ -9645,7 +9645,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--constraints-json",
@@ -9668,7 +9668,7 @@ class ReplaySearchTest(unittest.TestCase):
 
     def test_main_rejects_unknown_constraints_payload_keys(self) -> None:
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--constraints-json",
@@ -9696,7 +9696,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps(
                 {
@@ -9738,7 +9738,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps(
                 {
@@ -9779,7 +9779,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps(
                 {
@@ -9817,7 +9817,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps(
                 {
@@ -9878,7 +9878,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--window-days",
@@ -9947,7 +9947,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-heuristic-accepted-count",
@@ -10007,7 +10007,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--max-heuristic-accepted-share",
@@ -10067,7 +10067,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--max-heuristic-accepted-size-share",
@@ -10126,7 +10126,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -10197,7 +10197,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -10269,7 +10269,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--max-pause-guard-reject-share",
@@ -10334,7 +10334,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--max-top-trader-accepted-share",
@@ -10403,7 +10403,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--max-top-market-accepted-share",
@@ -10472,7 +10472,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--max-top-entry-price-band-accepted-share",
@@ -10541,7 +10541,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--max-top-time-to-close-band-accepted-share",
@@ -10638,7 +10638,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--max-top-trader-size-share",
@@ -10742,7 +10742,7 @@ class ReplaySearchTest(unittest.TestCase):
 
         stdout = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-trader-count",
@@ -10821,7 +10821,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--base-policy-json",
             json.dumps({"allow_heuristic": False}),
             "--grid-json",
@@ -10885,7 +10885,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--base-policy-json",
             json.dumps({"allow_heuristic": False}),
             "--grid-json",
@@ -10941,7 +10941,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -11032,7 +11032,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -11112,7 +11112,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--pause-guard-penalty",
@@ -11195,7 +11195,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--wallet-concentration-penalty",
@@ -11279,7 +11279,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--entry-price-band-concentration-penalty",
@@ -11343,7 +11343,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--wallet-count-penalty",
@@ -11417,7 +11417,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--mode-loss-penalty",
@@ -11476,7 +11476,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--resolved-share-penalty",
@@ -11535,7 +11535,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--mode-resolved-share-penalty",
@@ -11579,7 +11579,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"allow_heuristic": [True, False]}),
             "--mode-loss-penalty",
@@ -11638,7 +11638,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"allow_heuristic": [True, False]}),
             "--min-heuristic-accepted-count",
@@ -11719,7 +11719,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -11790,7 +11790,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -11850,7 +11850,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-heuristic-resolved-count",
@@ -11911,7 +11911,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-heuristic-resolved-share",
@@ -11970,7 +11970,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-heuristic-resolved-size-share",
@@ -12025,7 +12025,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-heuristic-pnl-usd",
@@ -12080,7 +12080,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-total-pnl-usd",
@@ -12139,7 +12139,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-resolved-share",
@@ -12197,7 +12197,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--min-resolved-size-share",
@@ -12259,7 +12259,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12328,7 +12328,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12402,7 +12402,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12471,7 +12471,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12546,7 +12546,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12621,7 +12621,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12683,7 +12683,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12751,7 +12751,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12828,7 +12828,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12898,7 +12898,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -12979,7 +12979,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13054,7 +13054,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13126,7 +13126,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--window-days",
@@ -13214,7 +13214,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13283,7 +13283,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13353,7 +13353,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13428,7 +13428,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13490,7 +13490,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13554,7 +13554,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13630,7 +13630,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13706,7 +13706,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13808,7 +13808,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13896,7 +13896,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -13983,7 +13983,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -14058,7 +14058,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -14120,7 +14120,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--base-policy-json",
             json.dumps({"allow_heuristic": False}),
             "--grid-json",
@@ -14193,7 +14193,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -14253,7 +14253,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -14303,7 +14303,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -14379,7 +14379,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--window-days",
@@ -14453,7 +14453,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--window-days",
@@ -14526,7 +14526,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
             "--window-days",
@@ -14568,7 +14568,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60]}),
         ]
@@ -14606,7 +14606,7 @@ class ReplaySearchTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         argv = [
-            "replay_search.py",
+            "kelly_watcher.research.replay_search.py",
             "--grid-json",
             json.dumps({"min_confidence": [0.60, 0.65]}),
             "--window-days",
@@ -14682,11 +14682,11 @@ class ReplaySearchTest(unittest.TestCase):
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "replay_search.db"
+            db_path = Path(tmpdir) / "kelly_watcher.research.replay_search.db"
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--label-prefix",
@@ -14909,7 +14909,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--label-prefix",
@@ -14997,7 +14997,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -15140,7 +15140,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -15269,7 +15269,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -15380,7 +15380,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -15486,7 +15486,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -15586,7 +15586,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -15686,7 +15686,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -15790,7 +15790,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--base-policy-json",
@@ -15890,7 +15890,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--base-policy-json",
@@ -15992,7 +15992,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -16074,7 +16074,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -16172,7 +16172,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -16266,7 +16266,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -16406,7 +16406,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -16601,7 +16601,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -16770,7 +16770,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -16980,7 +16980,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -17103,7 +17103,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -17222,7 +17222,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -17362,7 +17362,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -17440,7 +17440,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--base-policy-json",
@@ -17524,7 +17524,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--base-policy-json",
@@ -17616,7 +17616,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -17705,7 +17705,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -17794,7 +17794,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -17884,7 +17884,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -17973,7 +17973,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -18062,7 +18062,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--grid-json",
@@ -18136,7 +18136,7 @@ class ReplaySearchTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(db_path),
                 "--base-policy-json",

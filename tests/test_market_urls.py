@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import db
-from market_urls import market_url_from_metadata
+import kelly_watcher.data.db as db
+from kelly_watcher.data.market_urls import market_url_from_metadata
 
 
 class MarketUrlsTest(unittest.TestCase):

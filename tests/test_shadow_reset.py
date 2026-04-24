@@ -8,8 +8,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import db
-import shadow_reset
+import kelly_watcher.data.db as db
+import kelly_watcher.shadow_reset as shadow_reset
 
 
 class ShadowResetTest(unittest.TestCase):
@@ -269,7 +269,7 @@ class ShadowResetTest(unittest.TestCase):
             event_file = data_dir / "events.jsonl"
             bot_state_file = data_dir / "bot_state.json"
             pid_file = data_dir / "shadow_bot.pid"
-            identity_file = data_dir / "identity_cache.json"
+            identity_file = data_dir / "kelly_watcher.data.identity_cache.json"
             manual_retrain_file = data_dir / "manual_retrain_request.json"
             manual_trade_file = data_dir / "manual_trade_request.json"
             telegram_state_file = data_dir / "telegram_state.json"
@@ -289,7 +289,7 @@ class ShadowResetTest(unittest.TestCase):
             extra_db_path.write_text("extra db\n", encoding="utf-8")
             backup_db.write_text("backup db\n", encoding="utf-8")
 
-            with patch("db.DB_PATH", db_path), patch.object(shadow_reset, "SAVE_DIR", save_dir), patch.object(
+            with patch("kelly_watcher.data.db.DB_PATH", db_path), patch.object(shadow_reset, "SAVE_DIR", save_dir), patch.object(
                 shadow_reset, "DATA_DIR", data_dir
             ), patch.object(
                 shadow_reset, "LOG_DIR", log_dir
@@ -496,7 +496,7 @@ class ShadowResetTest(unittest.TestCase):
             event_file = data_dir / "events.jsonl"
             bot_state_file = data_dir / "bot_state.json"
             model_artifact = save_dir / "model.joblib"
-            identity_file = data_dir / "identity_cache.json"
+            identity_file = data_dir / "kelly_watcher.data.identity_cache.json"
             telegram_state_file = data_dir / "telegram_state.json"
             background_log = log_dir / "shadow_runtime.out"
             shadow_evidence_epoch_file = data_dir / "shadow_evidence_epoch.json"
@@ -508,7 +508,7 @@ class ShadowResetTest(unittest.TestCase):
             telegram_state_file.write_text('{"last_update_id": 123}\n', encoding="utf-8")
             background_log.write_text("runtime log\n", encoding="utf-8")
 
-            with patch("db.DB_PATH", db_path), patch.object(shadow_reset, "SAVE_DIR", save_dir), patch.object(
+            with patch("kelly_watcher.data.db.DB_PATH", db_path), patch.object(shadow_reset, "SAVE_DIR", save_dir), patch.object(
                 shadow_reset, "DATA_DIR", data_dir
             ), patch.object(
                 shadow_reset, "LOG_DIR", log_dir

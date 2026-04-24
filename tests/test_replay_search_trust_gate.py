@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import replay_search
+import kelly_watcher.research.replay_search as replay_search
 
 
 class ReplaySearchTrustGateTest(unittest.TestCase):
@@ -41,7 +41,7 @@ class ReplaySearchTrustGateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_db = Path(tmpdir) / "runtime.db"
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--grid-json",
                 json.dumps({"min_confidence": [0.60]}),
             ]
@@ -198,7 +198,7 @@ class ReplaySearchTrustGateTest(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             argv = [
-                "replay_search.py",
+                "kelly_watcher.research.replay_search.py",
                 "--db",
                 str(snapshot_db),
                 "--grid-json",

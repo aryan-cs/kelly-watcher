@@ -5,9 +5,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import db
-from tracker import PolymarketTracker
-from watchlist_manager import (
+import kelly_watcher.data.db as db
+from kelly_watcher.runtime.tracker import PolymarketTracker
+from kelly_watcher.engine.watchlist_manager import (
     DISCOVERY_WALLET_TRADE_FETCH_LIMIT,
     HOT_WALLET_TRADE_FETCH_LIMIT,
     WARM_WALLET_TRADE_FETCH_LIMIT,
@@ -161,10 +161,10 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_200
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
                 ):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xdisc"])
                     snapshot = manager.refresh()
@@ -199,12 +199,12 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.warm_poll_interval_multiplier", return_value=2), patch(
-                    "watchlist_manager.discovery_poll_interval_multiplier", return_value=3
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_200
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("kelly_watcher.engine.watchlist_manager.warm_poll_interval_multiplier", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.discovery_poll_interval_multiplier", return_value=3
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
                 ):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xdisc"])
                     self.assertEqual(manager.wallets_for_poll(), ["0xhot"])
@@ -247,15 +247,15 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("watchlist_manager.wallet_uncopyable_penalty_min_buys", return_value=12), patch(
-                    "watchlist_manager.wallet_uncopyable_penalty_weight", return_value=0.25
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_uncopyable_penalty_min_buys", return_value=12), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_penalty_weight", return_value=0.25
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
                     manager = WatchlistManager(["0xcopyable", "0xuncopyable"])
                     snapshot = manager.refresh()
 
@@ -307,14 +307,14 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=999
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_500):
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=999
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_500):
                     manager = WatchlistManager(["0xflashy", "0xsteady"])
                     snapshot = manager.refresh(run_auto_drop=False)
 
@@ -366,12 +366,12 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.warm_poll_interval_multiplier", return_value=2), patch(
-                    "watchlist_manager.discovery_poll_interval_multiplier", return_value=3
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_200
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("kelly_watcher.engine.watchlist_manager.warm_poll_interval_multiplier", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.discovery_poll_interval_multiplier", return_value=3
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
                 ):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xdisc"])
 
@@ -433,10 +433,10 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_200
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
                 ):
                     manager = WatchlistManager(["0xactive", "0xstale"])
                     snapshot = manager.refresh()
@@ -454,13 +454,13 @@ class WatchlistManagerTest(unittest.TestCase):
                 self.assertEqual(row["status"], "dropped")
                 self.assertEqual(row["status_reason"], "inactive>1h")
 
-                with patch("watchlist_manager.time.time", return_value=1_700_000_400):
+                with patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400):
                     self.assertTrue(reactivate_wallet("0xstale"))
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_500
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_500
                 ):
                     snapshot = manager.refresh()
 
@@ -497,11 +497,11 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
                     manager = WatchlistManager(["0xquiet"])
                     snapshot = manager.refresh()
 
@@ -562,15 +562,15 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=40), patch(
-                    "watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40
-                ), patch("watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=40), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
                     manager = WatchlistManager(["0xbest", "0xweak"])
                     snapshot = manager.refresh()
 
@@ -628,11 +628,11 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
                     manager = WatchlistManager(["0xcursoronly"])
                     snapshot = manager.refresh()
 
@@ -678,12 +678,12 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager._protected_best_wallets", return_value=set()), patch(
-                    "watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0
-                ), patch("watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_200
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager._protected_best_wallets", return_value=set()), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=3600.0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
                 ):
                     manager = WatchlistManager(["0xprofit"])
                     snapshot = manager.refresh()
@@ -727,15 +727,15 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
                 ), patch(
-                    "watchlist_manager.wallet_performance_drop_min_trades", return_value=40
-                ), patch("watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
-                    "watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                    "kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=40
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
                     manager = WatchlistManager(["0xgood", "0xbad"])
                     snapshot = manager.refresh()
 
@@ -751,18 +751,18 @@ class WatchlistManagerTest(unittest.TestCase):
                 self.assertEqual(row["status"], "dropped")
                 self.assertIn("poor_perf", row["status_reason"])
 
-                with patch("watchlist_manager.time.time", return_value=1_700_000_300):
+                with patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_300):
                     self.assertTrue(reactivate_wallet("0xbad"))
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
                 ), patch(
-                    "watchlist_manager.wallet_performance_drop_min_trades", return_value=40
-                ), patch("watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
-                    "watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_320):
+                    "kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=40
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_320):
                     snapshot = manager.refresh()
 
                 self.assertEqual(snapshot.dropped, ())
@@ -773,15 +773,15 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
                 ), patch(
-                    "watchlist_manager.wallet_performance_drop_min_trades", return_value=40
-                ), patch("watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
-                    "watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_500):
+                    "kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=40
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_500):
                     snapshot = manager.refresh()
 
                 self.assertEqual(snapshot.dropped, ("0xbad",))
@@ -842,16 +842,16 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=10), patch(
-                    "watchlist_manager.wallet_local_drop_max_avg_return", return_value=-0.08
-                ), patch("watchlist_manager.wallet_local_drop_max_total_pnl_usd", return_value=0.0), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_500
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=10), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_local_drop_max_avg_return", return_value=-0.08
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_local_drop_max_total_pnl_usd", return_value=0.0), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_500
                 ):
                     manager = WatchlistManager(["0xgood", "0xloser"])
                     snapshot = manager.refresh()
@@ -955,15 +955,15 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=2), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=20
-                ), patch("watchlist_manager.wallet_uncopyable_drop_max_skip_rate", return_value=0.75), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_max_resolved_copied", return_value=3
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_400):
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=20
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_max_skip_rate", return_value=0.75), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_max_resolved_copied", return_value=3
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400):
                     manager = WatchlistManager(["0xusable", "0xbot"])
                     snapshot = manager.refresh()
 
@@ -1045,15 +1045,15 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=6), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=0
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=20
-                ), patch("watchlist_manager.wallet_uncopyable_drop_max_skip_rate", return_value=0.75), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_max_resolved_copied", return_value=3
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_400):
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=6), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=20
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_max_skip_rate", return_value=0.75), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_max_resolved_copied", return_value=3
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400):
                     manager = WatchlistManager(tracked_wallets)
                     snapshot = manager.refresh()
 
@@ -1131,13 +1131,13 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("watchlist_manager.time.time", return_value=1_700_000_200):
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xprofit"])
                     snapshot = manager.refresh()
 
@@ -1200,12 +1200,12 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_200
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
                 ):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xslow"])
                     snapshot = manager.refresh()
@@ -1267,12 +1267,12 @@ class WatchlistManagerTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("watchlist_manager.hot_wallet_count", return_value=1), patch(
-                    "watchlist_manager.warm_wallet_count", return_value=1
-                ), patch("watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
-                    "watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
-                ), patch("watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "watchlist_manager.time.time", return_value=1_700_000_200
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=1), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=1
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
                 ):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xslow"])
                     snapshot = manager.refresh()

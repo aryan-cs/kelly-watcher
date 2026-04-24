@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import dashboard_api
+import kelly_watcher.dashboard_api as dashboard_api
 
 
 def _resolve_live_mode_helper() -> tuple[str, object | None]:

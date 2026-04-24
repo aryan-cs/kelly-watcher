@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from segment_policy import (
+from kelly_watcher.engine.segment_policy import (
     SEGMENT_FALLBACK,
     SHORT_TIME_TO_CLOSE_BANDS,
     MID_TIME_TO_CLOSE_BANDS,

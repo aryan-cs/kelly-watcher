@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from rank_copytrade_wallets import (
+from kelly_watcher.tools.rank_copytrade_wallets import (
     LeaderboardEntry,
     LocalCopyMetrics,
     PerformanceMetrics,

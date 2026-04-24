@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-import replay_runner
+import kelly_watcher.research.replay_runner as replay_runner
 
 
 class ReplayRunnerTest(unittest.TestCase):
@@ -37,7 +37,7 @@ class ReplayRunnerTest(unittest.TestCase):
         stderr = io.StringIO()
         with (
             patch.object(replay_runner, "run_replay", return_value=result) as run_replay_mock,
-            patch("sys.argv", ["replay_runner.py"]),
+            patch("sys.argv", ["kelly_watcher.research.replay_runner.py"]),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):

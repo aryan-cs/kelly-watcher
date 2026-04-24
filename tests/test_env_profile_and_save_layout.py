@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
 
-import env_profile
-import runtime_paths
+import kelly_watcher.env_profile as env_profile
+import kelly_watcher.runtime_paths as runtime_paths
 
 
 class EnvProfileTests(unittest.TestCase):
@@ -58,7 +59,7 @@ class EnvProfileTests(unittest.TestCase):
             config_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
             secrets_env.write_text("TELEGRAM_CHAT_ID=123\n", encoding="utf-8")
 
-            with unittest.mock.patch.object(env_profile, "REPO_ROOT", repo_root), unittest.mock.patch.dict(
+            with mock.patch.object(env_profile, "REPO_ROOT", repo_root), mock.patch.dict(
                 "os.environ", {}, clear=True
             ):
                 _profile, env_path = env_profile.init_env_profile()

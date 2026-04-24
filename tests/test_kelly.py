@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from kelly import heuristic_size
+from kelly_watcher.engine.kelly import heuristic_size
 
 
 class HeuristicSizingTest(unittest.TestCase):

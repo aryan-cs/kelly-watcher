@@ -1,9 +1,9 @@
 # Secrets and local environment files
 .env
 .env.*
-config.env
 secrets.env
 !.env.example
+!config.env
 !config.env.example
 !secrets.env.example
 
@@ -26,9 +26,9 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Runtime artifacts and local data
-save/
-data/
-logs/
+/save/
+/data/
+/logs/
 *.log
 *.pid
 nohup.out
@@ -40,12 +40,12 @@ results.json
 *.sqlite3
 
 # Dashboard / Node artifacts
-dashboard/node_modules/
-dashboard/dist/
-dashboard/coverage/
-dashboard/.cache/
-dashboard/.eslintcache
-dashboard/*.tsbuildinfo
+dashboard-cli/node_modules/
+dashboard-cli/dist/
+dashboard-cli/coverage/
+dashboard-cli/.cache/
+dashboard-cli/.eslintcache
+dashboard-cli/*.tsbuildinfo
 /package-lock.json
 
 # Editor and OS noise

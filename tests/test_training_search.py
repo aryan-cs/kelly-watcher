@@ -6,8 +6,8 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-import train
-from economic_model import transform_return_target
+import kelly_watcher.research.train as train
+from kelly_watcher.engine.economic_model import transform_return_target
 
 
 class DummyReturnModel:
@@ -284,7 +284,7 @@ class TrainingSearchTest(unittest.TestCase):
             }
         )
 
-        with mock.patch("train._build_regressor", return_value=(StubRegressor(), "hist_gradient_boosting")):
+        with mock.patch("kelly_watcher.research.train._build_regressor", return_value=(StubRegressor(), "hist_gradient_boosting")):
             fit_result = train._fit_calibrated_model(
                 spec={"backend": "hist_gradient_boosting", "params": {}, "calibration_mode": "auto"},
                 train_df=train_df,

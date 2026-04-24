@@ -10,10 +10,10 @@ from unittest.mock import patch
 import joblib
 import numpy as np
 
-import signal_engine
-from economic_model import expected_return_to_confidence, inverse_return_target, transform_return_target
-from features import FEATURE_COLS
-from trade_contract import DATA_CONTRACT_VERSION, MODEL_LABEL_MODE
+import kelly_watcher.engine.signal_engine as signal_engine
+from kelly_watcher.engine.economic_model import expected_return_to_confidence, inverse_return_target, transform_return_target
+from kelly_watcher.engine.features import FEATURE_COLS
+from kelly_watcher.engine.trade_contract import DATA_CONTRACT_VERSION, MODEL_LABEL_MODE
 
 
 class ConstantReturnModel:
@@ -65,7 +65,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             market_features = SimpleNamespace(execution_price=0.4, mid=0.4)
@@ -75,7 +75,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
                 "score",
                 return_value={"score": 0.7, "veto": None},
             ), patch(
-                "signal_engine.build_feature_map",
+                "kelly_watcher.engine.signal_engine.build_feature_map",
                 return_value={column: 0.5 for column in FEATURE_COLS[:3]},
             ):
                 result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
@@ -88,7 +88,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
     def test_signal_engine_tags_segment_metadata_for_runtime_scoring(self) -> None:
         with patch(
-            "signal_engine.model_path",
+            "kelly_watcher.engine.signal_engine.model_path",
             return_value="/tmp/kelly-watcher-missing-model.joblib",
         ):
             engine = signal_engine.SignalEngine()
@@ -106,10 +106,10 @@ class ExpectedReturnModelTest(unittest.TestCase):
             "score",
             return_value={"score": 0.79, "veto": None},
         ), patch(
-            "signal_engine.adaptive_min_confidence_for_signal",
+            "kelly_watcher.engine.signal_engine.adaptive_min_confidence_for_signal",
             return_value=adaptive_floor,
         ), patch(
-            "signal_engine.adjust_heuristic_confidence",
+            "kelly_watcher.engine.signal_engine.adjust_heuristic_confidence",
             return_value=belief,
         ):
             result = engine.evaluate(SimpleNamespace(), market_features, 10.0, watch_tier="warm")
@@ -126,7 +126,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             artifact = self._trusted_model_artifact(0.35, edge_threshold=0.02)
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             market_features = SimpleNamespace(execution_price=0.4, mid=0.4)
@@ -135,10 +135,10 @@ class ExpectedReturnModelTest(unittest.TestCase):
                 "score",
                 return_value={"score": 0.7, "veto": None},
             ), patch(
-                "signal_engine.build_feature_map",
+                "kelly_watcher.engine.signal_engine.build_feature_map",
                 return_value={column: 0.5 for column in FEATURE_COLS[:3]},
             ), patch(
-                "signal_engine.expected_return_to_confidence",
+                "kelly_watcher.engine.signal_engine.expected_return_to_confidence",
                 return_value=0.8,
             ):
                 result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
@@ -149,7 +149,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
     def test_signal_engine_blocks_heuristic_entries_below_min_entry_price(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
-            "signal_engine.model_path",
+            "kelly_watcher.engine.signal_engine.model_path",
             return_value="/tmp/kelly-watcher-missing-model.joblib",
         ):
             engine = signal_engine.SignalEngine()
@@ -164,16 +164,16 @@ class ExpectedReturnModelTest(unittest.TestCase):
         adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
 
         with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
-            "signal_engine.adjust_heuristic_confidence",
+            "kelly_watcher.engine.signal_engine.adjust_heuristic_confidence",
             return_value=belief,
         ), patch(
-            "signal_engine.adaptive_min_confidence_for_signal",
+            "kelly_watcher.engine.signal_engine.adaptive_min_confidence_for_signal",
             return_value=adaptive_floor,
         ), patch(
-            "signal_engine.heuristic_min_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_min_entry_price",
             return_value=0.45,
         ), patch(
-            "signal_engine.heuristic_max_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_max_entry_price",
             return_value=0.5,
         ):
             result = engine._evaluate_heuristic(
@@ -187,7 +187,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
     def test_signal_engine_blocks_heuristic_entries_outside_allowlisted_band(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
-            "signal_engine.model_path",
+            "kelly_watcher.engine.signal_engine.model_path",
             return_value="/tmp/kelly-watcher-missing-model.joblib",
         ):
             engine = signal_engine.SignalEngine()
@@ -202,22 +202,22 @@ class ExpectedReturnModelTest(unittest.TestCase):
         adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
 
         with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
-            "signal_engine.adjust_heuristic_confidence",
+            "kelly_watcher.engine.signal_engine.adjust_heuristic_confidence",
             return_value=belief,
         ), patch(
-            "signal_engine.adaptive_min_confidence_for_signal",
+            "kelly_watcher.engine.signal_engine.adaptive_min_confidence_for_signal",
             return_value=adaptive_floor,
         ), patch(
-            "signal_engine.heuristic_min_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_min_entry_price",
             return_value=0.60,
         ), patch(
-            "signal_engine.heuristic_max_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_max_entry_price",
             return_value=0.75,
         ), patch(
-            "signal_engine.heuristic_allowed_entry_price_bands",
+            "kelly_watcher.engine.signal_engine.heuristic_allowed_entry_price_bands",
             return_value=(">=0.70",),
         ), patch(
-            "signal_engine.heuristic_min_time_to_close_seconds",
+            "kelly_watcher.engine.signal_engine.heuristic_min_time_to_close_seconds",
             return_value=0,
         ):
             result = engine._evaluate_heuristic(
@@ -232,7 +232,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
     def test_signal_engine_blocks_heuristic_entries_below_min_time_to_close(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
-            "signal_engine.model_path",
+            "kelly_watcher.engine.signal_engine.model_path",
             return_value="/tmp/kelly-watcher-missing-model.joblib",
         ):
             engine = signal_engine.SignalEngine()
@@ -247,22 +247,22 @@ class ExpectedReturnModelTest(unittest.TestCase):
         adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
 
         with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
-            "signal_engine.adjust_heuristic_confidence",
+            "kelly_watcher.engine.signal_engine.adjust_heuristic_confidence",
             return_value=belief,
         ), patch(
-            "signal_engine.adaptive_min_confidence_for_signal",
+            "kelly_watcher.engine.signal_engine.adaptive_min_confidence_for_signal",
             return_value=adaptive_floor,
         ), patch(
-            "signal_engine.heuristic_min_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_min_entry_price",
             return_value=0.65,
         ), patch(
-            "signal_engine.heuristic_max_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_max_entry_price",
             return_value=0.75,
         ), patch(
-            "signal_engine.heuristic_allowed_entry_price_bands",
+            "kelly_watcher.engine.signal_engine.heuristic_allowed_entry_price_bands",
             return_value=(),
         ), patch(
-            "signal_engine.heuristic_min_time_to_close_seconds",
+            "kelly_watcher.engine.signal_engine.heuristic_min_time_to_close_seconds",
             return_value=3600,
         ):
             result = engine._evaluate_heuristic(
@@ -276,7 +276,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
     def test_signal_engine_blocks_heuristic_entries_with_weak_market_score_near_lower_band(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
-            "signal_engine.model_path",
+            "kelly_watcher.engine.signal_engine.model_path",
             return_value="/tmp/kelly-watcher-missing-model.joblib",
         ):
             engine = signal_engine.SignalEngine()
@@ -291,16 +291,16 @@ class ExpectedReturnModelTest(unittest.TestCase):
         adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
 
         with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
-            "signal_engine.adjust_heuristic_confidence",
+            "kelly_watcher.engine.signal_engine.adjust_heuristic_confidence",
             return_value=belief,
         ), patch(
-            "signal_engine.adaptive_min_confidence_for_signal",
+            "kelly_watcher.engine.signal_engine.adaptive_min_confidence_for_signal",
             return_value=adaptive_floor,
         ), patch(
-            "signal_engine.heuristic_min_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_min_entry_price",
             return_value=0.65,
         ), patch(
-            "signal_engine.heuristic_max_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_max_entry_price",
             return_value=0.75,
         ):
             result = engine._evaluate_heuristic(
@@ -315,7 +315,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
     def test_signal_engine_relaxes_heuristic_market_floor_near_upper_band(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
-            "signal_engine.model_path",
+            "kelly_watcher.engine.signal_engine.model_path",
             return_value="/tmp/kelly-watcher-missing-model.joblib",
         ):
             engine = signal_engine.SignalEngine()
@@ -330,16 +330,16 @@ class ExpectedReturnModelTest(unittest.TestCase):
         adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
 
         with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
-            "signal_engine.adjust_heuristic_confidence",
+            "kelly_watcher.engine.signal_engine.adjust_heuristic_confidence",
             return_value=belief,
         ), patch(
-            "signal_engine.adaptive_min_confidence_for_signal",
+            "kelly_watcher.engine.signal_engine.adaptive_min_confidence_for_signal",
             return_value=adaptive_floor,
         ), patch(
-            "signal_engine.heuristic_min_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_min_entry_price",
             return_value=0.65,
         ), patch(
-            "signal_engine.heuristic_max_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_max_entry_price",
             return_value=0.75,
         ):
             result = engine._evaluate_heuristic(
@@ -354,7 +354,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
     def test_signal_engine_blocks_heuristic_entries_outside_global_band_allowlist(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
-            "signal_engine.model_path",
+            "kelly_watcher.engine.signal_engine.model_path",
             return_value="/tmp/kelly-watcher-missing-model.joblib",
         ):
             engine = signal_engine.SignalEngine()
@@ -369,28 +369,28 @@ class ExpectedReturnModelTest(unittest.TestCase):
         adaptive_floor = SimpleNamespace(floor=0.55, as_dict=lambda: {"floor": 0.55})
 
         with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch(
-            "signal_engine.adjust_heuristic_confidence",
+            "kelly_watcher.engine.signal_engine.adjust_heuristic_confidence",
             return_value=belief,
         ), patch(
-            "signal_engine.adaptive_min_confidence_for_signal",
+            "kelly_watcher.engine.signal_engine.adaptive_min_confidence_for_signal",
             return_value=adaptive_floor,
         ), patch(
-            "signal_engine.allowed_entry_price_bands",
+            "kelly_watcher.engine.signal_engine.allowed_entry_price_bands",
             return_value=(">=0.70",),
         ), patch(
-            "signal_engine.allowed_time_to_close_bands",
+            "kelly_watcher.engine.signal_engine.allowed_time_to_close_bands",
             return_value=(),
         ), patch(
-            "signal_engine.heuristic_allowed_entry_price_bands",
+            "kelly_watcher.engine.signal_engine.heuristic_allowed_entry_price_bands",
             return_value=(),
         ), patch(
-            "signal_engine.heuristic_min_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_min_entry_price",
             return_value=0.65,
         ), patch(
-            "signal_engine.heuristic_max_entry_price",
+            "kelly_watcher.engine.signal_engine.heuristic_max_entry_price",
             return_value=0.75,
         ), patch(
-            "signal_engine.heuristic_min_time_to_close_seconds",
+            "kelly_watcher.engine.signal_engine.heuristic_min_time_to_close_seconds",
             return_value=0.0,
         ):
             result = engine._evaluate_heuristic(
@@ -405,12 +405,12 @@ class ExpectedReturnModelTest(unittest.TestCase):
 
     def test_signal_engine_blocks_heuristic_when_disabled(self) -> None:
         with patch.dict(os.environ, {}, clear=False), patch(
-            "signal_engine.model_path",
+            "kelly_watcher.engine.signal_engine.model_path",
             return_value="/tmp/kelly-watcher-missing-model.joblib",
         ):
             engine = signal_engine.SignalEngine()
 
-        with patch("signal_engine.allow_heuristic", return_value=False):
+        with patch("kelly_watcher.engine.signal_engine.allow_heuristic", return_value=False):
             result = engine._evaluate_heuristic(
                 SimpleNamespace(),
                 SimpleNamespace(execution_price=0.70, mid=0.70, days_to_res=0.5),
@@ -427,7 +427,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             market_features = SimpleNamespace(execution_price=0.4, mid=0.4, days_to_res=0.5)
@@ -436,19 +436,19 @@ class ExpectedReturnModelTest(unittest.TestCase):
                 "score",
                 return_value={"score": 0.7, "veto": None},
             ), patch(
-                "signal_engine.build_feature_map",
+                "kelly_watcher.engine.signal_engine.build_feature_map",
                 return_value={column: 0.5 for column in FEATURE_COLS[:3]},
             ), patch(
-                "signal_engine.allowed_entry_price_bands",
+                "kelly_watcher.engine.signal_engine.allowed_entry_price_bands",
                 return_value=(),
             ), patch(
-                "signal_engine.allowed_time_to_close_bands",
+                "kelly_watcher.engine.signal_engine.allowed_time_to_close_bands",
                 return_value=(">3d",),
             ), patch(
-                "signal_engine.xgboost_allowed_entry_price_bands",
+                "kelly_watcher.engine.signal_engine.xgboost_allowed_entry_price_bands",
                 return_value=(),
             ), patch(
-                "signal_engine.model_min_time_to_close_seconds",
+                "kelly_watcher.engine.signal_engine.model_min_time_to_close_seconds",
                 return_value=0.0,
             ):
                 result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
@@ -472,7 +472,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             }
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             runtime = engine.runtime_info()
@@ -502,7 +502,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             }
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             runtime = engine.runtime_info()
@@ -522,7 +522,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             artifact = self._trusted_model_artifact(0.20)
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             runtime = engine.runtime_info()
@@ -544,9 +544,9 @@ class ExpectedReturnModelTest(unittest.TestCase):
             joblib.dump(artifact, model_file)
 
             with patch(
-                "signal_engine.read_shadow_evidence_epoch",
+                "kelly_watcher.engine.signal_engine.read_shadow_evidence_epoch",
                 return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
-            ), patch("signal_engine.model_path", return_value=str(model_file)):
+            ), patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             runtime = engine.runtime_info()
@@ -579,7 +579,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             }
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             runtime = engine.runtime_info()
@@ -595,7 +595,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             market_features = SimpleNamespace(execution_price=0.58, mid=0.58, days_to_res=0.5)
@@ -604,16 +604,16 @@ class ExpectedReturnModelTest(unittest.TestCase):
                 "score",
                 return_value={"score": 0.7, "veto": None},
             ), patch(
-                "signal_engine.build_feature_map",
+                "kelly_watcher.engine.signal_engine.build_feature_map",
                 return_value={column: 0.5 for column in FEATURE_COLS[:3]},
             ), patch(
-                "signal_engine.expected_return_to_confidence",
+                "kelly_watcher.engine.signal_engine.expected_return_to_confidence",
                 return_value=0.8,
             ), patch(
-                "signal_engine.xgboost_allowed_entry_price_bands",
+                "kelly_watcher.engine.signal_engine.xgboost_allowed_entry_price_bands",
                 return_value=(">=0.70",),
             ), patch(
-                "signal_engine.model_min_time_to_close_seconds",
+                "kelly_watcher.engine.signal_engine.model_min_time_to_close_seconds",
                 return_value=0,
             ):
                 result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
@@ -628,7 +628,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             market_features = SimpleNamespace(execution_price=0.58, mid=0.58, days_to_res=0.01)
@@ -637,16 +637,16 @@ class ExpectedReturnModelTest(unittest.TestCase):
                 "score",
                 return_value={"score": 0.7, "veto": None},
             ), patch(
-                "signal_engine.build_feature_map",
+                "kelly_watcher.engine.signal_engine.build_feature_map",
                 return_value={column: 0.5 for column in FEATURE_COLS[:3]},
             ), patch(
-                "signal_engine.expected_return_to_confidence",
+                "kelly_watcher.engine.signal_engine.expected_return_to_confidence",
                 return_value=0.8,
             ), patch(
-                "signal_engine.xgboost_allowed_entry_price_bands",
+                "kelly_watcher.engine.signal_engine.xgboost_allowed_entry_price_bands",
                 return_value=(),
             ), patch(
-                "signal_engine.model_min_time_to_close_seconds",
+                "kelly_watcher.engine.signal_engine.model_min_time_to_close_seconds",
                 return_value=3600,
             ):
                 result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
@@ -660,10 +660,10 @@ class ExpectedReturnModelTest(unittest.TestCase):
             artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
-            with patch("signal_engine.allow_xgboost", return_value=False):
+            with patch("kelly_watcher.engine.signal_engine.allow_xgboost", return_value=False):
                 result = engine._evaluate_xgb(
                     SimpleNamespace(),
                     SimpleNamespace(execution_price=0.58, mid=0.58, days_to_res=0.5),
@@ -680,7 +680,7 @@ class ExpectedReturnModelTest(unittest.TestCase):
             artifact = self._trusted_model_artifact(0.35)
             joblib.dump(artifact, model_file)
 
-            with patch("signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
                 engine = signal_engine.SignalEngine()
 
             market_features = SimpleNamespace(execution_price=0.58, mid=0.58, days_to_res=0.5)
@@ -690,10 +690,10 @@ class ExpectedReturnModelTest(unittest.TestCase):
                 "_evaluate_heuristic",
                 return_value=expected,
             ) as heuristic_eval, patch(
-                "signal_engine.allow_xgboost",
+                "kelly_watcher.engine.signal_engine.allow_xgboost",
                 return_value=False,
             ), patch(
-                "signal_engine.allow_heuristic",
+                "kelly_watcher.engine.signal_engine.allow_heuristic",
                 return_value=True,
             ):
                 result = engine.evaluate(SimpleNamespace(), market_features, 10.0)

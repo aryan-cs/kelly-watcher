@@ -4,13 +4,13 @@ import os
 import unittest
 from unittest.mock import patch
 
-from adaptive_confidence import (
+from kelly_watcher.engine.adaptive_confidence import (
     BucketStats,
     CounterfactualRow,
     LocalCopyStats,
     derive_adaptive_floor,
 )
-from kelly import heuristic_size
+from kelly_watcher.engine.kelly import heuristic_size
 
 
 class AdaptiveConfidenceFloorTest(unittest.TestCase):

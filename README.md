@@ -29,19 +29,19 @@ The bot creates its runtime directories automatically on startup.
 
 At a high level, the system works like this:
 
-1. `tracker.py` polls watched Polymarket wallets for recent trades and loads market metadata, order books, and price history.
-2. `watchlist_manager.py` keeps wallets in hot, warm, discovery, or dropped tiers so more promising wallets are polled more aggressively.
-3. `signal_engine.py` scores each buy signal using either:
+1. `src/kelly_watcher/runtime/tracker.py` polls watched Polymarket wallets for recent trades and loads market metadata, order books, and price history.
+2. `src/kelly_watcher/engine/watchlist_manager.py` keeps wallets in hot, warm, discovery, or dropped tiers so more promising wallets are polled more aggressively.
+3. `src/kelly_watcher/engine/signal_engine.py` scores each buy signal using either:
    - the heuristic pipeline, or
    - a deployed model artifact if a current compatible `save/model.joblib` exists.
-4. `kelly.py` sizes the trade, then wallet trust and exposure guards shrink or block it.
-5. `executor.py` either:
+4. `src/kelly_watcher/engine/kelly.py` sizes the trade, then wallet trust and exposure guards shrink or block it.
+5. `src/kelly_watcher/runtime/executor.py` either:
    - simulates a shadow order from the order book, or
    - posts a real Polymarket order in live mode.
-6. `db.py` writes the durable record into `save/data/trading.db`.
-7. `main.py` also emits a lightweight JSON event stream, bot state file, and an HTTP API for the dashboard.
-8. `evaluator.py` resolves finished markets, computes PnL, and closes positions.
-9. `train.py` and `auto_retrain.py` periodically retrain and optionally deploy a new model.
+6. `src/kelly_watcher/data/db.py` writes the durable record into `save/data/trading.db`.
+7. `src/kelly_watcher/main.py` also emits a lightweight JSON event stream, bot state file, and an HTTP API for the dashboard.
+8. `src/kelly_watcher/runtime/evaluator.py` resolves finished markets, computes PnL, and closes positions.
+9. `src/kelly_watcher/research/train.py` and `src/kelly_watcher/research/auto_retrain.py` periodically retrain and optionally deploy a new model.
 
 Important distinction:
 
@@ -66,7 +66,7 @@ Optional for live trading:
 Notes:
 
 - The dashboard talks to the backend over HTTP, so it no longer needs direct SQLite access.
-- The repository includes `uv.lock` and `dashboard/package-lock.json` so installs are reproducible.
+- The repository includes `uv.lock` and `dashboard-cli/package-lock.json` so installs are reproducible.
 
 ## Split Mac/Windows Runtime
 
@@ -116,7 +116,7 @@ uv sync
 ### 3. Install dashboard dependencies
 
 ```bash
-cd dashboard
+cd dashboard-cli
 npm install
 cd ..
 ```
@@ -156,14 +156,14 @@ If you already know the wallets, paste them into `config.env`.
 If you only know Polymarket handles or profile URLs, use:
 
 ```bash
-uv run python resolve_wallet.py @some_user
-uv run python resolve_wallet.py https://polymarket.com/@some_user
+uv run resolve-wallet @some_user
+uv run resolve-wallet https://polymarket.com/@some_user
 ```
 
 If you want to discover candidate wallets from leaderboard data, use:
 
 ```bash
-uv run python rank_copytrade_wallets.py --top 20
+uv run rank-copytrade-wallets --top 20
 ```
 
 Both tools print a ready-to-paste `WATCHED_WALLETS=...` line.
@@ -202,21 +202,21 @@ If you want to run the dashboard on another computer, set:
 In a second terminal:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 npm start
 ```
 
 To run the dashboard on another computer, point it at the backend API:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 KELLY_API_BASE_URL=http://100.91.53.63:8765 npm start
 ```
 
 If the backend sets `DASHBOARD_API_TOKEN`, also set:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 KELLY_API_BASE_URL=http://100.91.53.63:8765 KELLY_API_TOKEN=some-shared-secret npm start
 ```
 
@@ -232,7 +232,7 @@ The dashboard reads `KELLY_API_BASE_URL` and `KELLY_API_TOKEN` from `secrets.env
 For dashboard development from the TypeScript sources instead of the checked-in runtime JS:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 npm run dev
 ```
 
@@ -315,7 +315,7 @@ Required env values:
 Recommended first-time setup:
 
 ```bash
-uv run python polymarket_setup.py
+uv run polymarket-setup
 ```
 
 Live startup also enforces operational checks such as:
@@ -572,7 +572,7 @@ uv run main
 Start the dashboard:
 
 ```bash
-cd dashboard
+cd dashboard-cli
 npm start
 ```
 
@@ -585,19 +585,19 @@ uv run python -m unittest discover -s tests
 Resolve a handle or profile into wallets:
 
 ```bash
-uv run python resolve_wallet.py @some_user
+uv run resolve-wallet @some_user
 ```
 
 Rank candidate wallets:
 
 ```bash
-uv run python rank_copytrade_wallets.py --top 20
+uv run rank-copytrade-wallets --top 20
 ```
 
 Run manual training:
 
 ```bash
-uv run python train.py
+uv run python -m kelly_watcher.research.train
 ```
 
 Reset and restart the shadow account:
@@ -609,7 +609,7 @@ uv run python restart_shadow.py
 Run one-time live collateral setup:
 
 ```bash
-uv run python polymarket_setup.py
+uv run polymarket-setup
 ```
 
 Run the bot in a restart loop on Windows:
@@ -696,41 +696,41 @@ All env parsing lives in `config.py`. Duration values typically accept forms suc
 
 Core runtime:
 
-- `main.py`: startup, polling loop, scheduling, event emission, bot-state writes
-- `tracker.py`: Polymarket trade and market data client
-- `signal_engine.py`: heuristic/model decision logic
-- `executor.py`: shadow and live execution
-- `evaluator.py`: resolution and PnL updates
-- `db.py`: SQLite schema and migrations
-- `dedup.py`: duplicate and open-position gating
+- `src/kelly_watcher/main.py`: startup, polling loop, scheduling, event emission, bot-state writes
+- `src/kelly_watcher/runtime/tracker.py`: Polymarket trade and market data client
+- `src/kelly_watcher/engine/signal_engine.py`: heuristic/model decision logic
+- `src/kelly_watcher/runtime/executor.py`: shadow and live execution
+- `src/kelly_watcher/runtime/evaluator.py`: resolution and PnL updates
+- `src/kelly_watcher/data/db.py`: SQLite schema and migrations
+- `src/kelly_watcher/engine/dedup.py`: duplicate and open-position gating
 
 Training and model:
 
-- `train.py`: feature loading, search, calibration, deployment decision
-- `auto_retrain.py`: scheduled and early retrain orchestration
-- `economic_model.py`: return-target transforms and sample weights
-- `trade_contract.py`: SQL contract for trainable and executed rows
-- `features.py`: shared feature list
+- `src/kelly_watcher/research/train.py`: feature loading, search, calibration, deployment decision
+- `src/kelly_watcher/research/auto_retrain.py`: scheduled and early retrain orchestration
+- `src/kelly_watcher/engine/economic_model.py`: return-target transforms and sample weights
+- `src/kelly_watcher/engine/trade_contract.py`: SQL contract for trainable and executed rows
+- `src/kelly_watcher/engine/features.py`: shared feature list
 
 Watchlist and wallet tooling:
 
-- `watchlist_manager.py`: wallet tiering and auto-drop logic
-- `wallet_trust.py`: sizing and trust tiers
-- `resolve_wallet.py`: handle/profile URL to wallet resolver
-- `rank_copytrade_wallets.py`: leaderboard-based discovery and ranking
-- `identity_cache.py`: wallet and username cache
+- `src/kelly_watcher/engine/watchlist_manager.py`: wallet tiering and auto-drop logic
+- `src/kelly_watcher/engine/wallet_trust.py`: sizing and trust tiers
+- `src/kelly_watcher/tools/resolve_wallet.py`: handle/profile URL to wallet resolver
+- `src/kelly_watcher/tools/rank_copytrade_wallets.py`: leaderboard-based discovery and ranking
+- `src/kelly_watcher/data/identity_cache.py`: wallet and username cache
 
 Dashboard:
 
-- `dashboard/dashboard.tsx`: main terminal UI
-- `dashboard/pages/*.tsx`: page views
-- `dashboard/configEditor.ts`: env-backed editable settings
-- `dashboard/settingsDanger.ts`: live toggle and shadow reset actions
+- `dashboard-cli/dashboard.tsx`: main terminal UI
+- `dashboard-cli/pages/*.tsx`: page views
+- `dashboard-cli/configEditor.ts`: env-backed editable settings
+- `dashboard-cli/settingsDanger.ts`: live toggle and shadow reset actions
 
 Packaging and entrypoints:
 
-- `pyproject.toml`: project metadata and the `main` console script
-- `cli.py`: lightweight launcher so `uv run main` works cleanly
+- `pyproject.toml`: project metadata and console scripts
+- `src/kelly_watcher/cli.py`: lightweight launcher so `uv run main` works cleanly
 - `restart_shadow.py`: cross-platform shadow reset and restart helper
 
 ## Operational Notes
@@ -812,7 +812,7 @@ Common reasons:
 Refresh it with:
 
 ```bash
-uv run python resolve_wallet.py <wallet-or-handle>
+uv run resolve-wallet <wallet-or-handle>
 ```
 
 That updates `save/data/identity_cache.json`.

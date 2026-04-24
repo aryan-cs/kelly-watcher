@@ -5,11 +5,11 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase
 
-import db
-import evaluator
-import wallet_trust
-from economics import build_entry_economics
-from executor import PolymarketExecutor, log_trade
+import kelly_watcher.data.db as db
+import kelly_watcher.runtime.evaluator as evaluator
+import kelly_watcher.engine.wallet_trust as wallet_trust
+from kelly_watcher.engine.economics import build_entry_economics
+from kelly_watcher.runtime.executor import PolymarketExecutor, log_trade
 
 
 def _insert_trade(

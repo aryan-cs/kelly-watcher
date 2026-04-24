@@ -20,7 +20,12 @@ dependencies = [
 ]
 
 [project.scripts]
-main = "cli:main"
+kelly-watcher = "kelly_watcher.cli:main"
+main = "kelly_watcher.cli:main"
+polymarket-setup = "kelly_watcher.tools.polymarket_setup:main"
+rank-copytrade-wallets = "kelly_watcher.tools.rank_copytrade_wallets:main"
+resolve-wallet = "kelly_watcher.tools.resolve_wallet:main"
+shadow-reset = "kelly_watcher.shadow_reset:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -30,7 +35,4 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.hatch.build.targets.wheel]
-include = [
-    "*.py",
-    "replay_search_specs/*.json",
-]
+packages = ["src/kelly_watcher"]

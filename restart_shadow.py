@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from shadow_reset import main
+from kelly_watcher.shadow_reset import main
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import inspect
 import unittest
 from pathlib import Path
 
-import dashboard_api
+import kelly_watcher.dashboard_api as dashboard_api
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,43 +33,43 @@ def _find_recovery_entrypoint():
 
 class DbRecoveryApiContractTest(unittest.TestCase):
     def test_recover_db_action_is_wired_to_expected_endpoint(self) -> None:
-        settings_ts = _read_text("dashboard/settingsDanger.ts")
-        settings_js = _read_text("dashboard/settingsDanger.js")
-        dashboard_ts = _read_text("dashboard/dashboard.tsx")
-        dashboard_js = _read_text("dashboard/dashboard.js")
+        settings_ts = _read_text("dashboard-cli/settingsDanger.ts")
+        settings_js = _read_text("dashboard-cli/settingsDanger.js")
+        dashboard_ts = _read_text("dashboard-cli/dashboard.tsx")
+        dashboard_js = _read_text("dashboard-cli/dashboard.js")
 
         for source_name, source_text in (
-            ("dashboard/settingsDanger.ts", settings_ts),
-            ("dashboard/settingsDanger.js", settings_js),
-            ("dashboard/dashboard.tsx", dashboard_ts),
-            ("dashboard/dashboard.js", dashboard_js),
+            ("dashboard-cli/settingsDanger.ts", settings_ts),
+            ("dashboard-cli/settingsDanger.js", settings_js),
+            ("dashboard-cli/dashboard.tsx", dashboard_ts),
+            ("dashboard-cli/dashboard.js", dashboard_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("recover_db", source_text)
 
         for source_name, source_text in (
-            ("dashboard/settingsDanger.ts", settings_ts),
-            ("dashboard/settingsDanger.js", settings_js),
+            ("dashboard-cli/settingsDanger.ts", settings_ts),
+            ("dashboard-cli/settingsDanger.js", settings_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("/api/shadow/recover-db", source_text)
 
     def test_recover_db_ui_warns_when_backup_is_integrity_only_or_unavailable(self) -> None:
-        settings_ts = _read_text("dashboard/settingsDanger.ts")
-        settings_js = _read_text("dashboard/settingsDanger.js")
-        dashboard_ts = _read_text("dashboard/dashboard.tsx")
-        dashboard_js = _read_text("dashboard/dashboard.js")
+        settings_ts = _read_text("dashboard-cli/settingsDanger.ts")
+        settings_js = _read_text("dashboard-cli/settingsDanger.js")
+        dashboard_ts = _read_text("dashboard-cli/dashboard.tsx")
+        dashboard_js = _read_text("dashboard-cli/dashboard.js")
 
         for source_name, source_text in (
-            ("dashboard/settingsDanger.ts", settings_ts),
-            ("dashboard/settingsDanger.js", settings_js),
+            ("dashboard-cli/settingsDanger.ts", settings_ts),
+            ("dashboard-cli/settingsDanger.js", settings_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("integrity-only, not evidence-ready", source_text)
 
         for source_name, source_text in (
-            ("dashboard/dashboard.tsx", dashboard_ts),
-            ("dashboard/dashboard.js", dashboard_js),
+            ("dashboard-cli/dashboard.tsx", dashboard_ts),
+            ("dashboard-cli/dashboard.js", dashboard_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("db_recovery_candidate_mode", source_text)
@@ -83,8 +83,8 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("shadowRestartMessage", source_text)
 
         for source_name, source_text in (
-            ("dashboard/pages/Settings.tsx", _read_text("dashboard/pages/Settings.tsx")),
-            ("dashboard/pages/Settings.js", _read_text("dashboard/pages/Settings.js")),
+            ("dashboard-cli/pages/Settings.tsx", _read_text("dashboard-cli/pages/Settings.tsx")),
+            ("dashboard-cli/pages/Settings.js", _read_text("dashboard-cli/pages/Settings.js")),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("EV-READY", source_text)
@@ -95,14 +95,14 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("Recover DB will restore an integrity-only verified backup.", source_text)
 
     def test_wallet_actions_surface_backend_messages_in_dashboard(self) -> None:
-        wallet_state_ts = _read_text("dashboard/walletWatchState.ts")
-        wallet_state_js = _read_text("dashboard/walletWatchState.js")
-        dashboard_ts = _read_text("dashboard/dashboard.tsx")
-        dashboard_js = _read_text("dashboard/dashboard.js")
+        wallet_state_ts = _read_text("dashboard-cli/walletWatchState.ts")
+        wallet_state_js = _read_text("dashboard-cli/walletWatchState.js")
+        dashboard_ts = _read_text("dashboard-cli/dashboard.tsx")
+        dashboard_js = _read_text("dashboard-cli/dashboard.js")
 
         for source_name, source_text in (
-            ("dashboard/walletWatchState.ts", wallet_state_ts),
-            ("dashboard/walletWatchState.js", wallet_state_js),
+            ("dashboard-cli/walletWatchState.ts", wallet_state_ts),
+            ("dashboard-cli/walletWatchState.js", wallet_state_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertNotIn("Boolean(response.ok)", source_text)
@@ -110,8 +110,8 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("/api/wallets/drop", source_text)
 
         for source_name, source_text in (
-            ("dashboard/dashboard.tsx", dashboard_ts),
-            ("dashboard/dashboard.js", dashboard_js),
+            ("dashboard-cli/dashboard.tsx", dashboard_ts),
+            ("dashboard-cli/dashboard.js", dashboard_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("showTransientNotice(result.message", source_text)
@@ -119,40 +119,40 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("Unknown wallet drop error", source_text)
 
     def test_config_edits_are_blocked_during_recovery_only_startup(self) -> None:
-        dashboard_api_source = _read_text("dashboard_api.py")
-        dashboard_ts = _read_text("dashboard/dashboard.tsx")
-        dashboard_js = _read_text("dashboard/dashboard.js")
-        settings_ts = _read_text("dashboard/pages/Settings.tsx")
-        settings_js = _read_text("dashboard/pages/Settings.js")
+        dashboard_api_source = _read_text("src/kelly_watcher/dashboard_api.py")
+        dashboard_ts = _read_text("dashboard-cli/dashboard.tsx")
+        dashboard_js = _read_text("dashboard-cli/dashboard.js")
+        settings_ts = _read_text("dashboard-cli/pages/Settings.tsx")
+        settings_js = _read_text("dashboard-cli/pages/Settings.js")
 
         self.assertIn("_config_value_response", dashboard_api_source)
         self.assertIn("Config editing", dashboard_api_source)
 
         for source_name, source_text in (
-            ("dashboard/dashboard.tsx", dashboard_ts),
-            ("dashboard/dashboard.js", dashboard_js),
+            ("dashboard-cli/dashboard.tsx", dashboard_ts),
+            ("dashboard-cli/dashboard.js", dashboard_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("configEditBlockedMessage", source_text)
                 self.assertIn("Config edits stay blocked until", source_text)
 
         for source_name, source_text in (
-            ("dashboard/pages/Settings.tsx", settings_ts),
-            ("dashboard/pages/Settings.js", settings_js),
+            ("dashboard-cli/pages/Settings.tsx", settings_ts),
+            ("dashboard-cli/pages/Settings.js", settings_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("configEditBlocked", source_text)
                 self.assertIn("Config edits stay blocked until", source_text)
 
     def test_dashboard_blocks_live_mode_ui_while_restart_is_pending(self) -> None:
-        dashboard_ts = _read_text("dashboard/dashboard.tsx")
-        dashboard_js = _read_text("dashboard/dashboard.js")
-        settings_ts = _read_text("dashboard/pages/Settings.tsx")
-        settings_js = _read_text("dashboard/pages/Settings.js")
+        dashboard_ts = _read_text("dashboard-cli/dashboard.tsx")
+        dashboard_js = _read_text("dashboard-cli/dashboard.js")
+        settings_ts = _read_text("dashboard-cli/pages/Settings.tsx")
+        settings_js = _read_text("dashboard-cli/pages/Settings.js")
 
         for source_name, source_text in (
-            ("dashboard/dashboard.tsx", dashboard_ts),
-            ("dashboard/dashboard.js", dashboard_js),
+            ("dashboard-cli/dashboard.tsx", dashboard_ts),
+            ("dashboard-cli/dashboard.js", dashboard_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("liveModeBlockedMessage", source_text)
@@ -160,20 +160,20 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("confirm.actionId === 'live_trading' && liveModeBlockedMessage", source_text)
 
         for source_name, source_text in (
-            ("dashboard/pages/Settings.tsx", settings_ts),
-            ("dashboard/pages/Settings.js", settings_js),
+            ("dashboard-cli/pages/Settings.tsx", settings_ts),
+            ("dashboard-cli/pages/Settings.js", settings_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("action.id === 'live_trading' && (startupRecoveryOnly || shadowRestartPending)", source_text)
                 self.assertIn("Live-mode requests stay blocked until the backend restarts.", source_text)
 
     def test_settings_live_readiness_fails_closed_during_recovery_only_or_pending_restart(self) -> None:
-        settings_ts = _read_text("dashboard/pages/Settings.tsx")
-        settings_js = _read_text("dashboard/pages/Settings.js")
+        settings_ts = _read_text("dashboard-cli/pages/Settings.tsx")
+        settings_js = _read_text("dashboard-cli/pages/Settings.js")
 
         for source_name, source_text in (
-            ("dashboard/pages/Settings.tsx", settings_ts),
-            ("dashboard/pages/Settings.js", settings_js),
+            ("dashboard-cli/pages/Settings.tsx", settings_ts),
+            ("dashboard-cli/pages/Settings.js", settings_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("liveModeStartupBlocked", source_text)
@@ -181,39 +181,39 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("recovery-only startup mode", source_text)
 
     def test_shadow_restart_kind_is_wired_through_runtime_and_dashboard(self) -> None:
-        main_source = _read_text("main.py")
-        dashboard_api_source = _read_text("dashboard_api.py")
-        bot_state_ts = _read_text("dashboard/useBotState.ts")
-        bot_state_js = _read_text("dashboard/useBotState.js")
-        settings_ts = _read_text("dashboard/pages/Settings.tsx")
-        settings_js = _read_text("dashboard/pages/Settings.js")
+        main_source = _read_text("src/kelly_watcher/main.py")
+        dashboard_api_source = _read_text("src/kelly_watcher/dashboard_api.py")
+        bot_state_ts = _read_text("dashboard-cli/useBotState.ts")
+        bot_state_js = _read_text("dashboard-cli/useBotState.js")
+        settings_ts = _read_text("dashboard-cli/pages/Settings.tsx")
+        settings_js = _read_text("dashboard-cli/pages/Settings.js")
 
         for source_name, source_text in (
-            ("main.py", main_source),
-            ("dashboard_api.py", dashboard_api_source),
-            ("dashboard/useBotState.ts", bot_state_ts),
-            ("dashboard/useBotState.js", bot_state_js),
+            ("src/kelly_watcher/main.py", main_source),
+            ("src/kelly_watcher/dashboard_api.py", dashboard_api_source),
+            ("dashboard-cli/useBotState.ts", bot_state_ts),
+            ("dashboard-cli/useBotState.js", bot_state_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("shadow_restart_kind", source_text)
 
         for source_name, source_text in (
-            ("dashboard/pages/Settings.tsx", settings_ts),
-            ("dashboard/pages/Settings.js", settings_js),
+            ("dashboard-cli/pages/Settings.tsx", settings_ts),
+            ("dashboard-cli/pages/Settings.js", settings_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("shadowRestartKind", source_text)
                 self.assertIn("shadowRestartPending && shadowRestartKind === 'db_recovery'", source_text)
 
     def test_models_and_dashboard_block_manual_retrain_honestly(self) -> None:
-        models_ts = _read_text("dashboard/pages/Models.tsx")
-        models_js = _read_text("dashboard/pages/Models.js")
-        dashboard_ts = _read_text("dashboard/dashboard.tsx")
-        dashboard_js = _read_text("dashboard/dashboard.js")
+        models_ts = _read_text("dashboard-cli/pages/Models.tsx")
+        models_js = _read_text("dashboard-cli/pages/Models.js")
+        dashboard_ts = _read_text("dashboard-cli/dashboard.tsx")
+        dashboard_js = _read_text("dashboard-cli/dashboard.js")
 
         for source_name, source_text in (
-            ("dashboard/pages/Models.tsx", models_ts),
-            ("dashboard/pages/Models.js", models_js),
+            ("dashboard-cli/pages/Models.tsx", models_ts),
+            ("dashboard-cli/pages/Models.js", models_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("Manual retrain is only available while the runtime is healthy and not restarting.", source_text)
@@ -223,8 +223,8 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("startupRecoveryOnly", source_text)
 
         for source_name, source_text in (
-            ("dashboard/dashboard.tsx", dashboard_ts),
-            ("dashboard/dashboard.js", dashboard_js),
+            ("dashboard-cli/dashboard.tsx", dashboard_ts),
+            ("dashboard-cli/dashboard.js", dashboard_js),
         ):
             with self.subTest(source_name=source_name):
                 self.assertIn("manualRetrainBlockedMessage", source_text)
@@ -232,8 +232,8 @@ class DbRecoveryApiContractTest(unittest.TestCase):
                 self.assertIn("requestManualRetrain", source_text)
 
     def test_models_js_matches_shadow_snapshot_optimization_block_guard(self) -> None:
-        models_ts = _read_text("dashboard/pages/Models.tsx")
-        models_js = _read_text("dashboard/pages/Models.js")
+        models_ts = _read_text("dashboard-cli/pages/Models.tsx")
+        models_js = _read_text("dashboard-cli/pages/Models.js")
 
         self.assertIn("&& !shadowSnapshotOptimizationBlocked", models_ts)
         self.assertIn("&& !shadowSnapshotOptimizationBlocked", models_js)

@@ -1057,7 +1057,7 @@ Tests: `uv run python -m py_compile src/kelly_watcher/env_profile.py src/kelly_w
 [2026-04-16 15:58 CDT] codex-config
 Task: Collapse env profiles into one `.env` and move non-secret operator settings to SQLite-backed runtime settings.
 Claims: `JOURNAL.md`, `src/kelly_watcher/env_profile.py`, `src/kelly_watcher/config.py`, `src/kelly_watcher/data/db.py`, `src/kelly_watcher/dashboard_api.py`, `src/kelly_watcher/main.py`, `src/kelly_watcher/shadow_reset.py`, `src/kelly_watcher/cli.py`, `.env.example`, `README.md`, `tests/test_env_profile_and_save_layout.py`, `tests/test_runtime_fixes.py`
-Status: In progress
+Status: Completed
 Blockers: Shared worktree is already dirty and `main.py` / `dashboard_api.py` are active integration points, so changes must stay scoped to config persistence rather than wallet-discovery logic.
 Next: Add a `runtime_settings` table + migration helper, strip non-secret values out of the persistent env file, make config reads prefer DB for non-secret keys, and update docs/tests for the single-env workflow.
 Decisions: Keep `.env` for secrets/deployment knobs only; treat operator/runtime tuning as DB-backed; migrate legacy `WATCHED_WALLETS` into the managed-wallet registry instead of keeping it in `.env`.
@@ -1575,3 +1575,12 @@ Blockers: None for this slice. The existing problem was purely UI/interaction de
 Next: If the user wants even stronger safeguards, the next step is field-specific confirmation flows for the most dangerous runtime settings rather than more generic input chrome.
 Decisions: Removed the top stats strip and all per-row `CLEAR` buttons. The editor now uses kind-aware controls with validation and save gating, so obvious bad values get blocked before save. The main editor and watched-wallets panes now consume the available height, and the destructive reset behavior has been moved into a dedicated red danger-zone panel with a single `RESET ALL TO DEFAULTS` action.
 Tests: `uv run pytest tests/test_dashboard_web_source.py -q` -> 11 passed; `npm run build` in `dashboard-web` -> passed
+
+[2026-04-24 12:49 CDT] codex-main
+Task: Add a soft shadow-account reset that restarts at the configured bankroll without deleting the learned XGBoost artifact.
+Claims: `JOURNAL.md`, `README.md`, `shadow_reset.py`, `tests/test_shadow_reset.py`
+Status: In progress
+Blockers: None. This is intentionally code support only; the production Windows backend must run the reset locally because its `save/` folder is on that machine.
+Next: Run `uv run python restart_shadow.py --preserve-model --preserve-identity-cache --preserve-telegram-state` on Windows after pulling `master`. This rebuilds runtime DB/PnL state while keeping `save/model.joblib` available for scoring.
+Decisions: Kept the existing full reset behavior unchanged by default because tests and docs still need a real factory-style shadow reset. Added explicit preserve flags for model artifact, identity cache, and Telegram state so an operator can perform an account/PnL reset without destroying learned model state or bot command offsets. The preserve path restores selected files in a `finally` block after DB initialization starts, so a failed reset does not strand the model artifact in a temp directory.
+Tests: `UV_CACHE_DIR=/tmp/uv-cache-kelly uv run python -m py_compile shadow_reset.py tests/test_shadow_reset.py` -> passed; `UV_CACHE_DIR=/tmp/uv-cache-kelly uv run pytest tests/test_shadow_reset.py -q` -> 16 passed; `git diff --check` -> passed.

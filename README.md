@@ -272,6 +272,15 @@ Reset helper:
 uv run python restart_shadow.py
 ```
 
+The default reset is a full shadow reset. It deletes the local `save/` runtime state,
+including old SQLite data, events, logs, and `save/model.joblib`.
+
+Soft account reset, keeping the learned model and operator caches:
+
+```bash
+uv run python restart_shadow.py --preserve-model --preserve-identity-cache --preserve-telegram-state
+```
+
 Foreground mode:
 
 ```bash
@@ -281,16 +290,17 @@ uv run python restart_shadow.py --foreground
 Reset only, then start the bot yourself:
 
 ```bash
-uv run python restart_shadow.py --reset-only
+uv run python restart_shadow.py --preserve-model --preserve-identity-cache --preserve-telegram-state --reset-only
 ```
 
 What `restart_shadow.py` does:
 
 - refuses to run if `USE_REAL_MONEY=true`
 - stops an existing bot process
-- deletes shadow runtime state such as the SQLite DB and event stream
-- preserves config, `WATCHED_WALLETS`, identity cache, logs, and your model artifact
-- recreates the DB and restarts the bot
+- deletes shadow runtime state such as the SQLite DB, positions, PnL, event stream, and bot state
+- preserves config and `WATCHED_WALLETS`
+- preserves `save/model.joblib`, identity cache, and Telegram state only when the explicit preserve flags are used
+- recreates the DB around the configured `SHADOW_BANKROLL_USD` and restarts the bot
 
 ### Live Mode
 

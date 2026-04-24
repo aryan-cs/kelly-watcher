@@ -29,9 +29,12 @@ from runtime_paths import (
     BACKGROUND_LOG_PATH,
     BOT_PID_FILE,
     DATA_DIR,
+    IDENTITY_CACHE_PATH,
     LOG_DIR,
+    MODEL_ARTIFACT_PATH,
     REPO_ROOT,
     SAVE_DIR,
+    TELEGRAM_STATE_FILE,
 )
 from shadow_evidence import write_shadow_evidence_epoch
 
@@ -379,12 +382,32 @@ def _active_watched_wallets(watched_wallets: list[str]) -> list[str]:
     return [wallet for wallet in watched_wallets if wallet not in dropped_wallets]
 
 
-def _wallet_mode_intro_lines(wallet_mode: RestartWalletMode) -> tuple[str, ...]:
-    reset_line = (
-        "Full shadow account reset: deleting the entire save directory and all shadow runtime state, "
-        "including tracker history, signals, positions, performance snapshots, logs, model artifacts, "
-        "training cycles, wallet watch-state memory, events, and bot state. Config settings stay in place."
-    )
+def _wallet_mode_intro_lines(
+    wallet_mode: RestartWalletMode,
+    *,
+    preserve_model_artifact: bool = False,
+    preserve_identity_cache: bool = False,
+    preserve_telegram_state: bool = False,
+) -> tuple[str, ...]:
+    preserved_names: list[str] = []
+    if preserve_model_artifact:
+        preserved_names.append("model artifact")
+    if preserve_identity_cache:
+        preserved_names.append("identity cache")
+    if preserve_telegram_state:
+        preserved_names.append("Telegram state")
+    if preserved_names:
+        reset_line = (
+            "Shadow account reset: deleting shadow runtime state, tracker history, signals, positions, "
+            "performance snapshots, logs, training-cycle metadata, wallet watch-state memory, events, "
+            f"and bot state while preserving {', '.join(preserved_names)}. Config settings stay in place."
+        )
+    else:
+        reset_line = (
+            "Full shadow account reset: deleting the entire save directory and all shadow runtime state, "
+            "including tracker history, signals, positions, performance snapshots, logs, model artifacts, "
+            "training cycles, wallet watch-state memory, events, and bot state. Config settings stay in place."
+        )
     if wallet_mode == "keep_active":
         return (
             reset_line,
@@ -427,19 +450,71 @@ def restore_watched_wallets(previous_wallets: str) -> None:
     _write_env_value("WATCHED_WALLETS", previous_wallets)
 
 
-def reset_shadow_runtime() -> None:
-    try:
-        shutil.rmtree(SAVE_DIR)
-    except FileNotFoundError:
-        pass
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    db.init_db()
-    write_shadow_evidence_epoch(
-        path=DATA_DIR / "shadow_evidence_epoch.json",
-        source="shadow_reset",
-        message="fresh shadow evidence epoch started after full shadow reset",
-    )
+def _preserve_reset_files(paths: list[Path], temp_root: Path) -> list[tuple[Path, Path]]:
+    preserved: list[tuple[Path, Path]] = []
+    for source_path in paths:
+        if not source_path.exists():
+            continue
+        try:
+            relative_path = source_path.relative_to(SAVE_DIR)
+        except ValueError:
+            relative_path = Path(source_path.name)
+        preserved_path = temp_root / relative_path
+        preserved_path.parent.mkdir(parents=True, exist_ok=True)
+        if source_path.is_dir():
+            shutil.copytree(source_path, preserved_path, dirs_exist_ok=True)
+        else:
+            shutil.copy2(source_path, preserved_path)
+        preserved.append((preserved_path, source_path))
+    return preserved
+
+
+def _restore_reset_files(preserved: list[tuple[Path, Path]]) -> None:
+    for preserved_path, target_path in preserved:
+        if not preserved_path.exists():
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if preserved_path.is_dir():
+            shutil.copytree(preserved_path, target_path, dirs_exist_ok=True)
+        else:
+            shutil.copy2(preserved_path, target_path)
+
+
+def reset_shadow_runtime(
+    *,
+    preserve_model_artifact: bool = False,
+    preserve_identity_cache: bool = False,
+    preserve_telegram_state: bool = False,
+) -> None:
+    paths_to_preserve: list[Path] = []
+    if preserve_model_artifact:
+        paths_to_preserve.append(MODEL_ARTIFACT_PATH)
+    if preserve_identity_cache:
+        paths_to_preserve.append(IDENTITY_CACHE_PATH)
+    if preserve_telegram_state:
+        paths_to_preserve.append(TELEGRAM_STATE_FILE)
+
+    preserved_files: list[tuple[Path, Path]] = []
+    with tempfile.TemporaryDirectory(prefix="kelly-shadow-reset-") as tmpdir:
+        if paths_to_preserve:
+            preserved_files = _preserve_reset_files(paths_to_preserve, Path(tmpdir))
+
+        try:
+            shutil.rmtree(SAVE_DIR)
+        except FileNotFoundError:
+            pass
+
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            db.init_db()
+        finally:
+            _restore_reset_files(preserved_files)
+        write_shadow_evidence_epoch(
+            path=DATA_DIR / "shadow_evidence_epoch.json",
+            source="shadow_reset",
+            message="fresh shadow evidence epoch started after full shadow reset",
+        )
     try:
         from beliefs import invalidate_belief_cache
 
@@ -538,6 +613,9 @@ def run(
     clear_wallets: bool | None = None,
     delay_seconds: float = 0.0,
     target_pids: list[int] | tuple[int, ...] | set[int] | None = None,
+    preserve_model_artifact: bool = False,
+    preserve_identity_cache: bool = False,
+    preserve_telegram_state: bool = False,
 ) -> int:
     if use_real_money():
         print("Refusing to reset while USE_REAL_MONEY=true. Switch back to shadow mode first.")
@@ -558,12 +636,30 @@ def run(
             normalized_wallet_mode
         )
 
-        print(
-            f"Resetting shadow account by deleting the entire save directory and returning to the configured bankroll of ${bankroll:.2f}..."
-        )
-        for line in _wallet_mode_intro_lines(normalized_wallet_mode):
+        if preserve_model_artifact or preserve_identity_cache or preserve_telegram_state:
+            print(
+                "Resetting shadow account runtime while preserving selected local artifacts "
+                f"and returning to the configured bankroll of ${bankroll:.2f}..."
+            )
+        else:
+            print(
+                f"Resetting shadow account by deleting the entire save directory and returning to the configured bankroll of ${bankroll:.2f}..."
+            )
+        for line in _wallet_mode_intro_lines(
+            normalized_wallet_mode,
+            preserve_model_artifact=preserve_model_artifact,
+            preserve_identity_cache=preserve_identity_cache,
+            preserve_telegram_state=preserve_telegram_state,
+        ):
             print(line)
-        reset_shadow_runtime()
+        if preserve_model_artifact or preserve_identity_cache or preserve_telegram_state:
+            reset_shadow_runtime(
+                preserve_model_artifact=preserve_model_artifact,
+                preserve_identity_cache=preserve_identity_cache,
+                preserve_telegram_state=preserve_telegram_state,
+            )
+        else:
+            reset_shadow_runtime()
 
         if not start_bot:
             print("Shadow runtime reset.")
@@ -628,6 +724,21 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Specific bot PID to stop before resetting. May be passed multiple times.",
     )
+    parser.add_argument(
+        "--preserve-model",
+        action="store_true",
+        help="Keep save/model.joblib while resetting shadow account PnL and runtime state.",
+    )
+    parser.add_argument(
+        "--preserve-identity-cache",
+        action="store_true",
+        help="Keep save/data/identity_cache.json while resetting shadow runtime state.",
+    )
+    parser.add_argument(
+        "--preserve-telegram-state",
+        action="store_true",
+        help="Keep save/data/telegram_state.json while resetting shadow runtime state.",
+    )
     wallet_mode_group = parser.add_mutually_exclusive_group()
     wallet_mode_group.add_argument(
         "--keep-active-wallets",
@@ -649,6 +760,9 @@ def main(argv: list[str] | None = None) -> int:
         wallet_mode=wallet_mode,
         delay_seconds=float(args.delay_seconds or 0.0),
         target_pids=[int(pid) for pid in args.target_pid],
+        preserve_model_artifact=bool(args.preserve_model),
+        preserve_identity_cache=bool(args.preserve_identity_cache),
+        preserve_telegram_state=bool(args.preserve_telegram_state),
     )
 
 

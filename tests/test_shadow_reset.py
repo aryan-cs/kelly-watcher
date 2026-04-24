@@ -180,6 +180,35 @@ class ShadowResetTest(unittest.TestCase):
         stop_bot.assert_called_once_with(target_pids=[111, 222])
         reset_runtime.assert_called_once_with()
 
+    def test_run_preserve_model_forwards_reset_preserve_flags(self) -> None:
+        stdout = io.StringIO()
+        with patch.object(shadow_reset, "use_real_money", return_value=False), patch.object(
+            shadow_reset, "shadow_bankroll_usd", return_value=3000.0
+        ), patch.object(shadow_reset, "stop_existing_bot") as stop_bot, patch.object(
+            shadow_reset, "reset_shadow_runtime"
+        ) as reset_runtime, patch.object(
+            shadow_reset, "_launch_background_bot_verified", return_value=4321
+        ), redirect_stdout(stdout):
+            exit_code = shadow_reset.run(
+                foreground=False,
+                start_bot=True,
+                wallet_mode="keep_all",
+                preserve_model_artifact=True,
+                preserve_identity_cache=True,
+                preserve_telegram_state=True,
+            )
+
+        self.assertEqual(exit_code, 0)
+        stop_bot.assert_called_once_with(target_pids=None)
+        reset_runtime.assert_called_once_with(
+            preserve_model_artifact=True,
+            preserve_identity_cache=True,
+            preserve_telegram_state=True,
+        )
+        output = stdout.getvalue()
+        self.assertIn("Resetting shadow account runtime while preserving selected local artifacts", output)
+        self.assertIn("preserving model artifact, identity cache, Telegram state", output)
+
     def test_launch_background_bot_verified_raises_when_child_exits_immediately(self) -> None:
         with patch.object(shadow_reset, "launch_background_bot", return_value=4321), patch.object(
             shadow_reset.time, "sleep"
@@ -455,6 +484,105 @@ class ShadowResetTest(unittest.TestCase):
             self.assertFalse(model_artifact.exists())
             self.assertFalse(extra_db_path.exists())
             self.assertFalse(backup_db.exists())
+
+    def test_reset_shadow_runtime_can_preserve_model_and_operator_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            save_dir = Path(tmpdir) / "save"
+            data_dir = save_dir / "data"
+            log_dir = save_dir / "logs"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "trading.db"
+            event_file = data_dir / "events.jsonl"
+            bot_state_file = data_dir / "bot_state.json"
+            model_artifact = save_dir / "model.joblib"
+            identity_file = data_dir / "identity_cache.json"
+            telegram_state_file = data_dir / "telegram_state.json"
+            background_log = log_dir / "shadow_runtime.out"
+            shadow_evidence_epoch_file = data_dir / "shadow_evidence_epoch.json"
+
+            event_file.write_text("event\n", encoding="utf-8")
+            bot_state_file.write_text('{"status": "old"}\n', encoding="utf-8")
+            model_artifact.write_text("trained model\n", encoding="utf-8")
+            identity_file.write_text('{"wallet": "name"}\n', encoding="utf-8")
+            telegram_state_file.write_text('{"last_update_id": 123}\n', encoding="utf-8")
+            background_log.write_text("runtime log\n", encoding="utf-8")
+
+            with patch("db.DB_PATH", db_path), patch.object(shadow_reset, "SAVE_DIR", save_dir), patch.object(
+                shadow_reset, "DATA_DIR", data_dir
+            ), patch.object(
+                shadow_reset, "LOG_DIR", log_dir
+            ), patch.object(
+                shadow_reset, "MODEL_ARTIFACT_PATH", model_artifact
+            ), patch.object(
+                shadow_reset, "IDENTITY_CACHE_PATH", identity_file
+            ), patch.object(
+                shadow_reset, "TELEGRAM_STATE_FILE", telegram_state_file
+            ), patch.object(
+                shadow_reset, "BACKGROUND_LOG", background_log
+            ):
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO trade_log (
+                            trade_id, market_id, trader_address, side, source_action,
+                            price_at_signal, signal_size_usd, confidence, kelly_fraction, placed_at, real_money
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        ("trade-1", "market-1", "0xabc", "yes", "buy", 0.61, 10.0, 0.66, 0.05, 1774252900, 0),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                shadow_reset.reset_shadow_runtime(
+                    preserve_model_artifact=True,
+                    preserve_identity_cache=True,
+                    preserve_telegram_state=True,
+                )
+
+                conn = db.get_conn()
+                try:
+                    trade_log_count = conn.execute("SELECT COUNT(*) FROM trade_log").fetchone()[0]
+                finally:
+                    conn.close()
+
+            self.assertEqual(trade_log_count, 0)
+            self.assertEqual(model_artifact.read_text(encoding="utf-8"), "trained model\n")
+            self.assertEqual(identity_file.read_text(encoding="utf-8"), '{"wallet": "name"}\n')
+            self.assertEqual(
+                telegram_state_file.read_text(encoding="utf-8"),
+                '{"last_update_id": 123}\n',
+            )
+            self.assertTrue(shadow_evidence_epoch_file.exists())
+            self.assertFalse(event_file.exists())
+            self.assertFalse(bot_state_file.exists())
+            self.assertFalse(background_log.exists())
+
+    def test_reset_shadow_runtime_restores_preserved_model_when_db_init_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            save_dir = Path(tmpdir) / "save"
+            data_dir = save_dir / "data"
+            log_dir = save_dir / "logs"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            model_artifact = save_dir / "model.joblib"
+            model_artifact.write_text("trained model\n", encoding="utf-8")
+
+            with patch.object(shadow_reset, "SAVE_DIR", save_dir), patch.object(
+                shadow_reset, "DATA_DIR", data_dir
+            ), patch.object(
+                shadow_reset, "LOG_DIR", log_dir
+            ), patch.object(
+                shadow_reset, "MODEL_ARTIFACT_PATH", model_artifact
+            ), patch.object(
+                shadow_reset.db, "init_db", side_effect=RuntimeError("init failed")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "init failed"):
+                    shadow_reset.reset_shadow_runtime(preserve_model_artifact=True)
+
+            self.assertEqual(model_artifact.read_text(encoding="utf-8"), "trained model\n")
 
 
 if __name__ == "__main__":

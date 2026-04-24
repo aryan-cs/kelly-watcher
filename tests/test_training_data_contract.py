@@ -6,10 +6,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import kelly_watcher.research.auto_retrain as auto_retrain
-import kelly_watcher.data.db as db
-import kelly_watcher.research.train as train
-from kelly_watcher.engine.economic_model import COUNTERFACTUAL_SAMPLE_WEIGHT, EXECUTED_SAMPLE_WEIGHT, transform_return_target
+import auto_retrain
+import db
+import train
+from economic_model import COUNTERFACTUAL_SAMPLE_WEIGHT, EXECUTED_SAMPLE_WEIGHT, transform_return_target
 
 
 class TrainingDataContractTest(unittest.TestCase):
@@ -112,61 +112,8 @@ class TrainingDataContractTest(unittest.TestCase):
                 conn.close()
 
                 df = train.load_training_data()
+
                 self.assertEqual(list(df["trade_id"]), ["labeled-early", "labeled-late"])
-            finally:
-                db.DB_PATH = original_db_path
-
-    def test_load_training_data_prefers_price_at_signal_for_effective_price(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            original_db_path = db.DB_PATH
-            try:
-                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
-                db.init_db()
-                conn = db.get_conn()
-                conn.execute(
-                    """
-                    INSERT INTO trade_log (
-                        trade_id, market_id, question, trader_address, side, source_action,
-                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
-                        real_money, skipped, placed_at,
-                        actual_entry_price, actual_entry_shares, actual_entry_size_usd,
-                        entry_gross_price, entry_gross_shares, entry_gross_size_usd,
-                        actual_pnl_usd, resolved_at, label_applied_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        "effective-price-signal-first",
-                        "market-effective",
-                        "Effective price should come from the quote",
-                        "0xaaa",
-                        "yes",
-                        "buy",
-                        0.41,
-                        10.0,
-                        0.71,
-                        0.10,
-                        0,
-                        0,
-                        1_700_100_000,
-                        0.77,
-                        12.987013,
-                        10.0,
-                        0.41,
-                        24.390244,
-                        10.0,
-                        4.0,
-                        1_700_100_100,
-                        1_700_100_100,
-                    ),
-                )
-                conn.commit()
-                conn.close()
-
-                df = train.load_training_data()
-
-                self.assertEqual(list(df["trade_id"]), ["effective-price-signal-first"])
-                self.assertAlmostEqual(float(df.iloc[0]["effective_price"]), 0.41, places=6)
-                self.assertNotAlmostEqual(float(df.iloc[0]["effective_price"]), 0.77, places=6)
             finally:
                 db.DB_PATH = original_db_path
 
@@ -759,14 +706,14 @@ class TrainingDataContractTest(unittest.TestCase):
                 conn.close()
 
                 with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+                    "auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=1):
+                ), patch("auto_retrain.retrain_min_new_labels", return_value=1):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
                 with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+                    "auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=2):
+                ), patch("auto_retrain.retrain_min_new_labels", return_value=2):
                     self.assertFalse(auto_retrain.should_retrain_early(None))
             finally:
                 db.DB_PATH = original_db_path
@@ -888,32 +835,32 @@ class TrainingDataContractTest(unittest.TestCase):
                 conn.close()
 
                 with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+                    "auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=1):
+                ), patch("auto_retrain.retrain_min_new_labels", return_value=1):
                     self.assertTrue(auto_retrain.should_retrain_early(None))
                 with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+                    "auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=2):
+                ), patch("auto_retrain.retrain_min_new_labels", return_value=2):
                     self.assertFalse(auto_retrain.should_retrain_early(None))
             finally:
                 db.DB_PATH = original_db_path
 
     def test_early_retrain_returns_false_without_active_epoch(self) -> None:
         with patch(
-            "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+            "auto_retrain.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 0},
-        ), patch("kelly_watcher.research.auto_retrain.load_training_data") as load_mock:
+        ), patch("auto_retrain.load_training_data") as load_mock:
             self.assertFalse(auto_retrain.should_retrain_early(None))
 
         load_mock.assert_not_called()
 
     def test_direct_train_skips_without_active_epoch(self) -> None:
         with patch(
-            "kelly_watcher.research.train.read_shadow_evidence_epoch",
+            "train.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 0},
-        ), patch("kelly_watcher.research.train.load_training_data") as load_mock:
+        ), patch("train.load_training_data") as load_mock:
             metrics = train.train()
 
         self.assertTrue(metrics["skipped"])
@@ -925,9 +872,9 @@ class TrainingDataContractTest(unittest.TestCase):
 
     def test_direct_train_scopes_default_load_to_active_epoch_and_routed_rows(self) -> None:
         with patch(
-            "kelly_watcher.research.train.read_shadow_evidence_epoch",
+            "train.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 3_000},
-        ), patch("kelly_watcher.research.train.load_training_data", return_value=[] ) as load_mock:
+        ), patch("train.load_training_data", return_value=[] ) as load_mock:
             metrics = train.train()
 
         self.assertTrue(metrics["skipped"])
@@ -939,12 +886,12 @@ class TrainingDataContractTest(unittest.TestCase):
 
     def test_direct_train_scopes_default_load_to_latest_promotion_within_epoch(self) -> None:
         with patch(
-            "kelly_watcher.research.train.read_shadow_evidence_epoch",
+            "train.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 3_000},
         ), patch(
-            "kelly_watcher.research.train._latest_applied_replay_promotion_at",
+            "train._latest_applied_replay_promotion_at",
             return_value=3_500,
-        ), patch("kelly_watcher.research.train.load_training_data", return_value=[] ) as load_mock:
+        ), patch("train.load_training_data", return_value=[] ) as load_mock:
             metrics = train.train()
 
         self.assertTrue(metrics["skipped"])
@@ -953,55 +900,6 @@ class TrainingDataContractTest(unittest.TestCase):
         self.assertTrue(metrics["training_routed_only"])
         self.assertTrue(metrics["training_provenance_trusted"])
         load_mock.assert_called_once_with(since_ts=3_500, routed_only=True)
-
-    def test_direct_train_with_prefetched_df_skips_without_explicit_trusted_provenance(self) -> None:
-        with patch(
-            "kelly_watcher.research.train.read_shadow_evidence_epoch",
-            return_value={"shadow_evidence_epoch_started_at": 3_000},
-        ):
-            metrics = train.train(df=[object()])
-
-        self.assertTrue(metrics["skipped"])
-        self.assertEqual(metrics["n_samples"], 1)
-        self.assertEqual(metrics["training_scope"], "all_history")
-        self.assertFalse(metrics["training_provenance_trusted"])
-        self.assertIn("routed-only", metrics["reason"])
-
-    def test_direct_train_with_prefetched_df_skips_when_provenance_mismatches_active_epoch(self) -> None:
-        with patch(
-            "kelly_watcher.research.train.read_shadow_evidence_epoch",
-            return_value={"shadow_evidence_epoch_started_at": 3_000},
-        ):
-            metrics = train.train(
-                df=[object(), object()],
-                training_since_ts=2_500,
-                training_routed_only=True,
-            )
-
-        self.assertTrue(metrics["skipped"])
-        self.assertEqual(metrics["n_samples"], 2)
-        self.assertEqual(metrics["training_since_ts"], 2_500)
-        self.assertTrue(metrics["training_routed_only"])
-        self.assertFalse(metrics["training_provenance_trusted"])
-        self.assertIn("does not match active evidence window 3000", metrics["reason"])
-
-    def test_direct_train_with_prefetched_df_accepts_matching_provenance_contract(self) -> None:
-        with patch(
-            "kelly_watcher.research.train.read_shadow_evidence_epoch",
-            return_value={"shadow_evidence_epoch_started_at": 3_000},
-        ):
-            metrics = train.train(
-                df=[object()],
-                training_since_ts=3_000,
-                training_routed_only=True,
-            )
-
-        self.assertTrue(metrics["skipped"])
-        self.assertEqual(metrics["n_samples"], 1)
-        self.assertEqual(metrics["training_scope"], "current_evidence_window")
-        self.assertEqual(metrics["training_since_ts"], 3_000)
-        self.assertTrue(metrics["training_routed_only"])
-        self.assertTrue(metrics["training_provenance_trusted"])
 
 
 if __name__ == "__main__":

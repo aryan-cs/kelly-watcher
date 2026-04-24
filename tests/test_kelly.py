@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from kelly_watcher.engine.kelly import heuristic_size, size_signal
+from kelly import heuristic_size
 
 
 class HeuristicSizingTest(unittest.TestCase):
@@ -44,28 +44,6 @@ class HeuristicSizingTest(unittest.TestCase):
 
         self.assertEqual(sized["dollar_size"], 100.0)
         self.assertAlmostEqual(sized["kelly_f"], 0.10, places=6)
-
-    def test_xgboost_sizing_uses_quoted_market_price_even_when_effective_price_differs(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "MAX_BET_FRACTION": "0.10",
-                "MIN_CONFIDENCE": "0.55",
-                "MIN_BET_USD": "1.00",
-            },
-            clear=False,
-        ):
-                quoted = size_signal(0.64, 0.60, 1000.0, "xgboost")
-                fee_aware = size_signal(
-                    0.64,
-                    0.60,
-                    1000.0,
-                    "xgboost",
-                    effective_market_price=0.63,
-                )
-
-        self.assertEqual(quoted["dollar_size"], fee_aware["dollar_size"])
-        self.assertEqual(quoted["kelly_f"], fee_aware["kelly_f"])
 
 
 if __name__ == "__main__":

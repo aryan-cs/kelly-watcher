@@ -7,8 +7,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import kelly_watcher.research.auto_retrain as auto_retrain
-import kelly_watcher.data.db as db
+import auto_retrain
+import db
 
 
 class RetrainRunHistoryTest(unittest.TestCase):
@@ -17,7 +17,7 @@ class RetrainRunHistoryTest(unittest.TestCase):
             original_db_path = db.DB_PATH
             try:
                 db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
-                with patch("kelly_watcher.data.db._repair_trade_log_market_urls", side_effect=sqlite3.DatabaseError("malformed")):
+                with patch("db._repair_trade_log_market_urls", side_effect=sqlite3.DatabaseError("malformed")):
                     db.init_db()
                 conn = db.get_conn()
                 conn.execute(
@@ -31,7 +31,7 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("kelly_watcher.data.db._repair_trade_log_market_urls", side_effect=sqlite3.DatabaseError("malformed")):
+                with patch("db._repair_trade_log_market_urls", side_effect=sqlite3.DatabaseError("malformed")):
                     db.init_db()
 
                 conn = db.get_conn()
@@ -63,12 +63,12 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 db.init_db()
 
                 with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+                    "auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
-                ), patch("kelly_watcher.research.auto_retrain.load_training_data", return_value=[object()] * 3), patch(
-                    "kelly_watcher.research.auto_retrain.min_samples_required", return_value=5
-                ), patch("kelly_watcher.research.auto_retrain.send_alert", return_value=None) as alert_mock, patch(
-                    "kelly_watcher.research.auto_retrain.time.time", return_value=1_700_000_100
+                ), patch("auto_retrain.load_training_data", return_value=[object()] * 3), patch(
+                    "auto_retrain.min_samples_required", return_value=5
+                ), patch("auto_retrain.send_alert", return_value=None) as alert_mock, patch(
+                    "auto_retrain.time.time", return_value=1_700_000_100
                 ):
                     report = auto_retrain.retrain_cycle_report(object(), trigger="manual")
 
@@ -104,11 +104,11 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 db.init_db()
 
                 with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+                    "auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 0},
-                ), patch("kelly_watcher.research.auto_retrain.load_training_data") as load_mock, patch(
-                    "kelly_watcher.research.auto_retrain.send_alert", return_value=None
-                ), patch("kelly_watcher.research.auto_retrain.time.time", return_value=1_700_000_125):
+                ), patch("auto_retrain.load_training_data") as load_mock, patch(
+                    "auto_retrain.send_alert", return_value=None
+                ), patch("auto_retrain.time.time", return_value=1_700_000_125):
                     report = auto_retrain.retrain_cycle_report(object(), trigger="scheduled")
 
                 self.assertEqual(report["status"], "blocked_shadow_snapshot")
@@ -146,13 +146,13 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 db.init_db()
 
                 with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+                    "auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
                 ), patch(
-                    "kelly_watcher.research.auto_retrain.load_training_data",
+                    "auto_retrain.load_training_data",
                     side_effect=RuntimeError("training data unavailable"),
-                ), patch("kelly_watcher.research.auto_retrain.send_alert", return_value=None), patch(
-                    "kelly_watcher.research.auto_retrain.time.time", return_value=1_700_000_125
+                ), patch("auto_retrain.send_alert", return_value=None), patch(
+                    "auto_retrain.time.time", return_value=1_700_000_125
                 ):
                     with self.assertRaisesRegex(RuntimeError, "training data unavailable"):
                         auto_retrain.retrain_cycle_report(object(), trigger="scheduled")
@@ -203,13 +203,13 @@ class RetrainRunHistoryTest(unittest.TestCase):
                 }
                 sample_rows = [object()] * 12
                 with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+                    "auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
-                ), patch("kelly_watcher.research.auto_retrain.load_training_data", return_value=sample_rows), patch(
-                    "kelly_watcher.research.auto_retrain.min_samples_required", return_value=5
-                ), patch("kelly_watcher.research.auto_retrain.train", return_value=metrics) as train_mock, patch(
-                    "kelly_watcher.research.auto_retrain.send_alert", return_value=None
-                ), patch("kelly_watcher.research.auto_retrain.time.time", return_value=1_700_000_200):
+                ), patch("auto_retrain.load_training_data", return_value=sample_rows), patch(
+                    "auto_retrain.min_samples_required", return_value=5
+                ), patch("auto_retrain.train", return_value=metrics) as train_mock, patch(
+                    "auto_retrain.send_alert", return_value=None
+                ), patch("auto_retrain.time.time", return_value=1_700_000_200):
                     report = auto_retrain.retrain_cycle_report(object(), trigger="scheduled", started_at=1_700_000_150)
 
                 self.assertEqual(report["status"], "completed_not_deployed")
@@ -320,13 +320,13 @@ class RetrainRunHistoryTest(unittest.TestCase):
         }
 
         with patch(
-            "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+            "auto_retrain.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
-        ), patch("kelly_watcher.research.auto_retrain.load_training_data", return_value=[object()] * 12), patch(
-            "kelly_watcher.research.auto_retrain.min_samples_required", return_value=5
-        ), patch("kelly_watcher.research.auto_retrain.train", return_value=metrics), patch(
-            "kelly_watcher.research.auto_retrain.send_alert", return_value=None
-        ) as alert_mock, patch("kelly_watcher.research.auto_retrain._record_retrain_run"):
+        ), patch("auto_retrain.load_training_data", return_value=[object()] * 12), patch(
+            "auto_retrain.min_samples_required", return_value=5
+        ), patch("auto_retrain.train", return_value=metrics), patch(
+            "auto_retrain.send_alert", return_value=None
+        ) as alert_mock, patch("auto_retrain._record_retrain_run"):
             report = auto_retrain.retrain_cycle_report(object(), trigger="scheduled", started_at=1_700_000_150)
 
         self.assertEqual(report["status"], "completed_not_deployed")
@@ -336,15 +336,15 @@ class RetrainRunHistoryTest(unittest.TestCase):
 
     def test_retrain_cycle_report_scopes_training_data_to_active_epoch_and_routed_rows(self) -> None:
         with patch(
-            "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+            "auto_retrain.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
         ), patch(
-            "kelly_watcher.research.auto_retrain.load_training_data",
+            "auto_retrain.load_training_data",
             return_value=[object()] * 3,
         ) as load_mock, patch(
-            "kelly_watcher.research.auto_retrain.min_samples_required",
+            "auto_retrain.min_samples_required",
             return_value=5,
-        ), patch("kelly_watcher.research.auto_retrain.send_alert", return_value=None):
+        ), patch("auto_retrain.send_alert", return_value=None):
             report = auto_retrain.retrain_cycle_report(object(), trigger="manual", started_at=1_700_000_300)
 
         self.assertEqual(report["status"], "skipped_not_enough_samples")
@@ -352,18 +352,18 @@ class RetrainRunHistoryTest(unittest.TestCase):
 
     def test_retrain_cycle_report_scopes_training_data_to_latest_promotion_within_epoch(self) -> None:
         with patch(
-            "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+            "auto_retrain.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
         ), patch(
-            "kelly_watcher.research.auto_retrain._latest_applied_replay_promotion_at",
+            "auto_retrain._latest_applied_replay_promotion_at",
             return_value=1_700_000_900,
         ), patch(
-            "kelly_watcher.research.auto_retrain.load_training_data",
+            "auto_retrain.load_training_data",
             return_value=[object()] * 3,
         ) as load_mock, patch(
-            "kelly_watcher.research.auto_retrain.min_samples_required",
+            "auto_retrain.min_samples_required",
             return_value=5,
-        ), patch("kelly_watcher.research.auto_retrain.send_alert", return_value=None):
+        ), patch("auto_retrain.send_alert", return_value=None):
             report = auto_retrain.retrain_cycle_report(object(), trigger="manual", started_at=1_700_000_300)
 
         self.assertEqual(report["status"], "skipped_not_enough_samples")
@@ -383,13 +383,13 @@ class RetrainRunHistoryTest(unittest.TestCase):
         engine = SimpleNamespace(reload_model=lambda: None)
 
         with patch(
-            "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
+            "auto_retrain.read_shadow_evidence_epoch",
             return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
-        ), patch("kelly_watcher.research.auto_retrain.load_training_data", return_value=[object()] * 12), patch(
-            "kelly_watcher.research.auto_retrain.min_samples_required", return_value=5
-        ), patch("kelly_watcher.research.auto_retrain.train", return_value=metrics), patch(
-            "kelly_watcher.research.auto_retrain.check_calibration", return_value={"calibration_bins": [1, 2, 3]}
-        ), patch("kelly_watcher.research.auto_retrain.send_alert", return_value=None) as alert_mock, patch("kelly_watcher.research.auto_retrain._record_retrain_run"):
+        ), patch("auto_retrain.load_training_data", return_value=[object()] * 12), patch(
+            "auto_retrain.min_samples_required", return_value=5
+        ), patch("auto_retrain.train", return_value=metrics), patch(
+            "auto_retrain.check_calibration", return_value={"calibration_bins": [1, 2, 3]}
+        ), patch("auto_retrain.send_alert", return_value=None) as alert_mock, patch("auto_retrain._record_retrain_run"):
             report = auto_retrain.retrain_cycle_report(engine, trigger="scheduled", started_at=1_700_000_150)
 
         self.assertEqual(report["status"], "deployed")

@@ -8,13 +8,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-import kelly_watcher.config as config
-import kelly_watcher.data.db as db
-import kelly_watcher.engine.dedup as dedup
-import kelly_watcher.runtime.evaluator as evaluator
-import kelly_watcher.runtime.tracker as tracker
-import kelly_watcher.research.train as train
-from kelly_watcher.runtime.executor import LiveExchangeFill, PolymarketExecutor
+
+import config
+import db
+import dedup
+import evaluator
+import tracker
+import train
+from executor import LiveExchangeFill, PolymarketExecutor
 
 
 class ProductionReadinessTest(unittest.TestCase):
@@ -56,7 +57,7 @@ class ProductionReadinessTest(unittest.TestCase):
         )
         market_f = SimpleNamespace()
 
-        with patch("kelly_watcher.runtime.executor.log_trade", return_value=1), patch("kelly_watcher.runtime.executor.send_alert") as alert_mock:
+        with patch("executor.log_trade", return_value=1), patch("executor.send_alert") as alert_mock:
             result = executor._execute_live(
                 "trade-1",
                 "market-1",
@@ -101,7 +102,7 @@ class ProductionReadinessTest(unittest.TestCase):
         market_f = SimpleNamespace()
         dedup_cache = SimpleNamespace(confirm=Mock(), mark_seen=Mock(), release=release)
 
-        with patch("kelly_watcher.runtime.executor.log_trade") as log_trade_mock, patch("kelly_watcher.runtime.executor.send_alert") as alert_mock:
+        with patch("executor.log_trade") as log_trade_mock, patch("executor.send_alert") as alert_mock:
             result = executor._execute_live(
                 "trade-1",
                 "market-1",
@@ -162,7 +163,7 @@ class ProductionReadinessTest(unittest.TestCase):
         )
         dedup_cache = SimpleNamespace(sync_positions_from_rows=lambda rows: None, release=Mock())
 
-        with patch("kelly_watcher.runtime.executor.send_alert"), patch("kelly_watcher.runtime.executor.logger.warning"):
+        with patch("executor.send_alert"), patch("executor.logger.warning"):
             result = executor._execute_live_exit(
                 trade_id="trade-exit",
                 market_id="market-1",
@@ -256,8 +257,8 @@ class ProductionReadinessTest(unittest.TestCase):
                 conn.commit()
                 conn.close()
 
-                with patch("kelly_watcher.runtime.evaluator.invalidate_belief_cache") as invalidate_mock, patch(
-                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
+                with patch("evaluator.invalidate_belief_cache") as invalidate_mock, patch(
+                    "evaluator.sync_belief_priors", return_value=0
                 ):
                     result = evaluator.cleanup_premature_resolutions(backup_path=Path(tmpdir) / "cleanup.bak")
 
@@ -354,8 +355,8 @@ class ProductionReadinessTest(unittest.TestCase):
         )
 
         try:
-            with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
-                "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=30
+            with patch("tracker.time.time", return_value=now_ts), patch(
+                "tracker.max_source_trade_age_seconds", return_value=30
             ):
                 events = tracker_obj.poll(["0xabc"], trade_limit=50)
         finally:

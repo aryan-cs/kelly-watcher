@@ -1,0 +1,64 @@
+import { postApiJson } from './api.js';
+import { readEnvValues } from './configEditor.js';
+export const dangerActions = [
+    {
+        id: 'live_trading',
+        label: 'Live Trading',
+        description: 'Enable or disable live mode through the guarded backend endpoint. Live mode stays blocked until DB integrity, shadow-history, and segment-shadow readiness are satisfied.',
+        value: (envValues) => (isLiveTradingEnabled(envValues) ? 'ON' : 'OFF')
+    },
+    {
+        id: 'restart_shadow',
+        label: 'Restart Shadow',
+        description: 'Do a full shadow account reset by deleting the entire save directory and all shadow history, logs, models, and runtime state. Config settings stay in place. Confirmation lets you keep active wallets, keep all wallets, or clear all wallets.',
+        value: (envValues) => `${watchedWalletCount(envValues)} wlts`
+    },
+    {
+        id: 'recover_db',
+        label: 'Recover DB',
+        description: 'Restore the shadow SQLite database from the latest verified backup and restart shadow mode. A verified backup may be integrity-only, not evidence-ready. Use this only when the current ledger is corrupt or untrustworthy.',
+        value: () => 'backup'
+    }
+];
+export function isLiveTradingEnabled(envValues = readEnvValues()) {
+    return String(envValues.USE_REAL_MONEY || 'false').trim().toLowerCase() === 'true';
+}
+export function watchedWalletCount(envValues = readEnvValues()) {
+    return String(envValues.WATCHED_WALLETS || '')
+        .split(',')
+        .map((wallet) => wallet.trim())
+        .filter(Boolean).length;
+}
+export async function setLiveTradingEnabled(enabled) {
+    try {
+        return await postApiJson('/api/live-mode', { enabled });
+    }
+    catch (error) {
+        return {
+            ok: false,
+            message: `Failed to update Live Trading: ${error instanceof Error ? error.message : 'unknown error'}`
+        };
+    }
+}
+export async function restartShadowAccount(walletMode) {
+    try {
+        return await postApiJson('/api/shadow/restart', { walletMode });
+    }
+    catch (error) {
+        return {
+            ok: false,
+            message: `Shadow restart failed: ${error instanceof Error ? error.message : 'unknown error'}`
+        };
+    }
+}
+export async function recoverShadowDatabase() {
+    try {
+        return await postApiJson('/api/shadow/recover-db', {});
+    }
+    catch (error) {
+        return {
+            ok: false,
+            message: `DB recovery failed: ${error instanceof Error ? error.message : 'unknown error'}`
+        };
+    }
+}

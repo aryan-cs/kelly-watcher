@@ -3,74 +3,48 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-import kelly_watcher.env_profile as env_profile
-import kelly_watcher.runtime_paths as runtime_paths
+
+import env_profile
+import runtime_paths
+
+
 class EnvProfileTests(unittest.TestCase):
-    def test_env_path_for_profile_points_to_single_save_env_file(self) -> None:
+    def test_env_path_points_to_repo_dot_env(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
             self.assertEqual(
                 env_profile.env_path_for_profile("prod", repo_root=repo_root),
-                repo_root / "save" / ".env",
+                repo_root / ".env",
             )
 
-    def test_active_env_profile_is_single_default_profile(self) -> None:
-        self.assertEqual(
-            env_profile.active_env_profile(argv=[], environ={env_profile.ENV_PROFILE_ENV_VAR: "prod"}),
-            "default",
-        )
-
-    def test_flags_do_not_switch_env_files(self) -> None:
+    def test_flags_and_env_do_not_select_profile_specific_files(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
-            save_env = repo_root / "save" / ".env"
-            save_env.parent.mkdir(parents=True, exist_ok=True)
-            save_env.write_text("TELEGRAM_BOT_TOKEN=x\n", encoding="utf-8")
 
             self.assertEqual(
-                env_profile.active_env_profile(argv=["--prod"], environ={}),
+                env_profile.active_env_profile(argv=["--prod"], environ={env_profile.ENV_PROFILE_ENV_VAR: "prod"}),
                 "default",
             )
             self.assertEqual(
                 env_profile.active_env_path(argv=["--prod"], environ={}, repo_root=repo_root),
-                save_env,
+                repo_root / ".env",
             )
-
-    def test_active_env_path_falls_back_to_repo_dot_env(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            repo_root = Path(tmpdir)
-            repo_env = repo_root / ".env"
-            repo_env.write_text("TELEGRAM_BOT_TOKEN=x\n", encoding="utf-8")
-
             self.assertEqual(
-                env_profile.active_env_path(argv=[], environ={}, repo_root=repo_root),
-                repo_env,
+                env_profile.active_env_path(argv=["--dev"], environ={}, repo_root=repo_root),
+                repo_root / ".env",
             )
 
-    def test_save_folder_env_takes_precedence_over_repo_env(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            repo_root = Path(tmpdir)
-            save_env = repo_root / "save" / ".env"
-            repo_env = repo_root / ".env"
-            save_env.parent.mkdir(parents=True, exist_ok=True)
-            save_env.write_text("TELEGRAM_BOT_TOKEN=save\n", encoding="utf-8")
-            repo_env.write_text("TELEGRAM_BOT_TOKEN=repo\n", encoding="utf-8")
-
-            self.assertEqual(
-                env_profile.active_env_path(argv=[], environ={}, repo_root=repo_root),
-                save_env,
-            )
-
-    def test_ensure_persistent_env_path_copies_repo_env_into_save_folder(self) -> None:
+    def test_ensure_persistent_env_path_does_not_copy_to_save_folder(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
             repo_env = repo_root / ".env"
-            repo_env.write_text("TELEGRAM_BOT_TOKEN=x\n", encoding="utf-8")
+            repo_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
 
-            save_env = env_profile.ensure_persistent_env_path("default", repo_root=repo_root)
+            env_path = env_profile.ensure_persistent_env_path("dev", repo_root=repo_root)
 
-            self.assertEqual(save_env, repo_root / "save" / ".env")
-            self.assertEqual(save_env.read_text(encoding="utf-8"), "TELEGRAM_BOT_TOKEN=x\n")
+            self.assertEqual(env_path, repo_env)
+            self.assertEqual(repo_env.read_text(encoding="utf-8"), "USE_REAL_MONEY=false\n")
+            self.assertFalse((repo_root / "save" / ".env.dev").exists())
 
 
 class RuntimeSaveLayoutTests(unittest.TestCase):

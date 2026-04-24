@@ -1,6 +1,6 @@
 # Kelly Watcher Journal
 
-Last updated: 2026-04-16 America/Chicago
+Last updated: 2026-04-24 America/Chicago
 
 You are one of 3 agents working on thsi codebase. Be sure to identify yourself for every entry and include all relevant information in what you do. This includes timestamps, summaries, etc. Make sure you do not overwrite someone else's work.
 
@@ -8,6 +8,15 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-24 12:05 CDT] codex-main
+Task: Roll back Kelly Watcher to commit `f1fd6bbb1309cbd50478b24a2f481db00302cf0f` after the web-dashboard era made production unstable, while preserving the single repo-root `.env` convention.
+Claims: `JOURNAL.md`, rollback tree, `env_profile.py`, `dashboard/envProfile.*`, `dashboard/paths.*`, `dashboard/package.json`, `kelly_watcher/cli.py`, `kelly_watcher/shadow_reset.py`, `README.md`, env/profile tests
+Status: Completed in temp clone; pending commit and push from the same rollback commit.
+Blockers: The local app workspace protects `.git/index.lock`, so the rollback commit is being prepared and pushed from `/tmp/kelly-watcher-rollback.qNVDPP` instead of the main checkout.
+Next: After pull on Windows, recreate/fill the single `.env`, run `uv sync`, run `cd dashboard && npm install` if needed, then start backend with `uv run main` and terminal dashboard with `cd dashboard && npm start`.
+Decisions: Restored the old root-level Python + Ink dashboard tree, removed `dashboard-web` and the `src/kelly_watcher` package layout, kept the terminal dashboard under `dashboard/`, and simplified env loading so only `.env` is read/written. Old `--dev`/`--prod` flags are accepted as no-ops where argparse still sees them, but they no longer select profile-specific files. Excluded the old commit's non-runtime macOS alias file and empty `x` file from the rollback.
+Tests: `uv run python -m py_compile env_profile.py config.py dashboard_api.py main.py db.py kelly_watcher/cli.py kelly_watcher/shadow_reset.py` -> passed; `uv run pytest tests/test_env_profile_and_save_layout.py ...selected env/dashboard runtime tests... -q` -> 9 passed; `npm exec tsc -- --noEmit` in `dashboard` -> passed; `uv run pytest tests/test_cli.py tests/test_shadow_reset.py tests/test_telegram_commands.py tests/test_market_urls.py -q` -> 32 passed; env smoke check confirmed `--prod` still resolves to `/tmp/example/.env`; dashboard env smoke check confirmed `.env`.
+
 [2026-04-24 11:27 CDT] codex-main
 Task: Reduce recurring SQLite `database is locked` failures surfacing through Telegram and the bot loop.
 Claims: `JOURNAL.md`, `src/kelly_watcher/data/db.py`, `tests/test_market_urls.py`

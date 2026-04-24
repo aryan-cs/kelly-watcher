@@ -7,9 +7,9 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import kelly_watcher.data.db as db
-import kelly_watcher.runtime.performance_preview as performance_preview
-import kelly_watcher.integrations.telegram_runtime as telegram_runtime
+import db
+import performance_preview
+import telegram_runtime
 
 
 class _HttpResponse:
@@ -252,11 +252,11 @@ class TelegramCommandTest(unittest.TestCase):
                     }
                 )
 
-                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
-                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
-                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
-                    "kelly_watcher.integrations.telegram_runtime.render_tracker_preview_message", return_value="reply"
-                ), patch("kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True) as send_message:
+                with patch("telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("telegram_runtime.httpx.Client", return_value=client), patch(
+                    "telegram_runtime.render_tracker_preview_message", return_value="reply"
+                ), patch("telegram_runtime.send_telegram_message", return_value=True) as send_message:
                     handled = telegram_runtime.service_telegram_commands()
 
                 self.assertEqual(handled, 2)
@@ -311,11 +311,11 @@ class TelegramCommandTest(unittest.TestCase):
                     }
                 )
 
-                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
-                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
-                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
-                    "kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True
-                ) as send_message, patch("kelly_watcher.integrations.telegram_runtime.time.time", return_value=1_700_000_400):
+                with patch("telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("telegram_runtime.httpx.Client", return_value=client), patch(
+                    "telegram_runtime.send_telegram_message", return_value=True
+                ) as send_message, patch("telegram_runtime.time.time", return_value=1_700_000_400):
                     handled = telegram_runtime.service_telegram_commands()
 
                 self.assertEqual(handled, 1)
@@ -336,70 +336,6 @@ class TelegramCommandTest(unittest.TestCase):
                 telegram_runtime.BOT_STATE_FILE = original_bot_state_file
                 telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
                 telegram_runtime._next_command_poll_at = original_next_poll_at
-
-    def test_service_telegram_commands_replies_to_link(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            original_state_file = telegram_runtime.TELEGRAM_STATE_FILE
-            original_bot_state_file = telegram_runtime.BOT_STATE_FILE
-            original_retrain_request_file = telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE
-            original_next_poll_at = telegram_runtime._next_command_poll_at
-            try:
-                tmp_path = Path(tmpdir)
-                telegram_runtime.TELEGRAM_STATE_FILE = tmp_path / "telegram_state.json"
-                telegram_runtime.BOT_STATE_FILE = tmp_path / "bot_state.json"
-                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = tmp_path / "manual_retrain_request.json"
-                telegram_runtime._next_command_poll_at = 0.0
-                client = _HttpClient(
-                    {
-                        "ok": True,
-                        "result": [
-                            {
-                                "update_id": 2501,
-                                "message": {
-                                    "message_id": 63,
-                                    "chat": {"id": 123},
-                                    "text": "/link@kellywatcherbot?",
-                                },
-                            }
-                        ],
-                    }
-                )
-
-                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
-                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
-                ), patch("kelly_watcher.integrations.telegram_runtime.dashboard_web_url", return_value="https://windows-box.tailnet-name.ts.net:8765"), patch(
-                    "kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client
-                ), patch("kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True) as send_message:
-                    handled = telegram_runtime.service_telegram_commands()
-
-                self.assertEqual(handled, 1)
-                send_message.assert_called_once_with(
-                    "web dashboard: https://windows-box.tailnet-name.ts.net:8765",
-                    chat_id="123",
-                    reply_to_message_id=63,
-                )
-            finally:
-                telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
-                telegram_runtime.BOT_STATE_FILE = original_bot_state_file
-                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
-                telegram_runtime._next_command_poll_at = original_next_poll_at
-
-    def test_dashboard_link_message_falls_back_to_tailscale_magicdns_name(self) -> None:
-        tailscale_payload = {
-            "Self": {
-                "DNSName": "windows-box.tailnet-name.ts.net.",
-            }
-        }
-
-        with patch("kelly_watcher.integrations.telegram_runtime.dashboard_web_url", return_value=""), patch(
-            "kelly_watcher.integrations.telegram_runtime.dashboard_api_port", return_value=8765
-        ), patch(
-            "kelly_watcher.integrations.telegram_runtime.subprocess.run",
-            return_value=SimpleNamespace(returncode=0, stdout=json.dumps(tailscale_payload)),
-        ):
-            message = telegram_runtime._dashboard_link_message()
-
-        self.assertEqual(message, "web dashboard: http://windows-box.tailnet-name.ts.net:8765")
 
     def test_service_telegram_commands_replies_to_leaderboards(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -429,11 +365,11 @@ class TelegramCommandTest(unittest.TestCase):
                     }
                 )
 
-                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
-                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
-                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
-                    "kelly_watcher.integrations.telegram_runtime.render_leaderboards_message", return_value="leaders"
-                ), patch("kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True) as send_message:
+                with patch("telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("telegram_runtime.httpx.Client", return_value=client), patch(
+                    "telegram_runtime.render_leaderboards_message", return_value="leaders"
+                ), patch("telegram_runtime.send_telegram_message", return_value=True) as send_message:
                     handled = telegram_runtime.service_telegram_commands()
 
                 self.assertEqual(handled, 1)
@@ -464,8 +400,8 @@ class TelegramCommandTest(unittest.TestCase):
                 ]
             return []
 
-        with patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=_ContextClient()), patch(
-            "kelly_watcher.integrations.telegram_runtime.fetch_leaderboard",
+        with patch("telegram_runtime.httpx.Client", return_value=_ContextClient()), patch(
+            "telegram_runtime.fetch_leaderboard",
             side_effect=_fake_fetch,
         ):
             message = telegram_runtime.render_leaderboards_message()
@@ -510,12 +446,6 @@ class TelegramCommandTest(unittest.TestCase):
             routed_expectancy_usd=0.5,
             routed_expectancy_pct=0.05,
             routed_coverage_pct=1 / 3,
-            wallet_family_history_status="mixed",
-            wallet_family_classified_acted=2,
-            wallet_family_classified_resolved=1,
-            wallet_family_unassigned_acted=3,
-            wallet_family_unassigned_resolved=2,
-            wallet_family_coverage_pct=1 / 3,
         )
 
         message = performance_preview.render_tracker_preview_message(summary)
@@ -530,9 +460,6 @@ class TelegramCommandTest(unittest.TestCase):
         self.assertIn("Routed fixed-segment shadow only", message)
         self.assertIn("Routed coverage: 33.333% (1 routed resolved, 2 legacy/unassigned resolved excluded)", message)
         self.assertIn("Routed history: mixed", message)
-        self.assertIn("Wallet-family coverage: 33.333% (1 classified resolved, 2 unassigned resolved excluded)", message)
-        self.assertIn("Wallet-family acted funnel: 2 acted -> 1 resolved (3 unassigned acted excluded)", message)
-        self.assertIn("Wallet-family history: mixed", message)
 
 
 if __name__ == "__main__":

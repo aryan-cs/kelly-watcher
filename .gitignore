@@ -36,18 +36,12 @@ results.json
 *.sqlite3
 
 # Dashboard / Node artifacts
-dashboard-cli/node_modules/
-dashboard-cli/dist/
-dashboard-cli/coverage/
-dashboard-cli/.cache/
-dashboard-cli/.eslintcache
-dashboard-cli/*.tsbuildinfo
-dashboard-web/node_modules/
-dashboard-web/dist/
-dashboard-web/coverage/
-dashboard-web/.cache/
-dashboard-web/.eslintcache
-dashboard-web/*.tsbuildinfo
+dashboard/node_modules/
+dashboard/dist/
+dashboard/coverage/
+dashboard/.cache/
+dashboard/.eslintcache
+dashboard/*.tsbuildinfo
 /package-lock.json
 
 # Editor and OS noise

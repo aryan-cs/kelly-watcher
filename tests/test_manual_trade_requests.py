@@ -1,4 +1,4 @@
-from kelly_watcher.main import ManualTradeRequest, _parse_manual_trade_request_payload
+from main import ManualTradeRequest, _parse_manual_trade_request_payload
 
 
 def test_parse_manual_buy_request_normalizes_fields():

@@ -9,11 +9,11 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import kelly_watcher.data.db as db
-import kelly_watcher.runtime.evaluator as evaluator
-import kelly_watcher.main as main
-import kelly_watcher.runtime.performance_preview as performance_preview
-from kelly_watcher.config import shadow_bankroll_usd
+import db
+import evaluator
+import main
+import performance_preview
+from config import shadow_bankroll_usd
 
 
 def _insert_trade(
@@ -23,7 +23,6 @@ def _insert_trade(
     segment_id: str | None,
     shadow_pnl_usd: float | None,
     resolved_at: int | None,
-    decision_context_json: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -52,12 +51,11 @@ def _insert_trade(
             outcome,
             resolved_at,
             segment_id,
-            decision_context_json,
             expected_edge,
             expected_fill_cost_usd,
             expected_exit_fee_usd,
             expected_close_fixed_cost_usd
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             trade_id,
@@ -84,7 +82,6 @@ def _insert_trade(
             1 if shadow_pnl_usd and shadow_pnl_usd > 0 else 0 if shadow_pnl_usd is not None else None,
             resolved_at,
             segment_id,
-            decision_context_json,
             0.12,
             0.03,
             0.01,
@@ -93,7 +90,7 @@ def _insert_trade(
     )
 
 
-def _build_fixture(rows: list[tuple[str, str | None, float | None, int | None, str | None]]) -> dict[str, object]:
+def _build_fixture(rows: list[tuple[str, str | None, float | None, int | None]]) -> dict[str, object]:
     tmpdir = TemporaryDirectory()
     root = Path(tmpdir.name)
     db_path = root / "data" / "trading.db"
@@ -105,14 +102,13 @@ def _build_fixture(rows: list[tuple[str, str | None, float | None, int | None, s
         db.init_db()
         conn = db.get_conn()
         try:
-            for trade_id, segment_id, shadow_pnl_usd, resolved_at, decision_context_json in rows:
+            for trade_id, segment_id, shadow_pnl_usd, resolved_at in rows:
                 _insert_trade(
                     conn,
                     trade_id=trade_id,
                     segment_id=segment_id,
                     shadow_pnl_usd=shadow_pnl_usd,
                     resolved_at=resolved_at,
-                    decision_context_json=decision_context_json,
                 )
             conn.commit()
         finally:
@@ -129,7 +125,7 @@ def _build_fixture(rows: list[tuple[str, str | None, float | None, int | None, s
 def _compute_segment_report(db_path: Path, *, min_resolved: int) -> dict[str, object]:
     signature = inspect.signature(evaluator.compute_segment_shadow_report)
     if "db_path" not in signature.parameters:
-        raise unittest.SkipTest("kelly_watcher.runtime.evaluator.compute_segment_shadow_report does not yet accept db_path.")
+        raise unittest.SkipTest("evaluator.compute_segment_shadow_report does not yet accept db_path.")
     result = evaluator.compute_segment_shadow_report(db_path=db_path, min_resolved=min_resolved)
     if isinstance(result, dict):
         return result
@@ -149,8 +145,8 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
     def test_report_distinguishes_routed_fixed_segment_rows_from_legacy_unassigned_rows(self) -> None:
         fixture = _build_fixture(
             [
-                ("routed-win", "hot_short", 4.0, 1_700_000_100, None),
-                ("legacy-win", None, 1.5, 1_700_000_120, None),
+                ("routed-win", "hot_short", 4.0, 1_700_000_100),
+                ("legacy-win", None, 1.5, 1_700_000_120),
             ]
         )
         db_path = fixture["db_path"]
@@ -174,8 +170,8 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
     def test_all_legacy_history_is_not_marked_ready_for_routed_segment_evidence(self) -> None:
         fixture = _build_fixture(
             [
-                ("legacy-1", None, 3.0, 1_700_000_200, None),
-                ("legacy-2", "", 2.0, 1_700_000_220, None),
+                ("legacy-1", None, 3.0, 1_700_000_200),
+                ("legacy-2", "", 2.0, 1_700_000_220),
             ]
         )
         db_path = fixture["db_path"]
@@ -196,14 +192,8 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
     def test_tracker_preview_summary_publishes_routed_only_metrics_separately_from_legacy_history(self) -> None:
         fixture = _build_fixture(
             [
-                (
-                    "routed-win",
-                    "hot_short",
-                    4.0,
-                    1_700_000_100,
-                    json.dumps({"signal": {"wallet_trust": {"family": "scalable"}}}),
-                ),
-                ("legacy-loss", None, -2.0, 1_700_000_120, None),
+                ("routed-win", "hot_short", 4.0, 1_700_000_100),
+                ("legacy-loss", None, -2.0, 1_700_000_120),
             ]
         )
         db_path = fixture["db_path"]
@@ -233,21 +223,12 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
         self.assertEqual(summary.routed_legacy_acted, 1)
         self.assertEqual(summary.routed_legacy_resolved, 1)
         self.assertAlmostEqual(float(summary.routed_coverage_pct or 0.0), 0.5, places=6)
-        self.assertEqual(summary.wallet_family_history_status, "mixed")
-        self.assertEqual(summary.wallet_family_classified_acted, 1)
-        self.assertEqual(summary.wallet_family_classified_resolved, 1)
-        self.assertEqual(summary.wallet_family_unassigned_acted, 1)
-        self.assertEqual(summary.wallet_family_unassigned_resolved, 1)
-        self.assertAlmostEqual(float(summary.wallet_family_coverage_pct or 0.0), 0.5, places=6)
-        self.assertEqual(len(summary.wallet_families), 1)
-        self.assertEqual(summary.wallet_families[0]["wallet_family"], "scalable")
-        self.assertAlmostEqual(float(summary.wallet_families[0]["total_pnl"] or 0.0), 10.0, places=6)
 
     def test_tracker_preview_summary_since_ts_scopes_shadow_metrics_to_epoch_boundary(self) -> None:
         fixture = _build_fixture(
             [
-                ("legacy-win", None, 4.0, 1_700_000_100, None),
-                ("epoch-win", "warm_mid", 3.0, 1_700_001_100, None),
+                ("legacy-win", None, 4.0, 1_700_000_100),
+                ("epoch-win", "warm_mid", 3.0, 1_700_001_100),
             ]
         )
         db_path = fixture["db_path"]
@@ -270,15 +251,15 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
     def test_tracker_preview_summary_does_not_mix_pre_epoch_legacy_history_into_current_window(self) -> None:
         fixture = _build_fixture(
             [
-                ("legacy-win", None, 4.0, 1_700_000_100, None),
-                ("epoch-win", "warm_mid", 3.0, 1_700_001_100, None),
+                ("legacy-win", None, 4.0, 1_700_000_100),
+                ("epoch-win", "warm_mid", 3.0, 1_700_001_100),
             ]
         )
         db_path = fixture["db_path"]
         assert isinstance(db_path, Path)
 
         with patch(
-            "kelly_watcher.runtime.performance_preview.read_shadow_evidence_epoch",
+            "performance_preview.read_shadow_evidence_epoch",
             return_value={
                 "shadow_evidence_epoch_known": True,
                 "shadow_evidence_epoch_started_at": 1_700_001_000,
@@ -314,22 +295,22 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
     def test_tracker_preview_summary_prefers_latest_promotion_within_epoch(self) -> None:
         fixture = _build_fixture(
             [
-                ("pre-promotion-win", "warm_mid", 4.0, 1_700_001_100, None),
-                ("post-promotion-win", "warm_mid", 3.0, 1_700_001_700, None),
+                ("pre-promotion-win", "warm_mid", 4.0, 1_700_001_100),
+                ("post-promotion-win", "warm_mid", 3.0, 1_700_001_700),
             ]
         )
         db_path = fixture["db_path"]
         assert isinstance(db_path, Path)
 
         with patch(
-            "kelly_watcher.runtime.performance_preview.read_shadow_evidence_epoch",
+            "performance_preview.read_shadow_evidence_epoch",
             return_value={
                 "shadow_evidence_epoch_known": True,
                 "shadow_evidence_epoch_started_at": 1_700_001_000,
                 "shadow_evidence_epoch_source": "shadow_reset",
             },
         ), patch(
-            "kelly_watcher.runtime.performance_preview._latest_applied_replay_promotion_at",
+            "performance_preview._latest_applied_replay_promotion_at",
             return_value=1_700_001_500,
         ):
             summary = performance_preview.compute_tracker_preview_summary(
@@ -347,8 +328,8 @@ class RoutedShadowEvidenceTest(unittest.TestCase):
     def test_tracker_preview_summary_since_ts_keeps_pre_epoch_open_positions_in_account_equity(self) -> None:
         fixture = _build_fixture(
             [
-                ("legacy-open", None, None, None, None),
-                ("epoch-win", "warm_mid", 3.0, 1_700_001_100, None),
+                ("legacy-open", None, None, None),
+                ("epoch-win", "warm_mid", 3.0, 1_700_001_100),
             ]
         )
         db_path = fixture["db_path"]

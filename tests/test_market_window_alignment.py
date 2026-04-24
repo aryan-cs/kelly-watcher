@@ -5,8 +5,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
-import kelly_watcher.config as config
-from kelly_watcher.engine.market_scorer import MarketScorer, build_market_features
+
+import config
+from market_scorer import MarketScorer, build_market_features
 
 
 def _close_time_in(seconds: int) -> str:

@@ -7,8 +7,11 @@ from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
-import kelly_watcher.dashboard_api as dashboard_api
-import kelly_watcher.main as main
+
+import dashboard_api
+import main
+
+
 QUEUE_ENTRYPOINT_NAMES = (
     "_launch_db_recovery",
     "_queue_db_recovery_request",
@@ -410,44 +413,6 @@ class DbRecoveryRequestFlowTest(unittest.TestCase):
                 )
 
         self.assertTrue(bool(result.get("ok")))
-        spawn_mock.assert_called_once()
-
-    def test_launch_allows_recovery_while_startup_is_recovery_only(self) -> None:
-        entrypoint = getattr(dashboard_api, "_launch_db_recovery", None)
-        if not callable(entrypoint):
-            self.skipTest("_launch_db_recovery is not present in this checkout yet.")
-
-        with TemporaryDirectory() as tmpdir:
-            tmpdir_path = Path(tmpdir)
-            verified_candidate = tmpdir_path / "verified.sqlite"
-            verified_source = tmpdir_path / "source.sqlite"
-            verified_candidate.touch()
-            verified_source.touch()
-
-            with patch.object(
-                dashboard_api,
-                "_bot_state_snapshot",
-                return_value={
-                    "mode": "shadow",
-                    "startup_blocked": True,
-                    "startup_recovery_only": True,
-                    "startup_block_reason": "startup blocked: waiting for Recover DB or Shadow Reset",
-                    "db_recovery_state_known": True,
-                    "db_recovery_candidate_ready": True,
-                    "db_recovery_candidate_path": str(verified_candidate),
-                    "db_recovery_candidate_source_path": str(verified_source),
-                },
-            ), patch.object(
-                dashboard_api, "_live_trading_enabled_in_config", return_value=False
-            ), patch.object(
-                dashboard_api, "use_real_money", return_value=False
-            ), patch.object(
-                dashboard_api, "_spawn_db_recovery_process", return_value={"ok": True, "message": "DB recovery queued."}
-            ) as spawn_mock:
-                result = entrypoint({"source": "dashboard-web"})
-
-        self.assertTrue(bool(result.get("ok")))
-        self.assertIn("DB recovery requested", str(result.get("message", "")))
         spawn_mock.assert_called_once()
 
     def test_consume_ignores_request_when_candidate_does_not_match_verified_backup(self) -> None:

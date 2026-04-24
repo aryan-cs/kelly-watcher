@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import kelly_watcher.data.db as db
-from kelly_watcher.data.market_urls import market_url_from_metadata
+import db
+from market_urls import market_url_from_metadata
 
 
 class MarketUrlsTest(unittest.TestCase):
@@ -25,21 +24,6 @@ class MarketUrlsTest(unittest.TestCase):
             db._preferred_journal_mode(Path(r"\\server\share\trading.db")),
             "DELETE",
         )
-
-    def test_locked_operational_error_helper_matches_sqlite_lock_messages(self) -> None:
-        self.assertTrue(db._is_locked_operational_error(sqlite3.OperationalError("database is locked")))
-        self.assertTrue(db._is_locked_operational_error(sqlite3.OperationalError("database table is locked: trade_log")))
-        self.assertFalse(db._is_locked_operational_error(sqlite3.OperationalError("no such table: trade_log")))
-
-    def test_connect_sqlite_applies_busy_timeout_and_retrying_connection(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            conn = db.get_conn_for_path(Path(tmpdir) / "trading.db", apply_runtime_pragmas=True)
-            try:
-                self.assertIsInstance(conn, db._RetryingConnection)
-                busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
-                self.assertEqual(int(busy_timeout), db.SQLITE_BUSY_TIMEOUT_MS)
-            finally:
-                conn.close()
 
     def test_market_url_from_metadata_uses_direct_polymarket_url_when_present(self) -> None:
         meta = {

@@ -10,10 +10,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import kelly_watcher.data.db as db
-import kelly_watcher.runtime.evaluator as evaluator
-import kelly_watcher.main as main
-import kelly_watcher.runtime.performance_preview as performance_preview
+import db
+import evaluator
+import main
+import performance_preview
 
 
 def _signature_supports(fn: object, required_names: tuple[str, ...]) -> bool:
@@ -204,7 +204,7 @@ def _call_preview_summary(*, db_path: Path, bot_state_path: Path) -> dict[str, o
     fn = getattr(performance_preview, "compute_tracker_preview_summary", None)
     if not _signature_supports(fn, ("db_path", "use_bot_state_balance")):
         raise unittest.SkipTest(
-            "kelly_watcher.runtime.performance_preview.compute_tracker_preview_summary does not yet accept "
+            "performance_preview.compute_tracker_preview_summary does not yet accept "
             "db_path and use_bot_state_balance."
         )
     with patch.object(performance_preview, "BOT_STATE_FILE", bot_state_path):
@@ -216,7 +216,7 @@ def _call_segment_report(*, db_path: Path) -> dict[str, object]:
     fn = getattr(evaluator, "compute_segment_shadow_report", None)
     if not _signature_supports(fn, ("db_path",)):
         raise unittest.SkipTest(
-            "kelly_watcher.runtime.evaluator.compute_segment_shadow_report does not yet accept db_path."
+            "evaluator.compute_segment_shadow_report does not yet accept db_path."
         )
     result = fn(db_path=db_path)
     return _payload_dict(result)

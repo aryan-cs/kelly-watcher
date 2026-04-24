@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import kelly_watcher.research.replay_search as replay_search
+import replay_search
 
 
 class ReplaySearchTrustGateTest(unittest.TestCase):

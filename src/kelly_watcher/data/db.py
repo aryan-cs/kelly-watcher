@@ -34,6 +34,40 @@ _SHARED_HOLDOUT_MESSAGE_RE = re.compile(
     r"incumbent ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+)",
     re.IGNORECASE | re.DOTALL,
 )
+SQLITE_CONNECT_TIMEOUT_SECONDS = 30.0
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+SQLITE_LOCK_RETRY_ATTEMPTS = 5
+SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS = 0.25
+
+
+def _is_locked_operational_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc or "").strip().lower()
+    return "database is locked" in message or "database table is locked" in message
+
+
+class _RetryingConnection(sqlite3.Connection):
+    def _call_with_lock_retry(self, fn, /, *args, **kwargs):
+        delay_seconds = SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS
+        for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if not _is_locked_operational_error(exc) or attempt >= SQLITE_LOCK_RETRY_ATTEMPTS - 1:
+                    raise
+                time.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 2.0)
+
+    def execute(self, sql: str, parameters=(), /):  # type: ignore[override]
+        return self._call_with_lock_retry(super().execute, sql, parameters)
+
+    def executemany(self, sql: str, seq_of_parameters, /):  # type: ignore[override]
+        return self._call_with_lock_retry(super().executemany, sql, seq_of_parameters)
+
+    def executescript(self, sql_script: str, /):  # type: ignore[override]
+        return self._call_with_lock_retry(super().executescript, sql_script)
+
+    def commit(self):  # type: ignore[override]
+        return self._call_with_lock_retry(super().commit)
 
 
 def _resolved_db_path_text(path: Path) -> str:
@@ -64,8 +98,14 @@ def _startup_heavy_maintenance_enabled(path: Path) -> bool:
 
 def _connect_sqlite(path: Path, *, apply_runtime_pragmas: bool) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(
+        path,
+        check_same_thread=False,
+        timeout=SQLITE_CONNECT_TIMEOUT_SECONDS,
+        factory=_RetryingConnection,
+    )
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
     if apply_runtime_pragmas:
         conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(path)}")
         conn.execute("PRAGMA foreign_keys=ON")

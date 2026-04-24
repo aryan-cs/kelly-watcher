@@ -8,6 +8,15 @@ You are one of 3 agents working on thsi codebase. Be sure to identify yourself f
 Add new entries below this line.
 
 ---
+[2026-04-24 11:27 CDT] codex-main
+Task: Reduce recurring SQLite `database is locked` failures surfacing through Telegram and the bot loop.
+Claims: `JOURNAL.md`, `src/kelly_watcher/data/db.py`, `tests/test_market_urls.py`
+Status: Completed
+Blockers: None for this slice. The issue was shared SQLite connection behavior under concurrent readers/writers, especially on Windows/UNC-style deployments, not Telegram command parsing itself.
+Next: If lock alerts still appear after deployment, inspect the specific longest-running write path or any external process opening the same DB file rather than adding more Telegram-side catch/retry noise.
+Decisions: I hardened the shared SQLite connection factory instead of trying to band-aid Telegram. Every connection created through `get_conn()` / `get_conn_for_path()` now uses a real `busy_timeout` plus a retrying connection subclass that transparently retries lock-related `sqlite3.OperationalError`s for `execute`, `executemany`, `executescript`, and `commit`. That gives the main bot loop, Telegram summaries, and other concurrent DB users more time to wait out short lock windows instead of failing fast with `database is locked`.
+Tests: `uv run python -m py_compile src/kelly_watcher/data/db.py tests/test_market_urls.py` -> passed; `uv run pytest tests/test_market_urls.py -q` -> 14 passed; `uv run pytest tests/test_db_recovery.py -q` -> 10 passed; `uv run pytest tests/test_telegram_commands.py -q` -> 8 passed
+
 [2026-04-20 14:28 CDT] codex-main
 Task: Recover dashboard consistency on pages `3`, `4`, and `5` by moving `PERFORMANCE` to a single backend snapshot, splitting wallet data into dedicated endpoints, and trimming `MODEL` down to operator-facing summaries.
 Claims: `JOURNAL.md`, `src/kelly_watcher/dashboard_api.py`, `dashboard-web/src/api.ts`, `dashboard-web/src/App.tsx`, `dashboard-web/src/dashboardPages.tsx`, `tests/test_dashboard_web_source.py`

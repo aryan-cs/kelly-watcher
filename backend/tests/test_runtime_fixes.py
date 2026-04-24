@@ -576,15 +576,15 @@ class RuntimeFixesTest(unittest.TestCase):
             ), patch.object(
                 dashboard_api, "ENV_EXAMPLE_PATH", env_example_path
             ):
-                dashboard_api._write_env_value("REPLAY_SEARCH_CONSTRAINTS_FILE", "replay_search_specs/constraints.json")
+                dashboard_api._write_env_value("REPLAY_SEARCH_CONSTRAINTS_FILE", "backend/replay_search_specs/constraints.json")
                 snapshot = dashboard_api._config_snapshot()
 
             self.assertEqual(
                 snapshot["safe_values"]["REPLAY_SEARCH_CONSTRAINTS_FILE"],
-                "replay_search_specs/constraints.json",
+                "backend/replay_search_specs/constraints.json",
             )
             self.assertIn(
-                "REPLAY_SEARCH_CONSTRAINTS_FILE=replay_search_specs/constraints.json",
+                "REPLAY_SEARCH_CONSTRAINTS_FILE=backend/replay_search_specs/constraints.json",
                 env_path.read_text(encoding="utf-8"),
             )
 
@@ -5752,10 +5752,10 @@ class RuntimeFixesTest(unittest.TestCase):
             patch.object(main, "replay_search_window_days", return_value=14),
             patch.object(main, "replay_search_window_count", return_value=6),
             patch.object(main, "replay_search_notes", return_value="nightly"),
-            patch.object(main, "replay_search_base_policy_file", return_value="replay_search_specs/base_policy.json"),
-            patch.object(main, "replay_search_grid_file", return_value="replay_search_specs/grid.json"),
-            patch.object(main, "replay_search_constraints_file", return_value="replay_search_specs/constraints.json"),
-            patch.object(main, "replay_search_score_weights_file", return_value="replay_search_specs/score_weights.json"),
+            patch.object(main, "replay_search_base_policy_file", return_value="backend/replay_search_specs/base_policy.json"),
+            patch.object(main, "replay_search_grid_file", return_value="backend/replay_search_specs/grid.json"),
+            patch.object(main, "replay_search_constraints_file", return_value="backend/replay_search_specs/constraints.json"),
+            patch.object(main, "replay_search_score_weights_file", return_value="backend/replay_search_specs/score_weights.json"),
             patch.object(main, "replay_search_base_policy", return_value={"mode": "shadow", "min_confidence": 0.66}),
             patch.object(main, "replay_search_grid", return_value={"min_confidence": [0.62, 0.66]}),
             patch.object(main, "replay_search_constraints", return_value={"min_accepted_count": 12}),
@@ -5764,13 +5764,13 @@ class RuntimeFixesTest(unittest.TestCase):
             command = main._build_replay_search_command()
 
         self.assertIn("--base-policy-file", command)
-        self.assertIn("replay_search_specs/base_policy.json", command)
+        self.assertIn("backend/replay_search_specs/base_policy.json", command)
         self.assertIn("--grid-file", command)
-        self.assertIn("replay_search_specs/grid.json", command)
+        self.assertIn("backend/replay_search_specs/grid.json", command)
         self.assertIn("--constraints-file", command)
-        self.assertIn("replay_search_specs/constraints.json", command)
+        self.assertIn("backend/replay_search_specs/constraints.json", command)
         self.assertIn("--score-weights-file", command)
-        self.assertIn("replay_search_specs/score_weights.json", command)
+        self.assertIn("backend/replay_search_specs/score_weights.json", command)
         self.assertIn("--base-policy-json", command)
         self.assertIn(json.dumps({"mode": "shadow", "min_confidence": 0.66}, separators=(",", ":"), sort_keys=True), command)
         self.assertIn("--grid-json", command)
@@ -5996,10 +5996,10 @@ class RuntimeFixesTest(unittest.TestCase):
             patch.object(config, "_get_env_file_value", return_value=None),
             patch.object(config, "_get", side_effect=lambda _name, default="": default),
         ):
-            self.assertEqual(config.replay_search_base_policy_file(), "replay_search_specs/base_policy.json")
-            self.assertEqual(config.replay_search_grid_file(), "replay_search_specs/grid.json")
-            self.assertEqual(config.replay_search_constraints_file(), "replay_search_specs/constraints.json")
-            self.assertEqual(config.replay_search_score_weights_file(), "replay_search_specs/score_weights.json")
+            self.assertEqual(config.replay_search_base_policy_file(), "backend/replay_search_specs/base_policy.json")
+            self.assertEqual(config.replay_search_grid_file(), "backend/replay_search_specs/grid.json")
+            self.assertEqual(config.replay_search_constraints_file(), "backend/replay_search_specs/constraints.json")
+            self.assertEqual(config.replay_search_score_weights_file(), "backend/replay_search_specs/score_weights.json")
 
     def test_replay_search_score_weights_reject_unknown_keys_before_subprocess(self) -> None:
         with (

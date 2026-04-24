@@ -761,22 +761,22 @@ def live_min_shadow_resolved() -> int:
 
 
 def replay_search_base_policy_file() -> str:
-    raw = _get_env_file_value("REPLAY_SEARCH_BASE_POLICY_FILE") or _get("REPLAY_SEARCH_BASE_POLICY_FILE", "replay_search_specs/base_policy.json")
+    raw = _get_env_file_value("REPLAY_SEARCH_BASE_POLICY_FILE") or _get("REPLAY_SEARCH_BASE_POLICY_FILE", "backend/replay_search_specs/base_policy.json")
     return str(raw or "").strip()
 
 
 def replay_search_grid_file() -> str:
-    raw = _get_env_file_value("REPLAY_SEARCH_GRID_FILE") or _get("REPLAY_SEARCH_GRID_FILE", "replay_search_specs/grid.json")
+    raw = _get_env_file_value("REPLAY_SEARCH_GRID_FILE") or _get("REPLAY_SEARCH_GRID_FILE", "backend/replay_search_specs/grid.json")
     return str(raw or "").strip()
 
 
 def replay_search_constraints_file() -> str:
-    raw = _get_env_file_value("REPLAY_SEARCH_CONSTRAINTS_FILE") or _get("REPLAY_SEARCH_CONSTRAINTS_FILE", "replay_search_specs/constraints.json")
+    raw = _get_env_file_value("REPLAY_SEARCH_CONSTRAINTS_FILE") or _get("REPLAY_SEARCH_CONSTRAINTS_FILE", "backend/replay_search_specs/constraints.json")
     return str(raw or "").strip()
 
 
 def replay_search_score_weights_file() -> str:
-    raw = _get_env_file_value("REPLAY_SEARCH_SCORE_WEIGHTS_FILE") or _get("REPLAY_SEARCH_SCORE_WEIGHTS_FILE", "replay_search_specs/score_weights.json")
+    raw = _get_env_file_value("REPLAY_SEARCH_SCORE_WEIGHTS_FILE") or _get("REPLAY_SEARCH_SCORE_WEIGHTS_FILE", "backend/replay_search_specs/score_weights.json")
     return str(raw or "").strip()
 
 def telegram_bot_token() -> str:

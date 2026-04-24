@@ -26,7 +26,7 @@ class RuntimeLayout:
 
 
 def runtime_layout(repo_root: Path | None = None) -> RuntimeLayout:
-    base = Path(repo_root or Path(__file__).resolve().parents[2])
+    base = Path(repo_root or Path(__file__).resolve().parents[3])
     save_dir = base / "save"
     data_dir = save_dir / "data"
     log_dir = save_dir / "logs"

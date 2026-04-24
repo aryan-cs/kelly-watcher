@@ -40,13 +40,13 @@ results.json
 *.sqlite
 *.sqlite3
 
-# Dashboard / Node artifacts
-dashboard-cli/node_modules/
-dashboard-cli/dist/
-dashboard-cli/coverage/
-dashboard-cli/.cache/
-dashboard-cli/.eslintcache
-dashboard-cli/*.tsbuildinfo
+# Frontend / Node artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/.cache/
+frontend/.eslintcache
+frontend/*.tsbuildinfo
 /package-lock.json
 
 # Editor and OS noise

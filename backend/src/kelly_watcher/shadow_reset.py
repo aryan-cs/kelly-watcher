@@ -140,17 +140,11 @@ def _normalize_command(command: str) -> str:
 
 def _looks_like_bot_command(command: str) -> bool:
     normalized = _normalize_command(command)
-    repo_root = str(REPO_ROOT).replace("\\", "/").lower()
     markers = (
-        f"{repo_root}/main.py",
-        f"python {repo_root}/main.py",
-        f"python3 {repo_root}/main.py",
-        f"python.exe {repo_root}/main.py",
-        "-m cli",
+        "kelly-watcher",
+        "-m kelly_watcher.main",
         "uv run main",
-        "uv run python main.py",
-        "python main.py",
-        "python3 main.py",
+        "uv run kelly-watcher",
     )
     return any(marker in normalized for marker in markers)
 
@@ -540,7 +534,7 @@ def preferred_python_executable() -> str:
 
 
 def _bot_command() -> list[str]:
-    command = [preferred_python_executable(), str(REPO_ROOT / "main.py")]
+    command = [preferred_python_executable(), "-m", "kelly_watcher.main"]
     env_flag = active_env_flag()
     if env_flag:
         command.append(env_flag)
@@ -656,7 +650,7 @@ def run(
             print("Shadow runtime reset.")
             print(f"Initial bankroll: ${bankroll:.2f}")
             print(_wallet_mode_result_line(normalized_wallet_mode))
-            print("Start the bot manually with: uv run main")
+            print("Start the bot manually from backend/ with: uv run main")
             return 0
 
         if foreground:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_EXAMPLE_PATH = REPO_ROOT / "config.env.example"
 CONFIG_ENV_PATH = REPO_ROOT / "config.env"
 SECRETS_ENV_PATH = REPO_ROOT / "secrets.env"

@@ -16,7 +16,7 @@ bot_main = _BotMainProxy()
 
 
 def main() -> None:
-    # Accept and ignore stray extra args so `uv run main pytho0n.py` still
+    # Accept and ignore stray extra args so accidental trailing tokens still
     # launches the bot instead of failing on command parsing.
     raw_argv = sys.argv[1:]
     if local_mode_requested(raw_argv):

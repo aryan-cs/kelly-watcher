@@ -315,10 +315,10 @@ export function Settings({ editor }) {
         ? shadowRestartPending
             ? shadowRestartMessage
             : dbRecoveryCandidateMode === 'evidence_ready'
-            ? `Recover DB will restore an evidence-ready verified backup. ${dbRecoveryCandidateClassReason}`
-            : dbRecoveryCandidateMode === 'integrity_only'
-                ? `Recover DB will restore an integrity-only verified backup. ${dbRecoveryCandidateClassReason}`
-                : dbRecoveryCandidateUnavailableMessage
+                ? `Recover DB will restore an evidence-ready verified backup. ${dbRecoveryCandidateClassReason}`
+                : dbRecoveryCandidateMode === 'integrity_only'
+                    ? `Recover DB will restore an integrity-only verified backup. ${dbRecoveryCandidateClassReason}`
+                    : dbRecoveryCandidateUnavailableMessage
         : '';
     const restartShadowDangerBlurb = !editor.dangerConfirm && selectedDangerAction?.id === 'restart_shadow' && shadowRestartPending
         ? shadowRestartMessage
@@ -327,11 +327,11 @@ export function Settings({ editor }) {
         ? `${shadowRestartMessage} Live-mode requests stay blocked until the backend restarts.`
         : startupRecoveryOnly && !editor.dangerConfirm && selectedDangerAction?.id === 'live_trading'
             ? 'Backend is in recovery-only mode. Recover DB or Restart Shadow first; live-mode requests stay blocked until startup recovers.'
-        : recoverDbDangerBlurb
-            || restartShadowDangerBlurb
-            || DANGER_OPTION_BLURBS[selectedDangerOption?.id || '']
-            || DANGER_ACTION_BLURBS[editor.dangerConfirm?.actionId || selectedDangerAction?.id || '']
-        || '';
+            : recoverDbDangerBlurb
+                || restartShadowDangerBlurb
+                || DANGER_OPTION_BLURBS[selectedDangerOption?.id || '']
+                || DANGER_ACTION_BLURBS[editor.dangerConfirm?.actionId || selectedDangerAction?.id || '']
+                || '';
     const dangerHelperLines = wrapText(dangerBlurb, dangerContentWidth);
     const startupBlockedHelperLines = startupRecoveryOnly
         ? wrapText(startupBlockReason
@@ -619,7 +619,7 @@ export function Settings({ editor }) {
                 'this box reflects routed post-segmentation performance, not legacy shadow history'
             ];
         }
-        return [
+        const summaryParts = [
             `status: ${routedShadowPerformanceStatus}`,
             `gate: ${routedShadowGateLabel}`,
             `pnl: ${routedShadowTotalPnlUsd == null ? '-' : `$${formatNumber(routedShadowTotalPnlUsd)}`}`,
@@ -632,6 +632,7 @@ export function Settings({ editor }) {
                 ? 'legacy history dominates, so routed performance remains insufficient'
                 : 'routed performance is based on routed post-segmentation evidence'
         ];
+        return summaryParts;
     }, [
         routedShadowExpectancyUsd,
         routedShadowGateLabel,
@@ -703,7 +704,7 @@ export function Settings({ editor }) {
                 'this section separates routed post-segmentation evidence from legacy/unassigned shadow history'
             ];
         }
-        return [
+        const summaryParts = [
             `status: ${routedShadowStatus}`,
             `threshold: ${routedShadowMinResolved > 0 ? formatNumber(routedShadowMinResolved) : '-'}`,
             `total resolved: ${formatNumber(routedShadowTotalResolved)}`,
@@ -716,6 +717,7 @@ export function Settings({ editor }) {
                 : 'routed evidence is present',
             'routed evidence is separate from legacy/unassigned shadow history'
         ];
+        return summaryParts;
     }, [
         routedShadowLegacyDominant,
         routedShadowLegacyResolved,
@@ -829,7 +831,9 @@ export function Settings({ editor }) {
         ? 'disabled'
         : shadowRestartPending
             ? 'pending_restart'
-            : liveModeReady ? 'ready' : 'blocked';
+            : liveModeReady
+                ? 'ready'
+                : 'blocked';
     const liveReadinessColor = !liveTradingEnabled
         ? theme.red
         : shadowRestartPending
@@ -862,19 +866,19 @@ export function Settings({ editor }) {
         : dbRecoveryPendingState
             ? 'pending_restart'
             : dbRecoveryCandidateReady
-            ? 'ready'
-            : dbRecoveryCandidatePath || dbRecoveryCandidateSourcePath || dbRecoveryCandidateMessage
-                ? 'blocked'
-                : 'idle';
+                ? 'ready'
+                : dbRecoveryCandidatePath || dbRecoveryCandidateSourcePath || dbRecoveryCandidateMessage
+                    ? 'blocked'
+                    : 'idle';
     const dbRecoveryColor = !dbRecoveryStateKnown
         ? theme.dim
         : dbRecoveryPendingState
             ? theme.yellow
             : dbRecoveryCandidateReady
-            ? theme.green
-            : dbRecoveryCandidatePath || dbRecoveryCandidateSourcePath || dbRecoveryCandidateMessage
-                ? theme.yellow
-                : theme.dim;
+                ? theme.green
+                : dbRecoveryCandidatePath || dbRecoveryCandidateSourcePath || dbRecoveryCandidateMessage
+                    ? theme.yellow
+                    : theme.dim;
     const dbRecoverySummaryLines = useMemo(() => {
         if (!dbRecoveryStateKnown) {
             return ['waiting for the bot to publish DB recovery readiness'];
@@ -892,7 +896,16 @@ export function Settings({ editor }) {
             `latest verified backup: ${dbRecoveryLatestVerifiedBackupPath || '-'}`,
             `latest verified backup at: ${dbRecoveryLatestVerifiedBackupAt > 0 ? formatSettingsDateTime(dbRecoveryLatestVerifiedBackupAt) : '-'}`
         ];
-    }, [dbRecoveryCandidateModeLabel, dbRecoveryCandidateReady, dbRecoveryPendingState, dbRecoveryLatestVerifiedBackupAt, dbRecoveryLatestVerifiedBackupPath, dbRecoveryStateKnown, dbRecoveryStatus, shadowRestartMessage]);
+    }, [
+        dbRecoveryCandidateModeLabel,
+        dbRecoveryCandidateReady,
+        dbRecoveryPendingState,
+        dbRecoveryLatestVerifiedBackupAt,
+        dbRecoveryLatestVerifiedBackupPath,
+        dbRecoveryStateKnown,
+        dbRecoveryStatus,
+        shadowRestartMessage
+    ]);
     const dbRecoveryDetailLines = [
         dbRecoveryPendingState ? `pending: ${shadowRestartMessage}` : '',
         dbRecoveryCandidatePath ? `candidate path: ${dbRecoveryCandidatePath}` : '',
@@ -928,23 +941,23 @@ export function Settings({ editor }) {
         : dbRecoveryPendingState
             ? theme.yellow
             : /block|fail|error|corrupt|invalid/i.test(dbRecoveryShadowStatus)
-            ? theme.red
-            : dbRecoveryShadowMigratedEvaluation || /migrated|legacy_migrated|mixed/i.test(dbRecoveryShadowStatus)
-                ? theme.yellow
-                : /ready|ok|healthy|positive/i.test(dbRecoveryShadowStatus)
-                    ? theme.green
-                    : dbRecoveryShadowCandidatePath
-                        ? theme.yellow
-                        : theme.dim;
+                ? theme.red
+                : dbRecoveryShadowMigratedEvaluation || /migrated|legacy_migrated|mixed/i.test(dbRecoveryShadowStatus)
+                    ? theme.yellow
+                    : /ready|ok|healthy|positive/i.test(dbRecoveryShadowStatus)
+                        ? theme.green
+                        : dbRecoveryShadowCandidatePath
+                            ? theme.yellow
+                            : theme.dim;
     const dbRecoveryShadowEvaluationLabel = !dbRecoveryShadowStateKnown
         ? 'checking'
         : dbRecoveryPendingState
             ? 'restart pending'
             : dbRecoveryShadowMigratedEvaluation
-            ? 'migrated temp clone'
-            : dbRecoveryShadowCandidatePath
-                ? 'verified backup candidate'
-                : 'no candidate';
+                ? 'migrated temp clone'
+                : dbRecoveryShadowCandidatePath
+                    ? 'verified backup candidate'
+                    : 'no candidate';
     const dbRecoveryShadowMigrationNote = dbRecoveryShadowMigratedEvaluation
         ? 'evaluated from a migrated temp clone; the backup file itself was not modified'
         : '';
@@ -965,7 +978,7 @@ export function Settings({ editor }) {
                 'this section reflects the verified backup candidate, not active runtime data'
             ];
         }
-        return [
+        const summaryParts = [
             `candidate use: ${dbRecoveryCandidateModeLabel}`,
             `status: ${dbRecoveryShadowStatus}`,
             `evaluation: ${dbRecoveryShadowEvaluationLabel}`,
@@ -980,11 +993,14 @@ export function Settings({ editor }) {
             'backup-candidate shadow data only; not active runtime data',
             dbRecoveryShadowMigrationNote
         ];
+        return summaryParts.filter(Boolean);
     }, [
         dbRecoveryShadowActed,
         dbRecoveryShadowCandidatePath,
         dbRecoveryCandidateModeLabel,
         dbRecoveryShadowExpectancyUsd,
+        dbRecoveryShadowEvaluationLabel,
+        dbRecoveryShadowMigrationNote,
         dbRecoveryPendingState,
         dbRecoveryShadowProfitFactor,
         dbRecoveryShadowResolved,
@@ -995,8 +1011,6 @@ export function Settings({ editor }) {
         dbRecoveryShadowStatus,
         dbRecoveryShadowTotalPnlUsd,
         dbRecoveryShadowReturnPct,
-        dbRecoveryShadowMigrationNote,
-        dbRecoveryShadowEvaluationLabel,
         shadowRestartMessage
     ]);
     const dbRecoveryShadowDetailLines = [
@@ -1016,7 +1030,7 @@ export function Settings({ editor }) {
         try {
             return segmentSummaryLinesFromJson(raw);
         }
-        catch (_a) {
+        catch {
             return ['segment summary: unavailable'];
         }
     }, [dbRecoveryShadowCandidatePath, dbRecoveryShadowStateKnown, state.db_recovery_shadow_segment_summary_json]);
@@ -1040,149 +1054,6 @@ export function Settings({ editor }) {
             React.createElement(SettingsSummaryBox, { title: "Bot State", width: topBoxWidth, items: botStateStats, columnCount: topBoxColumnCount }),
             !stacked ? React.createElement(InkBox, { width: topRowGap }) : React.createElement(InkBox, { height: 1 }),
             React.createElement(SettingsSummaryBox, { title: "Database", width: topBoxWidth, items: databaseStats, columnCount: topBoxColumnCount })),
-        React.createElement(InkBox, { marginTop: 1 },
-            React.createElement(Box, { title: "Live Readiness", width: "100%", accent: liveModeReady },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(StatRow, { label: "Live trading", value: liveTradingEnabled ? 'enabled in config' : 'disabled in config', color: liveTradingEnabled ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "DB integrity", value: dbIntegrityStatus, color: dbIntegrityColor }),
-            React.createElement(StatRow, { label: "All-time shadow history", value: shadowHistoryStateKnown ? shadowGateStatus : 'checking', color: shadowHistoryStateKnown ? shadowGateColor : theme.dim }),
-                    React.createElement(StatRow, { label: "Segment shadow", value: shadowSegmentStatus, color: shadowSegmentColor }),
-                    React.createElement(StatRow, { label: "Overall", value: liveReadinessStatus, color: liveReadinessColor }),
-                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                        React.createElement(Text, { color: theme.dim }, "Details"),
-                        wrapText(liveReadinessSummary, Math.max(24, panelContentWidth)).map((line, index) => (React.createElement(Text, { key: `live-readiness-summary-${index}`, color: liveReadinessColor }, line))),
-                        shadowReadinessSummaryLines.map((line, index) => (React.createElement(Text, { key: `shadow-readiness-summary-${index}`, color: shadowGateColor }, line))),
-                        shadowReadinessReasonLines.map((line, index) => (React.createElement(Text, { key: `shadow-readiness-reason-${index}`, color: shadowGateColor }, line))))))),
-        React.createElement(InkBox, { marginTop: 1 },
-            React.createElement(Box, { title: "Shadow History Epoch", width: "100%", accent: shadowHistoryEpochKnown && shadowHistoryEpochStartedAt > 0 },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(Text, { color: theme.dim }, "Shadow-history evidence epoch only. Source and active scope labels describe the evidence window, not the live runtime state."),
-                    React.createElement(StatRow, { label: "Status", value: shadowHistoryEpochStatus, color: shadowHistoryEpochColor }),
-                    React.createElement(StatRow, { label: "Started", value: shadowHistoryEpochStartedAt > 0 ? formatSettingsDateTime(shadowHistoryEpochStartedAt) : '-', color: theme.white }),
-                    React.createElement(StatRow, { label: "Source", value: shadowHistoryEpochSourceLabel || '-', color: theme.white }),
-                    React.createElement(StatRow, { label: "Active scope", value: shadowHistoryEpochActiveScopeLabel || '-', color: theme.white }),
-                    React.createElement(StatRow, { label: "Current window", value: formatNumber(shadowHistoryEpochReadyCount), color: theme.white }),
-                    React.createElement(StatRow, { label: "Blocked", value: formatNumber(shadowHistoryEpochBlockedCount), color: shadowHistoryEpochBlockedCount > 0 ? theme.red : theme.dim }),
-                    React.createElement(StatRow, { label: "Total resolved", value: formatNumber(shadowHistoryEpochTotalResolved), color: theme.white }),
-                    React.createElement(StatRow, { label: "Legacy/all-time", value: formatNumber(shadowHistoryEpochLegacyResolved), color: theme.white }),
-                    React.createElement(StatRow, { label: "Routed resolved", value: formatNumber(shadowHistoryEpochRoutedResolved), color: theme.white }),
-                    React.createElement(StatRow, { label: "Coverage", value: shadowHistoryEpochCoverageLabel, color: shadowHistoryEpochCoveragePct == null ? theme.dim : theme.white }),
-                    React.createElement(StatRow, { label: "Gate", value: shadowHistoryEpochGateSufficient ? 'sufficient' : 'insufficient', color: shadowHistoryEpochGateSufficient ? theme.green : theme.yellow }),
-                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                        React.createElement(Text, { color: theme.dim }, "Summary"),
-                        shadowHistoryEpochSummaryLines.map((line, index) => (React.createElement(Text, { key: `shadow-history-epoch-summary-${index}`, color: shadowHistoryEpochColor }, line))),
-                        shadowHistoryEpochDetailWrappedLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                            React.createElement(Text, { color: theme.dim }, "Warnings"),
-                            shadowHistoryEpochDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `shadow-history-epoch-detail-${index}`, color: shadowHistoryEpochColor }, line))))) : null))),
-        React.createElement(InkBox, { marginTop: 1 },
-            React.createElement(Box, { title: "Segment Shadow Readiness", width: "100%", accent: shadowSegmentStateKnown && shadowSegmentBlockedCount === 0 },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(StatRow, { label: "Status", value: shadowSegmentStatus, color: shadowSegmentColor }),
-                    React.createElement(StatRow, { label: "Scope", value: shadowSegmentScopeLabel, color: theme.dim }),
-                    React.createElement(StatRow, { label: "Ready", value: `${formatNumber(shadowSegmentReadyCount)}/${formatNumber(shadowSegmentTotal)}`, color: shadowSegmentColor }),
-                    React.createElement(StatRow, { label: "Min resolved", value: shadowSegmentMinResolved > 0 ? formatNumber(shadowSegmentMinResolved) : '-', color: theme.dim }),
-                    React.createElement(StatRow, { label: "Positive", value: formatNumber(shadowSegmentPositiveCount), color: theme.green }),
-                    React.createElement(StatRow, { label: "Negative", value: formatNumber(shadowSegmentNegativeCount), color: theme.red }),
-                    React.createElement(StatRow, { label: "Blocked", value: formatNumber(shadowSegmentBlockedCount), color: shadowSegmentBlockedCount > 0 ? theme.red : theme.dim }),
-                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                        React.createElement(Text, { color: theme.dim }, "Checks include pnl, expectancy, profit factor, calibration gap, and fill-cost slippage."),
-                        React.createElement(Text, { color: theme.dim }, "Summary"),
-                        shadowSegmentSummaryLines.map((line, index) => (React.createElement(Text, { key: `shadow-segment-summary-${index}`, color: shadowSegmentColor }, line))),
-                        shadowSegmentSummaryJsonLines.map((line, index) => (React.createElement(Text, { key: `shadow-segment-summary-json-${index}`, color: theme.dim }, line))),
-                        shadowSegmentBlockReasonLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                            React.createElement(Text, { color: theme.dim }, "Block reason"),
-                            shadowSegmentBlockReasonLines.map((line, index) => (React.createElement(Text, { key: `shadow-segment-block-reason-${index}`, color: shadowSegmentColor }, line))))) : null)))),
-        React.createElement(InkBox, { marginTop: 1 },
-            React.createElement(Box, { title: "Routed Shadow Evidence", width: "100%", accent: routedShadowStateKnown && routedShadowTotalResolved > 0 && !routedShadowLegacyDominant },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(Text, { color: theme.dim }, "Routed post-segmentation evidence only. Legacy and unassigned shadow history is shown separately."),
-                    React.createElement(StatRow, { label: "Status", value: routedShadowStatus, color: routedShadowColor }),
-                    React.createElement(StatRow, { label: "Threshold", value: routedShadowMinResolved > 0 ? formatNumber(routedShadowMinResolved) : '-', color: theme.dim }),
-                    React.createElement(StatRow, { label: "Total resolved", value: formatNumber(routedShadowTotalResolved), color: theme.white }),
-                    React.createElement(StatRow, { label: "Coverage", value: routedShadowCoverageLabel, color: routedShadowCoveragePct == null ? theme.dim : theme.white }),
-                    React.createElement(StatRow, { label: "Gate", value: routedShadowGateLabel, color: routedShadowGateSufficient ? theme.green : theme.yellow }),
-                    React.createElement(StatRow, { label: "Routed resolved", value: formatNumber(routedShadowRoutedResolved), color: theme.white }),
-                    React.createElement(StatRow, { label: "Legacy resolved", value: formatNumber(routedShadowLegacyResolved), color: theme.white }),
-                    React.createElement(StatRow, { label: "Mix", value: routedShadowTotalResolved > 0 ? `${formatNumber(routedShadowRoutedResolved)}/${formatNumber(routedShadowTotalResolved)} routed` : 'no routed evidence yet', color: routedShadowLegacyDominant ? theme.yellow : theme.white }),
-                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                        React.createElement(Text, { color: theme.dim }, "Summary"),
-                        routedShadowSummaryLines.map((line, index) => (React.createElement(Text, { key: `routed-shadow-summary-${index}`, color: routedShadowColor }, line))),
-                        routedShadowDetailWrappedLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                            React.createElement(Text, { color: theme.dim }, "Warnings"),
-                            routedShadowDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `routed-shadow-detail-${index}`, color: routedShadowColor }, line))))) : null)))),
-        React.createElement(InkBox, { marginTop: 1 },
-            React.createElement(Box, { title: "Routed Shadow Epoch", width: "100%", accent: routedShadowEpochKnown && routedShadowEpochStartedAt > 0 },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(Text, { color: theme.dim }, "Shadow evidence epoch only. Source and active scope labels describe the evidence window, not the live runtime state."),
-                    React.createElement(StatRow, { label: "Status", value: routedShadowEpochStatus, color: routedShadowEpochColor }),
-                    React.createElement(StatRow, { label: "Started", value: routedShadowEpochStartedAt > 0 ? formatSettingsDateTime(routedShadowEpochStartedAt) : '-', color: theme.white }),
-                    React.createElement(StatRow, { label: "Source", value: routedShadowEpochSourceLabel || '-', color: theme.white }),
-                    React.createElement(StatRow, { label: "Active scope", value: routedShadowEpochActiveScopeLabel || '-', color: theme.white }),
-                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                        React.createElement(Text, { color: theme.dim }, "Summary"),
-                        routedShadowEpochSummaryLines.map((line, index) => (React.createElement(Text, { key: `routed-shadow-epoch-summary-${index}`, color: routedShadowEpochColor }, line))))))),
-        React.createElement(InkBox, { marginTop: 1 },
-            React.createElement(Box, { title: "Routed Shadow Performance", width: "100%", accent: routedShadowPerformanceStateKnown && routedShadowPerformanceReady },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(Text, { color: theme.dim }, "Routed post-segmentation performance only. Legacy and unassigned shadow history is excluded from this box."),
-                    React.createElement(Text, { color: theme.dim }, "P&L / bankroll uses routed-only P&L over the global shadow bankroll, not a standalone routed bankroll."),
-                    React.createElement(StatRow, { label: "Status", value: routedShadowPerformanceStatus, color: routedShadowPerformanceColor }),
-                    React.createElement(StatRow, { label: "Gate", value: routedShadowGateLabel, color: routedShadowGateSufficient ? theme.green : theme.yellow }),
-                    React.createElement(StatRow, { label: "Treat as sufficient", value: routedShadowPerformanceReady ? 'yes' : 'no', color: routedShadowPerformanceReady ? theme.green : theme.yellow }),
-                    React.createElement(StatRow, { label: "Pnl", value: routedShadowTotalPnlUsd == null ? '-' : `$${formatNumber(routedShadowTotalPnlUsd)}`, color: routedShadowTotalPnlUsd == null ? theme.dim : routedShadowTotalPnlUsd >= 0 ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "P&L / bankroll", value: formatSettingsPercent(routedShadowReturnPct), color: routedShadowReturnPct == null ? theme.dim : routedShadowReturnPct >= 0 ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "Profit factor", value: formatNumber(routedShadowProfitFactor, 2), color: routedShadowProfitFactor == null ? theme.dim : routedShadowProfitFactor >= 1 ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "Expectancy", value: routedShadowExpectancyUsd == null ? '-' : `$${formatNumber(routedShadowExpectancyUsd)}`, color: routedShadowExpectancyUsd == null ? theme.dim : routedShadowExpectancyUsd >= 0 ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "Total resolved", value: formatNumber(routedShadowTotalResolved), color: theme.white }),
-                    React.createElement(StatRow, { label: "Coverage", value: routedShadowCoverageLabel, color: routedShadowCoveragePct == null ? theme.dim : theme.white }),
-                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                        React.createElement(Text, { color: theme.dim }, "Summary"),
-                        routedShadowPerformanceSummaryLines.map((line, index) => (React.createElement(Text, { key: `routed-shadow-performance-summary-${index}`, color: routedShadowPerformanceColor }, line))),
-                        routedShadowPerformanceDetailWrappedLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                            React.createElement(Text, { color: theme.dim }, "Warnings"),
-                            routedShadowPerformanceDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `routed-shadow-performance-detail-${index}`, color: routedShadowPerformanceColor }, line))))) : null)))),
-        dbIntegrityKnown && !dbIntegrityOk ? (React.createElement(InkBox, { marginTop: 1 },
-            React.createElement(Box, { title: "Database Integrity", width: "100%" },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(StatRow, { label: "Status", value: dbIntegrityStatus, color: dbIntegrityColor }),
-                    dbIntegrityLines.map((line, index) => (React.createElement(Text, { key: `db-integrity-${index}`, color: dbIntegrityColor }, line))))))) : null,
-        React.createElement(InkBox, { marginTop: 1 },
-        React.createElement(Box, { title: "Database Recovery", width: "100%", accent: dbRecoveryStateKnown && dbRecoveryCandidateReady && !dbRecoveryPendingState },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(StatRow, { label: "Status", value: dbRecoveryStatus, color: dbRecoveryColor }),
-                    React.createElement(StatRow, { label: "Use", value: dbRecoveryCandidateModeLabel, color: dbRecoveryCandidateModeColor }),
-                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                        React.createElement(Text, { color: theme.dim }, "Summary"),
-                        dbRecoverySummaryLines.map((line, index) => (React.createElement(Text, { key: `db-recovery-summary-${index}`, color: dbRecoveryColor }, line))),
-                        dbRecoveryDetailWrappedLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                            React.createElement(Text, { color: theme.dim }, "Details"),
-                            dbRecoveryDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `db-recovery-detail-${index}`, color: dbRecoveryColor }, line))))) : null)))),
-        React.createElement(InkBox, { marginTop: 1 },
-        React.createElement(Box, { title: "Recovery Candidate Shadow", width: "100%", accent: dbRecoveryShadowStateKnown && dbRecoveryCandidateMode === 'evidence_ready' && !dbRecoveryPendingState },
-                React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                    React.createElement(Text, { color: theme.dim }, "This panel measures whether the recovery candidate is evidence-ready. A verified backup alone is only integrity-only."),
-                    React.createElement(StatRow, { label: "Status", value: dbRecoveryShadowStatus, color: dbRecoveryShadowColor }),
-                    React.createElement(StatRow, { label: "Use", value: dbRecoveryCandidateModeLabel, color: dbRecoveryCandidateModeColor }),
-                    React.createElement(StatRow, { label: "Evaluation", value: dbRecoveryShadowEvaluationLabel, color: dbRecoveryShadowMigratedEvaluation ? theme.yellow : theme.white }),
-                    React.createElement(StatRow, { label: "Candidate", value: dbRecoveryShadowCandidatePath || 'no candidate', color: dbRecoveryShadowCandidatePath ? theme.white : theme.dim }),
-                    React.createElement(StatRow, { label: "Acted", value: formatNumber(dbRecoveryShadowActed), color: theme.white }),
-                    React.createElement(StatRow, { label: "Resolved", value: formatNumber(dbRecoveryShadowResolved), color: theme.white }),
-                    React.createElement(StatRow, { label: "PnL", value: dbRecoveryShadowTotalPnlUsd == null ? '-' : `$${formatNumber(dbRecoveryShadowTotalPnlUsd)}`, color: dbRecoveryShadowTotalPnlUsd == null ? theme.dim : dbRecoveryShadowTotalPnlUsd >= 0 ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "Return", value: formatSettingsPercent(dbRecoveryShadowReturnPct), color: dbRecoveryShadowReturnPct == null ? theme.dim : dbRecoveryShadowReturnPct >= 0 ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "Profit factor", value: formatNumber(dbRecoveryShadowProfitFactor, 2), color: dbRecoveryShadowProfitFactor == null ? theme.dim : dbRecoveryShadowProfitFactor >= 1 ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "Expectancy", value: dbRecoveryShadowExpectancyUsd == null ? '-' : `$${formatNumber(dbRecoveryShadowExpectancyUsd)}`, color: dbRecoveryShadowExpectancyUsd == null ? theme.dim : dbRecoveryShadowExpectancyUsd >= 0 ? theme.green : theme.red }),
-                    React.createElement(StatRow, { label: "Segments ready", value: `${formatNumber(dbRecoveryShadowSegmentReadyCount)}/${formatNumber(dbRecoveryShadowSegmentTotal)}`, color: theme.white }),
-                    React.createElement(StatRow, { label: "Segments blocked", value: formatNumber(dbRecoveryShadowSegmentBlockedCount), color: dbRecoveryShadowSegmentBlockedCount > 0 ? theme.red : theme.dim }),
-                    React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                        React.createElement(Text, { color: theme.dim }, "Summary"),
-                        dbRecoveryShadowSummaryLines.map((line, index) => (React.createElement(Text, { key: `db-recovery-shadow-summary-${index}`, color: dbRecoveryShadowColor }, line))),
-                        dbRecoveryShadowMigrationNote ? (React.createElement(Text, { color: theme.dim }, dbRecoveryShadowMigrationNote)) : null,
-                        dbRecoveryShadowDetailWrappedLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                            React.createElement(Text, { color: theme.dim }, "Warnings"),
-                            dbRecoveryShadowDetailWrappedLines.map((line, index) => (React.createElement(Text, { key: `db-recovery-shadow-detail-${index}`, color: dbRecoveryShadowColor }, line))))) : null,
-                        dbRecoveryShadowSegmentSummaryLines.length > 0 ? (React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
-                            React.createElement(Text, { color: theme.dim }, "Segment summary"),
-                            dbRecoveryShadowSegmentSummaryLines.map((line, index) => (React.createElement(Text, { key: `db-recovery-shadow-segment-${index}`, color: theme.dim }, line))))) : null)))),
         React.createElement(InkBox, { marginTop: 1, flexDirection: stacked ? 'column' : 'row', width: "100%" },
             React.createElement(Box, { title: "Editable Config", width: stacked ? '100%' : configBoxWidth, accent: true },
                 React.createElement(InkBox, { width: "100%" }, configColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `config-column-${columnIndex}` },
@@ -1221,27 +1092,27 @@ export function Settings({ editor }) {
                         const label = `${selected ? '>' : ' '} ${option.label}`;
                         return (React.createElement(InkBox, { key: `${editor.dangerConfirm?.actionId}-${option.id}`, width: "100%" },
                             React.createElement(Text, { color: selected ? theme.accent : theme.white, backgroundColor: rowBackground, bold: selected }, fit(label, dangerContentWidth))));
-                })))) : (React.createElement(React.Fragment, null, dangerActions.map((action, index) => {
+                    })))) : (React.createElement(React.Fragment, null, dangerActions.map((action, index) => {
                     const selected = editor.focusArea === 'danger' && index === safeDangerIndex;
                     const rowBackground = selected ? selectedRowBackground : undefined;
                     const value = action.id === 'live_trading' && (startupRecoveryOnly || shadowRestartPending)
                         ? 'BLOCKED'
                         : shadowRestartPending && (action.id === 'restart_shadow' || action.id === 'recover_db')
                             ? 'PENDING'
-                        : action.id === 'recover_db'
-                            ? dbRecoveryCandidateModeShortLabel
-                            : action.value(envData.rawValues);
+                            : action.id === 'recover_db'
+                                ? dbRecoveryCandidateModeShortLabel
+                                : action.value(envData.rawValues);
                     const valueColor = action.id === 'live_trading'
                         ? startupRecoveryOnly
                             ? theme.red
                             : shadowRestartPending
                                 ? theme.yellow
-                            : liveTradingEnabled ? theme.green : theme.red
+                                : liveTradingEnabled ? theme.green : theme.red
                         : shadowRestartPending && (action.id === 'restart_shadow' || action.id === 'recover_db')
                             ? theme.yellow
-                        : action.id === 'recover_db'
-                            ? dbRecoveryCandidateModeColor
-                            : theme.yellow;
+                            : action.id === 'recover_db'
+                                ? dbRecoveryCandidateModeColor
+                                : theme.yellow;
                     return (React.createElement(InkBox, { key: action.id, width: "100%" },
                         React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, fit(`${selected ? '>' : ' '} ${action.label}`, dangerLabelWidth)),
                         React.createElement(Text, { backgroundColor: rowBackground }, " "),

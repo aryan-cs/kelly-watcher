@@ -9,12 +9,16 @@ import runtime_paths
 
 
 class EnvProfileTests(unittest.TestCase):
-    def test_env_path_points_to_repo_dot_env(self) -> None:
+    def test_env_path_points_to_repo_config_env(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
             self.assertEqual(
                 env_profile.env_path_for_profile("prod", repo_root=repo_root),
-                repo_root / ".env",
+                repo_root / "config.env",
+            )
+            self.assertEqual(
+                env_profile.secrets_env_path_for_profile("prod", repo_root=repo_root),
+                repo_root / "secrets.env",
             )
 
     def test_flags_and_env_do_not_select_profile_specific_files(self) -> None:
@@ -27,17 +31,17 @@ class EnvProfileTests(unittest.TestCase):
             )
             self.assertEqual(
                 env_profile.active_env_path(argv=["--prod"], environ={}, repo_root=repo_root),
-                repo_root / ".env",
+                repo_root / "config.env",
             )
             self.assertEqual(
                 env_profile.active_env_path(argv=["--dev"], environ={}, repo_root=repo_root),
-                repo_root / ".env",
+                repo_root / "config.env",
             )
 
     def test_ensure_persistent_env_path_does_not_copy_to_save_folder(self) -> None:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
-            repo_env = repo_root / ".env"
+            repo_env = repo_root / "config.env"
             repo_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
 
             env_path = env_profile.ensure_persistent_env_path("dev", repo_root=repo_root)
@@ -45,6 +49,23 @@ class EnvProfileTests(unittest.TestCase):
             self.assertEqual(env_path, repo_env)
             self.assertEqual(repo_env.read_text(encoding="utf-8"), "USE_REAL_MONEY=false\n")
             self.assertFalse((repo_root / "save" / ".env.dev").exists())
+
+    def test_init_env_profile_loads_config_and_secrets_files(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            config_env = repo_root / "config.env"
+            secrets_env = repo_root / "secrets.env"
+            config_env.write_text("USE_REAL_MONEY=false\n", encoding="utf-8")
+            secrets_env.write_text("TELEGRAM_CHAT_ID=123\n", encoding="utf-8")
+
+            with unittest.mock.patch.object(env_profile, "REPO_ROOT", repo_root), unittest.mock.patch.dict(
+                "os.environ", {}, clear=True
+            ):
+                _profile, env_path = env_profile.init_env_profile()
+
+                self.assertEqual(env_path, config_env)
+                self.assertEqual(env_profile.os.environ.get("USE_REAL_MONEY"), "false")
+                self.assertEqual(env_profile.os.environ.get("TELEGRAM_CHAT_ID"), "123")
 
 
 class RuntimeSaveLayoutTests(unittest.TestCase):

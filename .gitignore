@@ -1,7 +1,11 @@
 # Secrets and local environment files
 .env
 .env.*
+config.env
+secrets.env
 !.env.example
+!config.env.example
+!secrets.env.example
 
 # Python environments and caches
 .venv/

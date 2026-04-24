@@ -2,7 +2,7 @@
 
 Kelly Watcher is a local, operator-driven Polymarket copy-trading system. It watches selected wallets, scores incoming trades, sizes positions with Kelly-style logic, executes in shadow or live mode, records everything to SQLite, and exposes a terminal dashboard for monitoring the bot in real time.
 
-This repository is meant to be clonable by another developer without any private local state. Secrets, databases, logs, model artifacts, and other runtime files are intentionally excluded from git. A fresh clone should be able to install dependencies, create a `.env`, start in shadow mode, and begin operating from there.
+This repository is meant to be clonable by another developer without any private local state. Secrets, databases, logs, model artifacts, and other runtime files are intentionally excluded from git. A fresh clone should be able to install dependencies, create `config.env` and `secrets.env`, start in shadow mode, and begin operating from there.
 
 ## What This Repository Includes
 
@@ -18,7 +18,7 @@ This repository is meant to be clonable by another developer without any private
 
 These are intentionally local-only and should stay out of version control:
 
-- `.env` and any other secret-bearing env files
+- `config.env`, `secrets.env`, `.env`, and any other local env files
 - `save/` runtime files, SQLite databases, logs, and model artifacts
 - Python caches and Node modules
 - one-off local artifacts such as `nohup.out` and `results.json`
@@ -77,7 +77,12 @@ Production is intended to run split across the two Tailscale-connected machines:
 
 Run the trading backend only on Windows. Run the React Ink terminal dashboard only on the Mac.
 
-Use one repo-root `.env` per checkout. On the Windows backend `.env`, keep:
+Use two repo-root env files per checkout:
+
+- `config.env`: program settings that are safe to inspect and tune, such as watchlists, thresholds, sizing, polling, and risk limits.
+- `secrets.env`: private or machine-specific values, such as wallet keys, Telegram tokens, dashboard API tokens, chat IDs, and Tailscale backend URLs.
+
+On the Windows backend `secrets.env`, keep:
 
 ```env
 DASHBOARD_API_HOST=100.91.53.63
@@ -85,7 +90,7 @@ DASHBOARD_API_PORT=8765
 KELLY_API_BASE_URL=http://100.91.53.63:8765
 ```
 
-On the Mac frontend `.env`, keep:
+On the Mac frontend `secrets.env`, keep:
 
 ```env
 KELLY_API_BASE_URL=http://100.91.53.63:8765
@@ -118,20 +123,23 @@ cd ..
 
 ### 4. Create your local config
 
-Copy `.env.example` to `.env`. Kelly Watcher now reads one repo-level `.env` only; `.env.dev`, `.env.prod`, and `save/.env.*` are ignored.
+Create two repo-root env files. Kelly Watcher reads `config.env` first and `secrets.env` second. Legacy `.env`, `.env.dev`, `.env.prod`, and `save/.env.*` files are only fallback/migration inputs and should not be used for normal operation.
 
 Examples:
 
 ```bash
-cp .env.example .env
+cp config.env.example config.env
+cp secrets.env.example secrets.env
 ```
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item config.env.example config.env
+Copy-Item secrets.env.example secrets.env
 ```
 
 ```bat
-copy .env.example .env
+copy config.env.example config.env
+copy secrets.env.example secrets.env
 ```
 
 At minimum for shadow mode, set:
@@ -143,7 +151,7 @@ At minimum for shadow mode, set:
 
 ### 5. Populate a watchlist
 
-If you already know the wallets, paste them into `.env`.
+If you already know the wallets, paste them into `config.env`.
 
 If you only know Polymarket handles or profile URLs, use:
 
@@ -178,7 +186,7 @@ The backend will automatically:
 
 - create `save/data/` and `save/logs/`
 - initialize or migrate the SQLite schema
-- load `.env`
+- load `config.env` and `secrets.env`
 - validate startup config
 - start the polling loop
 - emit `save/data/events.jsonl` and `save/data/bot_state.json`
@@ -212,14 +220,14 @@ cd dashboard
 KELLY_API_BASE_URL=http://100.91.53.63:8765 KELLY_API_TOKEN=some-shared-secret npm start
 ```
 
-You can also put those in the dashboard machine's repo-level `.env` instead of exporting them every time:
+You can also put those in the dashboard machine's repo-level `secrets.env` instead of exporting them every time:
 
 ```env
 KELLY_API_BASE_URL=http://100.91.53.63:8765
 KELLY_API_TOKEN=some-shared-secret
 ```
 
-The dashboard now reads `KELLY_API_BASE_URL` and `KELLY_API_TOKEN` from `.env`, with shell environment variables taking precedence if you set both.
+The dashboard reads `KELLY_API_BASE_URL` and `KELLY_API_TOKEN` from `secrets.env`, with shell environment variables taking precedence if you set both.
 
 For dashboard development from the TypeScript sources instead of the checked-in runtime JS:
 
@@ -430,7 +438,7 @@ The dashboard is a terminal app, not a web app. It reads backend state through t
 - `save/data/bot_state.json`
 - `save/data/identity_cache.json`
 
-In production, run it on the Mac checkout and set `KELLY_API_BASE_URL=http://100.91.53.63:8765` in the Mac `.env`.
+In production, run it on the Mac checkout and set `KELLY_API_BASE_URL=http://100.91.53.63:8765` in the Mac `secrets.env`.
 
 ## Runtime Files
 
@@ -524,7 +532,7 @@ Important behavior:
 
 - some fields apply on the next loop
 - some fields require a bot restart
-- toggling live trading only edits `.env`; it does not hot-switch the running bot
+- toggling live trading only edits `config.env`; it does not hot-switch the running bot
 
 ## Dashboard Controls
 
@@ -804,5 +812,5 @@ That updates `save/data/identity_cache.json`.
 - Shadow mode is the default for a reason.
 - Live mode should be treated as high risk and operationally supervised.
 - Test and validate watchlist quality before trusting bankroll results.
-- Keep secrets in `.env`, never in committed source files.
+- Keep secrets in `secrets.env`, never in committed source files.
 - Do not treat the dashboard event stream as the canonical ledger; use SQLite for durable records.

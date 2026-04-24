@@ -13,6 +13,7 @@ from env_profile import (
     LEGACY_ENV_PATH,
     active_env_profile,
     env_path_for_profile,
+    env_paths_for_profile,
     init_env_profile,
     repo_env_path_for_profile,
 )
@@ -52,10 +53,13 @@ class ConfigError(ValueError):
 
 
 def _source_env_path() -> Path:
-    if ENV_PATH.exists():
-        return ENV_PATH
     expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
     if ENV_PATH != expected_env_path:
+        return ENV_PATH
+    paths = [path for path in env_paths_for_profile(ENV_PROFILE, REPO_ROOT) if path.exists()]
+    if paths:
+        return paths[0]
+    if ENV_PATH.exists():
         return ENV_PATH
     repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
     if repo_env_path.exists():
@@ -63,6 +67,17 @@ def _source_env_path() -> Path:
     if ENV_PROFILE == "dev" and LEGACY_ENV_PATH.exists():
         return LEGACY_ENV_PATH
     return ENV_PATH
+
+
+def _source_env_paths() -> list[Path]:
+    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if ENV_PATH != expected_env_path:
+        return [ENV_PATH]
+    paths = [path for path in env_paths_for_profile(ENV_PROFILE, REPO_ROOT) if path.exists()]
+    if paths:
+        return paths
+    source_path = _source_env_path()
+    return [source_path]
 
 
 def _get(name: str, default: str = "") -> str:
@@ -127,18 +142,16 @@ def _get_bounded_int(
 
 
 def _get_env_file_value(name: str) -> str | None:
-    source_path = _source_env_path()
-    if not source_path.exists():
-        return None
-
-    try:
-        value = dotenv_values(source_path).get(name)
-    except Exception:
-        return None
-
-    if value is None:
-        return None
-    return str(value).strip()
+    for source_path in _source_env_paths():
+        if not source_path.exists():
+            continue
+        try:
+            value = dotenv_values(source_path).get(name)
+        except Exception:
+            continue
+        if value is not None:
+            return str(value).strip()
+    return None
 
 
 def _get_env_file_bounded_float(

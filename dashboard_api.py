@@ -15,7 +15,13 @@ from urllib.parse import parse_qs, urlparse
 
 from config import use_real_money
 from db import DB_PATH, db_recovery_state, get_conn
-from env_profile import LEGACY_ENV_PATH, active_env_profile, env_path_for_profile, repo_env_path_for_profile
+from env_profile import (
+    LEGACY_ENV_PATH,
+    active_env_profile,
+    env_path_for_profile,
+    env_paths_for_profile,
+    repo_env_path_for_profile,
+)
 from trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
 from runtime_paths import (
     BOT_STATE_FILE,
@@ -183,10 +189,13 @@ def _api_token() -> str | None:
 
 
 def _source_env_path() -> Path:
-    if ENV_PATH.exists():
-        return ENV_PATH
     expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
     if ENV_PATH != expected_env_path:
+        return ENV_PATH
+    paths = [path for path in env_paths_for_profile(ENV_PROFILE, REPO_ROOT) if path.exists()]
+    if paths:
+        return paths[0]
+    if ENV_PATH.exists():
         return ENV_PATH
     repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
     if repo_env_path.exists():
@@ -196,20 +205,35 @@ def _source_env_path() -> Path:
     return ENV_EXAMPLE_PATH
 
 
-def _read_env_items() -> list[tuple[str, str]]:
-    path = _source_env_path()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
+def _source_env_paths() -> list[Path]:
+    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if ENV_PATH != expected_env_path:
+        return [ENV_PATH]
+    paths = [path for path in env_paths_for_profile(ENV_PROFILE, REPO_ROOT) if path.exists()]
+    if paths:
+        return paths
+    source_path = _source_env_path()
+    return [source_path]
 
+
+def _read_env_items() -> list[tuple[str, str]]:
     items: list[tuple[str, str]] = []
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    seen: set[str] = set()
+    for path in _source_env_paths():
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
             continue
-        key, value = line.split("=", 1)
-        items.append((key.strip(), value.strip()))
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            normalized_key = key.strip()
+            if normalized_key in seen:
+                continue
+            seen.add(normalized_key)
+            items.append((normalized_key, value.strip()))
     return items
 
 
@@ -246,7 +270,7 @@ def _write_env_value(key: str, value: str) -> None:
         raise ValueError(f"Invalid config key: {key}")
 
     with _env_lock:
-        source_path = _source_env_path()
+        source_path = ENV_PATH if ENV_PATH.exists() else _source_env_path()
         try:
             lines = source_path.read_text(encoding="utf-8").splitlines()
         except OSError:

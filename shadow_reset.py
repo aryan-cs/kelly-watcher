@@ -22,6 +22,7 @@ from env_profile import (
     active_env_profile,
     add_env_profile_flags,
     env_path_for_profile,
+    env_paths_for_profile,
     repo_env_path_for_profile,
 )
 from runtime_paths import (
@@ -42,10 +43,13 @@ RestartWalletMode = Literal["keep_active", "keep_all", "clear_all"]
 
 
 def _source_env_path() -> Path:
-    if ENV_PATH.exists():
-        return ENV_PATH
     expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
     if ENV_PATH != expected_env_path:
+        return ENV_PATH
+    paths = [path for path in env_paths_for_profile(ENV_PROFILE, REPO_ROOT) if path.exists()]
+    if paths:
+        return paths[0]
+    if ENV_PATH.exists():
         return ENV_PATH
     repo_env_path = repo_env_path_for_profile(ENV_PROFILE, REPO_ROOT)
     if repo_env_path.exists():
@@ -55,24 +59,34 @@ def _source_env_path() -> Path:
     return ENV_EXAMPLE_PATH
 
 
-def _read_env_value(key: str) -> str:
-    try:
-        lines = _source_env_path().read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ""
+def _source_env_paths() -> list[Path]:
+    expected_env_path = env_path_for_profile(ENV_PROFILE, REPO_ROOT)
+    if ENV_PATH != expected_env_path:
+        return [ENV_PATH]
+    paths = [path for path in env_paths_for_profile(ENV_PROFILE, REPO_ROOT) if path.exists()]
+    if paths:
+        return paths
+    return [_source_env_path()]
 
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+
+def _read_env_value(key: str) -> str:
+    for path in _source_env_paths():
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
             continue
-        current_key, value = line.split("=", 1)
-        if current_key.strip() == key:
-            return value.strip()
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            current_key, value = line.split("=", 1)
+            if current_key.strip() == key:
+                return value.strip()
     return ""
 
 
 def _write_env_value(key: str, value: str) -> None:
-    source_path = _source_env_path()
+    source_path = ENV_PATH if ENV_PATH.exists() else _source_env_path()
     try:
         lines = source_path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -435,7 +449,7 @@ def reset_shadow_runtime() -> None:
 
 
 def runtime_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
-    env = dict(base_env or os.environ)
+    env = dict(os.environ if base_env is None else base_env)
     temp_root = Path(tempfile.gettempdir())
     env.setdefault("UV_CACHE_DIR", str(temp_root / "uv-cache"))
     env.setdefault("PYTHONPYCACHEPREFIX", str(temp_root / "kelly-watcher-pycache"))
@@ -623,7 +637,7 @@ def main(argv: list[str] | None = None) -> int:
     wallet_mode_group.add_argument(
         "--clear-wallets",
         action="store_true",
-        help="Clear WATCHED_WALLETS in .env before restarting shadow mode.",
+        help="Clear WATCHED_WALLETS in config.env before restarting shadow mode.",
     )
     args = parser.parse_args(argv)
     wallet_mode: RestartWalletMode = (

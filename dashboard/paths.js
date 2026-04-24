@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { envFileName } from './envProfile.js';
+import { envFileName, secretsEnvFileName } from './envProfile.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export const dashboardDir = __dirname;
@@ -15,7 +15,12 @@ export const botStatePath = path.resolve(dataDir, 'bot_state.json');
 export const retrainRequestPath = path.resolve(dataDir, 'manual_retrain_request.json');
 export const manualTradeRequestPath = path.resolve(dataDir, 'manual_trade_request.json');
 export const envPath = path.resolve(projectRoot, envFileName);
+export const secretsEnvPath = path.resolve(projectRoot, secretsEnvFileName);
+export const legacyEnvPath = path.resolve(projectRoot, '.env');
 export const envExamplePath = path.resolve(projectRoot, '.env.example');
-export const envReadPath = fs.existsSync(envPath)
-    ? envPath
-    : envExamplePath;
+export const envReadPaths = fs.existsSync(envPath) || fs.existsSync(secretsEnvPath)
+    ? [envPath, secretsEnvPath].filter((candidate) => fs.existsSync(candidate))
+    : fs.existsSync(legacyEnvPath)
+        ? [legacyEnvPath]
+        : [envExamplePath];
+export const envReadPath = envReadPaths[0] || envExamplePath;

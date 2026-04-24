@@ -1,5 +1,5 @@
 import fs from 'fs'
-import {envExamplePath, envReadPath} from './paths.js'
+import {envExamplePath, envReadPaths} from './paths.js'
 
 export class ApiError extends Error {
   status: number
@@ -11,8 +11,9 @@ export class ApiError extends Error {
   }
 }
 
-function sourceEnvPath(): string {
-  return fs.existsSync(envReadPath) ? envReadPath : envExamplePath
+function sourceEnvPaths(): string[] {
+  const existing = envReadPaths.filter((candidate) => fs.existsSync(candidate))
+  return existing.length > 0 ? existing : [envExamplePath]
 }
 
 function stripMatchingQuotes(value: string): string {
@@ -23,21 +24,23 @@ function stripMatchingQuotes(value: string): string {
 }
 
 function readEnvFileValue(key: string): string {
-  try {
-    const lines = fs.readFileSync(sourceEnvPath(), 'utf8').split(/\r?\n/)
-    for (const rawLine of lines) {
-      const line = rawLine.trim()
-      if (!line || line.startsWith('#') || !line.includes('=')) {
-        continue
+  for (const sourceEnvPath of sourceEnvPaths()) {
+    try {
+      const lines = fs.readFileSync(sourceEnvPath, 'utf8').split(/\r?\n/)
+      for (const rawLine of lines) {
+        const line = rawLine.trim()
+        if (!line || line.startsWith('#') || !line.includes('=')) {
+          continue
+        }
+        const [currentKey, ...rest] = line.split('=')
+        if (currentKey.trim() !== key) {
+          continue
+        }
+        return stripMatchingQuotes(rest.join('=').trim())
       }
-      const [currentKey, ...rest] = line.split('=')
-      if (currentKey.trim() !== key) {
-        continue
-      }
-      return stripMatchingQuotes(rest.join('=').trim())
+    } catch {
+      continue
     }
-  } catch {
-    return ''
   }
   return ''
 }

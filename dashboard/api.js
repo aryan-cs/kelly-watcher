@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { envExamplePath, envReadPath } from './paths.js';
+import { envExamplePath, envReadPaths } from './paths.js';
 export class ApiError extends Error {
     status;
     constructor(message, status = 500) {
@@ -8,8 +8,9 @@ export class ApiError extends Error {
         this.status = status;
     }
 }
-function sourceEnvPath() {
-    return fs.existsSync(envReadPath) ? envReadPath : envExamplePath;
+function sourceEnvPaths() {
+    const existing = envReadPaths.filter((candidate) => fs.existsSync(candidate));
+    return existing.length > 0 ? existing : [envExamplePath];
 }
 function stripMatchingQuotes(value) {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
@@ -18,22 +19,24 @@ function stripMatchingQuotes(value) {
     return value;
 }
 function readEnvFileValue(key) {
-    try {
-        const lines = fs.readFileSync(sourceEnvPath(), 'utf8').split(/\r?\n/);
-        for (const rawLine of lines) {
-            const line = rawLine.trim();
-            if (!line || line.startsWith('#') || !line.includes('=')) {
-                continue;
+    for (const sourceEnvPath of sourceEnvPaths()) {
+        try {
+            const lines = fs.readFileSync(sourceEnvPath, 'utf8').split(/\r?\n/);
+            for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (!line || line.startsWith('#') || !line.includes('=')) {
+                    continue;
+                }
+                const [currentKey, ...rest] = line.split('=');
+                if (currentKey.trim() !== key) {
+                    continue;
+                }
+                return stripMatchingQuotes(rest.join('=').trim());
             }
-            const [currentKey, ...rest] = line.split('=');
-            if (currentKey.trim() !== key) {
-                continue;
-            }
-            return stripMatchingQuotes(rest.join('=').trim());
         }
-    }
-    catch {
-        return '';
+        catch {
+            continue;
+        }
     }
     return '';
 }

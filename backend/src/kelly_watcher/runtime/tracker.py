@@ -90,6 +90,7 @@ class RawTradeCandidate:
 class SourceEventIngestionResult:
     fetched: int = 0
     queued: int = 0
+    stale: int = 0
     malformed: int = 0
     duplicate: int = 0
 
@@ -278,11 +279,11 @@ class PolymarketTracker:
                 observed_at=excluded.observed_at,
                 updated_at=excluded.updated_at,
                 status=CASE
-                    WHEN source_event_queue.status='processed' THEN source_event_queue.status
+                    WHEN source_event_queue.status IN ('processed', 'stale', 'malformed') THEN source_event_queue.status
                     ELSE excluded.status
                 END,
                 last_error=CASE
-                    WHEN source_event_queue.status='processed' THEN source_event_queue.last_error
+                    WHEN source_event_queue.status IN ('processed', 'stale', 'malformed') THEN source_event_queue.last_error
                     ELSE excluded.last_error
                 END
             """
@@ -321,6 +322,7 @@ class PolymarketTracker:
         fetched = 0
         malformed = 0
         duplicate = 0
+        stale = 0
 
         for address in normalized_targets:
             self._touch_activity()
@@ -348,6 +350,11 @@ class PolymarketTracker:
                     break
                 if cursor is not None and source_ts == cursor.last_source_ts and trade_id in cursor.last_trade_ids:
                     duplicate += 1
+                    continue
+
+                if source_ts > 0 and self._is_stale_source_timestamp(source_ts, poll_started_at):
+                    stale += 1
+                    cursor_advances.append((address, int(source_ts), trade_id))
                     continue
 
                 condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip().lower()
@@ -400,6 +407,7 @@ class PolymarketTracker:
         return SourceEventIngestionResult(
             fetched=fetched,
             queued=len(rows_to_stage),
+            stale=stale,
             malformed=malformed,
             duplicate=duplicate,
         )
@@ -418,8 +426,35 @@ class PolymarketTracker:
             conn.close()
         return {str(row["status"] or ""): int(row["n"] or 0) for row in rows}
 
+    def expire_stale_source_queue_rows(self, *, now_ts: int | None = None) -> int:
+        max_age = max_source_trade_age_seconds()
+        if max_age <= 0:
+            return 0
+        now_value = int(now_ts if now_ts is not None else time.time())
+        stale_cutoff = now_value - int(max_age)
+        message = f"source trade stale before processing (limit {int(max_age)}s)"
+        conn = get_conn()
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE source_event_queue
+                SET status='stale',
+                    updated_at=?,
+                    last_error=?
+                WHERE status IN ('pending', 'failed', 'processing')
+                  AND source_ts > 0
+                  AND source_ts < ?
+                """,
+                (now_value, message, stale_cutoff),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+        finally:
+            conn.close()
+
     def _claim_source_queue_rows(self, *, limit: int | None = None) -> list[sqlite3.Row]:
         now_ts = int(time.time())
+        self.expire_stale_source_queue_rows(now_ts=now_ts)
         stale_processing_cutoff = now_ts - 300
         limit_clause = ""
         params: list[Any] = [stale_processing_cutoff]

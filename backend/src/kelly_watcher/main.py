@@ -590,6 +590,7 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "last_event_count": 0,
         "source_events_fetched": 0,
         "source_events_queued": 0,
+        "source_events_stale": 0,
         "source_events_malformed": 0,
         "source_events_duplicate": 0,
         "source_events_pending": 0,
@@ -6731,6 +6732,7 @@ def main() -> None:
                 entry_block_reason = None
                 source_events_fetched = 0
                 source_events_queued = 0
+                source_events_stale = 0
                 source_events_malformed = 0
                 source_events_duplicate = 0
                 queue_counts: dict[str, int] = {}
@@ -6764,12 +6766,14 @@ def main() -> None:
                             )
                             source_events_fetched += ingestion.fetched
                             source_events_queued += ingestion.queued
+                            source_events_stale += ingestion.stale
                             source_events_malformed += ingestion.malformed
                             source_events_duplicate += ingestion.duplicate
                         queue_counts = tracker.source_queue_counts()
                         _persist_bot_state(
                             source_events_fetched=source_events_fetched,
                             source_events_queued=source_events_queued,
+                            source_events_stale=source_events_stale,
                             source_events_malformed=source_events_malformed,
                             source_events_duplicate=source_events_duplicate,
                             source_events_pending=queue_counts.get("pending", 0),
@@ -6874,6 +6878,7 @@ def main() -> None:
                     "last_event_count": event_count,
                     "source_events_fetched": source_events_fetched,
                     "source_events_queued": source_events_queued,
+                    "source_events_stale": source_events_stale,
                     "source_events_malformed": source_events_malformed,
                     "source_events_duplicate": source_events_duplicate,
                     "source_events_pending": queue_counts.get("pending", 0),

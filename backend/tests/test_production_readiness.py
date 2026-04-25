@@ -342,7 +342,7 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_tracker_stages_stale_rows_instead_of_dropping_before_ledger(self) -> None:
+    def test_tracker_advances_cursor_without_queueing_stale_rows(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -373,7 +373,8 @@ class ProductionReadinessTest(unittest.TestCase):
                 finally:
                     tracker_obj.close()
 
-                self.assertEqual(ingestion.queued, 1)
+                self.assertEqual(ingestion.queued, 0)
+                self.assertEqual(ingestion.stale, 1)
                 conn = db.get_conn()
                 try:
                     row = conn.execute(
@@ -381,10 +382,57 @@ class ProductionReadinessTest(unittest.TestCase):
                     ).fetchone()
                 finally:
                     conn.close()
-                self.assertIsNotNone(row)
-                self.assertEqual(row["status"], "pending")
-                self.assertEqual(row["source_ts"], now_ts - 120)
+                self.assertIsNone(row)
                 self.assertEqual(tracker_obj.wallet_cursors["0xabc"].last_source_ts, now_ts - 120)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_tracker_expires_stale_pending_queue_rows_before_claiming(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, ?, '', ?, ?, ?, '{}', ?, 0, ?, ?, ?, '')
+                        """,
+                        [
+                            ("old-1", "0xabc", "market-old", "token-old", now_ts - 120, "pending", now_ts - 120, now_ts - 120, now_ts - 120),
+                            ("new-1", "0xabc", "market-new", "token-new", now_ts - 10, "pending", now_ts - 10, now_ts - 10, now_ts - 10),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xabc"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=30
+                    ):
+                        rows = tracker_obj._claim_source_queue_rows(limit=10)
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in rows], ["new-1"])
+                conn = db.get_conn()
+                try:
+                    statuses = {
+                        row["trade_id"]: row["status"]
+                        for row in conn.execute("SELECT trade_id, status FROM source_event_queue").fetchall()
+                    }
+                finally:
+                    conn.close()
+                self.assertEqual(statuses["old-1"], "stale")
+                self.assertEqual(statuses["new-1"], "processing")
             finally:
                 db.DB_PATH = original_db_path
 

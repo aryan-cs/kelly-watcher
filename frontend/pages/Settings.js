@@ -190,11 +190,11 @@ const DANGER_OPTION_BLURBS = {
 };
 function SettingsSummaryBox({ title, width, height, items, columnCount }) {
     const columns = splitIntoColumns(items, columnCount);
-    const contentWidth = typeof width === 'number' ? Math.max(24, width - 5) : 31;
+    const contentWidth = typeof width === 'number' ? Math.max(24, width - 4) : 31;
     const columnWidth = columnCount <= 1
         ? contentWidth
         : Math.max(16, Math.floor((contentWidth - (columnCount - 1) * 2) / columnCount));
-    const rowWidth = Math.max(1, columnWidth - 1);
+    const rowWidth = Math.max(1, columnWidth);
     const valueWidth = Math.max(8, Math.min(14, Math.floor(rowWidth * 0.52)));
     const labelWidth = Math.max(8, rowWidth - valueWidth - 1);
     return (React.createElement(Box, { title: title, width: width, height: height },
@@ -203,7 +203,8 @@ function SettingsSummaryBox({ title, width, height, items, columnCount }) {
                 React.createElement(InkBox, { flexDirection: "column", width: columnWidth }, column.map((item) => (React.createElement(InkBox, { key: `${title}-${item.label}`, width: rowWidth },
                     React.createElement(Text, { color: theme.dim }, fit(item.label, labelWidth)),
                     React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: item.color ?? theme.white }, fitRight(item.value, valueWidth)))))),
+                    React.createElement(InkBox, { width: valueWidth, justifyContent: "flex-end", flexShrink: 0 },
+                        React.createElement(Text, { color: item.color ?? theme.white }, truncate(item.value, valueWidth))))))),
                 columnIndex < columns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
             React.createElement(Text, null, " "))));
 }

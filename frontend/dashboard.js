@@ -12,7 +12,7 @@ import { Performance, pendingPerfExitKey } from './pages/Performance.js';
 import { requestManualTrade } from './manualTradeControl.js';
 import { Wallets } from './pages/Wallets.js';
 import { Settings } from './pages/Settings.js';
-import { fit, fitRight, secondsAgo } from './format.js';
+import { fit, secondsAgo, truncate } from './format.js';
 import { ManualRefreshProvider } from './refresh.js';
 import { detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize } from './terminal.js';
 import { useBotState } from './useBotState.js';
@@ -307,12 +307,14 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                     React.createElement(Text, null, " "),
                     React.createElement(Text, { color: theme.dim }, fit(navText, headerNavWidth)))) : null)) : null,
             showHeaderLeft ? React.createElement(Spacer, null) : null,
-            React.createElement(Text, { color: backendDotColor, bold: true }, fit(headerStatusText, headerStatusWidth))),
+            React.createElement(Box, { width: headerStatusWidth, justifyContent: "flex-end", flexShrink: 0 },
+                React.createElement(Text, { color: backendDotColor, bold: true }, truncate(headerStatusText, headerStatusWidth)))),
         React.createElement(Box, { paddingX: 1, paddingY: 1, height: frameBodyHeight, flexShrink: 1, overflow: "hidden" }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
         React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1, height: 3, flexShrink: 0, width: "100%" },
             React.createElement(Text, { color: theme.dim }, fit(footerControls, footerControlsWidth)),
             React.createElement(Spacer, null),
-            React.createElement(Text, { color: footerStatusColor }, fitRight(footerStatusRaw, footerStatusWidth)))));
+            React.createElement(Box, { width: footerStatusWidth, justifyContent: "flex-end", flexShrink: 0 },
+                React.createElement(Text, { color: footerStatusColor }, truncate(footerStatusRaw, footerStatusWidth))))));
 }
 function App() {
     const botState = useBotState();

@@ -12,5 +12,6 @@ export function StatRow({ label, value, color = theme.white, width }) {
     return (React.createElement(Box, { width: rowWidth, flexShrink: 0 },
         React.createElement(Text, { color: theme.dim }, truncate(label, maxLabel)),
         hasGap ? React.createElement(Spacer, null) : null,
-        React.createElement(Text, { color: color }, truncate(value, maxValue))));
+        React.createElement(Box, { width: maxValue, justifyContent: "flex-end", flexShrink: 0 },
+            React.createElement(Text, { color: color }, truncate(value, maxValue)))));
 }

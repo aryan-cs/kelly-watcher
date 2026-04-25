@@ -22,7 +22,9 @@ export function StatRow({label, value, color = theme.white, width}: Props) {
     <Box width={rowWidth} flexShrink={0}>
       <Text color={theme.dim}>{truncate(label, maxLabel)}</Text>
       {hasGap ? <Spacer /> : null}
-      <Text color={color}>{truncate(value, maxValue)}</Text>
+      <Box width={maxValue} justifyContent="flex-end" flexShrink={0}>
+        <Text color={color}>{truncate(value, maxValue)}</Text>
+      </Box>
     </Box>
   )
 }

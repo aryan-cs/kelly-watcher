@@ -32,7 +32,7 @@ import {
 import {requestManualTrade} from './manualTradeControl.js'
 import {Wallets} from './pages/Wallets.js'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
-import {fit, fitRight, secondsAgo} from './format.js'
+import {fit, secondsAgo, truncate} from './format.js'
 import {ManualRefreshProvider} from './refresh.js'
 import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} from './terminal.js'
 import {useBotState, type BotState} from './useBotState.js'
@@ -529,7 +529,9 @@ function AppContent({
           </Box>
         ) : null}
         {showHeaderLeft ? <Spacer /> : null}
-        <Text color={backendDotColor} bold>{fit(headerStatusText, headerStatusWidth)}</Text>
+        <Box width={headerStatusWidth} justifyContent="flex-end" flexShrink={0}>
+          <Text color={backendDotColor} bold>{truncate(headerStatusText, headerStatusWidth)}</Text>
+        </Box>
       </Box>
 
       <Box paddingX={1} paddingY={1} height={frameBodyHeight} flexShrink={1} overflow="hidden">
@@ -574,7 +576,9 @@ function AppContent({
       <Box borderStyle="round" borderColor={theme.border} paddingX={1} height={3} flexShrink={0} width="100%">
         <Text color={theme.dim}>{fit(footerControls, footerControlsWidth)}</Text>
         <Spacer />
-        <Text color={footerStatusColor}>{fitRight(footerStatusRaw, footerStatusWidth)}</Text>
+        <Box width={footerStatusWidth} justifyContent="flex-end" flexShrink={0}>
+          <Text color={footerStatusColor}>{truncate(footerStatusRaw, footerStatusWidth)}</Text>
+        </Box>
       </Box>
     </Box>
   )

@@ -6,6 +6,7 @@ import os
 import re
 import time
 import sqlite3
+import threading
 from pathlib import Path
 
 from kelly_watcher.data.market_urls import market_url_from_metadata
@@ -16,6 +17,8 @@ REPAIR_BATCH_SIZE = 250
 VERIFIED_BACKUP_RETENTION = 5
 RECOVERY_QUARANTINE_RETENTION = 5
 logger = logging.getLogger(__name__)
+_RUNTIME_JOURNAL_MODE_LOCK = threading.Lock()
+_RUNTIME_JOURNAL_MODE_PATHS: set[str] = set()
 _SHARED_HOLDOUT_MESSAGE_RE = re.compile(
     r"shared holdout ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+).*?"
     r"incumbent ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+)",
@@ -63,8 +66,13 @@ def _connect_sqlite(path: Path, *, apply_runtime_pragmas: bool) -> sqlite3.Conne
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
     if apply_runtime_pragmas:
-        conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(path)}")
         conn.execute("PRAGMA foreign_keys=ON")
+        resolved_path = _resolved_db_path_text(path)
+        if resolved_path not in _RUNTIME_JOURNAL_MODE_PATHS:
+            with _RUNTIME_JOURNAL_MODE_LOCK:
+                if resolved_path not in _RUNTIME_JOURNAL_MODE_PATHS:
+                    conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(path)}")
+                    _RUNTIME_JOURNAL_MODE_PATHS.add(resolved_path)
     return conn
 
 
@@ -836,6 +844,8 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             counterfactual_return REAL,
             shadow_pnl_usd      REAL,
             actual_pnl_usd      REAL,
+            resolution_checked_at INTEGER NOT NULL DEFAULT 0,
+            resolution_error     TEXT NOT NULL DEFAULT '',
             resolution_json     TEXT,
             f_trader_win_rate   REAL,
             f_trader_n_trades   INTEGER,
@@ -1557,6 +1567,8 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             "resolved_at": "INTEGER",
             "market_resolved_outcome": "TEXT",
             "counterfactual_return": "REAL",
+            "resolution_checked_at": "INTEGER NOT NULL DEFAULT 0",
+            "resolution_error": "TEXT NOT NULL DEFAULT ''",
             "label_applied_at": "INTEGER",
             "resolution_json": "TEXT",
             "exited_at": "INTEGER",
@@ -1616,6 +1628,7 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
         CREATE INDEX IF NOT EXISTS idx_trade_log_real_trader_placed ON trade_log(real_money, trader_address, placed_at);
         CREATE INDEX IF NOT EXISTS idx_trade_log_real_market_position ON trade_log(real_money, market_id, token_id, side);
         CREATE INDEX IF NOT EXISTS idx_trade_log_trader_action_skipped ON trade_log(trader_address, source_action, skipped);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_resolution_due ON trade_log(real_money, outcome, source_action, resolution_checked_at, market_close_ts, placed_at);
         """
     )
     _ensure_table_columns(

@@ -26,6 +26,7 @@ from kelly_watcher.config import (
     model_min_time_to_close_seconds,
     model_path,
     time_to_close_band_label,
+    use_real_money,
     xgboost_allowed_entry_price_bands,
 )
 from kelly_watcher.engine.economic_model import apply_probability_calibrator, expected_return_to_confidence, inverse_return_target
@@ -269,7 +270,15 @@ class SignalEngine:
             return "xgboost"
         if allow_heuristic():
             return "heuristic"
+        if self._shadow_bootstrap_heuristic_enabled():
+            return "heuristic_bootstrap"
         return "disabled"
+
+    def _shadow_bootstrap_heuristic_enabled(self) -> bool:
+        return bool(self._xgb is None and allow_xgboost() and not use_real_money())
+
+    def _heuristic_runtime_enabled(self) -> bool:
+        return bool(allow_heuristic() or self._shadow_bootstrap_heuristic_enabled())
 
     def runtime_info(self) -> dict:
         artifact_backend = self._artifact_backend
@@ -279,6 +288,7 @@ class SignalEngine:
             "loaded_scorer": self.sizing_mode(),
             "loaded_model_backend": self._model_backend,
             "heuristic_enabled": bool(allow_heuristic()),
+            "heuristic_bootstrap_enabled": bool(self._shadow_bootstrap_heuristic_enabled()),
             "xgboost_enabled": bool(allow_xgboost()),
             "model_artifact_exists": bool(self._artifact_exists),
             "model_artifact_path": self._artifact_path,
@@ -401,7 +411,7 @@ class SignalEngine:
                 segment_context=segment_context,
             )
 
-        if allow_heuristic():
+        if self._heuristic_runtime_enabled():
             return self._evaluate_heuristic(
                 trader_features,
                 market_features,
@@ -442,13 +452,18 @@ class SignalEngine:
         if segment_policy is None or segment_context is None:
             segment_context = self._segment_context(market_features, watch_tier=None)
             segment_policy = self._segment_runtime_policy(segment_context["route"])
-        if not allow_heuristic():
+        heuristic_mode = (
+            "heuristic_bootstrap"
+            if self._shadow_bootstrap_heuristic_enabled() and not allow_heuristic()
+            else "heuristic"
+        )
+        if not self._heuristic_runtime_enabled():
             return {
                 "confidence": 0.0,
                 "passed": False,
                 "reason": "heuristic disabled by config",
                 "veto": None,
-                "mode": "heuristic",
+                "mode": heuristic_mode,
                 "trader": {},
                 "market": market_result,
                 **self._segment_payload(segment_policy, segment_context),
@@ -562,7 +577,7 @@ class SignalEngine:
             "passed": passed,
             "reason": reason,
             "veto": None,
-            "mode": "heuristic",
+            "mode": heuristic_mode,
             "trader": trader_result,
             "market": market_result,
             **self._segment_payload(segment_policy, segment_context),

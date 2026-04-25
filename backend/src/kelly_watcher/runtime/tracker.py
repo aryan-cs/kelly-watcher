@@ -5,6 +5,7 @@ import logging
 import hashlib
 import random
 import sqlite3
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -13,7 +14,12 @@ from typing import Any, Callable
 
 import httpx
 
-from kelly_watcher.config import max_source_trade_age_seconds
+from kelly_watcher.config import (
+    data_api_429_cooldown_seconds,
+    data_api_request_burst,
+    data_api_request_rate_per_second,
+    max_source_trade_age_seconds,
+)
 from kelly_watcher.data.db import get_conn, init_db
 from kelly_watcher.data.identity_cache import hydrate_observed_identity, resolve_username_for_wallet
 
@@ -37,6 +43,40 @@ MARKET_METADATA_CACHE_TTL_S = 300
 ORDERBOOK_CACHE_TTL_S = 2
 PRICE_HISTORY_CACHE_TTL_S = 60
 INTRADAY_MARKET_METADATA_CACHE_TTL_S = 30
+
+
+class HostRateLimiter:
+    def __init__(self, *, rate_per_second: float, burst: int, cooldown_seconds: float):
+        self.rate_per_second = max(float(rate_per_second or 0.0), 0.1)
+        self.burst = max(int(burst or 1), 1)
+        self.cooldown_seconds = max(float(cooldown_seconds or 0.0), 1.0)
+        self._tokens = float(self.burst)
+        self._updated_at = time.monotonic()
+        self._cooldown_until = 0.0
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                if now < self._cooldown_until:
+                    delay = self._cooldown_until - now
+                else:
+                    elapsed = max(now - self._updated_at, 0.0)
+                    self._tokens = min(float(self.burst), self._tokens + (elapsed * self.rate_per_second))
+                    self._updated_at = now
+                    if self._tokens >= 1.0:
+                        self._tokens -= 1.0
+                        return
+                    delay = (1.0 - self._tokens) / self.rate_per_second
+            time.sleep(min(max(delay, 0.01), 1.0))
+
+    def record_rate_limited(self, retry_after_seconds: float = 0.0) -> None:
+        cooldown = max(float(retry_after_seconds or 0.0), self.cooldown_seconds)
+        with self._lock:
+            self._tokens = 0.0
+            self._updated_at = time.monotonic()
+            self._cooldown_until = max(self._cooldown_until, self._updated_at + cooldown)
 
 
 @dataclass
@@ -116,6 +156,11 @@ class PolymarketTracker:
         self._orderbook_cache: dict[str, tuple[float, tuple[dict[str, float] | None, dict[str, Any] | None, int]]] = {}
         self._price_history_cache: dict[tuple[str, str], tuple[float, list[dict[str, float]]]] = {}
         self._dirty_wallet_cursors: set[str] = set()
+        self._data_api_rate_limiter = HostRateLimiter(
+            rate_per_second=data_api_request_rate_per_second(),
+            burst=data_api_request_burst(),
+            cooldown_seconds=data_api_429_cooldown_seconds(),
+        )
 
     def close(self) -> None:
         self.client.close()
@@ -630,6 +675,7 @@ class PolymarketTracker:
         max_attempts: int = TRADE_FETCH_MAX_ATTEMPTS,
     ) -> tuple[Any | None, bool]:
         attempt_count = max(1, int(max_attempts or 1))
+        rate_limiter = self._data_api_rate_limiter if str(url).startswith(DATA_API) else None
         for attempt in range(attempt_count):
             try:
                 self._touch_activity()
@@ -637,6 +683,8 @@ class PolymarketTracker:
                 if timeout_s is not None:
                     request_kwargs["timeout"] = timeout_s
                 client = getattr(self, "client", None)
+                if rate_limiter is not None:
+                    rate_limiter.acquire()
                 if client is None:
                     with self._new_http_client() as client:
                         response = client.get(url, **request_kwargs)
@@ -646,6 +694,13 @@ class PolymarketTracker:
                     self._touch_activity()
                     return None, True
                 if response.status_code == 429:
+                    retry_after = 0.0
+                    try:
+                        retry_after = float((response.headers or {}).get("Retry-After") or 0.0)
+                    except (TypeError, ValueError):
+                        retry_after = 0.0
+                    if rate_limiter is not None:
+                        rate_limiter.record_rate_limited(retry_after)
                     raise httpx.HTTPStatusError(
                         "429 Too Many Requests",
                         request=response.request,
@@ -663,6 +718,8 @@ class PolymarketTracker:
                         retry_after = float((exc.response.headers or {}).get("Retry-After") or 0.0)
                     except (TypeError, ValueError):
                         retry_after = 0.0
+                    if status_code == 429 and rate_limiter is not None:
+                        rate_limiter.record_rate_limited(retry_after)
                     delay = max(retry_after, RETRY_BASE_DELAY_S * (attempt + 1))
                     time.sleep(delay + random.uniform(0.0, 0.25))
                     continue

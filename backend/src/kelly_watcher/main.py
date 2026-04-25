@@ -185,6 +185,14 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+
+if str(os.getenv("KELLY_VERBOSE_HTTP_LOGS", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+if str(os.getenv("KELLY_VERBOSE_SCHEDULER_LOGS", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+    logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
+
 logger = logging.getLogger("main")
 _emit_count = 0
 _event_lock = threading.Lock()
@@ -1037,7 +1045,6 @@ def _run_deferred_startup_tasks(
             persist_state(**watchlist.state_fields()),
         ),
     )
-    _step("resolving historical trades", _resolve_trades_and_alert)
     _step("refreshing trade cache", lambda: dedup.load_from_db(rebuild_shadow_positions=False))
     tracker.seen_ids.update(dedup.seen_ids)
     if should_retrain_early(engine):
@@ -6744,8 +6751,7 @@ def main() -> None:
                         logger.warning("Low balance: $%.2f - skipping poll", bankroll)
                     else:
                         _heartbeat()
-                        _persist_bot_state(poll_stage="refreshing_watchlist")
-                        watchlist.refresh(run_auto_drop=False)
+                        _persist_bot_state(poll_stage="selecting_poll_batches")
                         poll_batches = watchlist.poll_batches()
                         polled_wallet_count = sum(len(batch.wallets) for batch in poll_batches)
                         _persist_bot_state(

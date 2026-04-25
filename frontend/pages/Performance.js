@@ -1335,8 +1335,11 @@ function normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEdit
             : computePositionProfit(normalizedRow)
     };
 }
-function groupBucketedPnl(rows) {
+function groupTodayHourlyPnl(rows, nowDate) {
     const totals = new Map();
+    const dayStart = new Date(nowDate.getTime());
+    dayStart.setHours(0, 0, 0, 0);
+    const currentBucket = floorToPnlBucket(nowDate);
     rows.forEach((row) => {
         const pnl = row.pnl_usd;
         if (pnl == null) {
@@ -1346,31 +1349,18 @@ function groupBucketedPnl(rows) {
         if (!ts) {
             return;
         }
-        const bucket = formatPnlBucketKey(floorToPnlBucket(new Date(ts * 1000)));
+        const bucketDate = floorToPnlBucket(new Date(ts * 1000));
+        if (bucketDate < dayStart || bucketDate > currentBucket) {
+            return;
+        }
+        const bucket = formatPnlBucketKey(bucketDate);
         totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3));
     });
-    const parsedEntries = Array.from(totals.entries())
-        .map(([day, pnl]) => ({
-        day,
-        pnl,
-        label: formatDollar(pnl),
-        bucketDate: parsePnlBucket(day)
-    }))
-        .filter((row) => row.bucketDate != null)
-        .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime());
-    if (!parsedEntries.length) {
-        return [];
-    }
-    const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]));
-    const newest = new Date(parsedEntries[0].bucketDate.getTime());
-    const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime());
     const filledEntries = [];
-    for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
+    for (let cursor = new Date(currentBucket.getTime()); cursor >= dayStart;) {
         const bucketKey = formatPnlBucketKey(cursor);
-        const existing = entryByBucket.get(bucketKey);
-        filledEntries.push(existing
-            ? { day: existing.day, pnl: existing.pnl, label: existing.label }
-            : { day: bucketKey, pnl: 0, label: formatDollar(0) });
+        const pnl = roundTo(totals.get(bucketKey) || 0, 3);
+        filledEntries.push({ day: bucketKey, pnl, label: formatDollar(pnl) });
         const nextCursor = new Date(cursor.getTime());
         nextCursor.setMinutes(nextCursor.getMinutes() - PNL_BUCKET_MINUTES);
         cursor = nextCursor;
@@ -1522,7 +1512,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             avg_size: avgSize
         };
     }, [confidenceRows, effectivePositions, resolvedPerformancePositions]);
-    const dailyEntries = useMemo(() => groupBucketedPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit')), [pastPositions]);
+    const dailyEntries = useMemo(() => groupTodayHourlyPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), new Date(nowTs * 1000)), [nowTs, pastPositions]);
     const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
     const summaryStatColumnWidth = useMemo(() => Math.max(1, Math.floor((dailyPanelContentWidth - 2) / 2)), [dailyPanelContentWidth]);
     const dailyPreviewCapacity = useMemo(() => dailyEntries.length

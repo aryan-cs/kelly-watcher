@@ -38,7 +38,10 @@ export function Signals({
     return lookup
   }, [events])
   const allSignals = useMemo(
-    () => events.filter((event) => event.type === 'signal').reverse(),
+    () =>
+      events
+        .filter((event) => event.type === 'signal')
+        .sort((left, right) => (right.ts || 0) - (left.ts || 0)),
     [events]
   )
   const maxReasonLength = useMemo(

@@ -5,6 +5,7 @@ import logging
 import re
 import shutil
 import sqlite3
+import threading
 import time
 import argparse
 from datetime import datetime, timezone
@@ -34,11 +35,14 @@ from kelly_watcher.engine.trade_contract import (
 )
 
 logger = logging.getLogger(__name__)
+_RESOLUTION_LOCK = threading.Lock()
 SEGMENT_SHADOW_MIN_RESOLVED = 20
 SEGMENT_SHADOW_MAX_CALIBRATION_GAP = 0.10
 SEGMENT_SHADOW_MAX_FILL_COST_SLIPPAGE_USD = 0.05
 SEGMENT_SHADOW_MAX_FILL_COST_OVERSHOOT_RATIO = 0.50
 UNASSIGNED_SEGMENT_ID = "unassigned"
+UNKNOWN_CLOSE_TS_RESOLUTION_DELAY_S = 24 * 3600
+UNRESOLVED_MARKET_RECHECK_DELAY_S = 60 * 60
 
 CLOB_API = "https://clob.polymarket.com"
 SPORTS_PAGE_BASE = "https://polymarket.com/sports"
@@ -550,13 +554,55 @@ def resolve_shadow_trades(
     question_contains: str | None = None,
     forced_outcome: str | None = None,
 ) -> list[dict]:
+    manual_scope = bool(trade_id or market_id or question_contains or forced_outcome)
+    acquired = _RESOLUTION_LOCK.acquire(blocking=manual_scope)
+    if not acquired:
+        logger.info("Resolution check skipped because a previous resolution pass is still running")
+        return []
+    try:
+        return _resolve_shadow_trades_locked(
+            trade_id=trade_id,
+            market_id=market_id,
+            question_contains=question_contains,
+            forced_outcome=forced_outcome,
+        )
+    finally:
+        _RESOLUTION_LOCK.release()
+
+
+def _resolve_shadow_trades_locked(
+    *,
+    trade_id: str | None = None,
+    market_id: str | None = None,
+    question_contains: str | None = None,
+    forced_outcome: str | None = None,
+) -> list[dict]:
     conn = get_conn()
+    manual_scope = bool(trade_id or market_id or question_contains or forced_outcome)
+    now_ts = int(time.time())
     where_clauses = [
         "outcome IS NULL",
         "COALESCE(source_action, 'buy')='buy'",
         "real_money=0",
     ]
     params: list[Any] = []
+    if not manual_scope:
+        where_clauses.append(
+            """
+            (
+                (COALESCE(market_close_ts, 0) > 0 AND market_close_ts <= ?)
+                OR (COALESCE(market_close_ts, 0) <= 0 AND placed_at <= ?)
+            )
+            """
+        )
+        where_clauses.append("COALESCE(resolution_checked_at, 0) <= ?")
+        params.extend(
+            [
+                now_ts,
+                now_ts - UNKNOWN_CLOSE_TS_RESOLUTION_DELAY_S,
+                now_ts - UNRESOLVED_MARKET_RECHECK_DELAY_S,
+            ]
+        )
     if trade_id:
         where_clauses.append("trade_id=?")
         params.append(str(trade_id).strip())
@@ -591,13 +637,15 @@ def resolve_shadow_trades(
     resolved_rows: list[dict] = []
     market_cache: dict[str, dict | None] = {}
     sports_page_cache: dict[str, dict[str, Any] | None] = {}
+    resolution_cache: dict[str, tuple[str | None, dict[str, Any] | None, str]] = {}
+    unresolved_market_checks: dict[str, tuple[int, str]] = {}
     normalized_forced_outcome = str(forced_outcome or "").strip()
     if normalized_forced_outcome and not (trade_id or market_id or question_contains):
         raise ValueError("forced_outcome requires trade_id, market_id, or question_contains")
-    with httpx.Client(timeout=10.0) as client:
+    with httpx.Client(timeout=httpx.Timeout(4.0, connect=2.0)) as client:
         for row in unresolved:
             try:
-                now_ts = int(time.time())
+                row_checked_at = int(time.time())
                 result: str | None = None
                 resolution_payload: dict[str, Any] | None = None
 
@@ -609,25 +657,45 @@ def resolve_shadow_trades(
                         "forcedOutcome": normalized_forced_outcome,
                     }
                 else:
-                    sports_snapshot = _fetch_sports_page_snapshot(client, row, sports_page_cache)
-                    if sports_snapshot is not None:
-                        result = _resolve_from_sports_page(row, sports_snapshot)
-                        if result is not None:
-                            resolution_payload = _sports_resolution_payload(row, sports_snapshot)
-
-                    if result is None:
-                        market = _fetch_market(client, str(row["market_id"]), market_cache)
-                        if market and _market_is_closed(market):
-                            result = _winning_outcome(market)
-                            if result is None:
-                                logger.info(
-                                    "Closed market %s is missing an explicit winner after sports-page fallback",
-                                    str(row["market_id"])[:12],
-                                )
+                    row_market_id = str(row["market_id"] or "").strip()
+                    cached_resolution = resolution_cache.get(row_market_id)
+                    if cached_resolution is not None:
+                        result, resolution_payload, no_result_reason = cached_resolution
+                    else:
+                        no_result_reason = "market not closed or winner unavailable"
+                        sports_snapshot = _fetch_sports_page_snapshot(client, row, sports_page_cache)
+                        if sports_snapshot is not None:
+                            result = _resolve_from_sports_page(row, sports_snapshot)
+                            if result is not None:
+                                resolution_payload = _sports_resolution_payload(row, sports_snapshot)
                             else:
-                                resolution_payload = market
+                                no_result_reason = "sports page did not expose a winner"
+
+                        if result is None:
+                            market = _fetch_market(client, row_market_id, market_cache)
+                            if market and _market_is_closed(market):
+                                result = _winning_outcome(market)
+                                if result is None:
+                                    no_result_reason = "closed market missing explicit winner"
+                                    logger.info(
+                                        "Closed market %s is missing an explicit winner after sports-page fallback",
+                                        row_market_id[:12],
+                                    )
+                                else:
+                                    resolution_payload = market
+                            elif market:
+                                no_result_reason = "market is not closed"
+                            else:
+                                no_result_reason = "market metadata unavailable"
+                        resolution_cache[row_market_id] = (result, resolution_payload, no_result_reason)
 
                 if result is None:
+                    row_market_id = str(row["market_id"] or "").strip()
+                    if row_market_id and not manual_scope:
+                        unresolved_market_checks[row_market_id] = (
+                            row_checked_at,
+                            no_result_reason[:240] if "no_result_reason" in locals() else "winner unavailable",
+                        )
                     continue
 
                 won = str(row["side"]).strip().lower() == str(result).strip().lower()
@@ -683,7 +751,7 @@ def resolve_shadow_trades(
 
                 conn = get_conn()
                 try:
-                    conn.execute(
+                    cursor = conn.execute(
                         """
                         UPDATE trade_log
                         SET outcome=?, market_resolved_outcome=?, counterfactual_return=?,
@@ -708,7 +776,7 @@ def resolve_shadow_trades(
                             label_applied_at=?,
                             resolved_at=COALESCE(resolved_at, ?),
                             resolution_json=?
-                        WHERE id=?
+                        WHERE id=? AND outcome IS NULL
                         """,
                         (
                             1 if won else 0,
@@ -721,12 +789,15 @@ def resolve_shadow_trades(
                             pnl if fill_aware else None,
                             pnl if fill_aware else None,
                             pnl if fill_aware else None,
-                            now_ts,
-                            now_ts,
+                            row_checked_at,
+                            row_checked_at,
                             json.dumps(resolution_payload, separators=(",", ":"), default=str),
                             row["id"],
                         ),
                     )
+                    if cursor.rowcount <= 0:
+                        conn.commit()
+                        continue
                     token_id_str = str(row["token_id"] or "").strip().lower()
                     side_str = str(row["side"] or "").strip().lower()
                     if token_id_str:
@@ -766,6 +837,27 @@ def resolve_shadow_trades(
                 )
             except Exception as exc:
                 logger.error("Resolution check failed for %s: %s", row["market_id"][:12], exc)
+
+    if unresolved_market_checks and not manual_scope:
+        conn = get_conn()
+        try:
+            conn.executemany(
+                """
+                UPDATE trade_log
+                SET resolution_checked_at=?, resolution_error=?
+                WHERE market_id=?
+                  AND outcome IS NULL
+                  AND COALESCE(source_action, 'buy')='buy'
+                  AND real_money=0
+                """,
+                [
+                    (checked_at, reason, market_id)
+                    for market_id, (checked_at, reason) in unresolved_market_checks.items()
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     if resolved_rows:
         logger.info("Resolved %s trades", len(resolved_rows))

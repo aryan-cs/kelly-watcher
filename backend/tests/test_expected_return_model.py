@@ -410,7 +410,10 @@ class ExpectedReturnModelTest(unittest.TestCase):
         ):
             engine = signal_engine.SignalEngine()
 
-        with patch("kelly_watcher.engine.signal_engine.allow_heuristic", return_value=False):
+        with patch("kelly_watcher.engine.signal_engine.allow_heuristic", return_value=False), patch(
+            "kelly_watcher.engine.signal_engine.use_real_money",
+            return_value=True,
+        ):
             result = engine._evaluate_heuristic(
                 SimpleNamespace(),
                 SimpleNamespace(execution_price=0.70, mid=0.70, days_to_res=0.5),
@@ -420,6 +423,24 @@ class ExpectedReturnModelTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(result["reason"], "heuristic disabled by config")
         self.assertEqual(result["mode"], "heuristic")
+
+    def test_signal_engine_shadow_bootstraps_heuristic_when_model_unavailable(self) -> None:
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "kelly_watcher.engine.signal_engine.model_path",
+            return_value="/tmp/kelly-watcher-missing-model.joblib",
+        ), patch("kelly_watcher.engine.signal_engine.allow_heuristic", return_value=False), patch(
+            "kelly_watcher.engine.signal_engine.allow_xgboost",
+            return_value=True,
+        ), patch(
+            "kelly_watcher.engine.signal_engine.use_real_money",
+            return_value=False,
+        ):
+            engine = signal_engine.SignalEngine()
+            runtime = engine.runtime_info()
+
+        self.assertEqual(runtime["loaded_scorer"], "heuristic_bootstrap")
+        self.assertFalse(runtime["heuristic_enabled"])
+        self.assertTrue(runtime["heuristic_bootstrap_enabled"])
 
     def test_signal_engine_blocks_model_entries_outside_global_horizon_allowlist(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -1545,7 +1545,10 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
     server_version = "KellyWatcherDashboardAPI/1.0"
 
     def log_message(self, format: str, *args: object) -> None:
-        logger.info("dashboard_api %s - %s", self.address_string(), format % args)
+        if str(os.getenv("KELLY_VERBOSE_DASHBOARD_ACCESS_LOGS", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            logger.info("dashboard_api %s - %s", self.address_string(), format % args)
+            return
+        logger.debug("dashboard_api %s - %s", self.address_string(), format % args)
 
     def _set_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")

@@ -1927,8 +1927,11 @@ function normalizeEffectivePosition(
   }
 }
 
-function groupBucketedPnl(rows: PositionRow[]): DailyPnlEntry[] {
+function groupTodayHourlyPnl(rows: PositionRow[], nowDate: Date): DailyPnlEntry[] {
   const totals = new Map<string, number>()
+  const dayStart = new Date(nowDate.getTime())
+  dayStart.setHours(0, 0, 0, 0)
+  const currentBucket = floorToPnlBucket(nowDate)
 
   rows.forEach((row) => {
     const pnl = row.pnl_usd
@@ -1939,36 +1942,21 @@ function groupBucketedPnl(rows: PositionRow[]): DailyPnlEntry[] {
     if (!ts) {
       return
     }
-    const bucket = formatPnlBucketKey(floorToPnlBucket(new Date(ts * 1000)))
+    const bucketDate = floorToPnlBucket(new Date(ts * 1000))
+    if (bucketDate < dayStart || bucketDate > currentBucket) {
+      return
+    }
+    const bucket = formatPnlBucketKey(bucketDate)
     totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3))
   })
 
-  const parsedEntries = Array.from(totals.entries())
-    .map(([day, pnl]) => ({
-      day,
-      pnl,
-      label: formatDollar(pnl),
-      bucketDate: parsePnlBucket(day)
-    }))
-    .filter((row): row is DailyPnlEntry & {bucketDate: Date} => row.bucketDate != null)
-    .sort((left, right) => right.bucketDate.getTime() - left.bucketDate.getTime())
-
-  if (!parsedEntries.length) {
-    return []
-  }
-
-  const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]))
-  const newest = new Date(parsedEntries[0].bucketDate.getTime())
-  const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime())
   const filledEntries: DailyPnlEntry[] = []
 
-  for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
+  for (let cursor = new Date(currentBucket.getTime()); cursor >= dayStart;) {
     const bucketKey = formatPnlBucketKey(cursor)
-    const existing = entryByBucket.get(bucketKey)
+    const pnl = roundTo(totals.get(bucketKey) || 0, 3)
     filledEntries.push(
-      existing
-        ? {day: existing.day, pnl: existing.pnl, label: existing.label}
-        : {day: bucketKey, pnl: 0, label: formatDollar(0)}
+      {day: bucketKey, pnl, label: formatDollar(pnl)}
     )
     const nextCursor = new Date(cursor.getTime())
     nextCursor.setMinutes(nextCursor.getMinutes() - PNL_BUCKET_MINUTES)
@@ -2261,10 +2249,11 @@ export function Performance({
   )
   const dailyEntries = useMemo<DailyPnlEntry[]>(
     () =>
-      groupBucketedPnl(
-        pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit')
+      groupTodayHourlyPnl(
+        pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'),
+        new Date(nowTs * 1000)
       ),
-    [pastPositions]
+    [nowTs, pastPositions]
   )
   useEffect(() => {
     if (!pendingPerfExits.length || !onPendingPerfExitSettlement) {

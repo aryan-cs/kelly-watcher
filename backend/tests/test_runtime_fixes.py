@@ -4097,6 +4097,87 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_resolve_shadow_trades_skips_future_markets_by_default(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at, market_close_ts
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        (
+                            "future-trade",
+                            "market-future",
+                            "Future market",
+                            "0xabc",
+                            "yes",
+                            "buy",
+                            0.50,
+                            10.0,
+                            0.75,
+                            0.10,
+                            0,
+                            1,
+                            1_700_000_000,
+                            1_700_010_000,
+                        ),
+                        (
+                            "past-trade",
+                            "market-past",
+                            "Past market",
+                            "0xabc",
+                            "yes",
+                            "buy",
+                            0.50,
+                            10.0,
+                            0.75,
+                            0.10,
+                            0,
+                            1,
+                            1_700_000_000,
+                            1_699_999_900,
+                        ),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                market = {
+                    "closed": True,
+                    "tokens": [
+                        {"outcome": "Yes", "winner": True},
+                        {"outcome": "No", "winner": False},
+                    ],
+                }
+                with patch("kelly_watcher.runtime.evaluator._fetch_market", return_value=market) as fetch_market, patch(
+                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
+                ), patch("kelly_watcher.runtime.evaluator.time.time", return_value=1_700_000_000):
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual([row["trade_id"] for row in resolved], ["past-trade"])
+                self.assertEqual(fetch_market.call_count, 1)
+                self.assertEqual(fetch_market.call_args.args[1], "market-past")
+
+                conn = db.get_conn()
+                rows = {
+                    row["trade_id"]: row["outcome"]
+                    for row in conn.execute("SELECT trade_id, outcome FROM trade_log").fetchall()
+                }
+                conn.close()
+
+                self.assertIsNone(rows["future-trade"])
+                self.assertEqual(int(rows["past-trade"]), 1)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_send_resolution_alerts_only_notifies_executed_positions(self) -> None:
         resolved_rows = [
             {
@@ -4141,8 +4222,8 @@ class RuntimeFixesTest(unittest.TestCase):
                     INSERT INTO trade_log (
                         trade_id, market_id, question, trader_address, side,
                         source_action, price_at_signal, signal_size_usd, confidence,
-                        kelly_fraction, real_money, skipped, placed_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        kelly_fraction, real_money, skipped, placed_at, market_close_ts
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         "trade-early",
@@ -4158,6 +4239,7 @@ class RuntimeFixesTest(unittest.TestCase):
                         0,
                         0,
                         1_700_000_000,
+                        1_699_999_900,
                     ),
                 )
                 conn.commit()
@@ -4207,8 +4289,8 @@ class RuntimeFixesTest(unittest.TestCase):
                     INSERT INTO trade_log (
                         trade_id, market_id, question, trader_address, side,
                         source_action, price_at_signal, signal_size_usd, confidence,
-                        kelly_fraction, real_money, skipped, placed_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        kelly_fraction, real_money, skipped, placed_at, market_close_ts
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         "trade-after-end",
@@ -4224,6 +4306,7 @@ class RuntimeFixesTest(unittest.TestCase):
                         0,
                         0,
                         1_700_000_000,
+                        1_699_999_900,
                     ),
                 )
                 conn.commit()

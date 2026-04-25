@@ -476,6 +476,37 @@ def discovery_poll_interval_multiplier() -> int:
     return value
 
 
+def data_api_request_rate_per_second() -> float:
+    return _get_env_file_bounded_float(
+        "DATA_API_REQUEST_RATE_PER_SECOND",
+        "4",
+        minimum=0.1,
+        maximum=50.0,
+    )
+
+
+def data_api_request_burst() -> int:
+    raw = _get_env_file_value("DATA_API_REQUEST_BURST") or _get("DATA_API_REQUEST_BURST", "4")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"DATA_API_REQUEST_BURST must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ConfigError(f"DATA_API_REQUEST_BURST must be >= 1, got {value}")
+    if value > 100:
+        raise ConfigError(f"DATA_API_REQUEST_BURST must be <= 100, got {value}")
+    return value
+
+
+def data_api_429_cooldown_seconds() -> float:
+    return _get_env_file_bounded_float(
+        "DATA_API_429_COOLDOWN_SECONDS",
+        "10",
+        minimum=1.0,
+        maximum=300.0,
+    )
+
+
 def wallet_inactivity_limit_seconds() -> float:
     return _get_duration_seconds(
         "WALLET_INACTIVITY_LIMIT",
@@ -699,7 +730,13 @@ def wallet_address() -> str:
 
 
 def model_path() -> str:
-    return _get("MODEL_PATH", str(MODEL_ARTIFACT_PATH.relative_to(REPO_ROOT)))
+    raw = str(_get("MODEL_PATH", str(MODEL_ARTIFACT_PATH.relative_to(REPO_ROOT))) or "").strip()
+    if not raw:
+        return str(MODEL_ARTIFACT_PATH)
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str((REPO_ROOT / path).resolve())
 
 
 def shadow_bankroll_usd() -> float:

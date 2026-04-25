@@ -24,7 +24,9 @@ export function Signals({ scrollOffset = 0, horizontalOffset = 0, onScrollOffset
         }
         return lookup;
     }, [events]);
-    const allSignals = useMemo(() => events.filter((event) => event.type === 'signal').reverse(), [events]);
+    const allSignals = useMemo(() => events
+        .filter((event) => event.type === 'signal')
+        .sort((left, right) => (right.ts || 0) - (left.ts || 0)), [events]);
     const maxReasonLength = useMemo(() => allSignals.slice(0, 250).reduce((max, event) => Math.max(max, normalizeReasonText(event.reason || '-').length), 6), [allSignals]);
     const layout = useMemo(() => getSignalsLayout(visibleWidth), [visibleWidth]);
     const maxOffset = Math.max(0, allSignals.length - lineBudget);

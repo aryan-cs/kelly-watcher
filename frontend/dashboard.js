@@ -280,13 +280,6 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                         : 'r: refresh  q: exit';
     const frameLineWidth = Math.max(12, terminal.width - 6);
     const frameBodyHeight = Math.max(1, terminal.height - 8);
-    const navText = Object.entries(PAGES)
-        .map(([key, value]) => {
-        const isSelected = Number(key) === page;
-        const label = `${key}:${navLabels[Number(key)] || value.label}`;
-        return isSelected ? `[${label}]` : label;
-    })
-        .join('  ');
     const headerStatusText = `${backendStatusTag} ${mode}`;
     const preferredHeaderStatusWidth = Math.min(frameLineWidth, terminal.compact ? 18 : 26);
     const headerStatusWidth = Math.max(1, Math.min(preferredHeaderStatusWidth, Math.max(1, frameLineWidth - 4)));
@@ -294,6 +287,22 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
     const showHeaderLeft = headerLeftWidth >= 4;
     const headerTitleWidth = Math.max(0, Math.min('KELLY-WATCHER'.length, Math.max(0, headerLeftWidth - 3)));
     const headerNavWidth = Math.max(0, headerLeftWidth - headerTitleWidth - 3);
+    const headerNavItems = [];
+    let headerNavRemaining = headerNavWidth;
+    Object.entries(PAGES).some(([key, value], index) => {
+        if (headerNavRemaining <= 0) {
+            return true;
+        }
+        const isSelected = Number(key) === page;
+        const label = `${key}:${navLabels[Number(key)] || value.label}`;
+        const text = `${index > 0 ? '  ' : ''}${isSelected ? `[${label}]` : label}`;
+        const visibleText = truncate(text, headerNavRemaining);
+        if (visibleText.length > 0) {
+            headerNavItems.push({ text: visibleText, selected: isSelected });
+            headerNavRemaining -= visibleText.length;
+        }
+        return visibleText.length < text.length;
+    });
     const footerStatusRaw = activeTransientNotice ? activeTransientNotice.message : footerStatusText;
     const footerStatusWidth = Math.max(10, Math.min(frameLineWidth - 4, Math.floor(frameLineWidth * (footerCompact ? 0.45 : 0.38))));
     const footerControlsWidth = Math.max(1, frameLineWidth - footerStatusWidth - 1);
@@ -305,7 +314,7 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                 React.createElement(Text, { color: theme.white, bold: true }, fit('KELLY-WATCHER', headerTitleWidth)),
                 headerNavWidth > 0 ? (React.createElement(React.Fragment, null,
                     React.createElement(Text, null, " "),
-                    React.createElement(Text, { color: theme.dim }, fit(navText, headerNavWidth)))) : null)) : null,
+                    React.createElement(Box, { width: headerNavWidth, flexShrink: 0 }, headerNavItems.map((item, index) => (React.createElement(Text, { key: `header-nav-${index}`, color: item.selected ? theme.white : theme.dim, bold: item.selected }, item.text)))))) : null)) : null,
             showHeaderLeft ? React.createElement(Spacer, null) : null,
             React.createElement(Box, { width: headerStatusWidth, justifyContent: "flex-end", flexShrink: 0 },
                 React.createElement(Text, { color: backendDotColor, bold: true }, truncate(headerStatusText, headerStatusWidth)))),

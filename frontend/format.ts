@@ -9,7 +9,10 @@ if (!endCodesSet.has(linkEndCode)) {
 }
 
 export function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 3))}...`
+  if (max <= 0) return ''
+  if (text.length <= max) return text
+  if (max <= 3) return '.'.repeat(max)
+  return `${text.slice(0, max - 3)}...`
 }
 
 export function wrapText(text: string, width: number): string[] {

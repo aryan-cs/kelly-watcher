@@ -188,7 +188,7 @@ const DANGER_OPTION_BLURBS = {
     clear_all: 'Resets shadow data and clears watched wallets.',
     cancel: 'Leaves everything unchanged.'
 };
-function SettingsSummaryBox({ title, width, items, columnCount }) {
+function SettingsSummaryBox({ title, width, height, items, columnCount }) {
     const columns = splitIntoColumns(items, columnCount);
     const contentWidth = typeof width === 'number' ? Math.max(24, width - 5) : 31;
     const columnWidth = columnCount <= 1
@@ -197,7 +197,7 @@ function SettingsSummaryBox({ title, width, items, columnCount }) {
     const rowWidth = Math.max(1, columnWidth - 1);
     const valueWidth = Math.max(8, Math.min(14, Math.floor(rowWidth * 0.52)));
     const labelWidth = Math.max(8, rowWidth - valueWidth - 1);
-    return (React.createElement(Box, { title: title, width: width },
+    return (React.createElement(Box, { title: title, width: width, height: height },
         React.createElement(InkBox, { width: "100%", marginTop: 1, flexDirection: "column" },
             React.createElement(InkBox, { width: "100%" }, columns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `${title}-column-${columnIndex}` },
                 React.createElement(InkBox, { flexDirection: "column", width: columnWidth }, column.map((item) => (React.createElement(InkBox, { key: `${title}-${item.label}`, width: rowWidth },
@@ -216,15 +216,6 @@ export function Settings({ editor }) {
     const config = useDashboardConfig();
     const envData = useMemo(() => envDataFromConfig(config), [config]);
     const identityMap = useIdentityMap();
-    const environmentBudget = rowsForHeight(terminal.height, stacked ? 40 : 30, 6, 14);
-    const walletSectionHeaderRows = envData.watchedWallets.length ? 2 : 0;
-    const maxWalletLines = envData.watchedWallets.length ? Math.max(2, Math.min(6, Math.floor(environmentBudget / 2))) : 0;
-    const walletSectionRows = envData.watchedWallets.length
-        ? walletSectionHeaderRows + Math.min(envData.watchedWallets.length, maxWalletLines) + (envData.watchedWallets.length > maxWalletLines ? 1 : 0)
-        : 0;
-    const envRows = envData.rows.slice(0, Math.max(0, environmentBudget - walletSectionRows));
-    const visibleWallets = envData.watchedWallets.slice(0, maxWalletLines);
-    const hiddenWalletCount = Math.max(0, envData.watchedWallets.length - visibleWallets.length);
     const safeSelectedIndex = Math.max(0, Math.min(editor.selectedIndex, Math.max(editableConfigFields.length - 1, 0)));
     const selectedField = editableConfigFields[safeSelectedIndex];
     const safeDangerIndex = Math.max(0, Math.min(editor.dangerSelectedIndex, Math.max(dangerActions.length - 1, 0)));
@@ -352,10 +343,11 @@ export function Settings({ editor }) {
         }
         return lookup;
     }, [events, identityMap]);
-    const walletTableWidth = Math.max(24, panelContentWidth);
-    const walletIndexWidth = Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1);
-    const walletAddressWidth = Math.max(18, Math.min(42, Math.floor(walletTableWidth * 0.62)));
-    const walletUsernameWidth = Math.max(8, walletTableWidth - walletIndexWidth - walletAddressWidth - 2);
+    const walletTableWidth = Math.max(1, panelContentWidth - 6);
+    const walletIndexWidth = Math.min(Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1), walletTableWidth);
+    const walletRemainingWidth = Math.max(0, walletTableWidth - walletIndexWidth - 2);
+    const walletAddressWidth = Math.max(0, Math.min(42, Math.floor(walletRemainingWidth * 0.62)));
+    const walletUsernameWidth = Math.max(0, walletRemainingWidth - walletAddressWidth);
     const liveTradingEnabled = isLiveTradingEnabled(envData.rawValues);
     const topRowGap = stacked ? 0 : 1;
     const topRowWidth = Math.max(24, terminal.width - 4);
@@ -1050,11 +1042,23 @@ export function Settings({ editor }) {
         { label: 'Duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-' },
         { label: 'Integrity', value: dbIntegrityStatus, color: dbIntegrityColor }
     ];
+    const topSummaryHeight = Math.max(7, Math.ceil(Math.max(botStateStats.length, databaseStats.length) / Math.max(1, topBoxColumnCount)) + 5);
+    const topRegionHeight = stacked ? topSummaryHeight * 2 + 1 : topSummaryHeight;
+    const settingsBodyHeight = Math.max(1, terminal.height - 8);
+    const middleSectionHeight = 16;
+    const environmentContentRows = Math.max(4, settingsBodyHeight - topRegionHeight - 1 - middleSectionHeight - 1 - 5);
+    const maxWalletLines = envData.watchedWallets.length ? 1 : 0;
+    const visibleWallets = envData.watchedWallets.slice(0, maxWalletLines);
+    const hiddenWalletCount = Math.max(0, envData.watchedWallets.length - visibleWallets.length);
+    const walletSectionRows = envData.watchedWallets.length
+        ? 2 + visibleWallets.length + (hiddenWalletCount > 0 ? 1 : 0)
+        : 0;
+    const envRows = envData.rows.slice(0, Math.max(0, environmentContentRows - walletSectionRows - (walletSectionRows > 0 && envData.rows.length ? 1 : 0)));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
-            React.createElement(SettingsSummaryBox, { title: "Bot State", width: topBoxWidth, items: botStateStats, columnCount: topBoxColumnCount }),
+            React.createElement(SettingsSummaryBox, { title: "Bot State", width: topBoxWidth, height: topSummaryHeight, items: botStateStats, columnCount: topBoxColumnCount }),
             !stacked ? React.createElement(InkBox, { width: topRowGap }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(SettingsSummaryBox, { title: "Database", width: topBoxWidth, items: databaseStats, columnCount: topBoxColumnCount })),
+            React.createElement(SettingsSummaryBox, { title: "Database", width: topBoxWidth, height: topSummaryHeight, items: databaseStats, columnCount: topBoxColumnCount })),
         React.createElement(InkBox, { marginTop: 1, flexDirection: stacked ? 'column' : 'row', width: "100%" },
             React.createElement(Box, { title: "Editable Config", width: stacked ? '100%' : configBoxWidth, accent: true },
                 React.createElement(InkBox, { width: "100%" }, configColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `config-column-${columnIndex}` },
@@ -1124,21 +1128,26 @@ export function Settings({ editor }) {
                     dangerHelperLines.map((line, index) => (React.createElement(Text, { key: `danger-status-${index}`, color: statusColor }, line)))))),
         React.createElement(InkBox, { marginTop: 1 },
             React.createElement(Box, { title: "Environment" }, envRows.length || envData.watchedWallets.length ? (React.createElement(React.Fragment, null,
-                envRows.map((row) => (React.createElement(StatRow, { key: row.key, label: row.key, value: row.value }))),
+                envRows.map((row) => (React.createElement(StatRow, { key: row.key, label: row.key, value: row.value, width: panelContentWidth }))),
                 React.createElement(InkBox, { flexDirection: "column", marginTop: envRows.length ? 1 : 0 },
                     React.createElement(Text, { color: theme.dim }, truncate(`WATCHED_WALLETS (${envData.watchedWallets.length})`, helperWidth)),
                     visibleWallets.length ? (React.createElement(React.Fragment, null,
-                        React.createElement(InkBox, { width: "100%" },
+                        React.createElement(InkBox, { width: "100%", flexShrink: 0 },
                             React.createElement(Text, { color: theme.dim }, fit('#', walletIndexWidth)),
-                            React.createElement(Text, { color: theme.dim }, " "),
-                            React.createElement(Text, { color: theme.dim }, fit('USERNAME', walletUsernameWidth)),
-                            React.createElement(Text, { color: theme.dim }, " "),
-                            React.createElement(Text, { color: theme.dim }, fit('WALLET', walletAddressWidth))),
-                        visibleWallets.map((wallet, index) => (React.createElement(InkBox, { key: wallet, width: "100%" },
+                            walletUsernameWidth > 0 ? (React.createElement(React.Fragment, null,
+                                React.createElement(Text, { color: theme.dim }, " "),
+                                React.createElement(Text, { color: theme.dim }, fit('USERNAME', walletUsernameWidth)))) : null,
+                            walletAddressWidth > 0 ? (React.createElement(React.Fragment, null,
+                                React.createElement(Text, { color: theme.dim }, " "),
+                                React.createElement(Text, { color: theme.dim }, fit('WALLET', walletAddressWidth)))) : null),
+                    visibleWallets.map((wallet, index) => (React.createElement(InkBox, { key: `${wallet}-${index}`, width: "100%", flexShrink: 0 },
                             React.createElement(Text, { color: theme.white }, fit(`${index + 1}.`, walletIndexWidth)),
-                            React.createElement(Text, null, " "),
-                            React.createElement(Text, { color: theme.white }, fit(usernames.get(wallet.toLowerCase()) || shortAddress(wallet), walletUsernameWidth)),
-                            React.createElement(Text, null, " "),
-                            React.createElement(Text, { color: theme.white }, fit(wallet, walletAddressWidth))))))) : (React.createElement(Text, { color: theme.dim }, "No watched wallets configured.")),
-                    hiddenWalletCount > 0 ? (React.createElement(Text, { color: theme.dim }, truncate(`... and ${hiddenWalletCount} more`, helperWidth))) : null))) : (React.createElement(Text, { color: theme.dim }, "No active env file found yet."))))));
+                            walletUsernameWidth > 0 ? (React.createElement(React.Fragment, null,
+                                React.createElement(Text, null, " "),
+                                React.createElement(Text, { color: theme.white }, fit(usernames.get(wallet.toLowerCase()) || shortAddress(wallet), walletUsernameWidth)))) : null,
+                            walletAddressWidth > 0 ? (React.createElement(React.Fragment, null,
+                                React.createElement(Text, null, " "),
+                                React.createElement(Text, { color: theme.white }, fit(wallet, walletAddressWidth)))) : null))))) : (React.createElement(Text, { color: theme.dim }, "No watched wallets configured.")),
+                    hiddenWalletCount > 0 ? (React.createElement(InkBox, { width: "100%", flexShrink: 0 },
+                        React.createElement(Text, { color: theme.dim }, truncate(`... and ${hiddenWalletCount} more`, helperWidth)))) : null))) : (React.createElement(Text, { color: theme.dim }, "No active env file found yet."))))));
 }

@@ -32,7 +32,7 @@ import {
 import {requestManualTrade} from './manualTradeControl.js'
 import {Wallets} from './pages/Wallets.js'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
-import {secondsAgo} from './format.js'
+import {fit, secondsAgo} from './format.js'
 import {ManualRefreshProvider} from './refresh.js'
 import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} from './terminal.js'
 import {useBotState, type BotState} from './useBotState.js'
@@ -492,33 +492,47 @@ function AppContent({
         : terminal.compact
           ? 'r refresh  q exit'
           : 'r: refresh  q: exit'
+  const frameLineWidth = Math.max(12, terminal.width - 6)
+  const frameBodyHeight = Math.max(1, terminal.height - 8)
+  const navText = (Object.entries(PAGES) as Array<[string, {label: string}]>)
+    .map(([key, value]) => {
+      const isSelected = Number(key) === page
+      const label = `${key}:${navLabels[Number(key) as keyof typeof navLabels] || value.label}`
+      return isSelected ? `[${label}]` : label
+    })
+    .join('  ')
+  const headerStatusText = `${backendStatusTag} ${mode}`
+  const preferredHeaderStatusWidth = Math.min(frameLineWidth, terminal.compact ? 18 : 26)
+  const headerStatusWidth = Math.max(1, Math.min(preferredHeaderStatusWidth, Math.max(1, frameLineWidth - 4)))
+  const headerLeftWidth = Math.max(0, frameLineWidth - headerStatusWidth - 1)
+  const showHeaderLeft = headerLeftWidth >= 4
+  const headerTitleWidth = Math.max(0, Math.min('KELLY-WATCHER'.length, Math.max(0, headerLeftWidth - 3)))
+  const headerNavWidth = Math.max(0, headerLeftWidth - headerTitleWidth - 3)
+  const footerStatusRaw = activeTransientNotice ? activeTransientNotice.message : footerStatusText
+  const footerStatusWidth = Math.max(10, Math.min(frameLineWidth - 4, Math.floor(frameLineWidth * (footerCompact ? 0.45 : 0.38))))
+  const footerControlsWidth = Math.max(1, frameLineWidth - footerStatusWidth - 1)
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.accent} width={terminal.width} height={terminal.height}>
-      <Box borderStyle="round" borderColor={theme.border} paddingX={1}>
-        <Text color={backendDotColor}>●</Text>
-        <Text> </Text>
-        <Text color={theme.white} bold>KELLY-WATCHER</Text>
-        <Text>  </Text>
-        {(Object.entries(PAGES) as Array<[string, {label: string}]>).map(([key, value]) => {
-          const isSelected = Number(key) === page
-          const label = `${key}:${navLabels[Number(key) as keyof typeof navLabels] || value.label}`
-          return (
-            <React.Fragment key={key}>
-              <Text color={isSelected ? theme.white : theme.dim} bold={isSelected}>
-                {isSelected ? `[${label}]` : label}
-              </Text>
-              <Text>  </Text>
-            </React.Fragment>
-          )
-        })}
-        <Spacer />
-        <Text color={backendDotColor} bold>{backendStatusTag}</Text>
-        <Text color={theme.dim}> </Text>
-        <Text color={modeColor} bold>{mode}</Text>
+      <Box borderStyle="round" borderColor={theme.border} paddingX={1} height={3} flexShrink={0} width="100%">
+        {showHeaderLeft ? (
+          <Box width={headerLeftWidth}>
+            <Text color={backendDotColor}>●</Text>
+            <Text> </Text>
+            <Text color={theme.white} bold>{fit('KELLY-WATCHER', headerTitleWidth)}</Text>
+            {headerNavWidth > 0 ? (
+              <>
+                <Text> </Text>
+                <Text color={theme.dim}>{fit(navText, headerNavWidth)}</Text>
+              </>
+            ) : null}
+          </Box>
+        ) : null}
+        {showHeaderLeft ? <Spacer /> : null}
+        <Text color={backendDotColor} bold>{fit(headerStatusText, headerStatusWidth)}</Text>
       </Box>
 
-      <Box padding={1} flexGrow={1}>
+      <Box paddingX={1} paddingY={1} height={frameBodyHeight} flexShrink={1} overflow="hidden">
         {renderPage(
           page,
           settingsEditor,
@@ -557,20 +571,10 @@ function AppContent({
         )}
       </Box>
 
-      <Box borderStyle="round" borderColor={theme.border} paddingX={1}>
-        {footerCompact ? (
-          <>
-            <Text color={theme.dim}>{footerControls}</Text>
-            <Spacer />
-            <Text color={footerStatusColor}>{activeTransientNotice ? activeTransientNotice.message : footerStatusText}</Text>
-          </>
-        ) : (
-          <>
-            <Text color={theme.dim}>{footerControls}</Text>
-            <Spacer />
-            <Text color={footerStatusColor}>{activeTransientNotice ? activeTransientNotice.message : footerStatusText}</Text>
-          </>
-        )}
+      <Box borderStyle="round" borderColor={theme.border} paddingX={1} height={3} flexShrink={0} width="100%">
+        <Text color={theme.dim}>{fit(footerControls, footerControlsWidth)}</Text>
+        <Spacer />
+        <Text color={footerStatusColor}>{fit(footerStatusRaw, footerStatusWidth)}</Text>
       </Box>
     </Box>
   )

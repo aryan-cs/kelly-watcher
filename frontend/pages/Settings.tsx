@@ -240,11 +240,13 @@ const DANGER_OPTION_BLURBS: Record<string, string> = {
 function SettingsSummaryBox({
   title,
   width,
+  height,
   items,
   columnCount
 }: {
   title: string
   width: string | number
+  height?: number
   items: SummaryStat[]
   columnCount: number
 }) {
@@ -258,7 +260,7 @@ function SettingsSummaryBox({
   const labelWidth = Math.max(8, rowWidth - valueWidth - 1)
 
   return (
-    <Box title={title} width={width}>
+    <Box title={title} width={width} height={height}>
       <InkBox width="100%" marginTop={1} flexDirection="column">
         <InkBox width="100%">
           {columns.map((column, columnIndex) => (
@@ -291,15 +293,6 @@ export function Settings({editor}: SettingsProps) {
   const config = useDashboardConfig()
   const envData = useMemo(() => envDataFromConfig(config), [config])
   const identityMap = useIdentityMap()
-  const environmentBudget = rowsForHeight(terminal.height, stacked ? 40 : 30, 6, 14)
-  const walletSectionHeaderRows = envData.watchedWallets.length ? 2 : 0
-  const maxWalletLines = envData.watchedWallets.length ? Math.max(2, Math.min(6, Math.floor(environmentBudget / 2))) : 0
-  const walletSectionRows = envData.watchedWallets.length
-    ? walletSectionHeaderRows + Math.min(envData.watchedWallets.length, maxWalletLines) + (envData.watchedWallets.length > maxWalletLines ? 1 : 0)
-    : 0
-  const envRows = envData.rows.slice(0, Math.max(0, environmentBudget - walletSectionRows))
-  const visibleWallets = envData.watchedWallets.slice(0, maxWalletLines)
-  const hiddenWalletCount = Math.max(0, envData.watchedWallets.length - visibleWallets.length)
   const safeSelectedIndex = Math.max(0, Math.min(editor.selectedIndex, Math.max(editableConfigFields.length - 1, 0)))
   const selectedField = editableConfigFields[safeSelectedIndex]
   const safeDangerIndex = Math.max(0, Math.min(editor.dangerSelectedIndex, Math.max(dangerActions.length - 1, 0)))
@@ -441,10 +434,11 @@ export function Settings({editor}: SettingsProps) {
     }
     return lookup
   }, [events, identityMap])
-  const walletTableWidth = Math.max(24, panelContentWidth)
-  const walletIndexWidth = Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1)
-  const walletAddressWidth = Math.max(18, Math.min(42, Math.floor(walletTableWidth * 0.62)))
-  const walletUsernameWidth = Math.max(8, walletTableWidth - walletIndexWidth - walletAddressWidth - 2)
+  const walletTableWidth = Math.max(1, panelContentWidth - 6)
+  const walletIndexWidth = Math.min(Math.max(3, String(Math.max(1, envData.watchedWallets.length)).length + 1), walletTableWidth)
+  const walletRemainingWidth = Math.max(0, walletTableWidth - walletIndexWidth - 2)
+  const walletAddressWidth = Math.max(0, Math.min(42, Math.floor(walletRemainingWidth * 0.62)))
+  const walletUsernameWidth = Math.max(0, walletRemainingWidth - walletAddressWidth)
   const liveTradingEnabled = isLiveTradingEnabled(envData.rawValues)
   const topRowGap = stacked ? 0 : 1
   const topRowWidth = Math.max(24, terminal.width - 4)
@@ -1161,13 +1155,34 @@ export function Settings({editor}: SettingsProps) {
     {label: 'Duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-'},
     {label: 'Integrity', value: dbIntegrityStatus, color: dbIntegrityColor}
   ]
+  const topSummaryHeight = Math.max(
+    7,
+    Math.ceil(Math.max(botStateStats.length, databaseStats.length) / Math.max(1, topBoxColumnCount)) + 5
+  )
+  const topRegionHeight = stacked ? topSummaryHeight * 2 + 1 : topSummaryHeight
+  const settingsBodyHeight = Math.max(1, terminal.height - 8)
+  const middleSectionHeight = 16
+  const environmentContentRows = Math.max(
+    4,
+    settingsBodyHeight - topRegionHeight - 1 - middleSectionHeight - 1 - 5
+  )
+  const maxWalletLines = envData.watchedWallets.length ? 1 : 0
+  const visibleWallets = envData.watchedWallets.slice(0, maxWalletLines)
+  const hiddenWalletCount = Math.max(0, envData.watchedWallets.length - visibleWallets.length)
+  const walletSectionRows = envData.watchedWallets.length
+    ? 2 + visibleWallets.length + (hiddenWalletCount > 0 ? 1 : 0)
+    : 0
+  const envRows = envData.rows.slice(
+    0,
+    Math.max(0, environmentContentRows - walletSectionRows - (walletSectionRows > 0 && envData.rows.length ? 1 : 0))
+  )
 
   return (
     <InkBox flexDirection="column" width="100%">
       <InkBox flexDirection={stacked ? 'column' : 'row'}>
-        <SettingsSummaryBox title="Bot State" width={topBoxWidth} items={botStateStats} columnCount={topBoxColumnCount} />
+        <SettingsSummaryBox title="Bot State" width={topBoxWidth} height={topSummaryHeight} items={botStateStats} columnCount={topBoxColumnCount} />
         {!stacked ? <InkBox width={topRowGap} /> : <InkBox height={1} />}
-        <SettingsSummaryBox title="Database" width={topBoxWidth} items={databaseStats} columnCount={topBoxColumnCount} />
+        <SettingsSummaryBox title="Database" width={topBoxWidth} height={topSummaryHeight} items={databaseStats} columnCount={topBoxColumnCount} />
       </InkBox>
 
       <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'} width="100%">
@@ -1319,31 +1334,47 @@ export function Settings({editor}: SettingsProps) {
         <Box title="Environment">
           {envRows.length || envData.watchedWallets.length ? (
             <>
-              {envRows.map((row) => (
-                <StatRow key={row.key} label={row.key} value={row.value} />
-              ))}
+                {envRows.map((row) => (
+                  <StatRow key={row.key} label={row.key} value={row.value} width={panelContentWidth} />
+                ))}
               <InkBox flexDirection="column" marginTop={envRows.length ? 1 : 0}>
                 <Text color={theme.dim}>
                   {truncate(`WATCHED_WALLETS (${envData.watchedWallets.length})`, helperWidth)}
                 </Text>
                 {visibleWallets.length ? (
                   <>
-                    <InkBox width="100%">
+                    <InkBox width="100%" flexShrink={0}>
                       <Text color={theme.dim}>{fit('#', walletIndexWidth)}</Text>
-                      <Text color={theme.dim}> </Text>
-                      <Text color={theme.dim}>{fit('USERNAME', walletUsernameWidth)}</Text>
-                      <Text color={theme.dim}> </Text>
-                      <Text color={theme.dim}>{fit('WALLET', walletAddressWidth)}</Text>
+                      {walletUsernameWidth > 0 ? (
+                        <>
+                          <Text color={theme.dim}> </Text>
+                          <Text color={theme.dim}>{fit('USERNAME', walletUsernameWidth)}</Text>
+                        </>
+                      ) : null}
+                      {walletAddressWidth > 0 ? (
+                        <>
+                          <Text color={theme.dim}> </Text>
+                          <Text color={theme.dim}>{fit('WALLET', walletAddressWidth)}</Text>
+                        </>
+                      ) : null}
                     </InkBox>
                     {visibleWallets.map((wallet, index) => (
-                      <InkBox key={wallet} width="100%">
+                      <InkBox key={`${wallet}-${index}`} width="100%" flexShrink={0}>
                         <Text color={theme.white}>{fit(`${index + 1}.`, walletIndexWidth)}</Text>
-                        <Text> </Text>
-                        <Text color={theme.white}>
-                          {fit(usernames.get(wallet.toLowerCase()) || shortAddress(wallet), walletUsernameWidth)}
-                        </Text>
-                        <Text> </Text>
-                        <Text color={theme.white}>{fit(wallet, walletAddressWidth)}</Text>
+                        {walletUsernameWidth > 0 ? (
+                          <>
+                            <Text> </Text>
+                            <Text color={theme.white}>
+                              {fit(usernames.get(wallet.toLowerCase()) || shortAddress(wallet), walletUsernameWidth)}
+                            </Text>
+                          </>
+                        ) : null}
+                        {walletAddressWidth > 0 ? (
+                          <>
+                            <Text> </Text>
+                            <Text color={theme.white}>{fit(wallet, walletAddressWidth)}</Text>
+                          </>
+                        ) : null}
                       </InkBox>
                     ))}
                   </>
@@ -1351,9 +1382,11 @@ export function Settings({editor}: SettingsProps) {
                   <Text color={theme.dim}>No watched wallets configured.</Text>
                 )}
                 {hiddenWalletCount > 0 ? (
-                  <Text color={theme.dim}>
-                    {truncate(`... and ${hiddenWalletCount} more`, helperWidth)}
-                  </Text>
+                  <InkBox width="100%" flexShrink={0}>
+                    <Text color={theme.dim}>
+                      {truncate(`... and ${hiddenWalletCount} more`, helperWidth)}
+                    </Text>
+                  </InkBox>
                 ) : null}
               </InkBox>
             </>

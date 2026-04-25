@@ -12,7 +12,7 @@ import { Performance, pendingPerfExitKey } from './pages/Performance.js';
 import { requestManualTrade } from './manualTradeControl.js';
 import { Wallets } from './pages/Wallets.js';
 import { Settings } from './pages/Settings.js';
-import { secondsAgo } from './format.js';
+import { fit, secondsAgo } from './format.js';
 import { ManualRefreshProvider } from './refresh.js';
 import { detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize } from './terminal.js';
 import { useBotState } from './useBotState.js';
@@ -276,33 +276,43 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                                                 ? '←→ box  ↑↓ select  enter open  r refresh  q exit'
                                                 : '←/→: switch box  ↑/↓: select  enter: edit/open  r: refresh  q: exit'
                             : terminal.compact
-                                ? 'r refresh  q exit'
-                                : 'r: refresh  q: exit';
+                        ? 'r refresh  q exit'
+                        : 'r: refresh  q: exit';
+    const frameLineWidth = Math.max(12, terminal.width - 6);
+    const frameBodyHeight = Math.max(1, terminal.height - 8);
+    const navText = Object.entries(PAGES)
+        .map(([key, value]) => {
+        const isSelected = Number(key) === page;
+        const label = `${key}:${navLabels[Number(key)] || value.label}`;
+        return isSelected ? `[${label}]` : label;
+    })
+        .join('  ');
+    const headerStatusText = `${backendStatusTag} ${mode}`;
+    const preferredHeaderStatusWidth = Math.min(frameLineWidth, terminal.compact ? 18 : 26);
+    const headerStatusWidth = Math.max(1, Math.min(preferredHeaderStatusWidth, Math.max(1, frameLineWidth - 4)));
+    const headerLeftWidth = Math.max(0, frameLineWidth - headerStatusWidth - 1);
+    const showHeaderLeft = headerLeftWidth >= 4;
+    const headerTitleWidth = Math.max(0, Math.min('KELLY-WATCHER'.length, Math.max(0, headerLeftWidth - 3)));
+    const headerNavWidth = Math.max(0, headerLeftWidth - headerTitleWidth - 3);
+    const footerStatusRaw = activeTransientNotice ? activeTransientNotice.message : footerStatusText;
+    const footerStatusWidth = Math.max(10, Math.min(frameLineWidth - 4, Math.floor(frameLineWidth * (footerCompact ? 0.45 : 0.38))));
+    const footerControlsWidth = Math.max(1, frameLineWidth - footerStatusWidth - 1);
     return (React.createElement(Box, { flexDirection: "column", borderStyle: "round", borderColor: theme.accent, width: terminal.width, height: terminal.height },
-        React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1 },
-            React.createElement(Text, { color: backendDotColor }, "\u25CF"),
-            React.createElement(Text, null, " "),
-            React.createElement(Text, { color: theme.white, bold: true }, "KELLY-WATCHER"),
-            React.createElement(Text, null, "  "),
-            Object.entries(PAGES).map(([key, value]) => {
-                const isSelected = Number(key) === page;
-                const label = `${key}:${navLabels[Number(key)] || value.label}`;
-                return (React.createElement(React.Fragment, { key: key },
-                    React.createElement(Text, { color: isSelected ? theme.white : theme.dim, bold: isSelected }, isSelected ? `[${label}]` : label),
-                    React.createElement(Text, null, "  ")));
-            }),
+        React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1, height: 3, flexShrink: 0, width: "100%" },
+            showHeaderLeft ? (React.createElement(Box, { width: headerLeftWidth },
+                React.createElement(Text, { color: backendDotColor }, "\u25CF"),
+                React.createElement(Text, null, " "),
+                React.createElement(Text, { color: theme.white, bold: true }, fit('KELLY-WATCHER', headerTitleWidth)),
+                headerNavWidth > 0 ? (React.createElement(React.Fragment, null,
+                    React.createElement(Text, null, " "),
+                    React.createElement(Text, { color: theme.dim }, fit(navText, headerNavWidth)))) : null)) : null,
+            showHeaderLeft ? React.createElement(Spacer, null) : null,
+            React.createElement(Text, { color: backendDotColor, bold: true }, fit(headerStatusText, headerStatusWidth))),
+        React.createElement(Box, { paddingX: 1, paddingY: 1, height: frameBodyHeight, flexShrink: 1, overflow: "hidden" }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
+        React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1, height: 3, flexShrink: 0, width: "100%" },
+            React.createElement(Text, { color: theme.dim }, fit(footerControls, footerControlsWidth)),
             React.createElement(Spacer, null),
-            React.createElement(Text, { color: backendDotColor, bold: true }, backendStatusTag),
-            React.createElement(Text, { color: theme.dim }, " "),
-            React.createElement(Text, { color: modeColor, bold: true }, mode)),
-        React.createElement(Box, { padding: 1, flexGrow: 1 }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
-        React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1 }, footerCompact ? (React.createElement(React.Fragment, null,
-            React.createElement(Text, { color: theme.dim }, footerControls),
-            React.createElement(Spacer, null),
-            React.createElement(Text, { color: footerStatusColor }, activeTransientNotice ? activeTransientNotice.message : footerStatusText))) : (React.createElement(React.Fragment, null,
-            React.createElement(Text, { color: theme.dim }, footerControls),
-            React.createElement(Spacer, null),
-            React.createElement(Text, { color: footerStatusColor }, activeTransientNotice ? activeTransientNotice.message : footerStatusText))))));
+            React.createElement(Text, { color: footerStatusColor }, fit(footerStatusRaw, footerStatusWidth)))));
 }
 function App() {
     const botState = useBotState();

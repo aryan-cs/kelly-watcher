@@ -19,6 +19,7 @@ export function Box({title, children, width = '100%', height, accent = false}: P
       width={width}
       height={height}
       paddingX={1}
+      flexShrink={0}
     >
       {title ? (
         <InkBox>

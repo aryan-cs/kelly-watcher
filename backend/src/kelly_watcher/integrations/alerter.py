@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import Iterable
 
 import httpx
@@ -13,6 +14,29 @@ _TELEGRAM_ALLOWED_KINDS = frozenset(
     {"buy", "resolution", "retrain", "exit", "status", "error", "warning", "report"}
 )
 _URL_RE = re.compile(r"https?://\S+")
+_TELEGRAM_CLIENT_LOCK = threading.Lock()
+_TELEGRAM_CLIENT: httpx.Client | None = None
+
+
+def _telegram_client() -> httpx.Client:
+    global _TELEGRAM_CLIENT
+    with _TELEGRAM_CLIENT_LOCK:
+        if _TELEGRAM_CLIENT is None or bool(getattr(_TELEGRAM_CLIENT, "is_closed", False)):
+            _TELEGRAM_CLIENT = httpx.Client(
+                timeout=5.0,
+                limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+            )
+        return _TELEGRAM_CLIENT
+
+
+def close_telegram_alert_client() -> None:
+    global _TELEGRAM_CLIENT
+    with _TELEGRAM_CLIENT_LOCK:
+        client = _TELEGRAM_CLIENT
+        _TELEGRAM_CLIENT = None
+    close = getattr(client, "close", None)
+    if callable(close):
+        close()
 
 
 def _one_line(value: object) -> str:
@@ -256,12 +280,11 @@ def send_telegram_message(
         payload["allow_sending_without_reply"] = True
 
     try:
-        with httpx.Client(timeout=5.0) as client:
-            response = client.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json=payload,
-            )
-            response.raise_for_status()
+        response = _telegram_client().post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json=payload,
+        )
+        response.raise_for_status()
         return True
     except Exception as exc:
         logger.warning("Telegram alert failed: %s", exc)

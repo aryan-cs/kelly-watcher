@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import hmac
+import math
 import os
 import re
 import sqlite3
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from kelly_watcher.config import use_real_money
+from kelly_watcher.config import max_bet_fraction, min_bet_usd, shadow_bankroll_usd, use_real_money
 from kelly_watcher.data.db import DB_PATH, db_recovery_state, get_conn
 from kelly_watcher.env_profile import (
     active_env_profile,
@@ -650,6 +652,37 @@ def _normalize_manual_trade_action(raw_action: Any) -> str | None:
     return None
 
 
+def _manual_trade_max_request_usd(bot_state: dict[str, Any]) -> float | None:
+    equity_keys = (
+        "bankroll_usd",
+        "current_balance",
+        "account_equity_usd",
+        "equity_usd",
+        "available_cash",
+    )
+    equity = 0.0
+    for key in equity_keys:
+        try:
+            candidate = float(bot_state.get(key) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(candidate) and candidate > 0:
+            equity = candidate
+            break
+    if equity <= 0:
+        try:
+            equity = float(shadow_bankroll_usd())
+        except Exception:
+            return None
+    try:
+        limit = float(equity) * float(max_bet_fraction())
+    except Exception:
+        return None
+    if not math.isfinite(limit) or limit <= 0:
+        return None
+    return round(limit, 6)
+
+
 def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
     action = _normalize_manual_trade_action(raw_input.get("action"))
     market_id = str(raw_input.get("marketId") or raw_input.get("market_id") or "").strip()
@@ -658,7 +691,10 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
     question = str(raw_input.get("question") or "").strip()
     trader_address = str(raw_input.get("traderAddress") or raw_input.get("trader_address") or "").strip().lower()
     amount_usd_raw = raw_input.get("amountUsd", raw_input.get("amount_usd"))
-    amount_usd = float(amount_usd_raw) if amount_usd_raw is not None else None
+    try:
+        amount_usd = float(amount_usd_raw) if amount_usd_raw is not None else None
+    except (TypeError, ValueError):
+        return {"ok": False, "message": "Buy more requires a numeric USD amount."}
     bot_state = _bot_state_snapshot()
     now = int(time.time())
     started_at = int(bot_state.get("started_at") or 0)
@@ -672,8 +708,24 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "message": "Manual trade request is missing a token id."}
     if not side:
         return {"ok": False, "message": "Manual trade request is missing a side."}
-    if action == "buy_more" and (amount_usd is None or not float(amount_usd) > 0):
-        return {"ok": False, "message": "Buy more requires a positive USD amount."}
+    requested_amount_usd = amount_usd
+    amount_clamped = False
+    if action == "buy_more":
+        if amount_usd is None or not math.isfinite(amount_usd) or not amount_usd > 0:
+            return {"ok": False, "message": "Buy more requires a positive USD amount."}
+        max_request_usd = _manual_trade_max_request_usd(bot_state)
+        if max_request_usd is not None and amount_usd > max_request_usd + 1e-9:
+            minimum = float(min_bet_usd())
+            if max_request_usd + 1e-9 < minimum:
+                return {
+                    "ok": False,
+                    "message": (
+                        "Manual buy is blocked because remaining configured size headroom "
+                        f"was ${max_request_usd:.2f}, below the ${minimum:.2f} minimum bet."
+                    ),
+                }
+            amount_usd = max_request_usd
+            amount_clamped = True
     if started_at <= 0 or last_activity_at <= 0:
         return {
             "ok": False,
@@ -705,6 +757,12 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
         "question": question or None,
         "trader_address": trader_address or None,
         "amount_usd": round(float(amount_usd), 6) if action == "buy_more" and amount_usd is not None else None,
+        "requested_amount_usd": (
+            round(float(requested_amount_usd), 6)
+            if action == "buy_more" and requested_amount_usd is not None
+            else None
+        ),
+        "amount_clamped": amount_clamped,
     }
 
     try:
@@ -717,6 +775,8 @@ def _manual_trade_response(raw_input: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "message": (
             f"Manual buy request queued for ${float(amount_usd):.2f}."
+            if action == "buy_more" and not amount_clamped
+            else f"Manual buy request queued for ${float(amount_usd):.2f} after clamping to the configured max size."
             if action == "buy_more"
             else "Manual cash-out request queued."
         ),
@@ -966,6 +1026,8 @@ def _save_position_manual_edit(payload: dict[str, Any]) -> dict[str, Any]:
     size_usd = _positive_number(payload.get("sizeUsd", payload.get("size_usd")), "Total")
     status = _normalize_position_status(payload.get("status"))
 
+    if real_money != 0:
+        raise ValueError("Manual position edits are only allowed on shadow positions")
     if not market_id:
         raise ValueError("Missing market id for manual position edit")
     if not side:
@@ -1390,7 +1452,10 @@ def _save_position_manual_edit_response(payload: dict[str, Any]) -> dict[str, An
     blocked_response = _blocked_shadow_mutation_response("Manual position edits")
     if blocked_response is not None:
         return blocked_response
-    return _save_position_manual_edit(payload)
+    try:
+        return _save_position_manual_edit(payload)
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc)}
 
 
 def _config_value_response(key: str, value: str) -> tuple[int, dict[str, Any]]:
@@ -1509,9 +1574,10 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         token = getattr(self.server, "api_token", None)
         if not token:
-            return True
+            client_host = str((self.client_address or ("",))[0]).strip()
+            return client_host in {"127.0.0.1", "::1", "localhost"}
         authorization = str(self.headers.get("Authorization") or "").strip()
-        return authorization == f"Bearer {token}"
+        return hmac.compare_digest(authorization, f"Bearer {token}")
 
     def _require_auth(self) -> bool:
         if self._authorized():
@@ -1529,13 +1595,15 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/health":
+            api_token = getattr(self.server, "api_token", None)
+            client_host = str((self.client_address or ("",))[0]).strip()
             self._send_json(
                 200,
                 {
                     "ok": True,
                     "host": getattr(self.server, "api_host", _api_host()),
                     "port": getattr(self.server, "api_port", _api_port()),
-                    "auth_required": bool(getattr(self.server, "api_token", None)),
+                    "auth_required": bool(api_token) or client_host not in {"127.0.0.1", "::1", "localhost"},
                 },
             )
             return

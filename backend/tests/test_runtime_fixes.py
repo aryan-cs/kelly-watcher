@@ -76,6 +76,7 @@ if "py_clob_client.clob_types" not in sys.modules:
 
 import kelly_watcher.research.auto_retrain as auto_retrain
 import kelly_watcher.integrations.alerter as alerter
+import kelly_watcher.integrations.telegram_runtime as telegram_runtime
 import kelly_watcher.engine.beliefs as beliefs
 import kelly_watcher.config as config
 import kelly_watcher.engine.dedup as dedup
@@ -215,6 +216,14 @@ def _insert_resolved_shadow_trade_for_promotion_test(
 
 
 class RuntimeFixesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        alerter.close_telegram_alert_client()
+        telegram_runtime.close_telegram_command_client()
+
+    def tearDown(self) -> None:
+        alerter.close_telegram_alert_client()
+        telegram_runtime.close_telegram_command_client()
+
     def test_quarantine_runtime_model_artifact_moves_current_artifact_to_quarantine(self) -> None:
         with TemporaryDirectory() as tmpdir:
             artifact_path = Path(tmpdir) / "save" / "model.joblib"
@@ -233,26 +242,20 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_send_alert_suppresses_non_trade_notifications(self) -> None:
         client = Mock()
-        client_context = Mock()
-        client_context.__enter__ = Mock(return_value=client)
-        client_context.__exit__ = Mock(return_value=False)
 
         with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
             "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client):
             alerter.send_alert("Bot started")
 
         client.post.assert_not_called()
 
     def test_send_alert_allows_buy_notifications(self) -> None:
         client = Mock()
-        client_context = Mock()
-        client_context.__enter__ = Mock(return_value=client)
-        client_context.__exit__ = Mock(return_value=False)
 
         with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
             "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client):
             alerter.send_alert("Bought", kind="buy")
 
         client.post.assert_called_once()
@@ -260,26 +263,20 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_send_alert_allows_retrain_notifications(self) -> None:
         client = Mock()
-        client_context = Mock()
-        client_context.__enter__ = Mock(return_value=client)
-        client_context.__exit__ = Mock(return_value=False)
 
         with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
             "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client):
             alerter.send_alert("Retrain accepted", kind="retrain")
 
         client.post.assert_called_once()
 
     def test_send_alert_allows_status_notifications(self) -> None:
         client = Mock()
-        client_context = Mock()
-        client_context.__enter__ = Mock(return_value=client)
-        client_context.__exit__ = Mock(return_value=False)
 
         with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
             "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client):
             alerter.send_alert("bot started", kind="status")
 
         client.post.assert_called_once()
@@ -340,13 +337,10 @@ class RuntimeFixesTest(unittest.TestCase):
         response = Mock()
         response.raise_for_status = Mock(return_value=None)
         client.post.return_value = response
-        client_context = Mock()
-        client_context.__enter__ = Mock(return_value=client)
-        client_context.__exit__ = Mock(return_value=False)
 
         with patch("kelly_watcher.integrations.alerter.telegram_bot_token", return_value="token"), patch(
             "kelly_watcher.integrations.alerter.telegram_chat_id", return_value="chat-id"
-        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client_context):
+        ), patch("kelly_watcher.integrations.alerter.httpx.Client", return_value=client):
             ok = alerter.send_telegram_message("Hello Trader\nWill BTC Win? https://polymarket.com/Event/ABC")
 
         self.assertTrue(ok)
@@ -2384,7 +2378,11 @@ class RuntimeFixesTest(unittest.TestCase):
         write_env_value.assert_called_once_with("USE_REAL_MONEY", "true")
 
     def test_set_live_mode_response_disables_live_mode_without_readiness_check(self) -> None:
-        with patch.object(dashboard_api, "_write_env_value") as write_env_value:
+        with patch.object(
+            dashboard_api,
+            "_bot_state_snapshot",
+            return_value={"shadow_restart_pending": False, "startup_blocked": False},
+        ), patch.object(dashboard_api, "_write_env_value") as write_env_value:
             result = dashboard_api._set_live_mode_response({"enabled": False})
 
         self.assertTrue(result["ok"])
@@ -3155,6 +3153,89 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("startup blocked", str(result["message"]).lower())
         self.assertFalse(request_file.exists())
+
+    def test_dashboard_manual_trade_response_clamps_buy_request_before_queueing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            request_file = Path(tmpdir) / "manual_trade_request.json"
+            bot_state = {
+                "started_at": 100,
+                "last_activity_at": int(time.time()),
+                "shadow_restart_pending": False,
+                "bankroll_usd": 1000.0,
+            }
+
+            with patch.dict(
+                os.environ,
+                {
+                    "MAX_BET_FRACTION": "0.05",
+                    "MIN_BET_USD": "1.00",
+                    "SHADOW_BANKROLL_USD": "1000",
+                },
+                clear=False,
+            ), patch.object(dashboard_api, "_bot_state_snapshot", return_value=bot_state), patch.object(
+                dashboard_api, "MANUAL_TRADE_REQUEST_FILE", request_file
+            ):
+                result = dashboard_api._manual_trade_response(
+                    {
+                        "action": "buy_more",
+                        "marketId": "market-1",
+                        "tokenId": "token-1",
+                        "side": "yes",
+                        "amountUsd": 500.0,
+                    }
+                )
+                payload = json.loads(request_file.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(payload["amount_usd"], 50.0)
+        self.assertEqual(payload["requested_amount_usd"], 500.0)
+        self.assertTrue(payload["amount_clamped"])
+
+    def test_dashboard_manual_position_edit_rejects_live_rows(self) -> None:
+        with patch.object(dashboard_api, "_bot_state_snapshot", return_value={"shadow_restart_pending": False}):
+            result = dashboard_api._save_position_manual_edit_response(
+                {
+                    "sourceKind": "position",
+                    "marketId": "market-1",
+                    "tokenId": "token-1",
+                    "side": "yes",
+                    "realMoney": True,
+                    "entryPrice": 0.5,
+                    "shares": 10.0,
+                    "sizeUsd": 5.0,
+                    "status": "open",
+                }
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("shadow positions", str(result["message"]).lower())
+
+    def test_dashboard_api_requires_token_for_non_loopback_when_token_unset(self) -> None:
+        handler = SimpleNamespace(
+            server=SimpleNamespace(api_token=None),
+            headers={},
+            client_address=("100.104.250.54", 54321),
+        )
+
+        self.assertFalse(dashboard_api.DashboardApiHandler._authorized(handler))
+
+    def test_dashboard_api_allows_loopback_without_token(self) -> None:
+        handler = SimpleNamespace(
+            server=SimpleNamespace(api_token=None),
+            headers={},
+            client_address=("127.0.0.1", 54321),
+        )
+
+        self.assertTrue(dashboard_api.DashboardApiHandler._authorized(handler))
+
+    def test_dashboard_api_uses_bearer_token_when_configured(self) -> None:
+        handler = SimpleNamespace(
+            server=SimpleNamespace(api_token="secret-token"),
+            headers={"Authorization": "Bearer secret-token"},
+            client_address=("100.104.250.54", 54321),
+        )
+
+        self.assertTrue(dashboard_api.DashboardApiHandler._authorized(handler))
 
     def test_dashboard_drop_wallet_response_blocks_while_shadow_restart_pending(self) -> None:
         with patch.object(

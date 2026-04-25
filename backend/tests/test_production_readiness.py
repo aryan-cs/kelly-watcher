@@ -19,6 +19,23 @@ from kelly_watcher.runtime.executor import LiveExchangeFill, PolymarketExecutor
 
 
 class ProductionReadinessTest(unittest.TestCase):
+    def test_shadow_buy_records_actual_spent_when_fill_has_dust_remaining(self) -> None:
+        book = {
+            "asks": [
+                {"price": "0.50", "size": "9.99"},
+            ]
+        }
+
+        fill, reason = PolymarketExecutor._simulate_shadow_buy(book, 5.0)
+
+        self.assertIsNone(reason)
+        self.assertIsNotNone(fill)
+        assert fill is not None
+        expected_spent = 0.50 * 9.99
+        self.assertAlmostEqual(fill.spent_usd, expected_spent, places=6)
+        self.assertAlmostEqual(fill.shares, 9.99, places=6)
+        self.assertAlmostEqual(fill.avg_price, expected_spent / 9.99, places=6)
+
     def test_live_entry_ensures_allowance_before_posting_order(self) -> None:
         ops: list[str] = []
         executor = object.__new__(PolymarketExecutor)

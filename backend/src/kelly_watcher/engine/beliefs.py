@@ -46,73 +46,74 @@ class BeliefAdjustment:
 
 def sync_belief_priors() -> int:
     conn = get_conn()
-    rows = conn.execute(
-        f"""
-        SELECT
-            id,
-            skipped,
-            skip_reason,
-            signal_mode,
-            market_veto,
-            source_action,
-            outcome,
-            {resolved_pnl_expr()} AS resolved_pnl_usd,
-            actual_entry_price,
-            actual_entry_shares,
-            actual_entry_size_usd,
-            confidence,
-            COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
-            f_trader_win_rate,
-            f_conviction_ratio,
-            f_consistency,
-            f_days_to_res,
-            f_price,
-            f_spread_pct,
-            f_momentum_1h,
-            f_volume_trend,
-            f_oi_usd,
-            f_bid_depth_usd,
-            f_ask_depth_usd
-        FROM trade_log
-        WHERE COALESCE(source_action, 'buy')='buy'
-          AND (
-              {resolved_pnl_expr()} IS NOT NULL
-              OR outcome IS NOT NULL
-          )
-          AND id NOT IN (SELECT trade_log_id FROM belief_updates)
-        ORDER BY id
-        """
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                id,
+                skipped,
+                skip_reason,
+                signal_mode,
+                market_veto,
+                source_action,
+                outcome,
+                {resolved_pnl_expr()} AS resolved_pnl_usd,
+                actual_entry_price,
+                actual_entry_shares,
+                actual_entry_size_usd,
+                confidence,
+                COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
+                f_trader_win_rate,
+                f_conviction_ratio,
+                f_consistency,
+                f_days_to_res,
+                f_price,
+                f_spread_pct,
+                f_momentum_1h,
+                f_volume_trend,
+                f_oi_usd,
+                f_bid_depth_usd,
+                f_ask_depth_usd
+            FROM trade_log
+            WHERE COALESCE(source_action, 'buy')='buy'
+              AND (
+                  {resolved_pnl_expr()} IS NOT NULL
+                  OR outcome IS NOT NULL
+              )
+              AND id NOT IN (SELECT trade_log_id FROM belief_updates)
+            ORDER BY id
+            """
+        ).fetchall()
 
-    if not rows:
+        if not rows:
+            return 0
+
+        now = int(time.time())
+        applied = 0
+        counterfactual = 0
+        for row in rows:
+            label_and_weight = _belief_label_and_weight(row)
+            if label_and_weight is not None:
+                outcome, weight = label_and_weight
+                wins = weight if outcome == 1 else 0.0
+                losses = weight if outcome == 0 else 0.0
+                buckets = _feature_buckets_from_row(row)
+
+                _apply_bucket_update(conn, "__global__", "all", wins, losses, now)
+                for feature_name, bucket in buckets.items():
+                    _apply_bucket_update(conn, feature_name, bucket, wins, losses, now)
+                applied += 1
+                if weight < 0.999:
+                    counterfactual += 1
+
+            conn.execute(
+                "INSERT OR IGNORE INTO belief_updates (trade_log_id, applied_at) VALUES (?, ?)",
+                (row["id"], now),
+            )
+
+        conn.commit()
+    finally:
         conn.close()
-        return 0
-
-    now = int(time.time())
-    applied = 0
-    counterfactual = 0
-    for row in rows:
-        label_and_weight = _belief_label_and_weight(row)
-        if label_and_weight is not None:
-            outcome, weight = label_and_weight
-            wins = weight if outcome == 1 else 0.0
-            losses = weight if outcome == 0 else 0.0
-            buckets = _feature_buckets_from_row(row)
-
-            _apply_bucket_update(conn, "__global__", "all", wins, losses, now)
-            for feature_name, bucket in buckets.items():
-                _apply_bucket_update(conn, feature_name, bucket, wins, losses, now)
-            applied += 1
-            if weight < 0.999:
-                counterfactual += 1
-
-        conn.execute(
-            "INSERT OR IGNORE INTO belief_updates (trade_log_id, applied_at) VALUES (?, ?)",
-            (row["id"], now),
-        )
-
-    conn.commit()
-    conn.close()
     invalidate_belief_cache()
     logger.info(
         "Applied belief updates for %s resolved trades (%s counterfactual)",
@@ -190,10 +191,12 @@ def _load_belief_map() -> dict[tuple[str, str], tuple[float, float]]:
         return _belief_cache
 
     conn = get_conn()
-    rows = conn.execute(
-        "SELECT feature_name, bucket, wins, losses FROM belief_priors"
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            "SELECT feature_name, bucket, wins, losses FROM belief_priors"
+        ).fetchall()
+    finally:
+        conn.close()
 
     _belief_cache = {
         (str(row["feature_name"]), str(row["bucket"])): (float(row["wins"]), float(row["losses"]))

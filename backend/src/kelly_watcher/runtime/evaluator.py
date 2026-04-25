@@ -266,35 +266,37 @@ def compute_segment_shadow_report(
         params.append(int(since_ts or 0))
 
     conn = get_conn_for_path(db_path, apply_runtime_pragmas=False) if db_path is not None else get_conn()
-    rows = conn.execute(
-        f"""
-        SELECT
-            COALESCE(NULLIF(TRIM(segment_id), ''), ?) AS segment_id,
-            COUNT(*) AS signals,
-            SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS acted,
-            SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS resolved,
-            SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
-            ROUND(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN COALESCE({pnl_column}, 0) ELSE 0 END), 6) AS total_pnl_usd,
-            ROUND(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND COALESCE({pnl_column}, 0) > 0 THEN COALESCE({pnl_column}, 0) ELSE 0 END), 6) AS gross_profit_usd,
-            ROUND(ABS(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND COALESCE({pnl_column}, 0) < 0 THEN COALESCE({pnl_column}, 0) ELSE 0 END)), 6) AS gross_loss_usd,
-            ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN confidence END), 6) AS avg_confidence,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_edge END), 6) AS avg_expected_edge,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_fill_cost_usd END), 6) AS avg_expected_fill_cost_usd,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_exit_fee_usd END), 6) AS avg_expected_exit_fee_usd,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_close_fixed_cost_usd END), 6) AS avg_expected_close_fixed_cost_usd,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN COALESCE(entry_fee_usd, 0) + COALESCE(entry_fixed_cost_usd, 0) END), 6) AS avg_realized_fill_cost_usd,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} AND expected_fill_cost_usd IS NOT NULL THEN (COALESCE(entry_fee_usd, 0) + COALESCE(entry_fixed_cost_usd, 0)) - expected_fill_cost_usd END), 6) AS avg_fill_cost_slippage_usd,
-            ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN {pnl_column} END), 6) AS expectancy_usd,
-            ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN {pnl_column} / NULLIF(actual_entry_size_usd, 0) END), 6) AS expectancy_pct,
-            ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND outcome IS NOT NULL THEN ((confidence - CAST(outcome AS REAL)) * (confidence - CAST(outcome AS REAL))) END), 6) AS brier_score
-        FROM trade_log
-        WHERE {" AND ".join(where_clauses)}
-        GROUP BY COALESCE(NULLIF(TRIM(segment_id), ''), ?)
-        ORDER BY segment_id ASC
-        """,
-        (UNASSIGNED_SEGMENT_ID, *params, UNASSIGNED_SEGMENT_ID),
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                COALESCE(NULLIF(TRIM(segment_id), ''), ?) AS segment_id,
+                COUNT(*) AS signals,
+                SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS acted,
+                SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS resolved,
+                SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
+                ROUND(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN COALESCE({pnl_column}, 0) ELSE 0 END), 6) AS total_pnl_usd,
+                ROUND(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND COALESCE({pnl_column}, 0) > 0 THEN COALESCE({pnl_column}, 0) ELSE 0 END), 6) AS gross_profit_usd,
+                ROUND(ABS(SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND COALESCE({pnl_column}, 0) < 0 THEN COALESCE({pnl_column}, 0) ELSE 0 END)), 6) AS gross_loss_usd,
+                ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN confidence END), 6) AS avg_confidence,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_edge END), 6) AS avg_expected_edge,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_fill_cost_usd END), 6) AS avg_expected_fill_cost_usd,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_exit_fee_usd END), 6) AS avg_expected_exit_fee_usd,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN expected_close_fixed_cost_usd END), 6) AS avg_expected_close_fixed_cost_usd,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN COALESCE(entry_fee_usd, 0) + COALESCE(entry_fixed_cost_usd, 0) END), 6) AS avg_realized_fill_cost_usd,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} AND expected_fill_cost_usd IS NOT NULL THEN (COALESCE(entry_fee_usd, 0) + COALESCE(entry_fixed_cost_usd, 0)) - expected_fill_cost_usd END), 6) AS avg_fill_cost_slippage_usd,
+                ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN {pnl_column} END), 6) AS expectancy_usd,
+                ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN {pnl_column} / NULLIF(actual_entry_size_usd, 0) END), 6) AS expectancy_pct,
+                ROUND(AVG(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND outcome IS NOT NULL THEN ((confidence - CAST(outcome AS REAL)) * (confidence - CAST(outcome AS REAL))) END), 6) AS brier_score
+            FROM trade_log
+            WHERE {" AND ".join(where_clauses)}
+            GROUP BY COALESCE(NULLIF(TRIM(segment_id), ''), ?)
+            ORDER BY segment_id ASC
+            """,
+            (UNASSIGNED_SEGMENT_ID, *params, UNASSIGNED_SEGMENT_ID),
+        ).fetchall()
+    finally:
+        conn.close()
 
     raw_rows = {
         str(row["segment_id"] or "").strip() or UNASSIGNED_SEGMENT_ID: dict(row)
@@ -564,22 +566,24 @@ def resolve_shadow_trades(
     if question_contains:
         where_clauses.append("LOWER(question) LIKE ?")
         params.append(f"%{str(question_contains).strip().lower()}%")
-    unresolved = conn.execute(
-        f"""
-        SELECT id, trade_id, market_id, question, market_url, market_metadata_json,
-               trader_address, trader_name,
-               token_id, side, price_at_signal, signal_size_usd,
-               actual_entry_price, actual_entry_shares, actual_entry_size_usd,
-               snapshot_json,
-               remaining_entry_shares, remaining_entry_size_usd, realized_exit_pnl_usd,
-               shadow_pnl_usd, actual_pnl_usd, resolution_fixed_cost_usd,
-               real_money, skipped, source_action, exited_at, source_shares
-        FROM trade_log
-        WHERE {" AND ".join(where_clauses)}
-        """,
-        params,
-    ).fetchall()
-    conn.close()
+    try:
+        unresolved = conn.execute(
+            f"""
+            SELECT id, trade_id, market_id, question, market_url, market_metadata_json,
+                   trader_address, trader_name,
+                   token_id, side, price_at_signal, signal_size_usd,
+                   actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                   snapshot_json,
+                   remaining_entry_shares, remaining_entry_size_usd, realized_exit_pnl_usd,
+                   shadow_pnl_usd, actual_pnl_usd, resolution_fixed_cost_usd,
+                   real_money, skipped, source_action, exited_at, source_shares
+            FROM trade_log
+            WHERE {" AND ".join(where_clauses)}
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
 
     if not unresolved:
         return []
@@ -678,69 +682,71 @@ def resolve_shadow_trades(
                         pnl = round(realized_exit_pnl + payout - remaining_size - resolution_fixed_cost, 2)
 
                 conn = get_conn()
-                conn.execute(
-                    """
-                    UPDATE trade_log
-                    SET outcome=?, market_resolved_outcome=?, counterfactual_return=?,
-                        shadow_pnl_usd=COALESCE(?, shadow_pnl_usd),
-                        actual_pnl_usd=COALESCE(?, actual_pnl_usd),
-                        resolution_fixed_cost_usd=CASE
-                            WHEN ? IS NOT NULL AND exited_at IS NULL THEN ?
-                            ELSE resolution_fixed_cost_usd
-                        END,
-                        remaining_entry_shares=CASE
-                            WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
-                            ELSE remaining_entry_shares
-                        END,
-                        remaining_entry_size_usd=CASE
-                            WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
-                            ELSE remaining_entry_size_usd
-                        END,
-                        remaining_source_shares=CASE
-                            WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
-                            ELSE remaining_source_shares
-                        END,
-                        label_applied_at=?,
-                        resolved_at=COALESCE(resolved_at, ?),
-                        resolution_json=?
-                    WHERE id=?
-                    """,
-                    (
-                        1 if won else 0,
-                        str(result).strip().lower(),
-                        unit_return,
-                        pnl if row["real_money"] == 0 and fill_aware else None,
-                        pnl if row["real_money"] == 1 and fill_aware else None,
-                        pnl if fill_aware else None,
-                        resolution_fixed_cost,
-                        pnl if fill_aware else None,
-                        pnl if fill_aware else None,
-                        pnl if fill_aware else None,
-                        now_ts,
-                        now_ts,
-                        json.dumps(resolution_payload, separators=(",", ":"), default=str),
-                        row["id"],
-                    ),
-                )
-                token_id_str = str(row["token_id"] or "").strip().lower()
-                side_str = str(row["side"] or "").strip().lower()
-                if token_id_str:
-                    deleted = conn.execute(
-                        "DELETE FROM positions WHERE market_id=? AND LOWER(token_id)=? AND real_money=?",
-                        (row["market_id"], token_id_str, row["real_money"]),
-                    ).rowcount
-                    if deleted == 0:
+                try:
+                    conn.execute(
+                        """
+                        UPDATE trade_log
+                        SET outcome=?, market_resolved_outcome=?, counterfactual_return=?,
+                            shadow_pnl_usd=COALESCE(?, shadow_pnl_usd),
+                            actual_pnl_usd=COALESCE(?, actual_pnl_usd),
+                            resolution_fixed_cost_usd=CASE
+                                WHEN ? IS NOT NULL AND exited_at IS NULL THEN ?
+                                ELSE resolution_fixed_cost_usd
+                            END,
+                            remaining_entry_shares=CASE
+                                WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
+                                ELSE remaining_entry_shares
+                            END,
+                            remaining_entry_size_usd=CASE
+                                WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
+                                ELSE remaining_entry_size_usd
+                            END,
+                            remaining_source_shares=CASE
+                                WHEN ? IS NOT NULL AND exited_at IS NULL THEN 0
+                                ELSE remaining_source_shares
+                            END,
+                            label_applied_at=?,
+                            resolved_at=COALESCE(resolved_at, ?),
+                            resolution_json=?
+                        WHERE id=?
+                        """,
+                        (
+                            1 if won else 0,
+                            str(result).strip().lower(),
+                            unit_return,
+                            pnl if row["real_money"] == 0 and fill_aware else None,
+                            pnl if row["real_money"] == 1 and fill_aware else None,
+                            pnl if fill_aware else None,
+                            resolution_fixed_cost,
+                            pnl if fill_aware else None,
+                            pnl if fill_aware else None,
+                            pnl if fill_aware else None,
+                            now_ts,
+                            now_ts,
+                            json.dumps(resolution_payload, separators=(",", ":"), default=str),
+                            row["id"],
+                        ),
+                    )
+                    token_id_str = str(row["token_id"] or "").strip().lower()
+                    side_str = str(row["side"] or "").strip().lower()
+                    if token_id_str:
+                        deleted = conn.execute(
+                            "DELETE FROM positions WHERE market_id=? AND LOWER(token_id)=? AND real_money=?",
+                            (row["market_id"], token_id_str, row["real_money"]),
+                        ).rowcount
+                        if deleted == 0:
+                            conn.execute(
+                                "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
+                                (row["market_id"], side_str, row["real_money"]),
+                            )
+                    else:
                         conn.execute(
                             "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
                             (row["market_id"], side_str, row["real_money"]),
                         )
-                else:
-                    conn.execute(
-                        "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
-                        (row["market_id"], side_str, row["real_money"]),
-                    )
-                conn.commit()
-                conn.close()
+                    conn.commit()
+                finally:
+                    conn.close()
 
                 resolved_rows.append(
                     {
@@ -958,75 +964,77 @@ def compute_performance_report(
         params.append(effective_since_ts)
     where_sql = " AND ".join(where_clauses)
 
-    summary = conn.execute(
-        f"""
-        SELECT
-            SUM(CASE WHEN {OBSERVED_BUY_SQL} THEN 1 ELSE 0 END) AS total_signals,
-            SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS acted,
-            SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS resolved,
-            SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
-            ROUND(SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN COALESCE({pnl_column}, 0) ELSE 0 END), 2) AS total_pnl,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN confidence END), 3) AS avg_confidence,
-            ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN actual_entry_size_usd END), 2) AS avg_size
-        FROM trade_log
-        WHERE {where_sql}
-        """,
-        tuple(params),
-    ).fetchone()
-
-    traders = conn.execute(
-        f"""
-        SELECT trader_address,
-               COUNT(*) AS n,
-               SUM(CASE WHEN {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
-               ROUND(SUM({pnl_column}), 2) AS pnl
-        FROM trade_log
-        WHERE {where_sql}
-          AND {RESOLVED_EXECUTED_ENTRY_SQL}
-        GROUP BY trader_address
-        ORDER BY pnl DESC
-        LIMIT 10
-        """,
-        tuple(params),
-    ).fetchall()
-
-    week_ago = int(time.time()) - 7 * 86400
-    weekly = conn.execute(
-        f"""
-        SELECT ROUND(SUM({pnl_column}), 2) AS pnl
-        FROM trade_log
-        WHERE {where_sql}
-          AND {RESOLVED_EXECUTED_ENTRY_SQL}
-          AND {REALIZED_CLOSE_TS_SQL} > ?
-        """,
-        (*params, week_ago),
-    ).fetchone()
-
-    daily_rows = conn.execute(
-        f"""
-        SELECT strftime('%Y-%m-%d', datetime({REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
-               SUM({pnl_column}) AS day_pnl
-        FROM trade_log
-        WHERE {where_sql}
-          AND {RESOLVED_EXECUTED_ENTRY_SQL}
-        GROUP BY day
-        ORDER BY day
-        """,
-        tuple(params),
-    ).fetchall()
-    all_time_resolved = 0
-    if mode == "shadow" and effective_since_ts > 0:
-        all_time_row = conn.execute(
+    try:
+        summary = conn.execute(
             f"""
-            SELECT COUNT(*) AS n
+            SELECT
+                SUM(CASE WHEN {OBSERVED_BUY_SQL} THEN 1 ELSE 0 END) AS total_signals,
+                SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS acted,
+                SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} THEN 1 ELSE 0 END) AS resolved,
+                SUM(CASE WHEN {RESOLVED_EXECUTED_ENTRY_SQL} AND {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
+                ROUND(SUM(CASE WHEN {EXECUTED_ENTRY_SQL} THEN COALESCE({pnl_column}, 0) ELSE 0 END), 2) AS total_pnl,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN confidence END), 3) AS avg_confidence,
+                ROUND(AVG(CASE WHEN {EXECUTED_ENTRY_SQL} THEN actual_entry_size_usd END), 2) AS avg_size
             FROM trade_log
-            WHERE real_money=?
-              AND {RESOLVED_EXECUTED_ENTRY_SQL}
+            WHERE {where_sql}
             """,
-            (real_money,),
+            tuple(params),
         ).fetchone()
-        all_time_resolved = max(int(all_time_row["n"] or 0), 0)
-    conn.close()
+
+        traders = conn.execute(
+            f"""
+            SELECT trader_address,
+                   COUNT(*) AS n,
+                   SUM(CASE WHEN {pnl_column} > 0 THEN 1 ELSE 0 END) AS wins,
+                   ROUND(SUM({pnl_column}), 2) AS pnl
+            FROM trade_log
+            WHERE {where_sql}
+              AND {RESOLVED_EXECUTED_ENTRY_SQL}
+            GROUP BY trader_address
+            ORDER BY pnl DESC
+            LIMIT 10
+            """,
+            tuple(params),
+        ).fetchall()
+
+        week_ago = int(time.time()) - 7 * 86400
+        weekly = conn.execute(
+            f"""
+            SELECT ROUND(SUM({pnl_column}), 2) AS pnl
+            FROM trade_log
+            WHERE {where_sql}
+              AND {RESOLVED_EXECUTED_ENTRY_SQL}
+              AND {REALIZED_CLOSE_TS_SQL} > ?
+            """,
+            (*params, week_ago),
+        ).fetchone()
+
+        daily_rows = conn.execute(
+            f"""
+            SELECT strftime('%Y-%m-%d', datetime({REALIZED_CLOSE_TS_SQL}, 'unixepoch', 'localtime')) AS day,
+                   SUM({pnl_column}) AS day_pnl
+            FROM trade_log
+            WHERE {where_sql}
+              AND {RESOLVED_EXECUTED_ENTRY_SQL}
+            GROUP BY day
+            ORDER BY day
+            """,
+            tuple(params),
+        ).fetchall()
+        all_time_resolved = 0
+        if mode == "shadow" and effective_since_ts > 0:
+            all_time_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS n
+                FROM trade_log
+                WHERE real_money=?
+                  AND {RESOLVED_EXECUTED_ENTRY_SQL}
+                """,
+                (real_money,),
+            ).fetchone()
+            all_time_resolved = max(int(all_time_row["n"] or 0), 0)
+    finally:
+        conn.close()
 
     resolved = int(summary["resolved"] or 0)
     wins = int(summary["wins"] or 0)
@@ -1081,33 +1089,35 @@ def persist_performance_snapshot(mode: str) -> None:
         apply_shadow_evidence_epoch=(mode == "shadow"),
     )
     conn = get_conn()
-    conn.execute(
-        """
-        INSERT INTO perf_snapshots (
-            snapshot_at, mode, scope, since_ts, epoch_started_at, epoch_source,
-            legacy_resolved_excluded, n_signals, n_acted, n_resolved,
-            win_rate, total_pnl_usd, avg_confidence, sharpe
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            int(time.time()),
-            mode,
-            str(report.get("scope") or "all_history"),
-            int(report.get("since_ts") or 0),
-            int(report.get("shadow_evidence_epoch_started_at") or 0),
-            str(report.get("shadow_evidence_epoch_source") or ""),
-            int(report.get("legacy_resolved_excluded") or 0),
-            report["total_signals"],
-            report["acted"],
-            report["resolved"],
-            report["win_rate"],
-            report["total_pnl_usd"],
-            report["avg_confidence"],
-            report["sharpe"],
-        ),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            """
+            INSERT INTO perf_snapshots (
+                snapshot_at, mode, scope, since_ts, epoch_started_at, epoch_source,
+                legacy_resolved_excluded, n_signals, n_acted, n_resolved,
+                win_rate, total_pnl_usd, avg_confidence, sharpe
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                int(time.time()),
+                mode,
+                str(report.get("scope") or "all_history"),
+                int(report.get("since_ts") or 0),
+                int(report.get("shadow_evidence_epoch_started_at") or 0),
+                str(report.get("shadow_evidence_epoch_source") or ""),
+                int(report.get("legacy_resolved_excluded") or 0),
+                report["total_signals"],
+                report["acted"],
+                report["resolved"],
+                report["win_rate"],
+                report["total_pnl_usd"],
+                report["avg_confidence"],
+                report["sharpe"],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def daily_report() -> None:
@@ -1231,102 +1241,103 @@ def cleanup_premature_resolutions(backup_path: Path | None = None) -> dict[str, 
     shutil.copy2(DB_PATH, backup_target)
 
     conn = get_conn()
-    rows = conn.execute(
-        f"""
-        SELECT
-            id,
-            real_money,
-            skipped,
-            actual_entry_price,
-            actual_entry_shares,
-            actual_entry_size_usd,
-            source_shares,
-            realized_exit_shares,
-            realized_exit_size_usd,
-            exited_at
-        FROM trade_log
-        WHERE {PREMATURE_RESOLUTION_WHERE_SQL}
-        ORDER BY id
-        """
-    ).fetchall()
-
-    if not rows:
-        conn.close()
-        return {
-            "backup_path": str(backup_target),
-            "rows_cleaned": 0,
-            "skipped_rows_cleaned": 0,
-            "open_positions_reopened": 0,
-            "exited_rows_preserved": 0,
-            "belief_rows_reapplied": 0,
-        }
-
-    skipped_rows_cleaned = 0
-    open_positions_reopened = 0
-    exited_rows_preserved = 0
-    for row in rows:
-        fill_aware = is_fill_aware_executed_buy(row)
-        exited_at = row["exited_at"]
-        restored_resolved_at = int(exited_at) if exited_at is not None else None
-
-        conn.execute(
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                id,
+                real_money,
+                skipped,
+                actual_entry_price,
+                actual_entry_shares,
+                actual_entry_size_usd,
+                source_shares,
+                realized_exit_shares,
+                realized_exit_size_usd,
+                exited_at
+            FROM trade_log
+            WHERE {PREMATURE_RESOLUTION_WHERE_SQL}
+            ORDER BY id
             """
-            UPDATE trade_log
-            SET outcome=NULL,
-                market_resolved_outcome=NULL,
-                counterfactual_return=NULL,
-                label_applied_at=NULL,
-                resolution_json=NULL,
-                resolved_at=?
-            WHERE id=?
-            """,
-            (restored_resolved_at, int(row["id"])),
-        )
+        ).fetchall()
 
-        if bool(row["skipped"]):
-            skipped_rows_cleaned += 1
-            continue
+        if not rows:
+            return {
+                "backup_path": str(backup_target),
+                "rows_cleaned": 0,
+                "skipped_rows_cleaned": 0,
+                "open_positions_reopened": 0,
+                "exited_rows_preserved": 0,
+                "belief_rows_reapplied": 0,
+            }
 
-        if fill_aware and exited_at is None:
-            actual_shares = max(float(row["actual_entry_shares"] or 0.0), 0.0)
-            actual_size = max(float(row["actual_entry_size_usd"] or 0.0), 0.0)
-            source_shares = max(float(row["source_shares"] or 0.0), 0.0)
-            realized_exit_shares = max(float(row["realized_exit_shares"] or 0.0), 0.0)
-            realized_exit_size = max(float(row["realized_exit_size_usd"] or 0.0), 0.0)
-
-            remaining_shares = max(round(actual_shares - realized_exit_shares, 6), 0.0)
-            remaining_size = max(round(actual_size - realized_exit_size, 6), 0.0)
-            if actual_shares > 1e-9:
-                remaining_source = max(round(source_shares * (remaining_shares / actual_shares), 6), 0.0)
-            else:
-                remaining_source = source_shares
+        skipped_rows_cleaned = 0
+        open_positions_reopened = 0
+        exited_rows_preserved = 0
+        for row in rows:
+            fill_aware = is_fill_aware_executed_buy(row)
+            exited_at = row["exited_at"]
+            restored_resolved_at = int(exited_at) if exited_at is not None else None
 
             conn.execute(
                 """
                 UPDATE trade_log
-                SET shadow_pnl_usd=NULL,
-                    actual_pnl_usd=NULL,
-                    remaining_entry_shares=?,
-                    remaining_entry_size_usd=?,
-                    remaining_source_shares=?
+                SET outcome=NULL,
+                    market_resolved_outcome=NULL,
+                    counterfactual_return=NULL,
+                    label_applied_at=NULL,
+                    resolution_json=NULL,
+                    resolved_at=?
                 WHERE id=?
                 """,
-                (
-                    remaining_shares,
-                    remaining_size,
-                    remaining_source,
-                    int(row["id"]),
-                ),
+                (restored_resolved_at, int(row["id"])),
             )
-            open_positions_reopened += 1
-        elif fill_aware and exited_at is not None:
-            exited_rows_preserved += 1
 
-    _rebuild_shadow_positions(conn)
-    conn.execute("DELETE FROM belief_updates")
-    conn.execute("DELETE FROM belief_priors")
-    conn.commit()
-    conn.close()
+            if bool(row["skipped"]):
+                skipped_rows_cleaned += 1
+                continue
+
+            if fill_aware and exited_at is None:
+                actual_shares = max(float(row["actual_entry_shares"] or 0.0), 0.0)
+                actual_size = max(float(row["actual_entry_size_usd"] or 0.0), 0.0)
+                source_shares = max(float(row["source_shares"] or 0.0), 0.0)
+                realized_exit_shares = max(float(row["realized_exit_shares"] or 0.0), 0.0)
+                realized_exit_size = max(float(row["realized_exit_size_usd"] or 0.0), 0.0)
+
+                remaining_shares = max(round(actual_shares - realized_exit_shares, 6), 0.0)
+                remaining_size = max(round(actual_size - realized_exit_size, 6), 0.0)
+                if actual_shares > 1e-9:
+                    remaining_source = max(round(source_shares * (remaining_shares / actual_shares), 6), 0.0)
+                else:
+                    remaining_source = source_shares
+
+                conn.execute(
+                    """
+                    UPDATE trade_log
+                    SET shadow_pnl_usd=NULL,
+                        actual_pnl_usd=NULL,
+                        remaining_entry_shares=?,
+                        remaining_entry_size_usd=?,
+                        remaining_source_shares=?
+                    WHERE id=?
+                    """,
+                    (
+                        remaining_shares,
+                        remaining_size,
+                        remaining_source,
+                        int(row["id"]),
+                    ),
+                )
+                open_positions_reopened += 1
+            elif fill_aware and exited_at is not None:
+                exited_rows_preserved += 1
+
+        _rebuild_shadow_positions(conn)
+        conn.execute("DELETE FROM belief_updates")
+        conn.execute("DELETE FROM belief_priors")
+        conn.commit()
+    finally:
+        conn.close()
 
     invalidate_belief_cache()
     belief_rows_reapplied = sync_belief_priors()
@@ -1758,7 +1769,11 @@ def _rebuild_shadow_positions(conn) -> None:
         if size_usd <= 0 or shares <= 0:
             continue
         conn.execute(
-            "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
+            """
+            INSERT OR REPLACE INTO positions (
+                market_id, side, size_usd, avg_price, token_id, entered_at, real_money
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
             (
                 row["market_id"],
                 row["side"],

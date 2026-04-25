@@ -48,6 +48,12 @@ class _ContextClient:
 
 
 class TelegramCommandTest(unittest.TestCase):
+    def setUp(self) -> None:
+        telegram_runtime.close_telegram_command_client()
+
+    def tearDown(self) -> None:
+        telegram_runtime.close_telegram_command_client()
+
     def test_tracker_preview_summary_matches_performance_box_logic(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

@@ -4,10 +4,37 @@ import os
 import unittest
 from unittest.mock import patch
 
-from kelly_watcher.engine.kelly import heuristic_size
+from kelly_watcher.engine.kelly import heuristic_size, kelly_size
 
 
 class HeuristicSizingTest(unittest.TestCase):
+    def test_kelly_size_rejects_non_finite_confidence(self) -> None:
+        sized = kelly_size(float("nan"), 0.5, 1000.0)
+
+        self.assertEqual(sized["dollar_size"], 0.0)
+        self.assertIn("non-finite confidence", sized["reason"])
+
+    def test_kelly_size_clips_overconfident_input_before_sizing(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "MAX_BET_FRACTION": "0.10",
+                "MIN_CONFIDENCE": "0.60",
+                "MIN_BET_USD": "1.00",
+            },
+            clear=False,
+        ):
+            sized = kelly_size(2.0, 0.5, 1000.0)
+
+        self.assertEqual(sized["dollar_size"], 100.0)
+        self.assertLessEqual(sized["full_kelly_f"], 1.0)
+
+    def test_heuristic_size_rejects_non_finite_score(self) -> None:
+        sized = heuristic_size(float("inf"), 1000.0)
+
+        self.assertEqual(sized["dollar_size"], 0.0)
+        self.assertIn("non-finite score", sized["reason"])
+
     def test_heuristic_size_expands_modest_edges_above_linear_curve(self) -> None:
         bankroll = 1000.0
         score = 0.63

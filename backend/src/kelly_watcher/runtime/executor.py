@@ -117,6 +117,11 @@ def _market_url_from_metadata(meta: Any) -> str | None:
 class PolymarketExecutor:
     def __init__(self):
         self._clob = None
+        self._http_client = httpx.Client(
+            timeout=10.0,
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+        )
         self._last_live_balance_ok_at = 0
         self._last_live_position_sync_ok_at = 0
         self._consecutive_live_balance_failures = 0
@@ -124,6 +129,9 @@ class PolymarketExecutor:
         self._fee_rate_cache: dict[str, tuple[float, int]] = {}
         self._conditional_allowance_cache: dict[str, bool] = {}
         self._init_clob()
+
+    def close(self) -> None:
+        self._http_client.close()
 
     @staticmethod
     def _fees_enabled_from_metadata(meta: Any) -> bool | None:
@@ -196,8 +204,11 @@ class PolymarketExecutor:
 
         fees_enabled = self._fees_enabled_from_metadata(market_meta)
         try:
-            with httpx.Client(timeout=FEE_RATE_TIMEOUT_S, follow_redirects=True) as client:
-                response = client.get(f"{CLOB_API}/fee-rate", params={"token_id": normalized_token})
+            response = self._http_client.get(
+                f"{CLOB_API}/fee-rate",
+                params={"token_id": normalized_token},
+                timeout=FEE_RATE_TIMEOUT_S,
+            )
             if response.status_code == 404:
                 if fees_enabled is False:
                     cache[normalized_token] = (time.time(), 0)
@@ -232,8 +243,11 @@ class PolymarketExecutor:
         if not normalized_token:
             return None, None, 0
         try:
-            with httpx.Client(timeout=EXECUTION_ORDERBOOK_TIMEOUT_S, follow_redirects=True) as client:
-                response = client.get(f"{CLOB_API}/book", params={"token_id": normalized_token})
+            response = self._http_client.get(
+                f"{CLOB_API}/book",
+                params={"token_id": normalized_token},
+                timeout=EXECUTION_ORDERBOOK_TIMEOUT_S,
+            )
             response.raise_for_status()
             raw_book = response.json()
         except Exception as exc:
@@ -445,30 +459,32 @@ class PolymarketExecutor:
     @staticmethod
     def _shadow_balance_components() -> tuple[float, float]:
         conn = get_conn()
-        row = conn.execute(
-            f"""
-            SELECT
+        try:
+            row = conn.execute(
+                f"""
+                SELECT
+                    SUM(
+                        CASE
+                            WHEN {OPEN_EXECUTED_ENTRY_SQL} THEN {remaining_entry_size_expr()}
+                            ELSE 0
+                        END
+                    ) AS remaining_cost,
                 SUM(
                     CASE
-                        WHEN {OPEN_EXECUTED_ENTRY_SQL} THEN {remaining_entry_size_expr()}
+                        WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy' AND exited_at IS NULL AND outcome IS NULL
+                            THEN COALESCE(realized_exit_pnl_usd, 0)
+                        WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy'
+                            THEN COALESCE(shadow_pnl_usd, 0)
                         ELSE 0
                     END
-                ) AS remaining_cost,
-            SUM(
-                CASE
-                    WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy' AND exited_at IS NULL AND outcome IS NULL
-                        THEN COALESCE(realized_exit_pnl_usd, 0)
-                    WHEN skipped=0 AND COALESCE(source_action, 'buy')='buy'
-                        THEN COALESCE(shadow_pnl_usd, 0)
-                    ELSE 0
-                END
-            ) AS realized_pnl
-        FROM trade_log
-        WHERE real_money=0
-          AND LOWER(COALESCE(experiment_arm, '{DEFAULT_EXPERIMENT_ARM}')) = '{DEFAULT_EXPERIMENT_ARM}'
-        """
-        ).fetchone()
-        conn.close()
+                ) AS realized_pnl
+            FROM trade_log
+            WHERE real_money=0
+              AND LOWER(COALESCE(experiment_arm, '{DEFAULT_EXPERIMENT_ARM}')) = '{DEFAULT_EXPERIMENT_ARM}'
+            """
+            ).fetchone()
+        finally:
+            conn.close()
         realized_pnl = float(row["realized_pnl"] or 0.0)
         remaining_cost = float(row["remaining_cost"] or 0.0)
         return realized_pnl, remaining_cost
@@ -669,7 +685,7 @@ class PolymarketExecutor:
         if remaining_usd > 0.01 or filled_shares <= 0:
             return None, "shadow simulation rejected the buy because there was not enough ask depth to fill the whole order"
 
-        spent_usd = round(float(dollar_size), 6)
+        spent_usd = round(float(spent_usd), 6)
         avg_price = spent_usd / filled_shares if filled_shares > 0 else 0.0
         return SimulatedFill(spent_usd=spent_usd, shares=filled_shares, avg_price=avg_price), None
 
@@ -709,17 +725,17 @@ class PolymarketExecutor:
             return []
 
         try:
-            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
-                response = client.get(
-                    f"{DATA_API}/positions",
-                    params={"user": wallet_address()},
-                )
-                response.raise_for_status()
-                payload = response.json()
-                rows = payload if isinstance(payload, list) else payload.get("positions", [])
-                normalized = [row for row in rows if isinstance(row, dict)]
-                self._record_live_position_sync_result(True)
-                return normalized
+            response = self._http_client.get(
+                f"{DATA_API}/positions",
+                params={"user": wallet_address()},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload if isinstance(payload, list) else payload.get("positions", [])
+            normalized = [row for row in rows if isinstance(row, dict)]
+            self._record_live_position_sync_result(True)
+            return normalized
         except Exception as exc:
             self._record_live_position_sync_result(False)
             logger.warning("Live position sync failed: %s", exc)
@@ -1777,7 +1793,17 @@ class PolymarketExecutor:
         if size_usd > 1e-9 and shares > 1e-9:
             avg_price = size_usd / shares
             conn.execute(
-                "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
+                """
+                INSERT OR REPLACE INTO positions (
+                    market_id,
+                    side,
+                    size_usd,
+                    avg_price,
+                    token_id,
+                    entered_at,
+                    real_money
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     market_id,
                     normalized_side,
@@ -2724,34 +2750,36 @@ def log_trade(
     placeholders = ",".join(["?"] * len(values))
 
     conn = get_conn()
-    conn.execute(
-        f"""
-        INSERT INTO trade_log (
-            trade_id, market_id, question, market_url, trader_address, trader_name, side,
-            token_id, source_action, source_ts, source_ts_raw, observed_at, poll_started_at,
-            market_close_ts, metadata_fetched_at, orderbook_fetched_at, source_latency_s,
-            observation_latency_s, processing_latency_s, source_shares, source_amount_usd,
-            source_trade_json, market_metadata_json, orderbook_json, snapshot_json,
-            price_at_signal, signal_size_usd, actual_entry_price, actual_entry_shares,
-            actual_entry_size_usd, entry_fee_rate_bps, entry_fee_usd, entry_fee_shares,
-            entry_fixed_cost_usd, entry_gross_price, entry_gross_shares, entry_gross_size_usd,
-            confidence, raw_confidence, kelly_fraction,
-            signal_mode, segment_id, policy_id, policy_bundle_version, promotion_epoch_id,
-            experiment_arm, expected_edge, expected_fill_cost_usd, expected_exit_fee_usd,
-            expected_close_fixed_cost_usd, belief_prior, belief_blend, belief_evidence, trader_score,
-            market_score, market_veto, real_money, order_id, skipped, skip_reason, placed_at,
-            remaining_entry_shares, remaining_entry_size_usd, remaining_source_shares,
-            realized_exit_shares, realized_exit_size_usd, realized_exit_pnl_usd, partial_exit_count,
-            f_trader_win_rate, f_trader_n_trades, f_conviction_ratio,
-            f_trader_volume_usd, f_trader_avg_size_usd, f_account_age_days, f_consistency,
-            f_trader_diversity, f_days_to_res, f_price, f_spread_pct, f_momentum_1h,
-            f_volume_24h_usd, f_volume_7d_avg_usd, f_volume_trend, f_oi_usd, f_top_holder_pct,
-            f_bid_depth_usd, f_ask_depth_usd, market_components_json, decision_context_json
-        ) VALUES ({placeholders})
-        """,
-        values,
-    )
-    row_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            f"""
+            INSERT INTO trade_log (
+                trade_id, market_id, question, market_url, trader_address, trader_name, side,
+                token_id, source_action, source_ts, source_ts_raw, observed_at, poll_started_at,
+                market_close_ts, metadata_fetched_at, orderbook_fetched_at, source_latency_s,
+                observation_latency_s, processing_latency_s, source_shares, source_amount_usd,
+                source_trade_json, market_metadata_json, orderbook_json, snapshot_json,
+                price_at_signal, signal_size_usd, actual_entry_price, actual_entry_shares,
+                actual_entry_size_usd, entry_fee_rate_bps, entry_fee_usd, entry_fee_shares,
+                entry_fixed_cost_usd, entry_gross_price, entry_gross_shares, entry_gross_size_usd,
+                confidence, raw_confidence, kelly_fraction,
+                signal_mode, segment_id, policy_id, policy_bundle_version, promotion_epoch_id,
+                experiment_arm, expected_edge, expected_fill_cost_usd, expected_exit_fee_usd,
+                expected_close_fixed_cost_usd, belief_prior, belief_blend, belief_evidence, trader_score,
+                market_score, market_veto, real_money, order_id, skipped, skip_reason, placed_at,
+                remaining_entry_shares, remaining_entry_size_usd, remaining_source_shares,
+                realized_exit_shares, realized_exit_size_usd, realized_exit_pnl_usd, partial_exit_count,
+                f_trader_win_rate, f_trader_n_trades, f_conviction_ratio,
+                f_trader_volume_usd, f_trader_avg_size_usd, f_account_age_days, f_consistency,
+                f_trader_diversity, f_days_to_res, f_price, f_spread_pct, f_momentum_1h,
+                f_volume_24h_usd, f_volume_7d_avg_usd, f_volume_trend, f_oi_usd, f_top_holder_pct,
+                f_bid_depth_usd, f_ask_depth_usd, market_components_json, decision_context_json
+            ) VALUES ({placeholders})
+            """,
+            values,
+        )
+        row_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.commit()
+    finally:
+        conn.close()
     return row_id

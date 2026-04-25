@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -90,9 +91,12 @@ def _get_env_file_bool(name: str, default: str = "false") -> bool:
 def _get_float(name: str, default: str) -> float:
     raw = _get(name, default)
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be numeric, got {raw!r}") from exc
+    if not math.isfinite(value):
+        raise ConfigError(f"{name} must be finite, got {raw!r}")
+    return value
 
 
 def _get_bounded_float(

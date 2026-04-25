@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,29 @@ _LEADERBOARD_PERIODS = (
 )
 _LEADERBOARD_ROWS_PER_PERIOD = 5
 _next_command_poll_at = 0.0
+_COMMAND_CLIENT_LOCK = threading.Lock()
+_COMMAND_CLIENT: httpx.Client | None = None
+
+
+def _telegram_command_client() -> httpx.Client:
+    global _COMMAND_CLIENT
+    with _COMMAND_CLIENT_LOCK:
+        if _COMMAND_CLIENT is None or bool(getattr(_COMMAND_CLIENT, "is_closed", False)):
+            _COMMAND_CLIENT = httpx.Client(
+                timeout=5.0,
+                limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+            )
+        return _COMMAND_CLIENT
+
+
+def close_telegram_command_client() -> None:
+    global _COMMAND_CLIENT
+    with _COMMAND_CLIENT_LOCK:
+        client = _COMMAND_CLIENT
+        _COMMAND_CLIENT = None
+    close = getattr(client, "close", None)
+    if callable(close):
+        close()
 
 
 def _load_telegram_state() -> dict[str, Any]:
@@ -394,10 +418,9 @@ def service_telegram_commands() -> int:
     }
 
     try:
-        with httpx.Client(timeout=5.0) as client:
-            response = client.get(f"https://api.telegram.org/bot{token}/getUpdates", params=params)
-            response.raise_for_status()
-            payload = response.json()
+        response = _telegram_command_client().get(f"https://api.telegram.org/bot{token}/getUpdates", params=params)
+        response.raise_for_status()
+        payload = response.json()
     except Exception as exc:
         logger.warning("Telegram command poll failed: %s", exc)
         return 0

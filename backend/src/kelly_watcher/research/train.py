@@ -13,7 +13,6 @@ from kelly_watcher.engine.economic_model import (
     apply_probability_calibrator,
     expected_return_to_confidence,
     inverse_return_target,
-    rebalance_training_sample_weights,
     transform_return_target,
 )
 from kelly_watcher.engine.features import FEATURE_COLS, LABEL_COL, OUTCOME_COL, RETURN_COL, SAMPLE_WEIGHT_COL
@@ -187,8 +186,9 @@ def load_training_data(
 
     df[RETURN_COL] = pd.to_numeric(df[RETURN_COL], errors="coerce")
     df[OUTCOME_COL] = pd.to_numeric(df[OUTCOME_COL], errors="coerce")
-    df[SAMPLE_WEIGHT_COL] = rebalance_training_sample_weights(df["skipped"].astype(bool).values)
+    df[SAMPLE_WEIGHT_COL] = 1.0
     df[LABEL_COL] = df[RETURN_COL].map(transform_return_target)
+    df["label_ts"] = pd.to_numeric(df["label_ts"], errors="coerce")
     df["effective_price"] = pd.to_numeric(df["effective_price"], errors="coerce")
     df["effective_size_usd"] = pd.to_numeric(df["effective_size_usd"], errors="coerce")
     df = df.replace([np.inf, -np.inf], np.nan)
@@ -234,6 +234,9 @@ def train(
     feature_cols = _select_feature_cols(df)
     df = df.dropna(subset=feature_cols + [LABEL_COL, OUTCOME_COL, RETURN_COL, SAMPLE_WEIGHT_COL, "effective_price"])
     df = df[(df["effective_price"] > 0.01) & (df["effective_price"] < 0.99)].copy()
+    df = df.reset_index(drop=True)
+    if not df["label_ts"].is_monotonic_increasing:
+        raise ValueError("training label_ts must be sorted before chronological windowing")
     if len(df) < min_samples:
         logger.info("Training skipped after filtering: %s samples (need %s)", len(df), min_samples)
         return _with_training_provenance(
@@ -376,7 +379,7 @@ def train(
         "top_features": top_features[:8],
         "trained_at": trained_at,
         "data_contract_version": DATA_CONTRACT_VERSION,
-        "fill_aware_only": False,
+        "fill_aware_only": True,
         "label_mode": MODEL_LABEL_MODE,
         **provenance,
         "candidate_count": len(candidate_reports),
@@ -448,10 +451,10 @@ def train(
         "model_backend": final_fit["backend"],
         "prediction_mode": "expected_return",
         "data_contract_version": DATA_CONTRACT_VERSION,
-        "fill_aware_only": False,
+        "fill_aware_only": True,
         "label_mode": MODEL_LABEL_MODE,
         "target_transform": "signed_log1p_return",
-        "sample_weight_mode": "executed_1.0_skipped_0.25_capped_total_ratio_1.0",
+        "sample_weight_mode": "executed_only_1.0",
         **provenance,
         "policy": {
             "edge_threshold": float(holdout_report["edge_threshold"]),
@@ -769,6 +772,8 @@ def _evaluate_candidate_spec(
     windows: tuple[TrainingWindow, ...],
     spec: dict[str, Any],
 ) -> dict[str, Any] | None:
+    if not df["label_ts"].is_monotonic_increasing:
+        raise ValueError("training label_ts must be sorted before candidate windowing")
     fold_reports: list[dict[str, Any]] = []
     for window in windows:
         train_df = df.iloc[: window.train_end].copy()
@@ -1107,9 +1112,14 @@ def _score_predictions(*, preds, outcomes, prices, baseline_rate: float) -> dict
     from sklearn.metrics import brier_score_loss, log_loss
 
     preds = np.asarray(preds, dtype=float)
+    if not np.all(np.isfinite(preds)):
+        raise ValueError("model predictions must be finite before scoring")
+    baseline_rate = float(baseline_rate)
+    if not np.isfinite(baseline_rate):
+        raise ValueError("baseline rate must be finite before scoring")
     baseline_pred = np.full(len(outcomes), baseline_rate, dtype=float)
-    baseline_pred = apply_probability_calibrator(None, baseline_pred)
-    preds = apply_probability_calibrator(None, preds)
+    baseline_pred = np.clip(baseline_pred, 1e-4, 1.0 - 1e-4)
+    preds = np.clip(preds, 1e-4, 1.0 - 1e-4)
     baseline_ll = log_loss(outcomes, baseline_pred, labels=[0, 1])
     baseline_brier = brier_score_loss(outcomes, baseline_pred)
     ll = log_loss(outcomes, preds, labels=[0, 1])

@@ -102,17 +102,19 @@ def _get_cached_trader_features(
     max_age_seconds: int | None,
 ) -> TraderFeatures | None:
     conn = get_conn()
-    if max_age_seconds is None:
-        row = conn.execute(
-            "SELECT * FROM trader_cache WHERE trader_address=?",
-            (trader_address.lower(),),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT * FROM trader_cache WHERE trader_address=? AND updated_at>?",
-            (trader_address.lower(), int(time.time()) - max_age_seconds),
-        ).fetchone()
-    conn.close()
+    try:
+        if max_age_seconds is None:
+            row = conn.execute(
+                "SELECT * FROM trader_cache WHERE trader_address=?",
+                (trader_address.lower(),),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM trader_cache WHERE trader_address=? AND updated_at>?",
+                (trader_address.lower(), int(time.time()) - max_age_seconds),
+            ).fetchone()
+    finally:
+        conn.close()
 
     if row:
         avg_size = row["avg_size_usd"] or observed_size_usd
@@ -480,22 +482,24 @@ def _position_key(row: dict[str, Any]) -> str:
 
 def _compute_local_trader_features(trader_address: str, observed_size_usd: float) -> TraderFeatures:
     conn = get_conn()
-    rows = conn.execute(
-        f"""
-        SELECT
-            {PROFITABLE_TRADE_SQL} AS label,
-            COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
-            placed_at,
-            market_id
-        FROM trade_log
-        WHERE trader_address=?
-          AND {RESOLVED_EXECUTED_ENTRY_SQL}
-        ORDER BY placed_at DESC
-        LIMIT 500
-        """,
-        (trader_address.lower(),),
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                {PROFITABLE_TRADE_SQL} AS label,
+                COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
+                placed_at,
+                market_id
+            FROM trade_log
+            WHERE trader_address=?
+              AND {RESOLVED_EXECUTED_ENTRY_SQL}
+            ORDER BY placed_at DESC
+            LIMIT 500
+            """,
+            (trader_address.lower(),),
+        ).fetchall()
+    finally:
+        conn.close()
 
     if not rows:
         return TraderFeatures(
@@ -550,48 +554,50 @@ def _compute_local_trader_features(trader_address: str, observed_size_usd: float
 
 def _store_trader_features(trader_address: str, features: TraderFeatures) -> None:
     conn = get_conn()
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO trader_cache (
-            trader_address,
-            win_rate,
-            n_trades,
-            consistency,
-            volume_usd,
-            avg_size_usd,
-            diversity,
-            account_age_d,
-            wins,
-            ties,
-            realized_pnl_usd,
-            avg_return,
-            open_positions,
-            open_value_usd,
-            open_pnl_usd,
-            updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            trader_address.lower(),
-            features.win_rate,
-            features.n_trades,
-            features.consistency,
-            features.volume_usd,
-            features.avg_size_usd,
-            features.diversity,
-            features.account_age_d,
-            features.wins,
-            features.ties,
-            features.realized_pnl_usd,
-            features.avg_return,
-            features.open_positions,
-            features.open_value_usd,
-            features.open_pnl_usd,
-            int(time.time()),
-        ),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO trader_cache (
+                trader_address,
+                win_rate,
+                n_trades,
+                consistency,
+                volume_usd,
+                avg_size_usd,
+                diversity,
+                account_age_d,
+                wins,
+                ties,
+                realized_pnl_usd,
+                avg_return,
+                open_positions,
+                open_value_usd,
+                open_pnl_usd,
+                updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                trader_address.lower(),
+                features.win_rate,
+                features.n_trades,
+                features.consistency,
+                features.volume_usd,
+                features.avg_size_usd,
+                features.diversity,
+                features.account_age_d,
+                features.wins,
+                features.ties,
+                features.realized_pnl_usd,
+                features.avg_return,
+                features.open_positions,
+                features.open_value_usd,
+                features.open_pnl_usd,
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _to_float(value: Any) -> float:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-DATA_CONTRACT_VERSION = 6
-MODEL_LABEL_MODE = "expected_return_weighted_counterfactual_v1"
+DATA_CONTRACT_VERSION = 7
+MODEL_LABEL_MODE = "expected_return_executed_fee_aware_v1"
 DEFAULT_EXPERIMENT_ARM = "champion"
 CHALLENGER_EXPERIMENT_ARM = "challenger"
 RESOLVED_PNL_SQL = "COALESCE(actual_pnl_usd, shadow_pnl_usd)"
@@ -90,24 +90,17 @@ RESOLVED_TRAINING_SAMPLE_SQL = f"""
     {FEE_AWARE_EXECUTED_ENTRY_SQL}
     AND {RESOLVED_PNL_SQL} IS NOT NULL
 )
-OR
-(
-    {RESOLVED_TRAINABLE_SKIPPED_BUY_SQL}
-)
 """
 
 TRAINING_LABEL_SQL = f"""
 CASE
-    WHEN skipped=1 THEN CASE WHEN COALESCE(counterfactual_return, 0) > 0 THEN 1 ELSE 0 END
-    ELSE {PROFITABLE_TRADE_SQL}
+    WHEN {RESOLVED_PNL_SQL} > 0 THEN 1
+    ELSE 0
 END
 """
 
 TRAINING_RETURN_SQL = f"""
-CASE
-    WHEN skipped=1 THEN counterfactual_return
-    ELSE {RESOLVED_PNL_SQL} / NULLIF(COALESCE(actual_entry_size_usd, signal_size_usd), 0)
-END
+{RESOLVED_PNL_SQL} / NULLIF(COALESCE(actual_entry_size_usd, signal_size_usd), 0)
 """
 
 TRAINING_OUTCOME_SQL = f"""

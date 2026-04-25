@@ -503,35 +503,54 @@ def _ensure_positions_schema(conn: sqlite3.Connection) -> None:
     if pk_columns == ["market_id", "token_id", "side", "real_money"]:
         return
 
-    conn.executescript(
-        """
-        DROP TABLE IF EXISTS positions_legacy;
-        ALTER TABLE positions RENAME TO positions_legacy;
-        CREATE TABLE positions (
-            market_id   TEXT NOT NULL,
-            side        TEXT NOT NULL,
-            size_usd    REAL NOT NULL,
-            avg_price   REAL NOT NULL,
-            token_id    TEXT NOT NULL,
-            entered_at  INTEGER NOT NULL,
-            real_money  INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (market_id, token_id, side, real_money)
-        );
-        INSERT OR REPLACE INTO positions (
-            market_id, side, size_usd, avg_price, token_id, entered_at, real_money
+    conn.execute("SAVEPOINT positions_schema_rebuild")
+    try:
+        conn.execute("DROP TABLE IF EXISTS positions_legacy")
+        conn.execute("ALTER TABLE positions RENAME TO positions_legacy")
+        pre_count = int(conn.execute("SELECT COUNT(*) FROM positions_legacy").fetchone()[0] or 0)
+        conn.execute(
+            """
+            CREATE TABLE positions (
+                market_id   TEXT NOT NULL,
+                side        TEXT NOT NULL,
+                size_usd    REAL NOT NULL,
+                avg_price   REAL NOT NULL,
+                token_id    TEXT NOT NULL,
+                entered_at  INTEGER NOT NULL,
+                real_money  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (market_id, token_id, side, real_money)
+            )
+            """
         )
-        SELECT
-            market_id,
-            side,
-            size_usd,
-            avg_price,
-            COALESCE(token_id, ''),
-            entered_at,
-            COALESCE(real_money, 0)
-        FROM positions_legacy;
-        DROP TABLE positions_legacy;
-        """
-    )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO positions (
+                market_id, side, size_usd, avg_price, token_id, entered_at, real_money
+            )
+            SELECT
+                market_id,
+                side,
+                size_usd,
+                avg_price,
+                COALESCE(token_id, ''),
+                entered_at,
+                COALESCE(real_money, 0)
+            FROM positions_legacy
+            """
+        )
+        copied_count = int(conn.execute("SELECT changes()").fetchone()[0] or 0)
+        post_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
+        if copied_count != pre_count or post_count != pre_count:
+            raise sqlite3.DatabaseError(
+                "positions schema rebuild row-count mismatch: "
+                f"legacy={pre_count} copied={copied_count} rebuilt={post_count}"
+            )
+        conn.execute("DROP TABLE positions_legacy")
+        conn.execute("RELEASE SAVEPOINT positions_schema_rebuild")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT positions_schema_rebuild")
+        conn.execute("RELEASE SAVEPOINT positions_schema_rebuild")
+        raise
 
 
 def _repair_trade_log_market_urls(conn: sqlite3.Connection) -> None:
@@ -1255,14 +1274,6 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
         CREATE INDEX IF NOT EXISTS idx_seen_trades_seen_at ON seen_trades(seen_at);
         CREATE INDEX IF NOT EXISTS idx_source_event_queue_status_ts ON source_event_queue(status, source_ts DESC);
         CREATE INDEX IF NOT EXISTS idx_source_event_queue_wallet_status ON source_event_queue(wallet_address, status);
-        CREATE INDEX IF NOT EXISTS idx_trade_log_placed_at ON trade_log(placed_at);
-        CREATE INDEX IF NOT EXISTS idx_trade_log_outcome ON trade_log(outcome);
-        CREATE INDEX IF NOT EXISTS idx_trade_log_trader ON trade_log(trader_address);
-        CREATE INDEX IF NOT EXISTS idx_trade_log_real_money ON trade_log(real_money);
-        CREATE INDEX IF NOT EXISTS idx_trade_log_skipped ON trade_log(skipped);
-        CREATE INDEX IF NOT EXISTS idx_trade_log_real_trader_placed ON trade_log(real_money, trader_address, placed_at);
-        CREATE INDEX IF NOT EXISTS idx_trade_log_real_market_position ON trade_log(real_money, market_id, token_id, side);
-        CREATE INDEX IF NOT EXISTS idx_trade_log_trader_action_skipped ON trade_log(trader_address, source_action, skipped);
         CREATE INDEX IF NOT EXISTS idx_belief_updates_applied_at ON belief_updates(applied_at);
         CREATE INDEX IF NOT EXISTS idx_wallet_watch_state_status ON wallet_watch_state(status);
         CREATE INDEX IF NOT EXISTS idx_wallet_policy_metrics_drop_ready ON wallet_policy_metrics(local_drop_ready);
@@ -1482,6 +1493,11 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
         conn,
         "trade_log",
         {
+            "trade_id": "TEXT NOT NULL DEFAULT ''",
+            "market_id": "TEXT NOT NULL DEFAULT ''",
+            "question": "TEXT",
+            "trader_address": "TEXT NOT NULL DEFAULT ''",
+            "side": "TEXT NOT NULL DEFAULT ''",
             "trader_name": "TEXT",
             "token_id": "TEXT",
             "market_url": "TEXT",
@@ -1502,6 +1518,8 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             "market_metadata_json": "TEXT",
             "orderbook_json": "TEXT",
             "snapshot_json": "TEXT",
+            "price_at_signal": "REAL NOT NULL DEFAULT 0",
+            "signal_size_usd": "REAL NOT NULL DEFAULT 0",
             "actual_entry_price": "REAL",
             "actual_entry_shares": "REAL",
             "actual_entry_size_usd": "REAL",
@@ -1521,7 +1539,9 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             "expected_fill_cost_usd": "REAL",
             "expected_exit_fee_usd": "REAL",
             "expected_close_fixed_cost_usd": "REAL",
+            "confidence": "REAL NOT NULL DEFAULT 0",
             "raw_confidence": "REAL",
+            "kelly_fraction": "REAL NOT NULL DEFAULT 0",
             "signal_mode": "TEXT",
             "belief_prior": "REAL",
             "belief_blend": "REAL",
@@ -1529,6 +1549,12 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             "trader_score": "REAL",
             "market_score": "REAL",
             "market_veto": "TEXT",
+            "real_money": "INTEGER NOT NULL DEFAULT 0",
+            "order_id": "TEXT",
+            "skipped": "INTEGER NOT NULL DEFAULT 0",
+            "skip_reason": "TEXT",
+            "placed_at": "INTEGER NOT NULL DEFAULT 0",
+            "resolved_at": "INTEGER",
             "market_resolved_outcome": "TEXT",
             "counterfactual_return": "REAL",
             "label_applied_at": "INTEGER",
@@ -1554,14 +1580,43 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             "realized_exit_pnl_usd": "REAL NOT NULL DEFAULT 0",
             "partial_exit_count": "INTEGER NOT NULL DEFAULT 0",
             "resolution_fixed_cost_usd": "REAL NOT NULL DEFAULT 0",
+            "outcome": "INTEGER",
+            "shadow_pnl_usd": "REAL",
+            "actual_pnl_usd": "REAL",
+            "f_trader_win_rate": "REAL",
+            "f_trader_n_trades": "INTEGER",
+            "f_conviction_ratio": "REAL",
+            "f_trader_volume_usd": "REAL",
             "f_trader_avg_size_usd": "REAL",
+            "f_account_age_days": "INTEGER",
+            "f_consistency": "REAL",
             "f_trader_diversity": "INTEGER",
+            "f_days_to_res": "REAL",
+            "f_price": "REAL",
+            "f_spread_pct": "REAL",
+            "f_momentum_1h": "REAL",
             "f_volume_24h_usd": "REAL",
             "f_volume_7d_avg_usd": "REAL",
+            "f_volume_trend": "REAL",
+            "f_oi_usd": "REAL",
             "f_top_holder_pct": "REAL",
+            "f_bid_depth_usd": "REAL",
+            "f_ask_depth_usd": "REAL",
             "market_components_json": "TEXT",
             "decision_context_json": "TEXT",
         },
+    )
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_trade_log_placed_at ON trade_log(placed_at);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_outcome ON trade_log(outcome);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_trader ON trade_log(trader_address);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_real_money ON trade_log(real_money);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_skipped ON trade_log(skipped);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_real_trader_placed ON trade_log(real_money, trader_address, placed_at);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_real_market_position ON trade_log(real_money, market_id, token_id, side);
+        CREATE INDEX IF NOT EXISTS idx_trade_log_trader_action_skipped ON trade_log(trader_address, source_action, skipped);
+        """
     )
     _ensure_table_columns(
         conn,

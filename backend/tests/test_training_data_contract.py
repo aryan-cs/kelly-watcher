@@ -9,7 +9,7 @@ from unittest.mock import patch
 import kelly_watcher.research.auto_retrain as auto_retrain
 import kelly_watcher.data.db as db
 import kelly_watcher.research.train as train
-from kelly_watcher.engine.economic_model import COUNTERFACTUAL_SAMPLE_WEIGHT, EXECUTED_SAMPLE_WEIGHT, transform_return_target
+from kelly_watcher.engine.economic_model import EXECUTED_SAMPLE_WEIGHT, transform_return_target
 
 
 class TrainingDataContractTest(unittest.TestCase):
@@ -256,11 +256,11 @@ class TrainingDataContractTest(unittest.TestCase):
 
                 df = train.load_training_data()
 
-                self.assertEqual(list(df["trade_id"]), ["fee-aware-executed", "fee-aware-skip"])
+                self.assertEqual(list(df["trade_id"]), ["fee-aware-executed"])
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_load_training_data_includes_trainable_skips_but_excludes_policy_skips(self) -> None:
+    def test_load_training_data_excludes_counterfactual_skips_from_model_samples(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -384,31 +384,23 @@ class TrainingDataContractTest(unittest.TestCase):
 
                 self.assertEqual(
                     list(df["trade_id"]),
-                    ["accepted-win", "skip-trainable-win", "skip-trainable-loss"],
+                    ["accepted-win"],
                 )
                 returns = {row.trade_id: float(row.economic_return) for row in df.itertuples(index=False)}
                 self.assertAlmostEqual(returns["accepted-win"], 0.5, places=6)
-                self.assertAlmostEqual(returns["skip-trainable-win"], 1.222222, places=6)
-                self.assertAlmostEqual(returns["skip-trainable-loss"], -1.0, places=6)
 
                 labels = {row.trade_id: float(row.label) for row in df.itertuples(index=False)}
                 self.assertAlmostEqual(labels["accepted-win"], transform_return_target(0.5), places=6)
-                self.assertAlmostEqual(labels["skip-trainable-win"], transform_return_target(1.222222), places=6)
-                self.assertAlmostEqual(labels["skip-trainable-loss"], transform_return_target(-1.0), places=6)
 
                 outcomes = {row.trade_id: int(row.outcome_label) for row in df.itertuples(index=False)}
                 self.assertEqual(outcomes["accepted-win"], 1)
-                self.assertEqual(outcomes["skip-trainable-win"], 1)
-                self.assertEqual(outcomes["skip-trainable-loss"], 0)
 
                 weights = {row.trade_id: float(row.sample_weight) for row in df.itertuples(index=False)}
                 self.assertAlmostEqual(weights["accepted-win"], EXECUTED_SAMPLE_WEIGHT, places=6)
-                self.assertAlmostEqual(weights["skip-trainable-win"], COUNTERFACTUAL_SAMPLE_WEIGHT, places=6)
-                self.assertAlmostEqual(weights["skip-trainable-loss"], COUNTERFACTUAL_SAMPLE_WEIGHT, places=6)
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_load_training_data_caps_total_counterfactual_weight(self) -> None:
+    def test_load_training_data_uses_executed_only_weights(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -494,7 +486,7 @@ class TrainingDataContractTest(unittest.TestCase):
                 counterfactual_total = float(df.loc[df["skipped"] == 1, "sample_weight"].sum())
 
                 self.assertAlmostEqual(executed_total, 1.0, places=6)
-                self.assertAlmostEqual(counterfactual_total, 1.0, places=6)
+                self.assertAlmostEqual(counterfactual_total, 0.0, places=6)
             finally:
                 db.DB_PATH = original_db_path
 
@@ -612,7 +604,7 @@ class TrainingDataContractTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_early_retrain_counts_trainable_skipped_labels_only(self) -> None:
+    def test_early_retrain_does_not_count_counterfactual_skipped_labels(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -709,11 +701,6 @@ class TrainingDataContractTest(unittest.TestCase):
                     "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
                     return_value={"shadow_evidence_epoch_started_at": 3_000},
                 ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=1):
-                    self.assertTrue(auto_retrain.should_retrain_early(None))
-                with patch(
-                    "kelly_watcher.research.auto_retrain.read_shadow_evidence_epoch",
-                    return_value={"shadow_evidence_epoch_started_at": 3_000},
-                ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=2):
                     self.assertFalse(auto_retrain.should_retrain_early(None))
             finally:
                 db.DB_PATH = original_db_path

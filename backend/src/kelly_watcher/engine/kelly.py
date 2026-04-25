@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from kelly_watcher.config import max_bet_fraction, min_bet_usd, min_confidence
 
 KELLY_FRACTION = 0.5
@@ -13,6 +15,20 @@ def kelly_size(
     *,
     min_confidence_override: float | None = None,
 ) -> dict:
+    try:
+        confidence = float(confidence)
+        market_price = float(market_price)
+        bankroll_usd = float(bankroll_usd)
+    except (TypeError, ValueError):
+        return _no_bet("invalid numeric input")
+    if not math.isfinite(confidence):
+        return _no_bet("non-finite confidence")
+    if not math.isfinite(market_price):
+        return _no_bet("non-finite market price")
+    if not math.isfinite(bankroll_usd):
+        return _no_bet("non-finite bankroll")
+    confidence = max(0.0, min(confidence, 1.0))
+
     threshold = _effective_min_confidence(min_confidence_override)
     if confidence < threshold:
         return _no_bet(f"conf {confidence:.3f} < min {threshold:.3f}")
@@ -52,6 +68,17 @@ def heuristic_size(
     effective_market_price: float | None = None,
     min_confidence_override: float | None = None,
 ) -> dict:
+    try:
+        score = float(score)
+        bankroll_usd = float(bankroll_usd)
+    except (TypeError, ValueError):
+        return _no_bet("invalid numeric input")
+    if not math.isfinite(score):
+        return _no_bet("non-finite score")
+    if not math.isfinite(bankroll_usd):
+        return _no_bet("non-finite bankroll")
+    score = max(0.0, min(score, 1.0))
+
     threshold = _effective_min_confidence(min_confidence_override)
     if score < threshold:
         return _no_bet(f"score {score:.3f} < min {threshold:.3f}")
@@ -139,12 +166,20 @@ def _no_bet(reason: str) -> dict:
 
 def _effective_min_confidence(min_confidence_override: float | None) -> float:
     threshold = min_confidence() if min_confidence_override is None else float(min_confidence_override)
+    if not math.isfinite(threshold):
+        threshold = 1.0
     return max(0.0, min(threshold, 1.0))
 
 
 def _apply_minimum_bet(size: float, bankroll_usd: float) -> tuple[float, str | None]:
     min_bet = min_bet_usd()
     max_size = round(bankroll_usd * max_bet_fraction(), 2)
+    if not math.isfinite(size):
+        return 0.0, "non-finite size"
+    if not math.isfinite(min_bet) or min_bet <= 0:
+        return 0.0, "invalid minimum bet"
+    if not math.isfinite(max_size) or max_size <= 0:
+        return 0.0, "invalid max size"
 
     if size <= 0:
         return 0.0, f"size ${size:.2f} <= 0"

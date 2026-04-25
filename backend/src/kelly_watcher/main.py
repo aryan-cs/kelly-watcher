@@ -26,6 +26,7 @@ from kelly_watcher.integrations.alerter import (
     build_lines,
     build_market_error_alert,
     build_trade_resolution_alert,
+    close_telegram_alert_client,
     send_alert,
 )
 from kelly_watcher.research.auto_retrain import retrain_cycle_report, should_retrain_early
@@ -149,7 +150,7 @@ from kelly_watcher.research.replay import REPLAY_POLICY_CONFIG_KEY_MAP
 from kelly_watcher.engine.segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
 from kelly_watcher.engine.signal_engine import SignalEngine
 from kelly_watcher.engine.shadow_evidence import read_shadow_evidence_epoch, write_shadow_evidence_epoch
-from kelly_watcher.integrations.telegram_runtime import service_telegram_commands
+from kelly_watcher.integrations.telegram_runtime import close_telegram_command_client, service_telegram_commands
 from kelly_watcher.engine.trade_contract import OPEN_EXECUTED_ENTRY_SQL, RESOLVED_EXECUTED_ENTRY_SQL
 from kelly_watcher.runtime.tracker import PolymarketTracker, TradeEvent
 from kelly_watcher.engine.trader_scorer import get_trader_features, refresh_trader_cache
@@ -5697,6 +5698,7 @@ def main() -> None:
     dashboard_api_server: DashboardApiServer | None = None
     telegram_command_stop: threading.Event | None = None
     telegram_command_thread: threading.Thread | None = None
+    executor: PolymarketExecutor | None = None
     engine: SignalEngine | None = None
     shutdown_event = threading.Event()
     previous_signal_handlers = _install_shutdown_signal_handlers(shutdown_event)
@@ -5781,6 +5783,8 @@ def main() -> None:
             telegram_command_stop.set()
         if telegram_command_thread is not None:
             telegram_command_thread.join(timeout=1.0)
+        close_telegram_command_client()
+        close_telegram_alert_client()
         if scheduler is not None:
             try:
                 scheduler.shutdown(wait=False)
@@ -5791,6 +5795,11 @@ def main() -> None:
                 tracker.close()
             except Exception:
                 logger.debug("Tracker close skipped during cleanup", exc_info=True)
+        if executor is not None:
+            try:
+                executor.close()
+            except Exception:
+                logger.debug("Executor close skipped during cleanup", exc_info=True)
         _restore_shutdown_signal_handlers(previous_signal_handlers)
 
     def _persist_replay_promotion_state(result: dict[str, Any]) -> None:

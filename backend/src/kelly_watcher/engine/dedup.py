@@ -68,7 +68,11 @@ class DedupeCache:
             if size_usd <= 0 or shares <= 0:
                 continue
             conn.execute(
-                "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
+                """
+                INSERT OR REPLACE INTO positions (
+                    market_id, side, size_usd, avg_price, token_id, entered_at, real_money
+                ) VALUES (?,?,?,?,?,?,?)
+                """,
                 (
                     row["market_id"],
                     row["side"],
@@ -107,17 +111,19 @@ class DedupeCache:
         cutoff = int(time.time()) - SEEN_WINDOW
         real_money = 1 if use_real_money() else 0
         conn = get_conn()
-        if real_money == 0 and rebuild_shadow_positions:
-            self._rebuild_shadow_positions(conn)
-        seen_rows = conn.execute(
-            "SELECT trade_id FROM seen_trades WHERE seen_at > ?",
-            (cutoff,),
-        ).fetchall()
-        position_rows = conn.execute(
-            "SELECT * FROM positions WHERE real_money=?",
-            (real_money,),
-        ).fetchall()
-        conn.close()
+        try:
+            if real_money == 0 and rebuild_shadow_positions:
+                self._rebuild_shadow_positions(conn)
+            seen_rows = conn.execute(
+                "SELECT trade_id FROM seen_trades WHERE seen_at > ?",
+                (cutoff,),
+            ).fetchall()
+            position_rows = conn.execute(
+                "SELECT * FROM positions WHERE real_money=?",
+                (real_money,),
+            ).fetchall()
+        finally:
+            conn.close()
 
         new_seen_ids = {row["trade_id"] for row in seen_rows}
         new_open_positions = {
@@ -158,44 +164,52 @@ class DedupeCache:
             return
 
         conn = get_conn()
-        conn.execute("DELETE FROM positions WHERE real_money=1")
-        new_open_positions: dict[str, dict[str, float | str]] = {}
+        try:
+            conn.execute("DELETE FROM positions WHERE real_money=1")
+            new_open_positions: dict[str, dict[str, float | str]] = {}
 
-        for position in rows:
-            shares = _to_float(position.get("size"))
-            market_id = str(position.get("market_id") or position.get("conditionId") or "").strip()
-            token_id = str(position.get("asset") or position.get("asset_id") or position.get("tokenId") or "").strip()
-            side = str(position.get("outcome") or position.get("title") or "unknown").strip().lower()
-            avg_price = _to_float(position.get("avgPrice") or position.get("averagePrice") or 0.0)
-            total_bought = max(_to_float(position.get("totalBought")), 0.0)
-            initial_value = max(_to_float(position.get("initialValue")), 0.0)
-            current_value = max(_to_float(position.get("currentValue")), 0.0)
-            size_usd = total_bought or initial_value
-            if size_usd <= 0 and shares > 0 and avg_price > 0:
-                size_usd = shares * avg_price
-            if size_usd <= 0:
-                size_usd = current_value
-            if shares <= 0 and size_usd > 0 and avg_price > 0:
-                shares = size_usd / avg_price
+            for position in rows:
+                shares = _to_float(position.get("size"))
+                market_id = str(position.get("market_id") or position.get("conditionId") or "").strip()
+                token_id = str(
+                    position.get("asset") or position.get("asset_id") or position.get("tokenId") or ""
+                ).strip()
+                side = str(position.get("outcome") or position.get("title") or "unknown").strip().lower()
+                avg_price = _to_float(position.get("avgPrice") or position.get("averagePrice") or 0.0)
+                total_bought = max(_to_float(position.get("totalBought")), 0.0)
+                initial_value = max(_to_float(position.get("initialValue")), 0.0)
+                current_value = max(_to_float(position.get("currentValue")), 0.0)
+                size_usd = total_bought or initial_value
+                if size_usd <= 0 and shares > 0 and avg_price > 0:
+                    size_usd = shares * avg_price
+                if size_usd <= 0:
+                    size_usd = current_value
+                if shares <= 0 and size_usd > 0 and avg_price > 0:
+                    shares = size_usd / avg_price
 
-            if shares <= 0 or size_usd <= 0:
-                continue
-            if not market_id:
-                continue
-            new_open_positions[_position_key(market_id, token_id, side)] = {
-                "market_id": market_id,
-                "side": side,
-                "size": size_usd,
-                "token_id": token_id,
-                "avg_price": avg_price,
-            }
-            conn.execute(
-                "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
-                (market_id, side, size_usd, avg_price, token_id, int(time.time()), 1),
-            )
+                if shares <= 0 or size_usd <= 0:
+                    continue
+                if not market_id:
+                    continue
+                new_open_positions[_position_key(market_id, token_id, side)] = {
+                    "market_id": market_id,
+                    "side": side,
+                    "size": size_usd,
+                    "token_id": token_id,
+                    "avg_price": avg_price,
+                }
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO positions (
+                        market_id, side, size_usd, avg_price, token_id, entered_at, real_money
+                    ) VALUES (?,?,?,?,?,?,?)
+                    """,
+                    (market_id, side, size_usd, avg_price, token_id, int(time.time()), 1),
+                )
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
         with self._lock:
             self.open_positions = new_open_positions
 
@@ -246,16 +260,18 @@ class DedupeCache:
         with self._lock:
             self.seen_ids.add(trade_id)
         conn = get_conn()
-        conn.execute(
-            "INSERT OR IGNORE INTO seen_trades VALUES (?,?,?,?)",
-            (trade_id, market_id, trader_id, now),
-        )
-        conn.execute(
-            "DELETE FROM seen_trades WHERE seen_at < ?",
-            (now - SEEN_WINDOW,),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO seen_trades VALUES (?,?,?,?)",
+                (trade_id, market_id, trader_id, now),
+            )
+            conn.execute(
+                "DELETE FROM seen_trades WHERE seen_at < ?",
+                (now - SEEN_WINDOW,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def mark_pending(self, market_id: str, token_id: str = "", side: str = "") -> None:
         with self._lock:
@@ -281,12 +297,18 @@ class DedupeCache:
                 "avg_price": avg_price,
             }
         conn = get_conn()
-        conn.execute(
-            "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?)",
-            (market_id, side, size_usd, avg_price, token_id, int(time.time()), 1 if real_money else 0),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO positions (
+                    market_id, side, size_usd, avg_price, token_id, entered_at, real_money
+                ) VALUES (?,?,?,?,?,?,?)
+                """,
+                (market_id, side, size_usd, avg_price, token_id, int(time.time()), 1 if real_money else 0),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def release(self, market_id: str, token_id: str = "", side: str = "") -> None:
         with self._lock:
@@ -310,28 +332,31 @@ class DedupeCache:
                 self.open_positions.pop(key, None)
 
         conn = get_conn()
-        normalized_token = str(token_id or "").strip()
-        normalized_side = str(side or "").strip().lower()
-        if normalized_token:
-            conn.execute(
-                "DELETE FROM positions WHERE market_id=? AND token_id=? AND real_money=?",
-                (market_id, normalized_token, mode_flag),
-            )
-        elif normalized_side:
-            conn.execute(
-                "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
-                (market_id, normalized_side, mode_flag),
-            )
-        else:
-            with self._lock:
-                keys_to_remove = [
-                    cache_key
-                    for cache_key, position in self.open_positions.items()
-                    if str(position.get("market_id") or "").strip().lower() == str(market_id or "").strip().lower()
-                ]
-                for cache_key in keys_to_remove:
-                    self.pending.pop(cache_key, None)
-                    self.open_positions.pop(cache_key, None)
-            conn.execute("DELETE FROM positions WHERE market_id=? AND real_money=?", (market_id, mode_flag))
-        conn.commit()
-        conn.close()
+        try:
+            normalized_token = str(token_id or "").strip()
+            normalized_side = str(side or "").strip().lower()
+            if normalized_token:
+                conn.execute(
+                    "DELETE FROM positions WHERE market_id=? AND token_id=? AND real_money=?",
+                    (market_id, normalized_token, mode_flag),
+                )
+            elif normalized_side:
+                conn.execute(
+                    "DELETE FROM positions WHERE market_id=? AND LOWER(side)=? AND real_money=?",
+                    (market_id, normalized_side, mode_flag),
+                )
+            else:
+                with self._lock:
+                    keys_to_remove = [
+                        cache_key
+                        for cache_key, position in self.open_positions.items()
+                        if str(position.get("market_id") or "").strip().lower()
+                        == str(market_id or "").strip().lower()
+                    ]
+                    for cache_key in keys_to_remove:
+                        self.pending.pop(cache_key, None)
+                        self.open_positions.pop(cache_key, None)
+                conn.execute("DELETE FROM positions WHERE market_id=? AND real_money=?", (market_id, mode_flag))
+            conn.commit()
+        finally:
+            conn.close()

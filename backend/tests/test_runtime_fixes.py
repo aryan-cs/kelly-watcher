@@ -7503,6 +7503,43 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(result, {"0x1": [], "0x2": [], "0x3": [], "0x4": []})
         self.assertLess(elapsed, 0.35)
 
+    def test_tracker_stops_wallet_trade_pagination_at_freshness_cutoff(self) -> None:
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        calls: list[int] = []
+
+        def fake_request_json(_url, *, params=None, **_kwargs):
+            offset = int((params or {}).get("offset") or 0)
+            calls.append(offset)
+            if offset > 0:
+                self.fail("stale first page should stop pagination before fetching older pages")
+            return [
+                {
+                    "id": "fresh",
+                    "timestamp": 1_700_000_110,
+                    "conditionId": "market-fresh",
+                    "asset": "token-fresh",
+                },
+                {
+                    "id": "stale",
+                    "timestamp": 1_700_000_090,
+                    "conditionId": "market-stale",
+                    "asset": "token-stale",
+                },
+            ], True
+
+        tracker_obj._request_json = fake_request_json
+        tracker_obj._record_trade_feed_result = lambda _ok: None
+
+        rows = tracker_obj.get_wallet_trades(
+            "0xabc",
+            limit=2,
+            cursor=None,
+            fresh_after_ts=1_700_000_100,
+        )
+
+        self.assertEqual([row["id"] for row in rows], ["fresh"])
+        self.assertEqual(calls, [0])
+
     def test_tracker_load_wallet_cursors_ignores_malformed_json_bytes(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

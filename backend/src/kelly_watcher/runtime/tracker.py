@@ -102,7 +102,11 @@ class PolymarketTracker:
         activity_callback: Callable[[], None] | None = None,
     ):
         self.wallets = [address.lower() for address in wallet_addresses if address]
-        self.client = httpx.Client(timeout=15.0, follow_redirects=True)
+        self.client = httpx.Client(
+            timeout=15.0,
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=12, max_keepalive_connections=6),
+        )
         self.activity_callback = activity_callback
         self.seen_ids: set[str] = set()
         self.wallet_cursors = self._load_wallet_cursors()
@@ -118,7 +122,11 @@ class PolymarketTracker:
 
     @staticmethod
     def _new_http_client() -> httpx.Client:
-        return httpx.Client(timeout=15.0, follow_redirects=True)
+        return httpx.Client(
+            timeout=15.0,
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=12, max_keepalive_connections=6),
+        )
 
     def add_wallet(self, address: str) -> None:
         wallet = address.lower()
@@ -731,11 +739,14 @@ class PolymarketTracker:
         address: str,
         limit: int = 50,
         cursor: WalletCursor | None = None,
+        fresh_after_ts: int = 0,
     ) -> list[dict]:
         page_limit = max(1, min(int(limit or 50), 100))
+        freshness_cutoff = max(int(fresh_after_ts or 0), 0)
         rows: list[dict] = []
         seen_ids: set[str] = set()
         reached_cursor = False
+        reached_freshness_cutoff = False
 
         for page in range(WALLET_TRADE_FETCH_MAX_PAGES):
             params: dict[str, Any] = {"user": address, "limit": page_limit}
@@ -762,6 +773,10 @@ class PolymarketTracker:
                     continue
                 trade_id = self._raw_trade_id(raw)
                 source_ts = self._raw_trade_timestamp(raw)
+                # The trade feed is newest-first; do not backfill pages that will be rejected as stale.
+                if freshness_cutoff > 0 and source_ts > 0 and source_ts < freshness_cutoff:
+                    reached_freshness_cutoff = True
+                    break
                 if cursor is not None and source_ts > 0:
                     if source_ts < cursor.last_source_ts:
                         reached_cursor = True
@@ -776,7 +791,7 @@ class PolymarketTracker:
                 rows.append(raw)
                 added += 1
 
-            if reached_cursor or len(batch) < page_limit or added == 0:
+            if reached_cursor or reached_freshness_cutoff or len(batch) < page_limit or added == 0:
                 break
 
         return rows
@@ -888,12 +903,24 @@ class PolymarketTracker:
         limit: int = 50,
     ) -> dict[str, list[dict]]:
         def fetch_for_wallet(wallet: str) -> list[dict]:
+            fresh_after_ts = 0
+            max_age = max_source_trade_age_seconds()
+            if max_age > 0:
+                fresh_after_ts = int(time.time()) - int(max_age)
             try:
-                return self.get_wallet_trades(wallet, limit=limit, cursor=self.wallet_cursors.get(wallet))
+                return self.get_wallet_trades(
+                    wallet,
+                    limit=limit,
+                    cursor=self.wallet_cursors.get(wallet),
+                    fresh_after_ts=fresh_after_ts,
+                )
             except TypeError:
                 # Some tests monkeypatch get_wallet_trades with the old two-arg
                 # shape. Keep that compatibility while production uses cursors.
-                return self.get_wallet_trades(wallet, limit=limit)
+                try:
+                    return self.get_wallet_trades(wallet, limit=limit, cursor=self.wallet_cursors.get(wallet))
+                except TypeError:
+                    return self.get_wallet_trades(wallet, limit=limit)
 
         targets = [str(address or "").strip().lower() for address in wallet_addresses if str(address or "").strip()]
         if not targets:

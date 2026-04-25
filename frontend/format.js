@@ -192,34 +192,36 @@ export function shortAddress(value) {
     return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 export function formatNumber(value, digits = DEFAULT_DECIMAL_PLACES) {
-    if (value == null || Number.isNaN(value))
+    if (value == null || !Number.isFinite(value))
         return '-';
     return value.toFixed(digits);
 }
 export function formatDollar(value) {
-    if (value == null || Number.isNaN(value))
+    if (value == null || !Number.isFinite(value))
         return '-';
-    const sign = value > 0 ? '+' : '';
-    return `${sign}$${value.toFixed(DEFAULT_DECIMAL_PLACES)}`;
+    const sign = value < 0 ? '-' : value > 0 ? '+' : '';
+    return `${sign}$${Math.abs(value).toFixed(DEFAULT_DECIMAL_PLACES)}`;
 }
 export function formatAdaptiveDollar(value, width) {
-    if (value == null || Number.isNaN(value))
+    if (value == null || !Number.isFinite(value))
         return '-';
     if (width <= 0)
         return '';
+    const sign = value < 0 ? '-' : '';
+    const absoluteValue = Math.abs(value);
     for (let digits = DEFAULT_DECIMAL_PLACES; digits >= 0; digits -= 1) {
-        const formatted = `$${value.toFixed(digits)}`;
+        const formatted = `${sign}$${absoluteValue.toFixed(digits)}`;
         if (formatted.length <= width) {
             return formatted;
         }
     }
-    const integerOnly = `$${Math.round(value)}`;
+    const integerOnly = `${sign}$${Math.round(absoluteValue)}`;
     return integerOnly.length <= width
         ? integerOnly
         : integerOnly.slice(0, width);
 }
 export function formatAdaptiveNumber(value, width) {
-    if (value == null || Number.isNaN(value))
+    if (value == null || !Number.isFinite(value))
         return '-';
     if (width <= 0)
         return '';
@@ -235,7 +237,7 @@ export function formatAdaptiveNumber(value, width) {
         : integerOnly.slice(0, width);
 }
 export function formatPct(value, digits = DEFAULT_DECIMAL_PLACES) {
-    if (value == null || Number.isNaN(value))
+    if (value == null || !Number.isFinite(value))
         return '-';
     return `${(value * 100).toFixed(digits)}%`;
 }

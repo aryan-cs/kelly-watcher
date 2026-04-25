@@ -26,9 +26,12 @@ export function BarSparkline({
 
   if (centered) {
     const slotWidth = 2
-    const halfWidth = Math.max(1, Math.floor((width - 1) / (slotWidth * 2)))
+    const safeWidth = Math.max(1, width)
+    const halfWidth = Math.max(1, Math.floor((safeWidth - 1) / (slotWidth * 2)))
     const filled = Math.round(magnitude * halfWidth)
     const empty = Math.max(0, halfWidth - filled)
+    const renderedWidth = (halfWidth * slotWidth * 2) + 1
+    const trailingPad = Math.max(0, safeWidth - renderedWidth)
     const leftEmpty = ' '.repeat(empty * slotWidth)
     const rightEmpty = ' '.repeat(empty * slotWidth)
     const leftBlank = ' '.repeat(halfWidth * slotWidth)
@@ -43,9 +46,11 @@ export function BarSparkline({
             <Text color={theme.dim}>{axisChar}</Text>
             <Text backgroundColor={fillColor}>{filledBar}</Text>
             <Text>{rightEmpty}</Text>
+            {trailingPad > 0 ? <Text>{' '.repeat(trailingPad)}</Text> : null}
           </>
         ) : (
           <>
+            {trailingPad > 0 ? <Text>{' '.repeat(trailingPad)}</Text> : null}
             <Text>{leftEmpty}</Text>
             <Text backgroundColor={fillColor}>{filledBar}</Text>
             <Text color={theme.dim}>{axisChar}</Text>

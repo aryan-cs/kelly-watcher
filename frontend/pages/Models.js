@@ -4790,27 +4790,29 @@ function splitIntoColumns(items, columnCount) {
     return columns;
 }
 function denseModelsLabelWidth(width) {
-    const safeWidth = Math.max(18, width);
-    return Math.max(8, Math.min(16, Math.floor(safeWidth * 0.42)));
+    const safeWidth = Math.max(1, Math.floor(width));
+    return Math.max(1, Math.min(16, Math.floor(safeWidth * 0.42)));
 }
 function DenseModelsRow({ label, value, width, color = theme.white, selected = false, backgroundColor, labelWidth, minValueWidth = 6, valueAlign = 'right' }) {
-    const safeWidth = Math.max(18, width);
-    const maxLabelWidth = Math.max(6, safeWidth - Math.max(6, minValueWidth) - 1);
-    const preferredLabelWidth = Math.max(labelWidth ?? denseModelsLabelWidth(safeWidth), Math.min(label.length, maxLabelWidth));
-    const boundedLabelWidth = Math.max(6, Math.min(maxLabelWidth, preferredLabelWidth));
-    const valueWidth = Math.max(Math.max(6, minValueWidth), safeWidth - boundedLabelWidth - 1);
+    const safeWidth = Math.max(1, Math.floor(width));
+    const gapWidth = safeWidth >= 3 ? 1 : 0;
+    const boundedMinValueWidth = Math.max(0, Math.min(Math.max(0, minValueWidth), safeWidth - gapWidth - 1));
+    const maxLabelWidth = Math.max(1, safeWidth - boundedMinValueWidth - gapWidth);
+    const preferredLabelWidth = Math.max(Math.min(labelWidth ?? denseModelsLabelWidth(safeWidth), maxLabelWidth), Math.min(label.length, maxLabelWidth));
+    const boundedLabelWidth = Math.max(1, Math.min(maxLabelWidth, preferredLabelWidth));
+    const valueWidth = Math.max(0, safeWidth - boundedLabelWidth - gapWidth);
     const rowBackground = selected ? backgroundColor : undefined;
     return (React.createElement(InkBox, { width: safeWidth },
         React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, fit(label, boundedLabelWidth)),
-        React.createElement(Text, { backgroundColor: rowBackground }, " "),
-        React.createElement(Text, { color: color, backgroundColor: rowBackground, bold: selected }, valueAlign === 'left' ? fit(value, valueWidth) : fitRight(value, valueWidth))));
+        gapWidth ? React.createElement(Text, { backgroundColor: rowBackground }, " ") : null,
+        valueWidth > 0 ? (React.createElement(Text, { color: color, backgroundColor: rowBackground, bold: selected }, valueAlign === 'left' ? fit(value, valueWidth) : fitRight(value, valueWidth))) : null));
 }
 function recentRunsColumnWidths(width) {
-    const safeWidth = Math.max(24, width);
-    const resultWidth = safeWidth >= 34 ? 8 : 6;
-    const logLossWidth = safeWidth >= 34 ? 8 : 7;
-    const brierWidth = safeWidth >= 32 ? 7 : 6;
-    const timestampWidth = Math.max(5, safeWidth - logLossWidth - brierWidth - resultWidth - 3);
+    const safeWidth = Math.max(18, width);
+    const resultWidth = safeWidth >= 34 ? 8 : safeWidth >= 24 ? 6 : 4;
+    const logLossWidth = safeWidth >= 34 ? 8 : safeWidth >= 24 ? 7 : 5;
+    const brierWidth = safeWidth >= 32 ? 7 : safeWidth >= 24 ? 6 : 4;
+    const timestampWidth = Math.max(1, safeWidth - logLossWidth - brierWidth - resultWidth - 3);
     return { safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth };
 }
 function RecentRunsHeaderRow({ width }) {
@@ -4836,11 +4838,11 @@ function RecentRunsDataRow({ width, timestamp, timestampColor, logLoss, logLossC
         React.createElement(Text, { color: resultColor }, fitRight(result, resultWidth))));
 }
 function recentExitColumnWidths(width) {
-    const safeWidth = Math.max(28, width);
-    const actionWidth = 9;
-    const returnWidth = 8;
-    const timestampWidth = 14;
-    const reasonWidth = Math.max(8, safeWidth - actionWidth - returnWidth - timestampWidth - 3);
+    const safeWidth = Math.max(18, width);
+    const timestampWidth = safeWidth >= 42 ? 14 : safeWidth >= 28 ? 10 : 5;
+    const actionWidth = safeWidth >= 42 ? 9 : safeWidth >= 28 ? 7 : 5;
+    const returnWidth = safeWidth >= 42 ? 8 : safeWidth >= 28 ? 7 : 5;
+    const reasonWidth = Math.max(1, safeWidth - actionWidth - returnWidth - timestampWidth - 3);
     return { safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth };
 }
 function RecentExitHeaderRow({ width }) {
@@ -5040,13 +5042,14 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const clampedSelectedSettingIndex = relatedSettings.length > 0
         ? Math.max(0, Math.min(selectedSettingIndex, relatedSettings.length - 1))
         : 0;
-    const helpModalWidth = Math.max(70, Math.min(terminal.width - 8, terminal.wide ? 118 : 94));
-    const helpContentWidth = Math.max(52, helpModalWidth - 4);
-    const helpSettingLabelWidth = Math.max(18, Math.min(28, Math.floor(helpContentWidth * 0.48)));
-    const helpSettingValueWidth = Math.max(14, helpContentWidth - helpSettingLabelWidth - 1);
+    const helpMaxModalWidth = Math.max(1, terminal.width - 8);
+    const helpModalWidth = Math.max(1, Math.min(helpMaxModalWidth, terminal.wide ? 118 : 94));
+    const helpContentWidth = Math.max(1, helpModalWidth - 4);
+    const helpSettingLabelWidth = Math.max(1, Math.min(28, Math.floor(helpContentWidth * 0.48)));
+    const helpSettingValueWidth = Math.max(1, helpContentWidth - helpSettingLabelWidth - 1);
     const helpIndexLabel = `${clampedSelectedPanelIndex + 1}/${MODEL_PANEL_DEFS.length}`;
     const helpTitleWidth = Math.max(1, helpContentWidth - helpIndexLabel.length - 1);
-    const helpSpacerLine = ' '.repeat(helpModalWidth - 2);
+    const helpSpacerLine = ' '.repeat(Math.max(0, helpModalWidth - 2));
     const formatConfigValue = (key) => {
         const field = configFieldByKey.get(key);
         if (!field)
@@ -6223,16 +6226,17 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         priorPull
     ]);
     const scoringMixColumns = useMemo(() => splitIntoColumns(scoringMixStats, 2), [scoringMixStats]);
-    const modelsColumnGap = terminal.compact ? 1 : 2;
-    const modelsContentWidth = Math.max(50, terminal.width - 10);
-    const modelsUsableWidth = Math.max(18, modelsContentWidth - modelsColumnGap * 2);
-    const leftModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.26));
-    const middleModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.27));
+    const modelsContentWidth = Math.max(3, terminal.width - 14);
+    const modelsColumnGap = modelsContentWidth >= 40 ? (terminal.compact ? 1 : 2) : 0;
+    const modelsUsableWidth = Math.max(3, modelsContentWidth - modelsColumnGap * 2);
+    const leftModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth * 0.26));
+    const middleModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth * 0.27));
     const modelsColumnWidths = [
         leftModelsColumnWidth,
         middleModelsColumnWidth,
-        Math.max(18, modelsUsableWidth - leftModelsColumnWidth - middleModelsColumnWidth)
+        Math.max(1, modelsUsableWidth - leftModelsColumnWidth - middleModelsColumnWidth)
     ];
+    const modelPanelHeight = Math.max(12, terminal.height - 9);
     const predictionQualityStats = useMemo(() => [
         {
             label: 'Scorer gates',
@@ -6338,7 +6342,10 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     const recentRetrainRuns = useMemo(() => retrainRuns.slice(0, historyLimit), [historyLimit, retrainRuns]);
     const howItWorksScoreRows = useMemo(() => scoringMixStats.slice(0, 4), [scoringMixStats]);
     const howItWorksHistoryRows = useMemo(() => scoringMixStats.slice(4), [scoringMixStats]);
-    const renderPageBody = () => (React.createElement(InkBox, { width: "100%" },
+    const renderPageBody = () => (React.createElement(InkBox, { width: "100%", flexDirection: "column" },
+        React.createElement(InkBox, { width: modelsContentWidth, height: 1, flexShrink: 0 },
+            React.createElement(Text, { color: theme.accent, bold: true }, fit('Model', modelsContentWidth))),
+        React.createElement(InkBox, { width: "100%" },
         React.createElement(InkBox, { width: modelsColumnWidths[0], flexDirection: "column" },
             React.createElement(ModelsSectionTitle, { title: "Prediction Quality", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 0, backgroundColor: selectedRowBackground }),
             predictionQualityStats.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[0], labelWidth: 14 }))),
@@ -6390,9 +6397,9 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
                 React.createElement(DenseModelsRow, { label: "Brier c / i", value: `${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`, color: sharedHoldoutGateReadColor(latestSharedHoldoutRun), width: modelsColumnWidths[2], labelWidth: 11, minValueWidth: 16 }))) : null,
             React.createElement(ModelsSpacer, null),
             React.createElement(RecentRunsHeaderRow, { width: modelsColumnWidths[2] }),
-            recentRetrainRuns.length ? (recentRetrainRuns.map((row, index) => (React.createElement(RecentRunsDataRow, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, width: modelsColumnWidths[2], timestamp: formatShortDateTime(row.finished_at), timestampColor: theme.dim, logLoss: formatNumber(row.log_loss, 3), logLossColor: lowerIsBetterColor(row.log_loss, 0.55, 0.69), brier: formatNumber(row.brier_score, 3), brierColor: lowerIsBetterColor(row.brier_score, 0.18, 0.25), result: retrainRunStateCompactLabel(row.status, row.deployed), resultColor: retrainRunStateColor(row.status, row.deployed) })))) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[2]))))));
+            recentRetrainRuns.length ? (recentRetrainRuns.map((row, index) => (React.createElement(RecentRunsDataRow, { key: `${row.finished_at}-${row.status || 'run'}-${index}`, width: modelsColumnWidths[2], timestamp: formatShortDateTime(row.finished_at), timestampColor: theme.dim, logLoss: formatNumber(row.log_loss, 3), logLossColor: lowerIsBetterColor(row.log_loss, 0.55, 0.69), brier: formatNumber(row.brier_score, 3), brierColor: lowerIsBetterColor(row.brier_score, 0.18, 0.25), result: retrainRunStateCompactLabel(row.status, row.deployed), resultColor: retrainRunStateColor(row.status, row.deployed) })))) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[2])))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
-        renderPageBody(),
+        React.createElement(Box, { width: "100%", height: modelPanelHeight }, renderPageBody()),
         detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: helpModalWidth },
                 React.createElement(InkBox, { width: "100%" },

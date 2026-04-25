@@ -6,9 +6,12 @@ export function BarSparkline({ value, width = 20, label, positive, centered = fa
     const fillColor = color || ((positive ?? value >= 0) ? theme.green : theme.red);
     if (centered) {
         const slotWidth = 2;
-        const halfWidth = Math.max(1, Math.floor((width - 1) / (slotWidth * 2)));
+        const safeWidth = Math.max(1, width);
+        const halfWidth = Math.max(1, Math.floor((safeWidth - 1) / (slotWidth * 2)));
         const filled = Math.round(magnitude * halfWidth);
         const empty = Math.max(0, halfWidth - filled);
+        const renderedWidth = (halfWidth * slotWidth * 2) + 1;
+        const trailingPad = Math.max(0, safeWidth - renderedWidth);
         const leftEmpty = ' '.repeat(empty * slotWidth);
         const rightEmpty = ' '.repeat(empty * slotWidth);
         const leftBlank = ' '.repeat(halfWidth * slotWidth);
@@ -19,7 +22,9 @@ export function BarSparkline({ value, width = 20, label, positive, centered = fa
                 React.createElement(Text, null, leftBlank),
                 React.createElement(Text, { color: theme.dim }, axisChar),
                 React.createElement(Text, { backgroundColor: fillColor }, filledBar),
-                React.createElement(Text, null, rightEmpty))) : (React.createElement(React.Fragment, null,
+                React.createElement(Text, null, rightEmpty),
+                trailingPad > 0 ? React.createElement(Text, null, ' '.repeat(trailingPad)) : null)) : (React.createElement(React.Fragment, null,
+                trailingPad > 0 ? React.createElement(Text, null, ' '.repeat(trailingPad)) : null,
                 React.createElement(Text, null, leftEmpty),
                 React.createElement(Text, { backgroundColor: fillColor }, filledBar),
                 React.createElement(Text, { color: theme.dim }, axisChar),

@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node bootstrap.js",
-    "start:local": "node bootstrap.js --local",
+    "start": "tsx bootstrap.ts",
+    "start:local": "tsx bootstrap.ts --local",
     "dev": "tsx bootstrap.ts",
     "dev:local": "tsx bootstrap.ts --local"
   },

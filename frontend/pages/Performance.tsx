@@ -692,10 +692,10 @@ function getPositionPaneMetrics(terminalHeight: number, stacked: boolean) {
 }
 
 function getDailyPanelContentWidth(terminalWidth: number, stacked: boolean): number {
-  const minContentWidth = 24
+  const pageContentWidth = Math.max(1, terminalWidth - 8)
   return stacked
-    ? Math.max(minContentWidth, terminalWidth - 10)
-    : Math.max(minContentWidth, Math.floor((terminalWidth - 15) / 2))
+    ? Math.max(1, pageContentWidth - 6)
+    : Math.max(1, Math.floor((pageContentWidth - 9) / 2))
 }
 
 function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQueueLayout {
@@ -1903,6 +1903,11 @@ function normalizeEffectivePosition(
     status === 'exit'
       ? roundTo(Number(row.exit_size_usd ?? size_usd), 3)
       : null
+  const manualEditChangesPnl =
+    edit?.entry_price != null ||
+    edit?.shares != null ||
+    edit?.size_usd != null ||
+    statusOverride != null
   const normalizedRow: PositionRow = {
     ...row,
     entry_price: roundTo(Number(entry_price || 0), 3),
@@ -1912,13 +1917,17 @@ function normalizeEffectivePosition(
     resolution_ts,
     exit_size_usd
   }
+  const sourcePnl = row.pnl_usd == null ? null : roundTo(Number(row.pnl_usd), 3)
   return {
     ...normalizedRow,
-    pnl_usd: computePositionProfit(normalizedRow)
+    pnl_usd:
+      row.source_kind === 'trade_log' && !manualEditChangesPnl && sourcePnl != null
+        ? sourcePnl
+        : computePositionProfit(normalizedRow)
   }
 }
 
-function groupBucketedPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
+function groupBucketedPnl(rows: PositionRow[]): DailyPnlEntry[] {
   const totals = new Map<string, number>()
 
   rows.forEach((row) => {
@@ -1949,10 +1958,7 @@ function groupBucketedPnl(rows: PositionRow[], nowTs: number): DailyPnlEntry[] {
   }
 
   const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]))
-  const newestResolved = new Date(parsedEntries[0].bucketDate.getTime())
-  const currentBucket = floorToPnlBucket(new Date(nowTs * 1000))
-  const newest =
-    currentBucket.getTime() > newestResolved.getTime() ? currentBucket : newestResolved
+  const newest = new Date(parsedEntries[0].bucketDate.getTime())
   const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime())
   const filledEntries: DailyPnlEntry[] = []
 
@@ -1977,9 +1983,11 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
   const gapWidth = 0
   const columnWidth = 2
   const chartWidth = Math.max(1, width)
-  const leftPaddingWidth = Math.max(0, chartWidth - (entries.length * columnWidth))
-  const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)))
-  const heights = entries.map((entry) => {
+  const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth))
+  const visibleEntries = entries.slice(-visibleCapacity)
+  const leftPaddingWidth = Math.max(0, chartWidth - (visibleEntries.length * columnWidth))
+  const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)))
+  const heights = visibleEntries.map((entry) => {
     const magnitude = Math.abs(entry.pnl)
     if (magnitude <= 0) {
       return 0
@@ -1988,13 +1996,13 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
   })
 
   const renderRow = (rowIndex: number, negative: boolean) => (
-    <InkBox width="100%">
+    <InkBox width={chartWidth} flexShrink={0}>
       {leftPaddingWidth > 0 ? (
         <InkBox width={leftPaddingWidth}>
           <Text>{' '.repeat(leftPaddingWidth)}</Text>
         </InkBox>
       ) : null}
-      {entries.map((entry, index) => {
+      {visibleEntries.map((entry, index) => {
         const filled =
           negative
             ? entry.pnl < 0 && heights[index] >= rowIndex
@@ -2005,7 +2013,7 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
             <InkBox width={columnWidth}>
               <Text color={filled ? color : undefined}>{filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth)}</Text>
             </InkBox>
-            {index < entries.length - 1 ? <Text>{' '.repeat(gapWidth)}</Text> : null}
+            {index < visibleEntries.length - 1 ? <Text>{' '.repeat(gapWidth)}</Text> : null}
           </React.Fragment>
         )
       })}
@@ -2015,10 +2023,24 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
   return (
     <InkBox flexDirection="column">
       {Array.from({length: levelCount}, (_, index) => renderRow(levelCount - index, false))}
-      <InkBox width="100%">
+      <InkBox width={chartWidth} flexShrink={0}>
         <Text color={theme.dim}>{'─'.repeat(chartWidth)}</Text>
       </InkBox>
       {Array.from({length: levelCount}, (_, index) => renderRow(index + 1, true))}
+    </InkBox>
+  )
+}
+
+function EmptyDailyPnlPanel({message, width}: {message: string; width: number}) {
+  const panelWidth = Math.max(1, width)
+  const panelRows = 9
+  return (
+    <InkBox flexDirection="column" width={panelWidth} flexShrink={0}>
+      {Array.from({length: panelRows}, (_, index) => (
+        <Text key={`empty-daily-pnl-${index}`} color={index === 0 ? theme.dim : undefined}>
+          {fit(index === 0 ? message : '', panelWidth)}
+        </Text>
+      ))}
     </InkBox>
   )
 }
@@ -2066,7 +2088,6 @@ export function Performance({
   const activeMode = botState.mode === 'live' ? 'live' : 'shadow'
   const activeRealMoney = activeMode === 'live' ? 1 : 0
   const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker'
-  const currentPnlBucketTs = Math.floor(nowTs / (PNL_BUCKET_MINUTES * 60)) * (PNL_BUCKET_MINUTES * 60)
   const usernames = useMemo(() => {
     const lookup = new Map<string, string>()
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -2241,10 +2262,9 @@ export function Performance({
   const dailyEntries = useMemo<DailyPnlEntry[]>(
     () =>
       groupBucketedPnl(
-        pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'),
-        currentPnlBucketTs
+        pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit')
       ),
-    [currentPnlBucketTs, pastPositions]
+    [pastPositions]
   )
   useEffect(() => {
     if (!pendingPerfExits.length || !onPendingPerfExitSettlement) {
@@ -2275,6 +2295,10 @@ export function Performance({
   const dailyPanelContentWidth = useMemo(
     () => getDailyPanelContentWidth(terminal.width, stacked),
     [stacked, terminal.width]
+  )
+  const summaryStatColumnWidth = useMemo(
+    () => Math.max(1, Math.floor((dailyPanelContentWidth - 2) / 2)),
+    [dailyPanelContentWidth]
   )
   const dailyPreviewCapacity = useMemo(
     () =>
@@ -2524,8 +2548,9 @@ export function Performance({
   ]
   const modalBackground = terminal.backgroundColor || theme.modalBackground
   const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
-  const detailModalWidth = Math.max(60, Math.min(terminal.width - 8, terminal.wide ? 110 : 88))
-  const detailModalContentWidth = Math.max(40, detailModalWidth - 4)
+  const detailMaxModalWidth = Math.max(1, terminal.width - 8)
+  const detailModalWidth = Math.max(1, Math.min(detailMaxModalWidth, terminal.wide ? 110 : 88))
+  const detailModalContentWidth = Math.max(1, detailModalWidth - 4)
   const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12))
   const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows)
   const detailOffset = Math.min(dailyDetailScrollOffset, detailMaxOffset)
@@ -2659,7 +2684,7 @@ export function Performance({
       if (row.status === 'open' || row.status === 'waiting') {
         return row.shares != null ? roundTo(Number(row.shares) - Number(row.size_usd || 0), 3) : null
       }
-      return computePositionProfit(row)
+      return row.pnl_usd ?? computePositionProfit(row)
     }
     const displayCashOutNow = (row: PositionRow): number | null => {
       if (row.status === 'open' || row.status === 'waiting') {
@@ -2904,18 +2929,30 @@ export function Performance({
 
   const renderPageBody = () => (
     <>
-      <InkBox flexDirection={stacked ? 'column' : 'row'}>
+      <InkBox width="100%" flexDirection={stacked ? 'column' : 'row'}>
         <Box title={activeTitle} width={stacked ? '100%' : '50%'} accent={selectedBox === 'summary'}>
           <InkBox width="100%" flexDirection="row">
-            <InkBox flexDirection="column" flexGrow={1}>
+            <InkBox flexDirection="column" width={summaryStatColumnWidth} flexShrink={0}>
               {summaryLeftStats.map((stat) => (
-                <StatRow key={stat.label} label={stat.label} value={stat.value} color={stat.color} />
+                <StatRow
+                  key={stat.label}
+                  label={stat.label}
+                  value={stat.value}
+                  color={stat.color}
+                  width={summaryStatColumnWidth}
+                />
               ))}
             </InkBox>
             <InkBox width={2} />
-            <InkBox flexDirection="column" flexGrow={1}>
+            <InkBox flexDirection="column" width={summaryStatColumnWidth} flexShrink={0}>
               {summaryRightStats.map((stat) => (
-                <StatRow key={stat.label} label={stat.label} value={stat.value} color={stat.color} />
+                <StatRow
+                  key={stat.label}
+                  label={stat.label}
+                  value={stat.value}
+                  color={stat.color}
+                  width={summaryStatColumnWidth}
+                />
               ))}
             </InkBox>
           </InkBox>
@@ -2925,7 +2962,10 @@ export function Performance({
           {dailyPreviewEntries.length ? (
             <DailyPnlPreviewChart entries={dailyPreviewEntries} width={dailyPanelContentWidth} />
           ) : (
-            <Text color={theme.dim}>{`No resolved ${activeTitle.toLowerCase()} trades yet.`}</Text>
+            <EmptyDailyPnlPanel
+              message={`No resolved ${activeTitle.toLowerCase()} trades yet.`}
+              width={dailyPanelContentWidth}
+            />
           )}
         </Box>
       </InkBox>

@@ -467,10 +467,10 @@ function getPositionPaneMetrics(terminalHeight, stacked) {
     return { paneHeight, visibleRows };
 }
 function getDailyPanelContentWidth(terminalWidth, stacked) {
-    const minContentWidth = 24;
+    const pageContentWidth = Math.max(1, terminalWidth - 8);
     return stacked
-        ? Math.max(minContentWidth, terminalWidth - 10)
-        : Math.max(minContentWidth, Math.floor((terminalWidth - 15) / 2));
+        ? Math.max(1, pageContentWidth - 6)
+        : Math.max(1, Math.floor((pageContentWidth - 9) / 2));
 }
 function getDailyQueueLayout(contentWidth, valueWidth) {
     const dateWidth = 14;
@@ -1314,6 +1314,10 @@ function normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEdit
     const exit_size_usd = status === 'exit'
         ? roundTo(Number(row.exit_size_usd ?? size_usd), 3)
         : null;
+    const manualEditChangesPnl = edit?.entry_price != null ||
+        edit?.shares != null ||
+        edit?.size_usd != null ||
+        statusOverride != null;
     const normalizedRow = {
         ...row,
         entry_price: roundTo(Number(entry_price || 0), 3),
@@ -1323,12 +1327,15 @@ function normalizeEffectivePosition(row, nowTs, tradeLogEditLookup, positionEdit
         resolution_ts,
         exit_size_usd
     };
+    const sourcePnl = row.pnl_usd == null ? null : roundTo(Number(row.pnl_usd), 3);
     return {
         ...normalizedRow,
-        pnl_usd: computePositionProfit(normalizedRow)
+        pnl_usd: row.source_kind === 'trade_log' && !manualEditChangesPnl && sourcePnl != null
+            ? sourcePnl
+            : computePositionProfit(normalizedRow)
     };
 }
-function groupBucketedPnl(rows, nowTs) {
+function groupBucketedPnl(rows) {
     const totals = new Map();
     rows.forEach((row) => {
         const pnl = row.pnl_usd;
@@ -1355,9 +1362,7 @@ function groupBucketedPnl(rows, nowTs) {
         return [];
     }
     const entryByBucket = new Map(parsedEntries.map((entry) => [entry.day, entry]));
-    const newestResolved = new Date(parsedEntries[0].bucketDate.getTime());
-    const currentBucket = floorToPnlBucket(new Date(nowTs * 1000));
-    const newest = currentBucket.getTime() > newestResolved.getTime() ? currentBucket : newestResolved;
+    const newest = new Date(parsedEntries[0].bucketDate.getTime());
     const oldest = new Date(parsedEntries[parsedEntries.length - 1].bucketDate.getTime());
     const filledEntries = [];
     for (let cursor = new Date(newest.getTime()); cursor >= oldest;) {
@@ -1377,19 +1382,21 @@ function DailyPnlPreviewChart({ entries, width }) {
     const gapWidth = 0;
     const columnWidth = 2;
     const chartWidth = Math.max(1, width);
-    const leftPaddingWidth = Math.max(0, chartWidth - (entries.length * columnWidth));
-    const maxAbsPnl = Math.max(1, ...entries.map((entry) => Math.abs(entry.pnl)));
-    const heights = entries.map((entry) => {
+    const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth));
+    const visibleEntries = entries.slice(-visibleCapacity);
+    const leftPaddingWidth = Math.max(0, chartWidth - (visibleEntries.length * columnWidth));
+    const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)));
+    const heights = visibleEntries.map((entry) => {
         const magnitude = Math.abs(entry.pnl);
         if (magnitude <= 0) {
             return 0;
         }
         return Math.max(1, Math.min(levelCount, Math.round((magnitude / maxAbsPnl) * levelCount)));
     });
-    const renderRow = (rowIndex, negative) => (React.createElement(InkBox, { width: "100%" },
+    const renderRow = (rowIndex, negative) => (React.createElement(InkBox, { width: chartWidth, flexShrink: 0 },
         leftPaddingWidth > 0 ? (React.createElement(InkBox, { width: leftPaddingWidth },
             React.createElement(Text, null, ' '.repeat(leftPaddingWidth)))) : null,
-        entries.map((entry, index) => {
+        visibleEntries.map((entry, index) => {
             const filled = negative
                 ? entry.pnl < 0 && heights[index] >= rowIndex
                 : entry.pnl > 0 && heights[index] >= rowIndex;
@@ -1397,13 +1404,18 @@ function DailyPnlPreviewChart({ entries, width }) {
             return (React.createElement(React.Fragment, { key: `${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}` },
                 React.createElement(InkBox, { width: columnWidth },
                     React.createElement(Text, { color: filled ? color : undefined }, filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth))),
-                index < entries.length - 1 ? React.createElement(Text, null, ' '.repeat(gapWidth)) : null));
+                index < visibleEntries.length - 1 ? React.createElement(Text, null, ' '.repeat(gapWidth)) : null));
         })));
     return (React.createElement(InkBox, { flexDirection: "column" },
         Array.from({ length: levelCount }, (_, index) => renderRow(levelCount - index, false)),
-        React.createElement(InkBox, { width: "100%" },
+        React.createElement(InkBox, { width: chartWidth, flexShrink: 0 },
             React.createElement(Text, { color: theme.dim }, '─'.repeat(chartWidth))),
         Array.from({ length: levelCount }, (_, index) => renderRow(index + 1, true))));
+}
+function EmptyDailyPnlPanel({ message, width }) {
+    const panelWidth = Math.max(1, width);
+    const panelRows = 9;
+    return (React.createElement(InkBox, { flexDirection: "column", width: panelWidth, flexShrink: 0 }, Array.from({ length: panelRows }, (_, index) => (React.createElement(Text, { key: `empty-daily-pnl-${index}`, color: index === 0 ? theme.dim : undefined }, fit(index === 0 ? message : '', panelWidth))))));
 }
 export function Performance({ currentScrollOffset, pastScrollOffset, activePane, selectedBox, dailyDetailOpen, dailyDetailScrollOffset, actionState, editState, pendingPerfExits = [], onCurrentScrollOffsetChange, onPastScrollOffsetChange, onDailyDetailScrollOffsetChange, onSelectionMetaChange, onDetailHistoryMetaChange, onPendingPerfExitSettlement }) {
     const terminal = useTerminalSize();
@@ -1426,7 +1438,6 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const activeMode = botState.mode === 'live' ? 'live' : 'shadow';
     const activeRealMoney = activeMode === 'live' ? 1 : 0;
     const activeTitle = activeMode === 'live' ? 'Live' : 'Tracker';
-    const currentPnlBucketTs = Math.floor(nowTs / (PNL_BUCKET_MINUTES * 60)) * (PNL_BUCKET_MINUTES * 60);
     const usernames = useMemo(() => {
         const lookup = new Map();
         for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -1511,8 +1522,9 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             avg_size: avgSize
         };
     }, [confidenceRows, effectivePositions, resolvedPerformancePositions]);
-    const dailyEntries = useMemo(() => groupBucketedPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), currentPnlBucketTs), [currentPnlBucketTs, pastPositions]);
+    const dailyEntries = useMemo(() => groupBucketedPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit')), [pastPositions]);
     const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
+    const summaryStatColumnWidth = useMemo(() => Math.max(1, Math.floor((dailyPanelContentWidth - 2) / 2)), [dailyPanelContentWidth]);
     const dailyPreviewCapacity = useMemo(() => dailyEntries.length
         ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
         : 0, [dailyEntries.length, dailyPanelContentWidth]);
@@ -1719,8 +1731,9 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     ];
     const modalBackground = terminal.backgroundColor || theme.modalBackground;
     const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);
-    const detailModalWidth = Math.max(60, Math.min(terminal.width - 8, terminal.wide ? 110 : 88));
-    const detailModalContentWidth = Math.max(40, detailModalWidth - 4);
+    const detailMaxModalWidth = Math.max(1, terminal.width - 8);
+    const detailModalWidth = Math.max(1, Math.min(detailMaxModalWidth, terminal.wide ? 110 : 88));
+    const detailModalContentWidth = Math.max(1, detailModalWidth - 4);
     const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12));
     const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows);
     const detailOffset = Math.min(dailyDetailScrollOffset, detailMaxOffset);
@@ -1822,7 +1835,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             if (row.status === 'open' || row.status === 'waiting') {
                 return row.shares != null ? roundTo(Number(row.shares) - Number(row.size_usd || 0), 3) : null;
             }
-            return computePositionProfit(row);
+            return row.pnl_usd ?? computePositionProfit(row);
         };
         const displayCashOutNow = (row) => {
             if (row.status === 'open' || row.status === 'waiting') {
@@ -1962,14 +1975,15 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             }))));
     };
     const renderPageBody = () => (React.createElement(React.Fragment, null,
-        React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row' },
+        React.createElement(InkBox, { width: "100%", flexDirection: stacked ? 'column' : 'row' },
             React.createElement(Box, { title: activeTitle, width: stacked ? '100%' : '50%', accent: selectedBox === 'summary' },
                 React.createElement(InkBox, { width: "100%", flexDirection: "row" },
-                    React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, summaryLeftStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color })))),
+                    React.createElement(InkBox, { flexDirection: "column", width: summaryStatColumnWidth, flexShrink: 0 }, summaryLeftStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color, width: summaryStatColumnWidth })))),
                     React.createElement(InkBox, { width: 2 }),
-                    React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, summaryRightStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color })))))),
+                    React.createElement(InkBox, { flexDirection: "column", width: summaryStatColumnWidth, flexShrink: 0 }, summaryRightStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color, width: summaryStatColumnWidth })))))),
             !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(Text, { color: theme.dim }, `No resolved ${activeTitle.toLowerCase()} trades yet.`)))),
+            React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(EmptyDailyPnlPanel, { message: `No resolved ${activeTitle.toLowerCase()} trades yet.`, width: dailyPanelContentWidth }))),
+            null),
         React.createElement(InkBox, { marginTop: 1, flexDirection: "column", height: paneMetrics.paneHeight * 2 + 1 },
             React.createElement(InkBox, { height: paneMetrics.paneHeight },
                 React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: selectedBox === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, {

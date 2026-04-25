@@ -212,35 +212,37 @@ export function shortAddress(value: string): string {
 }
 
 export function formatNumber(value: number | null | undefined, digits = DEFAULT_DECIMAL_PLACES): string {
-  if (value == null || Number.isNaN(value)) return '-'
+  if (value == null || !Number.isFinite(value)) return '-'
   return value.toFixed(digits)
 }
 
 export function formatDollar(value: number | null | undefined): string {
-  if (value == null || Number.isNaN(value)) return '-'
-  const sign = value > 0 ? '+' : ''
-  return `${sign}$${value.toFixed(DEFAULT_DECIMAL_PLACES)}`
+  if (value == null || !Number.isFinite(value)) return '-'
+  const sign = value < 0 ? '-' : value > 0 ? '+' : ''
+  return `${sign}$${Math.abs(value).toFixed(DEFAULT_DECIMAL_PLACES)}`
 }
 
 export function formatAdaptiveDollar(value: number | null | undefined, width: number): string {
-  if (value == null || Number.isNaN(value)) return '-'
+  if (value == null || !Number.isFinite(value)) return '-'
   if (width <= 0) return ''
+  const sign = value < 0 ? '-' : ''
+  const absoluteValue = Math.abs(value)
 
   for (let digits = DEFAULT_DECIMAL_PLACES; digits >= 0; digits -= 1) {
-    const formatted = `$${value.toFixed(digits)}`
+    const formatted = `${sign}$${absoluteValue.toFixed(digits)}`
     if (formatted.length <= width) {
       return formatted
     }
   }
 
-  const integerOnly = `$${Math.round(value)}`
+  const integerOnly = `${sign}$${Math.round(absoluteValue)}`
   return integerOnly.length <= width
     ? integerOnly
     : integerOnly.slice(0, width)
 }
 
 export function formatAdaptiveNumber(value: number | null | undefined, width: number): string {
-  if (value == null || Number.isNaN(value)) return '-'
+  if (value == null || !Number.isFinite(value)) return '-'
   if (width <= 0) return ''
 
   for (let digits = DEFAULT_DECIMAL_PLACES; digits >= 0; digits -= 1) {
@@ -257,7 +259,7 @@ export function formatAdaptiveNumber(value: number | null | undefined, width: nu
 }
 
 export function formatPct(value: number | null | undefined, digits = DEFAULT_DECIMAL_PLACES): string {
-  if (value == null || Number.isNaN(value)) return '-'
+  if (value == null || !Number.isFinite(value)) return '-'
   return `${(value * 100).toFixed(digits)}%`
 }
 

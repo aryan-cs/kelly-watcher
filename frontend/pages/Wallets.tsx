@@ -195,6 +195,16 @@ interface WalletsLayout {
   profileWinRateWidth: number
   copyPnlWidth: number
   lastSeenWidth: number
+  showTrackingSince: boolean
+  showTier: boolean
+  showSkippedTrades: boolean
+  showSeenTrades: boolean
+  showSeenWinRate: boolean
+  showObservedResolved: boolean
+  showObservedWinRate: boolean
+  showProfileWinRate: boolean
+  showCopyPnl: boolean
+  showLastSeen: boolean
 }
 
 interface DroppedWalletsLayout {
@@ -203,6 +213,8 @@ interface DroppedWalletsLayout {
   reasonWidth: number
   lastSeenWidth: number
   droppedWidth: number
+  showLastSeen: boolean
+  showDropped: boolean
 }
 
 interface WalletsProps {
@@ -722,6 +734,7 @@ function tierColor(tier: WatchTier): string {
 }
 
 function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
+  const safeWidth = Math.max(1, Math.floor(width))
   const trackingSinceWidth = 10
   const tierWidth = 5
   const skippedTradesWidth = 6
@@ -732,52 +745,113 @@ function getWalletsLayout(width: number, wallets: WalletRow[]): WalletsLayout {
   const profileWinRateWidth = 8
   const copyPnlWidth = 11
   const lastSeenWidth = 10
-  const fixedWidths =
-    trackingSinceWidth +
-    tierWidth +
-    skippedTradesWidth +
-    seenTradesWidth +
-    seenWinRateWidth +
-    observedResolvedWidth +
-    observedWinRateWidth +
-    profileWinRateWidth +
-    copyPnlWidth +
-    lastSeenWidth
-  const gapCount = 11
-  const variableBudget = Math.max(40, width - fixedWidths - gapCount)
+  let showTrackingSince = safeWidth >= 84
+  let showTier = safeWidth >= 44
+  let showSkippedTrades = safeWidth >= 70
+  let showSeenTrades = safeWidth >= 64
+  let showSeenWinRate = safeWidth >= 90
+  let showObservedResolved = safeWidth >= 78
+  let showObservedWinRate = safeWidth >= 100
+  let showProfileWinRate = safeWidth >= 112
+  let showCopyPnl = safeWidth >= 72
+  let showLastSeen = safeWidth >= 84
+  const usernameMinWidth = safeWidth < 64 ? 8 : 14
+  const addressMinWidth = safeWidth < 64 ? 10 : 18
+  const visibleFixedWidth = () =>
+    (showTrackingSince ? trackingSinceWidth : 0) +
+    (showTier ? tierWidth : 0) +
+    (showSkippedTrades ? skippedTradesWidth : 0) +
+    (showSeenTrades ? seenTradesWidth : 0) +
+    (showSeenWinRate ? seenWinRateWidth : 0) +
+    (showObservedResolved ? observedResolvedWidth : 0) +
+    (showObservedWinRate ? observedWinRateWidth : 0) +
+    (showProfileWinRate ? profileWinRateWidth : 0) +
+    (showCopyPnl ? copyPnlWidth : 0) +
+    (showLastSeen ? lastSeenWidth : 0)
+  const visibleColumnCount = () =>
+    2 +
+    [
+      showTrackingSince,
+      showTier,
+      showSkippedTrades,
+      showSeenTrades,
+      showSeenWinRate,
+      showObservedResolved,
+      showObservedWinRate,
+      showProfileWinRate,
+      showCopyPnl,
+      showLastSeen
+    ].filter(Boolean).length
+  const variableBudget = () => safeWidth - visibleFixedWidth() - Math.max(0, visibleColumnCount() - 1)
+
+  for (const hide of [
+    () => { showProfileWinRate = false },
+    () => { showObservedWinRate = false },
+    () => { showSeenWinRate = false },
+    () => { showSkippedTrades = false },
+    () => { showObservedResolved = false },
+    () => { showSeenTrades = false },
+    () => { showTrackingSince = false },
+    () => { showLastSeen = false },
+    () => { showCopyPnl = false },
+    () => { showTier = false }
+  ]) {
+    if (variableBudget() >= usernameMinWidth + addressMinWidth) {
+      break
+    }
+    hide()
+  }
+
+  const availableVariableWidth = Math.max(2, variableBudget())
   const desiredUsernameWidth = Math.max(
-    14,
+    usernameMinWidth,
     wallets.reduce((max, wallet) => Math.max(max, (wallet.username || '-').length + 2), 0)
   )
   const desiredAddressWidth = Math.max(
-    18,
+    addressMinWidth,
     wallets.reduce((max, wallet) => Math.max(max, wallet.trader_address.length), 0)
   )
 
+  const minAddressWidth = Math.min(addressMinWidth, Math.max(1, availableVariableWidth - 1))
+  const minUsernameWidth = Math.min(usernameMinWidth, Math.max(1, availableVariableWidth - minAddressWidth))
   let usernameWidth = Math.max(
-    14,
-    Math.min(desiredUsernameWidth, variableBudget - Math.min(desiredAddressWidth, Math.max(18, variableBudget - 14)))
+    minUsernameWidth,
+    Math.min(desiredUsernameWidth, Math.floor(availableVariableWidth * 0.38))
   )
-  let addressWidth = variableBudget - usernameWidth
+  let addressWidth = availableVariableWidth - usernameWidth
+  if (addressWidth < minAddressWidth) {
+    addressWidth = minAddressWidth
+    usernameWidth = Math.max(1, availableVariableWidth - addressWidth)
+  }
 
-  if (variableBudget >= desiredUsernameWidth + desiredAddressWidth) {
+  if (availableVariableWidth >= desiredUsernameWidth + desiredAddressWidth) {
     usernameWidth = desiredUsernameWidth
-    addressWidth = variableBudget - usernameWidth
+    addressWidth = availableVariableWidth - usernameWidth
   }
 
   return {
     usernameWidth,
     addressWidth,
-    trackingSinceWidth,
-    tierWidth,
-    skippedTradesWidth,
-    seenTradesWidth,
-    seenWinRateWidth,
-    observedResolvedWidth,
-    observedWinRateWidth,
-    profileWinRateWidth,
-    copyPnlWidth,
-    lastSeenWidth
+    trackingSinceWidth: showTrackingSince ? trackingSinceWidth : 0,
+    tierWidth: showTier ? tierWidth : 0,
+    skippedTradesWidth: showSkippedTrades ? skippedTradesWidth : 0,
+    seenTradesWidth: showSeenTrades ? seenTradesWidth : 0,
+    seenWinRateWidth: showSeenWinRate ? seenWinRateWidth : 0,
+    observedResolvedWidth: showObservedResolved ? observedResolvedWidth : 0,
+    observedWinRateWidth: showObservedWinRate ? observedWinRateWidth : 0,
+    profileWinRateWidth: showProfileWinRate ? profileWinRateWidth : 0,
+    copyPnlWidth: showCopyPnl ? copyPnlWidth : 0,
+    lastSeenWidth: showLastSeen ? lastSeenWidth : 0,
+    showTrackingSince,
+    showTier,
+    showSkippedTrades,
+    showSeenTrades,
+    showSeenWinRate,
+    showObservedResolved,
+    showObservedWinRate,
+    showProfileWinRate,
+    showCopyPnl,
+    showLastSeen
   }
 }
 
@@ -799,18 +873,50 @@ function buildDetailColumns(sections: WalletDetailSection[], wide: boolean): Wal
 }
 
 function getDroppedWalletsLayout(width: number, sharedLayout: WalletsLayout): DroppedWalletsLayout {
+  const safeWidth = Math.max(1, Math.floor(width))
   const lastSeenWidth = 10
   const droppedWidth = 10
-  const gapCount = 4
-  const usernameWidth = sharedLayout.usernameWidth
-  const addressWidth = sharedLayout.addressWidth
-  const reasonWidth = Math.max(14, width - usernameWidth - addressWidth - lastSeenWidth - droppedWidth - gapCount)
+  let showLastSeen = safeWidth >= 62
+  let showDropped = safeWidth >= 74
+  const reasonMinWidth = safeWidth < 64 ? 6 : 14
+  const fixedWidth = () => (showLastSeen ? lastSeenWidth : 0) + (showDropped ? droppedWidth : 0)
+  const columnCount = () => 3 + [showLastSeen, showDropped].filter(Boolean).length
+  const availableForPrimary = () => safeWidth - fixedWidth() - Math.max(0, columnCount() - 1) - reasonMinWidth
+
+  for (const hide of [
+    () => { showDropped = false },
+    () => { showLastSeen = false }
+  ]) {
+    if (availableForPrimary() >= 2) {
+      break
+    }
+    hide()
+  }
+
+  const primaryBudget = Math.max(2, safeWidth - fixedWidth() - Math.max(0, columnCount() - 1) - reasonMinWidth)
+  let usernameWidth = Math.min(sharedLayout.usernameWidth, Math.max(1, Math.floor(primaryBudget * 0.4)))
+  let addressWidth = Math.max(1, primaryBudget - usernameWidth)
+  if (primaryBudget >= sharedLayout.usernameWidth + sharedLayout.addressWidth) {
+    usernameWidth = sharedLayout.usernameWidth
+    addressWidth = sharedLayout.addressWidth
+  }
+  const reasonWidth = Math.max(
+    1,
+    safeWidth -
+      usernameWidth -
+      addressWidth -
+      (showLastSeen ? lastSeenWidth : 0) -
+      (showDropped ? droppedWidth : 0) -
+      Math.max(0, columnCount() - 1)
+  )
   return {
     usernameWidth,
     addressWidth,
     reasonWidth,
-    lastSeenWidth,
-    droppedWidth
+    lastSeenWidth: showLastSeen ? lastSeenWidth : 0,
+    droppedWidth: showDropped ? droppedWidth : 0,
+    showLastSeen,
+    showDropped
   }
 }
 
@@ -985,8 +1091,8 @@ function WalletPnlHistoryChart({
   backgroundColor?: string
 }) {
   const yLabelWidth = 10
-  const plotWidth = Math.max(18, Math.floor(width) - yLabelWidth - 1)
-  const visiblePointCount = Math.max(12, plotWidth - 4)
+  const plotWidth = Math.max(1, Math.floor(width) - yLabelWidth - 1)
+  const visiblePointCount = Math.max(1, plotWidth - 4)
   const maxOffset = Math.max(0, points.length - visiblePointCount)
   const clampedOffset = Math.max(0, Math.min(maxOffset, offset))
   const endExclusive = Math.max(1, points.length - clampedOffset)
@@ -1036,7 +1142,7 @@ export function Wallets({
   const profileVisibleRows = Math.max(2, Math.floor(totalVisibleRows / 2) - profileChromeRows)
   const trackedVisibleRows = profileVisibleRows
   const droppedVisibleRows = profileVisibleRows
-  const tableWidth = Math.max(52, terminal.width - 8)
+  const tableWidth = Math.max(1, terminal.width - 8)
   const activityRows = useQuery<WalletActivityRow>(WALLET_ACTIVITY_SQL)
   const traderCacheRows = useQuery<TraderCacheRow>(TRADER_CACHE_SQL)
   const walletCursorRows = useQuery<WalletCursorRow>(WALLET_CURSOR_SQL)
@@ -1683,10 +1789,11 @@ export function Wallets({
   const detailColumnCount = detailColumns.length || 1
   const detailColumnGap = terminal.wide ? 4 : 2
   const modalBackground = terminal.backgroundColor || theme.modalBackground
-  const modalWidth = Math.max(60, Math.min(terminal.width - 6, terminal.wide ? 132 : 90))
-  const modalContentWidth = Math.max(36, modalWidth - 4)
+  const maxModalWidth = Math.max(1, terminal.width - 6)
+  const modalWidth = Math.max(1, Math.min(maxModalWidth, terminal.wide ? 132 : 90))
+  const modalContentWidth = Math.max(1, modalWidth - 4)
   const detailColumnWidth = Math.max(
-    20,
+    1,
     Math.floor((modalContentWidth - detailColumnGap * (detailColumnCount - 1)) / detailColumnCount)
   )
   const detailRowInnerWidth =
@@ -1703,9 +1810,9 @@ export function Wallets({
           ? `${clampedDroppedSelectedIndex + 1}/${Math.max(droppedWallets.length, 1)}`
           : `${clampedTrackedSelectedIndex + 1}/${Math.max(trackedWallets.length, 1)}`
   const detailHeaderWidth = Math.max(1, modalContentWidth - detailIndexLabel.length - 1)
-  const modalSpacerLine = ' '.repeat(modalWidth - 2)
-  const walletChartWidth = Math.max(36, modalContentWidth)
-  const walletChartVisiblePoints = Math.max(12, Math.max(18, Math.floor(walletChartWidth) - 11) - 4)
+  const modalSpacerLine = ' '.repeat(Math.max(0, modalWidth - 2))
+  const walletChartWidth = Math.max(1, modalContentWidth)
+  const walletChartVisiblePoints = Math.max(1, Math.floor(walletChartWidth) - 15)
   const walletChartMaxOffset = Math.max(0, walletPnlHistoryPoints.length - walletChartVisiblePoints)
   const detailTitle = selectedWallet?.username || (selectedWallet ? shortAddress(selectedWallet.trader_address) : '-')
   const detailAddressLines = selectedWallet
@@ -1889,26 +1996,16 @@ export function Wallets({
               <Text color={theme.dim}>{fit('USERNAME', layout.usernameWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('ADDRESS', layout.addressWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('SINCE', layout.trackingSinceWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fit('TRACK', layout.tierWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('SKIP %', layout.skippedTradesWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('SEEN', layout.seenTradesWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('SEEN WR', layout.seenWinRateWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('COPIED', layout.observedResolvedWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('COPY WR', layout.observedWinRateWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('PROF WR', layout.profileWinRateWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('COPY P&L', layout.copyPnlWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('LAST TRADE', layout.lastSeenWidth)}</Text>
+              {layout.showTrackingSince ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('SINCE', layout.trackingSinceWidth)}</Text></> : null}
+              {layout.showTier ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fit('TRACK', layout.tierWidth)}</Text></> : null}
+              {layout.showSkippedTrades ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('SKIP %', layout.skippedTradesWidth)}</Text></> : null}
+              {layout.showSeenTrades ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('SEEN', layout.seenTradesWidth)}</Text></> : null}
+              {layout.showSeenWinRate ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('SEEN WR', layout.seenWinRateWidth)}</Text></> : null}
+              {layout.showObservedResolved ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('COPIED', layout.observedResolvedWidth)}</Text></> : null}
+              {layout.showObservedWinRate ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('COPY WR', layout.observedWinRateWidth)}</Text></> : null}
+              {layout.showProfileWinRate ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('PROF WR', layout.profileWinRateWidth)}</Text></> : null}
+              {layout.showCopyPnl ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('COPY P&L', layout.copyPnlWidth)}</Text></> : null}
+              {layout.showLastSeen ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('LAST TRADE', layout.lastSeenWidth)}</Text></> : null}
             </InkBox>
 
             <InkBox flexDirection="column" width="100%" height={trackedVisibleRows} flexShrink={0} justifyContent="flex-start">
@@ -1950,50 +2047,34 @@ export function Wallets({
                       <Text color={usernameColor} backgroundColor={rowBackground} bold={isSelected}>{linkedUsername}</Text>
                       <Text backgroundColor={rowBackground}> </Text>
                       <Text color={addressColor} backgroundColor={rowBackground} bold={isSelected}>{formatAddress(wallet.trader_address, layout.addressWidth)}</Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
-                        {fitRight(secondsAgo(wallet.tracking_started_at || undefined), layout.trackingSinceWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={tierTextColor} backgroundColor={rowBackground} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={skippedTradesColor} backgroundColor={rowBackground}>
-                        {fitRight(wallet.skip_rate == null ? '-' : formatPct(wallet.skip_rate, 0), layout.skippedTradesWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text backgroundColor={rowBackground}>
-                        {fitRight(formatCount(wallet.seen_trades, layout.seenTradesWidth), layout.seenTradesWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={seenWinRateColor} backgroundColor={rowBackground}>
-                        {fitRight(
-                          wallet.seen_win_rate == null ? '-' : formatPct(wallet.seen_win_rate),
-                          layout.seenWinRateWidth
-                        )}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text backgroundColor={rowBackground}>
-                        {fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={observedWinRateColor} backgroundColor={rowBackground}>
-                        {fitRight(
-                          wallet.observed_win_rate == null ? '-' : formatPct(wallet.observed_win_rate),
-                          layout.observedWinRateWidth
-                        )}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={winRateColor} backgroundColor={rowBackground}>
-                        {fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.profileWinRateWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={localPnlColor} backgroundColor={rowBackground}>
-                        {fitRight(formatSignedMoney(wallet.local_pnl, layout.copyPnlWidth), layout.copyPnlWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
-                        {fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth)}
-                      </Text>
+                      {layout.showTrackingSince ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>{fitRight(secondsAgo(wallet.tracking_started_at || undefined), layout.trackingSinceWidth)}</Text></>
+                      ) : null}
+                      {layout.showTier ? <><Text backgroundColor={rowBackground}> </Text><Text color={tierTextColor} backgroundColor={rowBackground} bold={isSelected}>{fit(tierText, layout.tierWidth)}</Text></> : null}
+                      {layout.showSkippedTrades ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={skippedTradesColor} backgroundColor={rowBackground}>{fitRight(wallet.skip_rate == null ? '-' : formatPct(wallet.skip_rate, 0), layout.skippedTradesWidth)}</Text></>
+                      ) : null}
+                      {layout.showSeenTrades ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text backgroundColor={rowBackground}>{fitRight(formatCount(wallet.seen_trades, layout.seenTradesWidth), layout.seenTradesWidth)}</Text></>
+                      ) : null}
+                      {layout.showSeenWinRate ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={seenWinRateColor} backgroundColor={rowBackground}>{fitRight(wallet.seen_win_rate == null ? '-' : formatPct(wallet.seen_win_rate), layout.seenWinRateWidth)}</Text></>
+                      ) : null}
+                      {layout.showObservedResolved ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text backgroundColor={rowBackground}>{fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth)}</Text></>
+                      ) : null}
+                      {layout.showObservedWinRate ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={observedWinRateColor} backgroundColor={rowBackground}>{fitRight(wallet.observed_win_rate == null ? '-' : formatPct(wallet.observed_win_rate), layout.observedWinRateWidth)}</Text></>
+                      ) : null}
+                      {layout.showProfileWinRate ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={winRateColor} backgroundColor={rowBackground}>{fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.profileWinRateWidth)}</Text></>
+                      ) : null}
+                      {layout.showCopyPnl ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={localPnlColor} backgroundColor={rowBackground}>{fitRight(formatSignedMoney(wallet.local_pnl, layout.copyPnlWidth), layout.copyPnlWidth)}</Text></>
+                      ) : null}
+                      {layout.showLastSeen ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>{fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth)}</Text></>
+                      ) : null}
                     </InkBox>
                   )
                 })
@@ -2020,10 +2101,8 @@ export function Wallets({
               <Text color={theme.dim}>{fit('ADDRESS', droppedLayout.addressWidth)}</Text>
               <Text color={theme.dim}> </Text>
               <Text color={theme.dim}>{fit('REASON', droppedLayout.reasonWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('LAST TRADE', droppedLayout.lastSeenWidth)}</Text>
-              <Text color={theme.dim}> </Text>
-              <Text color={theme.dim}>{fitRight('DROPPED', droppedLayout.droppedWidth)}</Text>
+              {droppedLayout.showLastSeen ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('LAST TRADE', droppedLayout.lastSeenWidth)}</Text></> : null}
+              {droppedLayout.showDropped ? <><Text color={theme.dim}> </Text><Text color={theme.dim}>{fitRight('DROPPED', droppedLayout.droppedWidth)}</Text></> : null}
             </InkBox>
 
             <InkBox flexDirection="column" width="100%" height={droppedVisibleRows} flexShrink={0} justifyContent="flex-start">
@@ -2049,14 +2128,12 @@ export function Wallets({
                       <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
                         {fit(wallet.status_reason || '-', droppedLayout.reasonWidth)}
                       </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>
-                        {fitRight(secondsAgo(wallet.last_seen || undefined), droppedLayout.lastSeenWidth)}
-                      </Text>
-                      <Text backgroundColor={rowBackground}> </Text>
-                      <Text color={isSelected ? theme.accent : theme.red} backgroundColor={rowBackground} bold={isSelected}>
-                        {fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth)}
-                      </Text>
+                      {droppedLayout.showLastSeen ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={isSelected ? theme.white : theme.dim} backgroundColor={rowBackground} bold={isSelected}>{fitRight(secondsAgo(wallet.last_seen || undefined), droppedLayout.lastSeenWidth)}</Text></>
+                      ) : null}
+                      {droppedLayout.showDropped ? (
+                        <><Text backgroundColor={rowBackground}> </Text><Text color={isSelected ? theme.accent : theme.red} backgroundColor={rowBackground} bold={isSelected}>{fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth)}</Text></>
+                      ) : null}
                     </InkBox>
                   )
                 })

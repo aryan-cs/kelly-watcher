@@ -17,7 +17,7 @@ interface LiveFeedProps {
 export function LiveFeed({scrollOffset = 0, onScrollOffsetChange}: LiveFeedProps) {
   const terminal = useTerminalSize()
   const rowCount = rowsForHeight(terminal.height, 10, 4)
-  const tableWidth = Math.max(56, terminal.width - 8)
+  const tableWidth = Math.max(1, terminal.width - 8)
   const allEvents = useEventStream(1000)
   const {lookup: tradeIdLookup} = useTradeIdIndex(allEvents)
   const allIncoming = allEvents.filter((event) => event.type === 'incoming').reverse()

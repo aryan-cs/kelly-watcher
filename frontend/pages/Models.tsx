@@ -5027,8 +5027,8 @@ interface DenseModelsRowProps {
 }
 
 function denseModelsLabelWidth(width: number): number {
-  const safeWidth = Math.max(18, width)
-  return Math.max(8, Math.min(16, Math.floor(safeWidth * 0.42)))
+  const safeWidth = Math.max(1, Math.floor(width))
+  return Math.max(1, Math.min(16, Math.floor(safeWidth * 0.42)))
 }
 
 function DenseModelsRow({
@@ -5042,17 +5042,16 @@ function DenseModelsRow({
   minValueWidth = 6,
   valueAlign = 'right'
 }: DenseModelsRowProps) {
-  const safeWidth = Math.max(18, width)
-  const maxLabelWidth = Math.max(6, safeWidth - Math.max(6, minValueWidth) - 1)
-  const preferredLabelWidth = Math.max(labelWidth ?? denseModelsLabelWidth(safeWidth), Math.min(label.length, maxLabelWidth))
-  const boundedLabelWidth = Math.max(
-    6,
-    Math.min(
-      maxLabelWidth,
-      preferredLabelWidth
-    )
+  const safeWidth = Math.max(1, Math.floor(width))
+  const gapWidth = safeWidth >= 3 ? 1 : 0
+  const boundedMinValueWidth = Math.max(0, Math.min(Math.max(0, minValueWidth), safeWidth - gapWidth - 1))
+  const maxLabelWidth = Math.max(1, safeWidth - boundedMinValueWidth - gapWidth)
+  const preferredLabelWidth = Math.max(
+    Math.min(labelWidth ?? denseModelsLabelWidth(safeWidth), maxLabelWidth),
+    Math.min(label.length, maxLabelWidth)
   )
-  const valueWidth = Math.max(Math.max(6, minValueWidth), safeWidth - boundedLabelWidth - 1)
+  const boundedLabelWidth = Math.max(1, Math.min(maxLabelWidth, preferredLabelWidth))
+  const valueWidth = Math.max(0, safeWidth - boundedLabelWidth - gapWidth)
   const rowBackground = selected ? backgroundColor : undefined
 
   return (
@@ -5060,20 +5059,22 @@ function DenseModelsRow({
       <Text color={selected ? theme.accent : theme.dim} backgroundColor={rowBackground} bold={selected}>
         {fit(label, boundedLabelWidth)}
       </Text>
-      <Text backgroundColor={rowBackground}> </Text>
-      <Text color={color} backgroundColor={rowBackground} bold={selected}>
-        {valueAlign === 'left' ? fit(value, valueWidth) : fitRight(value, valueWidth)}
-      </Text>
+      {gapWidth ? <Text backgroundColor={rowBackground}> </Text> : null}
+      {valueWidth > 0 ? (
+        <Text color={color} backgroundColor={rowBackground} bold={selected}>
+          {valueAlign === 'left' ? fit(value, valueWidth) : fitRight(value, valueWidth)}
+        </Text>
+      ) : null}
     </InkBox>
   )
 }
 
 function recentRunsColumnWidths(width: number) {
-  const safeWidth = Math.max(24, width)
-  const resultWidth = safeWidth >= 34 ? 8 : 6
-  const logLossWidth = safeWidth >= 34 ? 8 : 7
-  const brierWidth = safeWidth >= 32 ? 7 : 6
-  const timestampWidth = Math.max(5, safeWidth - logLossWidth - brierWidth - resultWidth - 3)
+  const safeWidth = Math.max(18, width)
+  const resultWidth = safeWidth >= 34 ? 8 : safeWidth >= 24 ? 6 : 4
+  const logLossWidth = safeWidth >= 34 ? 8 : safeWidth >= 24 ? 7 : 5
+  const brierWidth = safeWidth >= 32 ? 7 : safeWidth >= 24 ? 6 : 4
+  const timestampWidth = Math.max(1, safeWidth - logLossWidth - brierWidth - resultWidth - 3)
   return {safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth}
 }
 
@@ -5128,11 +5129,11 @@ function RecentRunsDataRow({
 }
 
 function recentExitColumnWidths(width: number) {
-  const safeWidth = Math.max(28, width)
-  const actionWidth = 9
-  const returnWidth = 8
-  const timestampWidth = 14
-  const reasonWidth = Math.max(8, safeWidth - actionWidth - returnWidth - timestampWidth - 3)
+  const safeWidth = Math.max(18, width)
+  const timestampWidth = safeWidth >= 42 ? 14 : safeWidth >= 28 ? 10 : 5
+  const actionWidth = safeWidth >= 42 ? 9 : safeWidth >= 28 ? 7 : 5
+  const returnWidth = safeWidth >= 42 ? 8 : safeWidth >= 28 ? 7 : 5
+  const reasonWidth = Math.max(1, safeWidth - actionWidth - returnWidth - timestampWidth - 3)
   return {safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth}
 }
 
@@ -5406,13 +5407,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     relatedSettings.length > 0
       ? Math.max(0, Math.min(selectedSettingIndex, relatedSettings.length - 1))
       : 0
-  const helpModalWidth = Math.max(70, Math.min(terminal.width - 8, terminal.wide ? 118 : 94))
-  const helpContentWidth = Math.max(52, helpModalWidth - 4)
-  const helpSettingLabelWidth = Math.max(18, Math.min(28, Math.floor(helpContentWidth * 0.48)))
-  const helpSettingValueWidth = Math.max(14, helpContentWidth - helpSettingLabelWidth - 1)
+  const helpMaxModalWidth = Math.max(1, terminal.width - 8)
+  const helpModalWidth = Math.max(1, Math.min(helpMaxModalWidth, terminal.wide ? 118 : 94))
+  const helpContentWidth = Math.max(1, helpModalWidth - 4)
+  const helpSettingLabelWidth = Math.max(1, Math.min(28, Math.floor(helpContentWidth * 0.48)))
+  const helpSettingValueWidth = Math.max(1, helpContentWidth - helpSettingLabelWidth - 1)
   const helpIndexLabel = `${clampedSelectedPanelIndex + 1}/${MODEL_PANEL_DEFS.length}`
   const helpTitleWidth = Math.max(1, helpContentWidth - helpIndexLabel.length - 1)
-  const helpSpacerLine = ' '.repeat(helpModalWidth - 2)
+  const helpSpacerLine = ' '.repeat(Math.max(0, helpModalWidth - 2))
   const formatConfigValue = (key: string): string => {
     const field = configFieldByKey.get(key)
     if (!field) return '-'
@@ -6759,16 +6761,17 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => splitIntoColumns(scoringMixStats, 2),
     [scoringMixStats]
   )
-  const modelsColumnGap = terminal.compact ? 1 : 2
-  const modelsContentWidth = Math.max(50, terminal.width - 10)
-  const modelsUsableWidth = Math.max(18, modelsContentWidth - modelsColumnGap * 2)
-  const leftModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.26))
-  const middleModelsColumnWidth = Math.max(18, Math.floor(modelsUsableWidth * 0.27))
+  const modelsContentWidth = Math.max(3, terminal.width - 14)
+  const modelsColumnGap = modelsContentWidth >= 40 ? (terminal.compact ? 1 : 2) : 0
+  const modelsUsableWidth = Math.max(3, modelsContentWidth - modelsColumnGap * 2)
+  const leftModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth * 0.26))
+  const middleModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth * 0.27))
   const modelsColumnWidths: [number, number, number] = [
     leftModelsColumnWidth,
     middleModelsColumnWidth,
-    Math.max(18, modelsUsableWidth - leftModelsColumnWidth - middleModelsColumnWidth)
+    Math.max(1, modelsUsableWidth - leftModelsColumnWidth - middleModelsColumnWidth)
   ]
+  const modelPanelHeight = Math.max(12, terminal.height - 9)
   const predictionQualityStats = useMemo<CompactStatItem[]>(
     () => [
       {
@@ -6888,7 +6891,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   )
 
   const renderPageBody = () => (
-    <InkBox width="100%">
+    <InkBox width="100%" flexDirection="column">
+      <InkBox width={modelsContentWidth} height={1} flexShrink={0}>
+        <Text color={theme.accent} bold>{fit('Model', modelsContentWidth)}</Text>
+      </InkBox>
+      <InkBox width="100%">
       <InkBox width={modelsColumnWidths[0]} flexDirection="column">
         <ModelsSectionTitle
           title="Prediction Quality"
@@ -7173,12 +7180,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           <Text color={theme.dim}>{fit('No retrain attempts logged yet.', modelsColumnWidths[2])}</Text>
         )}
       </InkBox>
+      </InkBox>
     </InkBox>
   )
 
   return (
     <InkBox flexDirection="column" width="100%">
-      {renderPageBody()}
+      <Box width="100%" height={modelPanelHeight}>
+        {renderPageBody()}
+      </Box>
       {detailOpen ? (
         <ModalOverlay backgroundColor={terminal.backgroundColor}>
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={helpModalWidth}>

@@ -39,6 +39,19 @@ class _HttpClient:
         return _HttpResponse(self.payload)
 
 
+class _FailingHttpClient:
+    def __init__(self, calls: list[tuple[str, dict | None]]) -> None:
+        self.calls = calls
+        self.is_closed = False
+
+    def get(self, url: str, *, params=None) -> _HttpResponse:
+        self.calls.append((url, params))
+        raise OSError("[Errno 8] nodename nor servname provided, or not known")
+
+    def close(self) -> None:
+        self.is_closed = True
+
+
 class _ContextClient:
     def __enter__(self):
         return object()
@@ -277,6 +290,48 @@ class TelegramCommandTest(unittest.TestCase):
                 telegram_runtime.BOT_STATE_FILE = original_bot_state_file
                 telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
                 telegram_runtime._next_command_poll_at = original_next_poll_at
+
+    def test_service_telegram_commands_backs_off_after_transport_failure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = telegram_runtime.TELEGRAM_STATE_FILE
+            original_next_poll_at = telegram_runtime._next_command_poll_at
+            original_failure_count = telegram_runtime._command_poll_failure_count
+            original_last_warning_at = telegram_runtime._last_command_poll_warning_at
+            try:
+                telegram_runtime.TELEGRAM_STATE_FILE = Path(tmpdir) / "telegram_state.json"
+                telegram_runtime._next_command_poll_at = 0.0
+                telegram_runtime._command_poll_failure_count = 0
+                telegram_runtime._last_command_poll_warning_at = 0.0
+                calls: list[tuple[str, dict | None]] = []
+
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch(
+                    "kelly_watcher.integrations.telegram_runtime.httpx.Client",
+                    side_effect=lambda *args, **kwargs: _FailingHttpClient(calls),
+                ), patch(
+                    "kelly_watcher.integrations.telegram_runtime.time.time", return_value=1_000.0
+                ), self.assertLogs("kelly_watcher.integrations.telegram_runtime", level="WARNING") as logs:
+                    handled = telegram_runtime.service_telegram_commands()
+
+                self.assertEqual(handled, 0)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(telegram_runtime._command_poll_failure_count, 1)
+                self.assertEqual(telegram_runtime._next_command_poll_at, 1_002.0)
+                self.assertIn("backing off for 2s", "\n".join(logs.output))
+
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("kelly_watcher.integrations.telegram_runtime.time.time", return_value=1_001.0):
+                    handled = telegram_runtime.service_telegram_commands()
+
+                self.assertEqual(handled, 0)
+                self.assertEqual(len(calls), 1)
+            finally:
+                telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
+                telegram_runtime._next_command_poll_at = original_next_poll_at
+                telegram_runtime._command_poll_failure_count = original_failure_count
+                telegram_runtime._last_command_poll_warning_at = original_last_warning_at
 
     def test_balance_command_uses_cached_bot_state_without_db_preview(self) -> None:
         with TemporaryDirectory() as tmpdir:

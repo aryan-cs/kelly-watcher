@@ -26,6 +26,8 @@ from kelly_watcher.runtime_paths import BOT_STATE_FILE, MANUAL_RETRAIN_REQUEST_F
 
 logger = logging.getLogger(__name__)
 _COMMAND_POLL_INTERVAL_S = 2.0
+_COMMAND_POLL_MAX_BACKOFF_S = 300.0
+_COMMAND_POLL_WARNING_INTERVAL_S = 60.0
 _LEADERBOARD_PERIODS = (
     ("DAY", "24h"),
     ("WEEK", "7d"),
@@ -33,6 +35,8 @@ _LEADERBOARD_PERIODS = (
 )
 _LEADERBOARD_ROWS_PER_PERIOD = 5
 _next_command_poll_at = 0.0
+_command_poll_failure_count = 0
+_last_command_poll_warning_at = 0.0
 _COMMAND_CLIENT_LOCK = threading.Lock()
 _COMMAND_CLIENT: httpx.Client | None = None
 
@@ -49,6 +53,11 @@ def _telegram_command_client() -> httpx.Client:
 
 
 def close_telegram_command_client() -> None:
+    _drop_telegram_command_client()
+    _reset_command_poll_backoff()
+
+
+def _drop_telegram_command_client() -> None:
     global _COMMAND_CLIENT
     with _COMMAND_CLIENT_LOCK:
         client = _COMMAND_CLIENT
@@ -56,6 +65,40 @@ def close_telegram_command_client() -> None:
     close = getattr(client, "close", None)
     if callable(close):
         close()
+
+
+def _reset_command_poll_backoff() -> None:
+    global _command_poll_failure_count, _last_command_poll_warning_at
+    _command_poll_failure_count = 0
+    _last_command_poll_warning_at = 0.0
+
+
+def _record_command_poll_success() -> None:
+    _reset_command_poll_backoff()
+
+
+def _record_command_poll_failure(exc: Exception, *, now_ts: float) -> None:
+    global _command_poll_failure_count, _last_command_poll_warning_at, _next_command_poll_at
+    _command_poll_failure_count += 1
+    delay_s = min(
+        _COMMAND_POLL_MAX_BACKOFF_S,
+        _COMMAND_POLL_INTERVAL_S * (2 ** min(_command_poll_failure_count - 1, 8)),
+    )
+    _next_command_poll_at = now_ts + delay_s
+
+    should_log = (
+        _command_poll_failure_count == 1
+        or (now_ts - _last_command_poll_warning_at) >= _COMMAND_POLL_WARNING_INTERVAL_S
+    )
+    if should_log:
+        _last_command_poll_warning_at = now_ts
+        logger.warning(
+            "Telegram command poll failed; backing off for %.0fs after %s consecutive failure(s): %s",
+            delay_s,
+            _command_poll_failure_count,
+            exc,
+        )
+    _drop_telegram_command_client()
 
 
 def _load_telegram_state() -> dict[str, Any]:
@@ -422,8 +465,9 @@ def service_telegram_commands() -> int:
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        logger.warning("Telegram command poll failed: %s", exc)
+        _record_command_poll_failure(exc, now_ts=now_ts)
         return 0
+    _record_command_poll_success()
 
     updates = payload.get("result") if isinstance(payload, dict) else None
     if not isinstance(updates, list) or not updates:

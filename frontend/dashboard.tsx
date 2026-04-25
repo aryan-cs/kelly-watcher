@@ -32,7 +32,7 @@ import {
 import {requestManualTrade} from './manualTradeControl.js'
 import {Wallets} from './pages/Wallets.js'
 import {Settings, type SettingsEditorState} from './pages/Settings.js'
-import {fit, secondsAgo} from './format.js'
+import {fit, fitRight, secondsAgo} from './format.js'
 import {ManualRefreshProvider} from './refresh.js'
 import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} from './terminal.js'
 import {useBotState, type BotState} from './useBotState.js'
@@ -574,7 +574,7 @@ function AppContent({
       <Box borderStyle="round" borderColor={theme.border} paddingX={1} height={3} flexShrink={0} width="100%">
         <Text color={theme.dim}>{fit(footerControls, footerControlsWidth)}</Text>
         <Spacer />
-        <Text color={footerStatusColor}>{fit(footerStatusRaw, footerStatusWidth)}</Text>
+        <Text color={footerStatusColor}>{fitRight(footerStatusRaw, footerStatusWidth)}</Text>
       </Box>
     </Box>
   )

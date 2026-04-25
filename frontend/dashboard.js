@@ -12,7 +12,7 @@ import { Performance, pendingPerfExitKey } from './pages/Performance.js';
 import { requestManualTrade } from './manualTradeControl.js';
 import { Wallets } from './pages/Wallets.js';
 import { Settings } from './pages/Settings.js';
-import { fit, secondsAgo } from './format.js';
+import { fit, fitRight, secondsAgo } from './format.js';
 import { ManualRefreshProvider } from './refresh.js';
 import { detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize } from './terminal.js';
 import { useBotState } from './useBotState.js';
@@ -312,7 +312,7 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
         React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1, height: 3, flexShrink: 0, width: "100%" },
             React.createElement(Text, { color: theme.dim }, fit(footerControls, footerControlsWidth)),
             React.createElement(Spacer, null),
-            React.createElement(Text, { color: footerStatusColor }, fit(footerStatusRaw, footerStatusWidth)))));
+            React.createElement(Text, { color: footerStatusColor }, fitRight(footerStatusRaw, footerStatusWidth)))));
 }
 function App() {
     const botState = useBotState();

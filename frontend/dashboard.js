@@ -304,7 +304,7 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
         return visibleText.length < text.length;
     });
     const footerStatusRaw = activeTransientNotice ? activeTransientNotice.message : footerStatusText;
-    const footerStatusWidth = Math.max(10, Math.min(frameLineWidth - 4, Math.floor(frameLineWidth * (footerCompact ? 0.45 : 0.38))));
+    const footerStatusWidth = Math.max(1, Math.min(frameLineWidth - 4, Math.floor(frameLineWidth * (footerCompact ? 0.45 : 0.38)), footerStatusRaw.length));
     const footerControlsWidth = Math.max(1, frameLineWidth - footerStatusWidth - 1);
     return (React.createElement(Box, { flexDirection: "column", borderStyle: "round", borderColor: theme.accent, width: terminal.width, height: terminal.height },
         React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1, height: 3, flexShrink: 0, width: "100%" },

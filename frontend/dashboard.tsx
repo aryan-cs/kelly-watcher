@@ -518,7 +518,14 @@ function AppContent({
     return visibleText.length < text.length
   })
   const footerStatusRaw = activeTransientNotice ? activeTransientNotice.message : footerStatusText
-  const footerStatusWidth = Math.max(10, Math.min(frameLineWidth - 4, Math.floor(frameLineWidth * (footerCompact ? 0.45 : 0.38))))
+  const footerStatusWidth = Math.max(
+    1,
+    Math.min(
+      frameLineWidth - 4,
+      Math.floor(frameLineWidth * (footerCompact ? 0.45 : 0.38)),
+      footerStatusRaw.length
+    )
+  )
   const footerControlsWidth = Math.max(1, frameLineWidth - footerStatusWidth - 1)
 
   return (

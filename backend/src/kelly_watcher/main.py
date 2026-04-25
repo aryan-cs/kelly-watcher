@@ -276,7 +276,7 @@ def _install_shutdown_signal_handlers(stop_event: threading.Event) -> dict[int, 
         if signal_counts["count"] <= 1:
             logger.warning("Received signal %s. Shutting down...", signum)
             stop_event.set()
-            return
+            raise KeyboardInterrupt
         logger.error("Received signal %s again. Forcing process exit.", signum)
         os._exit(128 + int(signum))
 
@@ -298,6 +298,55 @@ def _restore_shutdown_signal_handlers(previous_handlers: dict[int, Any]) -> None
             signal.signal(signum, handler)
         except (OSError, RuntimeError, ValueError):
             continue
+
+
+def _terminate_child_process(process: subprocess.Popen[str], command: list[str], *, timeout_s: float = 5.0) -> None:
+    if process.poll() is not None:
+        return
+
+    logger.warning("Terminating child process during shutdown: %s", " ".join(command))
+    process.terminate()
+    try:
+        process.communicate(timeout=timeout_s)
+        return
+    except subprocess.TimeoutExpired:
+        logger.error("Child process did not exit after terminate; killing: %s", " ".join(command))
+        process.kill()
+        process.communicate()
+
+
+def _run_subprocess_until_complete_or_shutdown(
+    command: list[str],
+    *,
+    cwd: Path,
+    shutdown_event: threading.Event,
+    poll_timeout_s: float = 0.5,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        while True:
+            if shutdown_event.is_set():
+                _terminate_child_process(process, command)
+                raise KeyboardInterrupt
+            try:
+                stdout, stderr = process.communicate(timeout=poll_timeout_s)
+                return subprocess.CompletedProcess(
+                    command,
+                    int(process.returncode or 0),
+                    stdout,
+                    stderr,
+                )
+            except subprocess.TimeoutExpired:
+                continue
+    except KeyboardInterrupt:
+        _terminate_child_process(process, command)
+        raise
 
 
 @dataclass
@@ -5734,7 +5783,7 @@ def main() -> None:
             telegram_command_thread.join(timeout=1.0)
         if scheduler is not None:
             try:
-                scheduler.shutdown(wait=True)
+                scheduler.shutdown(wait=False)
             except Exception:
                 logger.debug("Scheduler shutdown skipped during cleanup", exc_info=True)
         if tracker is not None:
@@ -6083,6 +6132,10 @@ def main() -> None:
             return result
 
     def _run_replay_search_job(trigger: str) -> bool:
+        if shutdown_event.is_set():
+            logger.info("Replay search skipped during shutdown (%s)", trigger)
+            return False
+
         blocked_message = _shadow_history_trust_block_reason("Replay search")
         if blocked_message:
             logger.warning(blocked_message)
@@ -6147,12 +6200,10 @@ def main() -> None:
             request_token = f"replay-search-{started_at}-{uuid.uuid4().hex}"
             command = _build_replay_search_command(request_token=request_token, trigger=trigger)
             logger.info("Running replay search (%s): %s", trigger, command)
-            completed = subprocess.run(
+            completed = _run_subprocess_until_complete_or_shutdown(
                 command,
-                cwd=str(REPO_ROOT),
-                capture_output=True,
-                text=True,
-                check=False,
+                cwd=REPO_ROOT,
+                shutdown_event=shutdown_event,
             )
             finished_at = int(time.time())
             run_row = _load_replay_search_run_after(previous_run_id, request_token=request_token)
@@ -6301,6 +6352,10 @@ def main() -> None:
             replay_search_lock.release()
 
     def _run_retrain_job(trigger: str) -> bool:
+        if shutdown_event.is_set():
+            logger.info("Retrain skipped during shutdown (%s)", trigger)
+            return False
+
         blocked_status, blocked_message = _retrain_trust_block_state("Retrain")
         if blocked_message:
             logger.warning(blocked_message)
@@ -6362,7 +6417,7 @@ def main() -> None:
                 last_retrain_deployed=bool(report.get("deployed")),
             )
             _persist_runtime_truth()
-            if bool(report.get("ok")):
+            if bool(report.get("ok")) and not shutdown_event.is_set():
                 _run_replay_search_job(f"post_retrain_{trigger}")
             return bool(report.get("ok"))
         except Exception as exc:
@@ -6634,6 +6689,9 @@ def main() -> None:
             exc.request.candidate_path,
             exc.request.request_id or "-",
         )
+    except KeyboardInterrupt:
+        shutdown_event.set()
+        logger.info("Shutting down during startup...")
     except Exception as exc:
         detail = f"startup failed: {exc}"
         logger.exception(detail)

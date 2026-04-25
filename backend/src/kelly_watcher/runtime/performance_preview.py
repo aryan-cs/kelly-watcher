@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from kelly_watcher.config import shadow_bankroll_usd
-from kelly_watcher.data.db import database_integrity_state, get_conn, get_conn_for_path
+from kelly_watcher.data.db import get_conn, get_conn_for_path
 from kelly_watcher.runtime_paths import BOT_STATE_FILE
 from kelly_watcher.engine.segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
 from kelly_watcher.engine.shadow_evidence import read_shadow_evidence_epoch
@@ -691,10 +691,9 @@ def compute_tracker_preview_summary(
         else None
     )
     max_drawdown_pct = _compute_max_drawdown_pct(starting_bankroll, resolved_rows)
-    integrity = database_integrity_state(db_path)
     data_warning = ""
-    if integrity.get("db_integrity_known") and not integrity.get("db_integrity_ok"):
-        detail = str(integrity.get("db_integrity_message") or "").splitlines()[0].strip()
+    if bot_state.get("db_integrity_known") and not bot_state.get("db_integrity_ok"):
+        detail = str(bot_state.get("db_integrity_message") or "").splitlines()[0].strip()
         data_warning = (
             "WARNING: SQLite integrity check failed; performance numbers may be unreliable"
             + (f" ({detail})" if detail else "")

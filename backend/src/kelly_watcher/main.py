@@ -19,6 +19,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Callable
 
+from apscheduler.executors.pool import ThreadPoolExecutor as APSchedulerThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from kelly_watcher.integrations.alerter import (
@@ -4984,15 +4985,20 @@ def _run_stop_loss_checks(
         return
 
     real_money = use_real_money()
-    if real_money and not dedup.sync_positions_from_api(tracker, wallet_address()):
-        logger.warning("Stop-loss check skipped because live positions could not be refreshed")
+    if real_money:
+        if not dedup.sync_positions_from_api(tracker, wallet_address()):
+            logger.warning("Stop-loss check skipped because live positions could not be refreshed")
+            return
+        candidates = _load_stop_loss_candidates(real_money=real_money)
+    else:
+        candidates = _load_stop_loss_candidates(real_money=real_money)
+    if not candidates:
         return
 
     now_ts = int(time.time())
     max_loss_pct = stop_loss_max_loss_pct()
     hard_exit_loss_pct = max_loss_pct + 0.10
     min_hold_seconds = stop_loss_min_hold_seconds()
-    candidates = _load_stop_loss_candidates(real_money=real_money)
     for candidate in candidates:
         if candidate.entered_at > 0 and (now_ts - candidate.entered_at) < min_hold_seconds:
             continue
@@ -6549,18 +6555,47 @@ def main() -> None:
                 watchlist.refresh(run_auto_drop=True)
                 _persist_bot_state(**watchlist.state_fields())
 
-            scheduler = BackgroundScheduler()
+            def _scheduled_resolve_trades() -> None:
+                _resolve_trades_and_alert()
+                dedup.load_from_db(rebuild_shadow_positions=False)
+                _refresh_shadow_history_state()
+
+            def _scheduled_shadow_dashboard_refresh() -> None:
+                _refresh_segment_shadow_state()
+                _refresh_routed_shadow_performance_state()
+
+            def _scheduled_retrain() -> bool:
+                return _run_retrain_job("scheduled")
+
+            def _scheduled_replay_search() -> bool | None:
+                return _run_replay_search_job("scheduled")
+
+            def _scheduled_early_retrain_check() -> bool:
+                return bool(should_retrain_early(engine) and _run_retrain_job("early"))
+
+            def _scheduled_sync_positions() -> bool:
+                return bool(dedup.sync_positions_from_api(tracker, wallet_address()))
+
+            def _scheduled_stop_loss_check() -> None:
+                _run_stop_loss_checks(tracker, executor, dedup)
+
+            scheduler = BackgroundScheduler(
+                executors={"default": APSchedulerThreadPoolExecutor(max_workers=1)},
+                job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
+            )
             scheduler.add_job(
-                lambda: (
-                    _resolve_trades_and_alert(),
-                    dedup.load_from_db(rebuild_shadow_positions=False),
-                    _refresh_shadow_history_state(),
-                    _refresh_segment_shadow_state(),
-                    _refresh_routed_shadow_performance_state(),
-                ),
+                _scheduled_resolve_trades,
                 "interval",
                 minutes=2,
                 id="resolve_trades",
+                name="resolve_trades",
+            )
+            scheduler.add_job(
+                _scheduled_shadow_dashboard_refresh,
+                "interval",
+                minutes=10,
+                id="shadow_dashboard_refresh",
+                name="shadow_dashboard_refresh",
             )
             scheduler.add_job(
                 daily_report,
@@ -6568,21 +6603,24 @@ def main() -> None:
                 hour=8,
                 minute=0,
                 id="daily_report",
+                name="daily_report",
             )
             retrain_cadence = retrain_base_cadence()
             retrain_hour = retrain_hour_local()
             retrain_trigger = {"hour": retrain_hour, "minute": 0, "id": "scheduled_retrain"}
             if retrain_cadence == "weekly":
                 scheduler.add_job(
-                    lambda: _run_retrain_job("scheduled"),
+                    _scheduled_retrain,
                     "cron",
                     day_of_week="mon",
+                    name="scheduled_retrain",
                     **retrain_trigger,
                 )
             else:
                 scheduler.add_job(
-                    lambda: _run_retrain_job("scheduled"),
+                    _scheduled_retrain,
                     "cron",
+                    name="scheduled_retrain",
                     **retrain_trigger,
                 )
             replay_search_cadence = replay_search_base_cadence()
@@ -6590,64 +6628,74 @@ def main() -> None:
             replay_search_trigger = {"hour": replay_search_hour, "minute": 0, "id": "scheduled_replay_search"}
             if replay_search_cadence == "weekly":
                 scheduler.add_job(
-                    lambda: _run_replay_search_job("scheduled"),
+                    _scheduled_replay_search,
                     "cron",
                     day_of_week="mon",
+                    name="scheduled_replay_search",
                     **replay_search_trigger,
                 )
             elif replay_search_cadence == "daily":
                 scheduler.add_job(
-                    lambda: _run_replay_search_job("scheduled"),
+                    _scheduled_replay_search,
                     "cron",
+                    name="scheduled_replay_search",
                     **replay_search_trigger,
                 )
             scheduler.add_job(
-                lambda: should_retrain_early(engine) and _run_retrain_job("early"),
+                _scheduled_early_retrain_check,
                 "interval",
                 seconds=retrain_early_check_seconds(),
                 id="early_retrain_check",
+                name="early_retrain_check",
             )
             scheduler.add_job(
-                lambda: dedup.sync_positions_from_api(tracker, wallet_address()),
+                _scheduled_sync_positions,
                 "interval",
                 minutes=5,
                 id="sync_positions",
+                name="sync_positions",
             )
             scheduler.add_job(
-                lambda: _run_stop_loss_checks(tracker, executor, dedup),
+                _scheduled_stop_loss_check,
                 "interval",
                 minutes=1,
                 id="stop_loss_check",
+                name="stop_loss_check",
             )
             scheduler.add_job(
                 _refresh_watchlist,
                 "interval",
                 minutes=10,
                 id="refresh_trader_cache",
+                name="refresh_trader_cache",
             )
             scheduler.add_job(
                 _backup_db,
                 "cron",
                 hour=4,
                 id="db_backup",
+                name="db_backup",
             )
             scheduler.add_job(
                 _refresh_db_integrity_state,
                 "interval",
                 hours=1,
                 id="db_integrity_check",
+                name="db_integrity_check",
             )
             scheduler.add_job(
                 _refresh_db_recovery_state,
                 "interval",
                 hours=1,
                 id="db_recovery_check",
+                name="db_recovery_check",
             )
             scheduler.add_job(
                 _refresh_db_recovery_shadow_state,
                 "interval",
                 hours=1,
                 id="db_recovery_shadow_check",
+                name="db_recovery_shadow_check",
             )
             _set_startup_detail("starting scheduler")
             scheduler.start()

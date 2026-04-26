@@ -2191,7 +2191,7 @@ class PolymarketExecutor:
                 )
             conn.commit()
         except Exception:
-            conn.rollback()
+            rollback_safely(conn, label="trade exit finalization")
             raise
         finally:
             conn.close()

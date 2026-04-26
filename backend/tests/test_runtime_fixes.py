@@ -8028,6 +8028,56 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_finalize_exit_preserves_original_error_when_rollback_fails(self) -> None:
+        class _FailingConnection:
+            def __init__(self) -> None:
+                self.rolled_back = False
+                self.closed = False
+
+            def execute(self, *_args, **_kwargs) -> None:
+                raise sqlite3.OperationalError("write failed")
+
+            def rollback(self) -> None:
+                self.rolled_back = True
+                raise sqlite3.OperationalError("rollback failed")
+
+            def close(self) -> None:
+                self.closed = True
+
+        conn = _FailingConnection()
+        executor = object.__new__(PolymarketExecutor)
+        entry = {
+            "id": 123,
+            "remaining_entry_shares": 10.0,
+            "remaining_entry_size_usd": 5.0,
+            "remaining_source_shares": 10.0,
+            "actual_entry_price": 0.5,
+            "actual_entry_shares": 10.0,
+            "actual_entry_size_usd": 5.0,
+        }
+
+        with patch("kelly_watcher.runtime.executor.get_conn", return_value=conn):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "write failed"):
+                executor._finalize_exit(
+                    entries=[entry],
+                    position={"market_id": "market-1", "token_id": "token-1", "side": "yes"},
+                    real_money=False,
+                    exit_trade_id="sell-rollback",
+                    exit_price=0.6,
+                    exit_fraction=1.0,
+                    exit_shares=10.0,
+                    exit_notional=6.0,
+                    exit_reason="test rollback failure",
+                    exit_order_id=None,
+                    market_id="market-1",
+                    trader_address="0xabc",
+                    dedup=Mock(),
+                    refresh_position_from_trade_log=False,
+                )
+
+        self.assertTrue(conn.rolled_back)
+        self.assertTrue(conn.closed)
+
     def test_resolved_shadow_trade_count_uses_fill_aware_realized_rows_only(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

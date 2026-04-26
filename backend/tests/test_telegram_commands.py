@@ -600,6 +600,40 @@ class TelegramCommandTest(unittest.TestCase):
                 telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
                 telegram_runtime._next_command_poll_at = original_next_poll_at
 
+    def test_request_manual_retrain_cleans_temp_file_when_replace_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_bot_state_file = telegram_runtime.BOT_STATE_FILE
+            original_retrain_request_file = telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE
+            try:
+                tmp_path = Path(tmpdir)
+                telegram_runtime.BOT_STATE_FILE = tmp_path / "bot_state.json"
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = tmp_path / "manual_retrain_request.json"
+                telegram_runtime.BOT_STATE_FILE.write_text(
+                    json.dumps(
+                        {
+                            "started_at": 1_700_000_000,
+                            "last_activity_at": 1_700_000_390,
+                            "poll_interval": 2.0,
+                            "retrain_in_progress": False,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                with patch("kelly_watcher.integrations.telegram_runtime.time.time", return_value=1_700_000_400), patch.object(
+                    Path,
+                    "replace",
+                    side_effect=OSError("replace failed"),
+                ):
+                    message = telegram_runtime._request_manual_retrain(source="telegram")
+
+                self.assertIn("Failed to request manual retrain", message)
+                self.assertFalse(telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE.exists())
+                self.assertEqual(list(tmp_path.glob("manual_retrain_request.json.*.tmp")), [])
+            finally:
+                telegram_runtime.BOT_STATE_FILE = original_bot_state_file
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
+
     def test_service_telegram_commands_replies_to_link(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_state_file = telegram_runtime.TELEGRAM_STATE_FILE

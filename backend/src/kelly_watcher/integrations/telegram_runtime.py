@@ -183,6 +183,7 @@ def _request_manual_retrain(*, source: str = "telegram") -> str:
         "request_id": f"telegram-{now_ts}-{os.getpid()}",
         "requested_at": now_ts,
     }
+    temp_path: Path | None = None
     try:
         MANUAL_RETRAIN_REQUEST_FILE.parent.mkdir(parents=True, exist_ok=True)
         temp_path = MANUAL_RETRAIN_REQUEST_FILE.with_name(
@@ -192,6 +193,13 @@ def _request_manual_retrain(*, source: str = "telegram") -> str:
         temp_path.replace(MANUAL_RETRAIN_REQUEST_FILE)
         return "Manual retrain requested. The bot should pick it up within about a second."
     except Exception as exc:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                logger.debug("Manual retrain temp cleanup failed for %s", temp_path, exc_info=True)
         logger.warning("Failed to persist manual retrain request: %s", exc)
         return f"Failed to request manual retrain: {exc}"
 

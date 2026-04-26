@@ -6813,40 +6813,7 @@ def main() -> None:
                             poll_stage="fetching_wallet_trades",
                             **watchlist.state_fields(),
                         )
-                        _persist_bot_state(poll_stage="staging_source_events")
-                        for batch in poll_batches:
-                            if shutdown_event.is_set():
-                                break
-                            if not batch.wallets:
-                                continue
-                            ingestion = tracker.stage_source_events(
-                                list(batch.wallets),
-                                trade_limit=batch.trade_limit,
-                                watch_tier=batch.watch_tier,
-                            )
-                            source_events_fetched += ingestion.fetched
-                            source_events_queued += ingestion.queued
-                            source_events_stale += ingestion.stale
-                            source_events_malformed += ingestion.malformed
-                            source_events_duplicate += ingestion.duplicate
-                        queue_counts = tracker.source_queue_counts()
-                        _persist_bot_state(
-                            source_events_fetched=source_events_fetched,
-                            source_events_queued=source_events_queued,
-                            source_events_stale=source_events_stale,
-                            source_events_malformed=source_events_malformed,
-                            source_events_duplicate=source_events_duplicate,
-                            source_events_pending=queue_counts.get("pending", 0),
-                            source_events_failed=queue_counts.get("failed", 0),
-                            source_events_processing=queue_counts.get("processing", 0),
-                            poll_stage="loading_source_queue",
-                        )
-                        events = tracker.load_queued_events(limit=source_event_process_batch_size())
-                        event_count = len(events)
-                        _persist_bot_state(
-                            last_event_count=event_count,
-                            poll_stage="evaluating_entry_guards",
-                        )
+                        _persist_bot_state(poll_stage="evaluating_entry_guards")
                         entry_pause_state = _entry_pause_state(
                             tracker,
                             executor,
@@ -6878,15 +6845,18 @@ def main() -> None:
                                     ),
                                     kind="status",
                                 )
-                        for event in events:
-                            if shutdown_event.is_set():
-                                break
-                            _heartbeat()
-                            _persist_bot_state(poll_stage=f"processing_event:{event.trade_id[:12]}")
-                            try:
-                                bankroll = max(
-                                    bankroll
-                                    + process_event(
+
+                        event_budget = source_event_process_batch_size()
+
+                        def _process_queued_events(events_to_process: list[Any]) -> None:
+                            nonlocal bankroll, account_equity, event_count
+                            for event in events_to_process:
+                                if shutdown_event.is_set():
+                                    break
+                                _heartbeat()
+                                _persist_bot_state(poll_stage=f"processing_event:{event.trade_id[:12]}")
+                                try:
+                                    bankroll_delta = process_event(
                                         event,
                                         engine,
                                         executor,
@@ -6894,33 +6864,96 @@ def main() -> None:
                                         bankroll,
                                         account_equity,
                                         entry_block_reason=entry_block_reason,
-                                    ),
-                                    0.0,
-                                )
-                                tracker.mark_source_event_processed(event.trade_id)
-                                account_equity = executor.get_account_equity_usd()
-                            except Exception as exc:
-                                logger.error(
-                                    "Event processing failed for trade %s: %s",
-                                    event.trade_id,
-                                    exc,
-                                    exc_info=True,
-                                )
-                                tracker.mark_source_event_failed(event.trade_id, str(exc))
-                                send_alert(
-                                    build_market_error_alert(
-                                        "event processing failed",
-                                        question=event.question,
-                                        market_url=_market_url_for_event(event),
-                                        detail=f"trade {event.trade_id[:12]} failed: {exc}",
-                                        tracked_trader_name=getattr(event, "trader_name", None),
-                                        tracked_trader_address=getattr(event, "trader_address", None),
-                                    ),
-                                    kind="error",
-                                )
-                            finally:
-                                if event.trade_id in dedup.seen_ids:
-                                    tracker.seen_ids.add(event.trade_id)
+                                    )
+                                    bankroll = max(bankroll + bankroll_delta, 0.0)
+                                    tracker.mark_source_event_processed(event.trade_id)
+                                    if use_real_money() and abs(float(bankroll_delta or 0.0)) > 1e-9:
+                                        account_equity = executor.get_account_equity_usd()
+                                except Exception as exc:
+                                    logger.error(
+                                        "Event processing failed for trade %s: %s",
+                                        event.trade_id,
+                                        exc,
+                                        exc_info=True,
+                                    )
+                                    tracker.mark_source_event_failed(event.trade_id, str(exc))
+                                    send_alert(
+                                        build_market_error_alert(
+                                            "event processing failed",
+                                            question=event.question,
+                                            market_url=_market_url_for_event(event),
+                                            detail=f"trade {event.trade_id[:12]} failed: {exc}",
+                                            tracked_trader_name=getattr(event, "trader_name", None),
+                                            tracked_trader_address=getattr(event, "trader_address", None),
+                                        ),
+                                        kind="error",
+                                    )
+                                finally:
+                                    event_count += 1
+                                    if event.trade_id in dedup.seen_ids:
+                                        tracker.seen_ids.add(event.trade_id)
+
+                        _persist_bot_state(poll_stage="staging_source_events")
+                        for batch in poll_batches:
+                            if shutdown_event.is_set():
+                                break
+                            if not batch.wallets:
+                                continue
+                            ingestion = tracker.stage_source_events(
+                                list(batch.wallets),
+                                trade_limit=batch.trade_limit,
+                                watch_tier=batch.watch_tier,
+                            )
+                            source_events_fetched += ingestion.fetched
+                            source_events_queued += ingestion.queued
+                            source_events_stale += ingestion.stale
+                            source_events_malformed += ingestion.malformed
+                            source_events_duplicate += ingestion.duplicate
+                            remaining_budget = max(event_budget - event_count, 0)
+                            if remaining_budget <= 0:
+                                continue
+                            queue_counts = tracker.source_queue_counts()
+                            _persist_bot_state(
+                                source_events_fetched=source_events_fetched,
+                                source_events_queued=source_events_queued,
+                                source_events_stale=source_events_stale,
+                                source_events_malformed=source_events_malformed,
+                                source_events_duplicate=source_events_duplicate,
+                                source_events_pending=queue_counts.get("pending", 0),
+                                source_events_failed=queue_counts.get("failed", 0),
+                                source_events_processing=queue_counts.get("processing", 0),
+                                poll_stage=f"loading_source_queue:{batch.watch_tier or 'unknown'}",
+                            )
+                            events = tracker.load_queued_events(
+                                limit=remaining_budget,
+                                watch_tiers=(batch.watch_tier,),
+                            )
+                            _persist_bot_state(
+                                last_event_count=event_count + len(events),
+                                poll_stage=f"processing_source_queue:{batch.watch_tier or 'unknown'}",
+                            )
+                            _process_queued_events(events)
+
+                        remaining_budget = max(event_budget - event_count, 0)
+                        if remaining_budget > 0 and not shutdown_event.is_set():
+                            queue_counts = tracker.source_queue_counts()
+                            _persist_bot_state(
+                                source_events_fetched=source_events_fetched,
+                                source_events_queued=source_events_queued,
+                                source_events_stale=source_events_stale,
+                                source_events_malformed=source_events_malformed,
+                                source_events_duplicate=source_events_duplicate,
+                                source_events_pending=queue_counts.get("pending", 0),
+                                source_events_failed=queue_counts.get("failed", 0),
+                                source_events_processing=queue_counts.get("processing", 0),
+                                poll_stage="loading_source_queue:remaining",
+                            )
+                            events = tracker.load_queued_events(limit=remaining_budget)
+                            _persist_bot_state(
+                                last_event_count=event_count + len(events),
+                                poll_stage="processing_source_queue:remaining",
+                            )
+                            _process_queued_events(events)
                         queue_counts = tracker.source_queue_counts()
                 except Exception as exc:
                     logger.error("Main loop error: %s", exc, exc_info=True)

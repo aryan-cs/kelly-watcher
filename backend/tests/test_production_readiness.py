@@ -436,6 +436,48 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_source_queue_claim_can_prioritize_hot_tier(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, ?, ?, ?, ?, ?, '{}', 'pending', 0, ?, ?, ?, '')
+                        """,
+                        [
+                            ("warm-newer", "0xwarm", "warm", "market-warm", "token-warm", now_ts - 1, now_ts - 1, now_ts - 1, now_ts - 1),
+                            ("hot-older", "0xhot", "hot", "market-hot", "token-hot", now_ts - 5, now_ts - 5, now_ts - 5, now_ts - 5),
+                            ("discovery-newest", "0xdisc", "discovery", "market-disc", "token-disc", now_ts, now_ts, now_ts, now_ts),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot", "0xwarm", "0xdisc"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=300
+                    ):
+                        hot_rows = tracker_obj._claim_source_queue_rows(limit=10, watch_tiers=("hot",))
+                        remaining_rows = tracker_obj._claim_source_queue_rows(limit=10)
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in hot_rows], ["hot-older"])
+                self.assertEqual([row["trade_id"] for row in remaining_rows], ["warm-newer", "discovery-newest"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_load_training_data_sql_executes(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

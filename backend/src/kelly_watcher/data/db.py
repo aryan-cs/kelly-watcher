@@ -1283,6 +1283,7 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
 
         CREATE INDEX IF NOT EXISTS idx_seen_trades_seen_at ON seen_trades(seen_at);
         CREATE INDEX IF NOT EXISTS idx_source_event_queue_status_ts ON source_event_queue(status, source_ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_source_event_queue_status_tier_ts ON source_event_queue(status, watch_tier, source_ts DESC);
         CREATE INDEX IF NOT EXISTS idx_source_event_queue_wallet_status ON source_event_queue(wallet_address, status);
         CREATE INDEX IF NOT EXISTS idx_belief_updates_applied_at ON belief_updates(applied_at);
         CREATE INDEX IF NOT EXISTS idx_wallet_watch_state_status ON wallet_watch_state(status);

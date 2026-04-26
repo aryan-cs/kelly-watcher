@@ -733,6 +733,14 @@ def source_event_process_batch_size() -> int:
     return _get_bounded_int("SOURCE_EVENT_PROCESS_BATCH_SIZE", "75", minimum=1, maximum=1000)
 
 
+def wallet_trade_fetch_workers() -> int:
+    return _get_bounded_int("WALLET_TRADE_FETCH_WORKERS", "16", minimum=1, maximum=64)
+
+
+def enrichment_fetch_workers() -> int:
+    return _get_bounded_int("ENRICHMENT_FETCH_WORKERS", "12", minimum=1, maximum=64)
+
+
 def telegram_balance_cache_max_age_seconds() -> int:
     raw = _get_env_file_value("TELEGRAM_BALANCE_CACHE_MAX_AGE") or _get("TELEGRAM_BALANCE_CACHE_MAX_AGE", "15m")
     seconds = _parse_duration(raw, 15 * 60.0)

@@ -67,6 +67,22 @@ export const editableConfigFields = [
         liveApplies: true
     },
     {
+        key: 'WALLET_TRADE_FETCH_WORKERS',
+        label: 'Trade Fetch Workers',
+        kind: 'int',
+        description: 'Maximum parallel wallet trade-feed requests. Higher values reduce hot-poll latency while the API rate limiter still caps request throughput.',
+        defaultValue: '16',
+        liveApplies: true
+    },
+    {
+        key: 'ENRICHMENT_FETCH_WORKERS',
+        label: 'Enrich Workers',
+        kind: 'int',
+        description: 'Maximum parallel metadata/orderbook enrichment requests for queued events.',
+        defaultValue: '12',
+        liveApplies: true
+    },
+    {
         key: 'MAX_MARKET_HORIZON',
         label: 'Max Market Horizon',
         kind: 'duration',

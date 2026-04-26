@@ -18,9 +18,11 @@ from kelly_watcher.config import (
     data_api_429_cooldown_seconds,
     data_api_request_burst,
     data_api_request_rate_per_second,
+    enrichment_fetch_workers,
     max_source_trade_age_ceiling_seconds,
     max_source_trade_age_seconds,
     source_trade_age_limit_seconds,
+    wallet_trade_fetch_workers,
 )
 from kelly_watcher.data.db import get_conn, init_db
 from kelly_watcher.data.identity_cache import hydrate_observed_identity, resolve_username_for_wallet
@@ -38,8 +40,6 @@ POSITIONS_REQUEST_TIMEOUT_S = 4.0
 METADATA_REQUEST_TIMEOUT_S = 4.0
 ORDERBOOK_REQUEST_TIMEOUT_S = 3.0
 PRICE_HISTORY_REQUEST_TIMEOUT_S = 4.0
-WALLET_TRADE_FETCH_WORKERS = 6
-ENRICHMENT_FETCH_WORKERS = 6
 WALLET_TRADE_FETCH_MAX_PAGES = 50
 MARKET_METADATA_CACHE_TTL_S = 300
 ORDERBOOK_CACHE_TTL_S = 2
@@ -144,10 +144,14 @@ class PolymarketTracker:
         activity_callback: Callable[[], None] | None = None,
     ):
         self.wallets = [address.lower() for address in wallet_addresses if address]
+        connection_limit = max(wallet_trade_fetch_workers(), enrichment_fetch_workers(), 12)
         self.client = httpx.Client(
             timeout=15.0,
             follow_redirects=True,
-            limits=httpx.Limits(max_connections=12, max_keepalive_connections=6),
+            limits=httpx.Limits(
+                max_connections=connection_limit,
+                max_keepalive_connections=max(connection_limit // 2, 6),
+            ),
         )
         self.activity_callback = activity_callback
         self.seen_ids: set[str] = set()
@@ -507,12 +511,27 @@ class PolymarketTracker:
         finally:
             conn.close()
 
-    def _claim_source_queue_rows(self, *, limit: int | None = None) -> list[sqlite3.Row]:
+    def _claim_source_queue_rows(
+        self,
+        *,
+        limit: int | None = None,
+        watch_tiers: tuple[str, ...] | list[str] | None = None,
+    ) -> list[sqlite3.Row]:
         now_ts = int(time.time())
         self.expire_stale_source_queue_rows(now_ts=now_ts)
         stale_processing_cutoff = now_ts - 300
         limit_clause = ""
         params: list[Any] = [stale_processing_cutoff]
+        tier_clause = ""
+        normalized_tiers = tuple(
+            str(tier or "").strip().lower()
+            for tier in (watch_tiers or ())
+            if str(tier or "").strip()
+        )
+        if normalized_tiers:
+            placeholders = ",".join("?" for _ in normalized_tiers)
+            tier_clause = f" AND LOWER(watch_tier) IN ({placeholders})"
+            params.extend(normalized_tiers)
         if limit is not None and int(limit) > 0:
             limit_clause = " LIMIT ?"
             params.append(int(limit))
@@ -523,10 +542,21 @@ class PolymarketTracker:
                 f"""
                 SELECT *
                 FROM source_event_queue
-                WHERE status='pending'
-                   OR (status='failed' AND attempts < 5)
-                   OR (status='processing' AND updated_at < ?)
-                ORDER BY source_ts DESC, first_seen_at ASC
+                WHERE (
+                    status='pending'
+                    OR (status='failed' AND attempts < 5)
+                    OR (status='processing' AND updated_at < ?)
+                )
+                {tier_clause}
+                ORDER BY
+                    CASE LOWER(watch_tier)
+                        WHEN 'hot' THEN 0
+                        WHEN 'warm' THEN 1
+                        WHEN 'discovery' THEN 2
+                        ELSE 3
+                    END,
+                    source_ts DESC,
+                    first_seen_at ASC
                 {limit_clause}
                 """,
                 params,
@@ -548,8 +578,13 @@ class PolymarketTracker:
         finally:
             conn.close()
 
-    def load_queued_events(self, *, limit: int | None = None) -> list[TradeEvent]:
-        rows = self._claim_source_queue_rows(limit=limit)
+    def load_queued_events(
+        self,
+        *,
+        limit: int | None = None,
+        watch_tiers: tuple[str, ...] | list[str] | None = None,
+    ) -> list[TradeEvent]:
+        rows = self._claim_source_queue_rows(limit=limit, watch_tiers=watch_tiers)
         if not rows:
             return []
 
@@ -989,7 +1024,7 @@ class PolymarketTracker:
             return {wallet: fetch_for_wallet(wallet)}
 
         results: dict[str, list[dict]] = {}
-        worker_count = min(WALLET_TRADE_FETCH_WORKERS, len(targets))
+        worker_count = min(wallet_trade_fetch_workers(), len(targets))
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             future_map = {
                 pool.submit(fetch_for_wallet, wallet): wallet
@@ -1016,7 +1051,7 @@ class PolymarketTracker:
             return {condition_id: self.get_market_metadata(condition_id)}
 
         results: dict[str, tuple[dict[str, Any], int]] = {}
-        worker_count = min(ENRICHMENT_FETCH_WORKERS, len(normalized))
+        worker_count = min(enrichment_fetch_workers(), len(normalized))
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             future_map = {
                 pool.submit(self.get_market_metadata, condition_id): condition_id
@@ -1043,7 +1078,7 @@ class PolymarketTracker:
             return {token_id: self.get_orderbook_snapshot(token_id)}
 
         results: dict[str, tuple[dict[str, float] | None, dict[str, Any] | None, int]] = {}
-        worker_count = min(ENRICHMENT_FETCH_WORKERS, len(normalized))
+        worker_count = min(enrichment_fetch_workers(), len(normalized))
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             future_map = {
                 pool.submit(self.get_orderbook_snapshot, token_id): token_id

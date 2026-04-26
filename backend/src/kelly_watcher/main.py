@@ -2392,11 +2392,6 @@ def process_event(
         _ignore_event(event, 0.0, reason)
         return 0.0
 
-    if entry_block_reason:
-        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
-        _pause_event(event, 0.0, entry_block_reason)
-        return 0.0
-
     market_close_ts = int(getattr(event, "market_close_ts", 0) or 0)
     max_source_age = source_trade_age_limit_seconds(market_close_ts, now_ts=time.time())
     source_age_s = int(time.time()) - int(getattr(event, "timestamp", 0) or int(time.time()))
@@ -2417,6 +2412,11 @@ def process_event(
         )
         dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
         _reject_event(event, 0.0, 0.0, reason)
+        return 0.0
+
+    if entry_block_reason:
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _pause_event(event, 0.0, entry_block_reason)
         return 0.0
 
     market_data_ok, market_data_reason = executor.refresh_event_market_data(event)
@@ -7072,13 +7072,20 @@ def main() -> None:
                         nonlocal bankroll, account_equity, event_count
                         if not events_to_process:
                             return
-                        _ensure_entry_context()
                         for event in events_to_process:
                             if shutdown_event.is_set():
                                 break
                             _heartbeat()
                             _persist_bot_state(poll_stage=f"processing_event:{event.trade_id[:12]}")
                             try:
+                                event_action = str(getattr(event, "action", "") or "").strip().lower()
+                                if event_action == "buy":
+                                    market_close_ts = int(getattr(event, "market_close_ts", 0) or 0)
+                                    now_ts = int(time.time())
+                                    max_source_age = source_trade_age_limit_seconds(market_close_ts, now_ts=now_ts)
+                                    source_ts = int(getattr(event, "timestamp", 0) or now_ts)
+                                    if max_source_age <= 0 or now_ts - source_ts <= max_source_age:
+                                        _ensure_entry_context()
                                 bankroll_delta = process_event(
                                     event,
                                     engine,

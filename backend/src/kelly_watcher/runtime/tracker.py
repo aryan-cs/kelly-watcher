@@ -604,6 +604,7 @@ class PolymarketTracker:
                             OR (
                                 ? > 0
                                 AND source_ts > 0
+                                AND attempts > 1
                                 AND source_ts >= ?
                                 AND source_ts <= ? + ?
                                 AND updated_at <= source_ts + MAX(? - ?, 0)

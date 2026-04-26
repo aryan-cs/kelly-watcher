@@ -896,6 +896,16 @@ class ProductionReadinessTest(unittest.TestCase):
                                 now_ts - 40,
                                 now_ts - 20,
                             ),
+                            (
+                                "failed-final-window-first-attempt",
+                                "market-final-first",
+                                "token-final-first",
+                                now_ts - 40,
+                                1,
+                                now_ts - 40,
+                                now_ts - 40,
+                                now_ts - 4,
+                            ),
                         ],
                     )
                     conn.commit()
@@ -927,6 +937,7 @@ class ProductionReadinessTest(unittest.TestCase):
                     conn.close()
                 self.assertEqual(states["failed-recent-high-attempts"], ("failed", 8))
                 self.assertEqual(states["failed-delayed-high-attempts"], ("failed", 8))
+                self.assertEqual(states["failed-final-window-first-attempt"], ("failed", 1))
                 self.assertEqual(states["failed-ready-high-attempts"], ("processing", 9))
                 self.assertEqual(states["failed-final-window-high-attempts"], ("processing", 9))
             finally:

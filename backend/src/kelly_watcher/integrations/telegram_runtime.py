@@ -499,6 +499,11 @@ def service_telegram_commands() -> int:
         response = _telegram_command_client().get(f"https://api.telegram.org/bot{token}/getUpdates", params=params)
         response.raise_for_status()
         payload = response.json()
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            error_code = payload.get("error_code")
+            description = str(payload.get("description") or "unknown error").strip()
+            detail = f"{error_code}: {description}" if error_code is not None else description
+            raise RuntimeError(f"Telegram getUpdates returned ok=false: {detail}")
     except Exception as exc:
         _record_command_poll_failure(exc, now_ts=now_ts)
         return 0

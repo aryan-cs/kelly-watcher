@@ -336,6 +336,45 @@ class TelegramCommandTest(unittest.TestCase):
                 telegram_runtime._command_poll_failure_count = original_failure_count
                 telegram_runtime._last_command_poll_warning_at = original_last_warning_at
 
+    def test_service_telegram_commands_backs_off_after_api_error_payload(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = telegram_runtime.TELEGRAM_STATE_FILE
+            original_next_poll_at = telegram_runtime._next_command_poll_at
+            original_failure_count = telegram_runtime._command_poll_failure_count
+            original_last_warning_at = telegram_runtime._last_command_poll_warning_at
+            try:
+                telegram_runtime.TELEGRAM_STATE_FILE = Path(tmpdir) / "telegram_state.json"
+                telegram_runtime._next_command_poll_at = 0.0
+                telegram_runtime._command_poll_failure_count = 0
+                telegram_runtime._last_command_poll_warning_at = 0.0
+                client = _HttpClient(
+                    {
+                        "ok": False,
+                        "error_code": 409,
+                        "description": "Conflict: terminated by other getUpdates request",
+                    }
+                )
+
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
+                    "kelly_watcher.integrations.telegram_runtime.time.time", return_value=1_000.0
+                ), self.assertLogs("kelly_watcher.integrations.telegram_runtime", level="WARNING") as logs:
+                    handled = telegram_runtime.service_telegram_commands()
+
+                self.assertEqual(handled, 0)
+                self.assertEqual(len(client.get_calls), 1)
+                self.assertEqual(telegram_runtime._command_poll_failure_count, 1)
+                self.assertEqual(telegram_runtime._next_command_poll_at, 1_002.0)
+                log_output = "\n".join(logs.output)
+                self.assertIn("ok=false", log_output)
+                self.assertIn("backing off for 2s", log_output)
+            finally:
+                telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
+                telegram_runtime._next_command_poll_at = original_next_poll_at
+                telegram_runtime._command_poll_failure_count = original_failure_count
+                telegram_runtime._last_command_poll_warning_at = original_last_warning_at
+
     def test_service_telegram_commands_tolerates_invalid_state_and_message_ids(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_state_file = telegram_runtime.TELEGRAM_STATE_FILE

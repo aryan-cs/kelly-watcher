@@ -1877,211 +1877,216 @@ class PolymarketExecutor:
     ) -> tuple[float, float, float]:
         pnl_column = "actual_pnl_usd" if real_money else "shadow_pnl_usd"
         conn = get_conn()
-        now_ts = int(time.time())
-        total_shares = 0.0
-        total_exit_notional = 0.0
-        total_pnl = 0.0
-        fraction = min(max(exit_fraction, 0.0), 1.0)
-        active_entries = [
-            entry
-            for entry in entries
-            if self._entry_open_shares(entry) > 1e-9 and self._entry_open_size(entry) > 1e-9
-        ]
+        try:
+            now_ts = int(time.time())
+            total_shares = 0.0
+            total_exit_notional = 0.0
+            total_pnl = 0.0
+            fraction = min(max(exit_fraction, 0.0), 1.0)
+            active_entries = [
+                entry
+                for entry in entries
+                if self._entry_open_shares(entry) > 1e-9 and self._entry_open_size(entry) > 1e-9
+            ]
 
-        remaining_exit_shares = float(exit_shares)
-        remaining_exit_notional = float(exit_notional)
-        remaining_exit_gross_shares = float(exit_economics.gross_shares) if exit_economics is not None else float(exit_shares)
-        remaining_exit_gross_notional = (
-            float(exit_economics.gross_notional_usd) if exit_economics is not None else float(exit_notional)
-        )
-        remaining_exit_fee_usd = float(exit_economics.exit_fee_usd) if exit_economics is not None else 0.0
-        remaining_exit_fixed_cost = float(exit_economics.fixed_cost_usd) if exit_economics is not None else 0.0
-        total_exit_gross_shares = remaining_exit_gross_shares
-        total_exit_gross_notional = remaining_exit_gross_notional
-        total_exit_fee_usd = remaining_exit_fee_usd
-        total_exit_fixed_cost = remaining_exit_fixed_cost
-        exit_fee_rate_bps = int(exit_economics.fee_rate_bps) if exit_economics is not None else 0
-        for index, entry in enumerate(active_entries):
-            open_shares = self._entry_open_shares(entry)
-            open_size = self._entry_open_size(entry)
-            open_source_shares = self._entry_open_source_shares(entry)
-            if open_shares <= 1e-9 or open_size <= 1e-9:
-                continue
+            remaining_exit_shares = float(exit_shares)
+            remaining_exit_notional = float(exit_notional)
+            remaining_exit_gross_shares = float(exit_economics.gross_shares) if exit_economics is not None else float(exit_shares)
+            remaining_exit_gross_notional = (
+                float(exit_economics.gross_notional_usd) if exit_economics is not None else float(exit_notional)
+            )
+            remaining_exit_fee_usd = float(exit_economics.exit_fee_usd) if exit_economics is not None else 0.0
+            remaining_exit_fixed_cost = float(exit_economics.fixed_cost_usd) if exit_economics is not None else 0.0
+            total_exit_gross_shares = remaining_exit_gross_shares
+            total_exit_gross_notional = remaining_exit_gross_notional
+            total_exit_fee_usd = remaining_exit_fee_usd
+            total_exit_fixed_cost = remaining_exit_fixed_cost
+            exit_fee_rate_bps = int(exit_economics.fee_rate_bps) if exit_economics is not None else 0
+            for index, entry in enumerate(active_entries):
+                open_shares = self._entry_open_shares(entry)
+                open_size = self._entry_open_size(entry)
+                open_source_shares = self._entry_open_source_shares(entry)
+                if open_shares <= 1e-9 or open_size <= 1e-9:
+                    continue
 
-            is_last = index == len(active_entries) - 1
-            if is_last:
-                entry_exit_shares = min(open_shares, max(remaining_exit_shares, 0.0))
-                entry_exit_notional = max(round(remaining_exit_notional, 6), 0.0)
-                entry_exit_gross_shares = max(round(remaining_exit_gross_shares, 6), 0.0)
-                entry_exit_gross_notional = max(round(remaining_exit_gross_notional, 6), 0.0)
-                entry_exit_fee_usd = max(round(remaining_exit_fee_usd, 6), 0.0)
-                entry_exit_fixed_cost = max(round(remaining_exit_fixed_cost, 6), 0.0)
-            else:
-                entry_exit_shares = min(open_shares, round(open_shares * fraction, 6))
-                share_ratio = (entry_exit_shares / exit_shares) if exit_shares > 0 else 0.0
-                entry_exit_notional = max(round(exit_notional * share_ratio, 6), 0.0)
-                entry_exit_gross_shares = max(round(total_exit_gross_shares * share_ratio, 6), 0.0)
-                entry_exit_gross_notional = max(round(total_exit_gross_notional * share_ratio, 6), 0.0)
-                entry_exit_fee_usd = max(round(total_exit_fee_usd * share_ratio, 6), 0.0)
-                entry_exit_fixed_cost = max(round(total_exit_fixed_cost * share_ratio, 6), 0.0)
-            if entry_exit_shares <= 1e-9:
-                continue
+                is_last = index == len(active_entries) - 1
+                if is_last:
+                    entry_exit_shares = min(open_shares, max(remaining_exit_shares, 0.0))
+                    entry_exit_notional = max(round(remaining_exit_notional, 6), 0.0)
+                    entry_exit_gross_shares = max(round(remaining_exit_gross_shares, 6), 0.0)
+                    entry_exit_gross_notional = max(round(remaining_exit_gross_notional, 6), 0.0)
+                    entry_exit_fee_usd = max(round(remaining_exit_fee_usd, 6), 0.0)
+                    entry_exit_fixed_cost = max(round(remaining_exit_fixed_cost, 6), 0.0)
+                else:
+                    entry_exit_shares = min(open_shares, round(open_shares * fraction, 6))
+                    share_ratio = (entry_exit_shares / exit_shares) if exit_shares > 0 else 0.0
+                    entry_exit_notional = max(round(exit_notional * share_ratio, 6), 0.0)
+                    entry_exit_gross_shares = max(round(total_exit_gross_shares * share_ratio, 6), 0.0)
+                    entry_exit_gross_notional = max(round(total_exit_gross_notional * share_ratio, 6), 0.0)
+                    entry_exit_fee_usd = max(round(total_exit_fee_usd * share_ratio, 6), 0.0)
+                    entry_exit_fixed_cost = max(round(total_exit_fixed_cost * share_ratio, 6), 0.0)
+                if entry_exit_shares <= 1e-9:
+                    continue
 
-            close_ratio = min(entry_exit_shares / open_shares, 1.0)
-            closed_cost = round(open_size * close_ratio, 6)
-            closed_source_shares = round(open_source_shares * close_ratio, 6)
-            remaining_shares = max(round(open_shares - entry_exit_shares, 6), 0.0)
-            remaining_size = max(round(open_size - closed_cost, 6), 0.0)
-            remaining_source_shares = max(round(open_source_shares - closed_source_shares, 6), 0.0)
-            realized_exit_shares = round(float(entry.get("realized_exit_shares") or 0.0) + entry_exit_shares, 6)
-            realized_exit_size = round(float(entry.get("realized_exit_size_usd") or 0.0) + entry_exit_notional, 6)
-            realized_exit_pnl = round(
-                float(entry.get("realized_exit_pnl_usd") or 0.0) + entry_exit_notional - closed_cost,
-                6,
-            )
-            cumulative_exit_fee_usd = round(float(entry.get("exit_fee_usd") or 0.0) + entry_exit_fee_usd, 6)
-            cumulative_exit_fixed_cost = round(
-                float(entry.get("exit_fixed_cost_usd") or 0.0) + entry_exit_fixed_cost,
-                6,
-            )
-            cumulative_exit_gross_shares = round(
-                float(entry.get("exit_gross_shares") or 0.0) + entry_exit_gross_shares,
-                6,
-            )
-            cumulative_exit_gross_size = round(
-                float(entry.get("exit_gross_size_usd") or 0.0) + entry_exit_gross_notional,
-                6,
-            )
-            cumulative_exit_price = round(realized_exit_size / realized_exit_shares, 6) if realized_exit_shares > 0 else 0.0
-            cumulative_exit_gross_price = (
-                round(cumulative_exit_gross_size / cumulative_exit_gross_shares, 6)
-                if cumulative_exit_gross_shares > 0
-                else 0.0
-            )
-            prior_partial_count = int(entry.get("partial_exit_count") or 0)
-            partial_count = prior_partial_count + (1 if remaining_shares > 1e-9 else 0)
-            is_fully_closed = remaining_shares <= 1e-9 or remaining_size <= 1e-9
-
-            total_shares += entry_exit_shares
-            total_exit_notional += entry_exit_notional
-            total_pnl += entry_exit_notional - closed_cost
-            remaining_exit_shares = max(round(remaining_exit_shares - entry_exit_shares, 6), 0.0)
-            remaining_exit_notional = max(round(remaining_exit_notional - entry_exit_notional, 6), 0.0)
-            remaining_exit_gross_shares = max(round(remaining_exit_gross_shares - entry_exit_gross_shares, 6), 0.0)
-            remaining_exit_gross_notional = max(round(remaining_exit_gross_notional - entry_exit_gross_notional, 6), 0.0)
-            remaining_exit_fee_usd = max(round(remaining_exit_fee_usd - entry_exit_fee_usd, 6), 0.0)
-            remaining_exit_fixed_cost = max(round(remaining_exit_fixed_cost - entry_exit_fixed_cost, 6), 0.0)
-
-            if is_fully_closed:
-                conn.execute(
-                    f"""
-                    UPDATE trade_log
-                    SET exited_at=?,
-                        exit_trade_id=?,
-                        exit_price=?,
-                        exit_shares=?,
-                        exit_size_usd=?,
-                        exit_fee_rate_bps=?,
-                        exit_fee_usd=?,
-                        exit_fixed_cost_usd=?,
-                        exit_gross_price=?,
-                        exit_gross_shares=?,
-                        exit_gross_size_usd=?,
-                        exit_order_id=?,
-                        exit_reason=?,
-                        resolved_at=COALESCE(resolved_at, ?),
-                        remaining_entry_shares=0,
-                        remaining_entry_size_usd=0,
-                        remaining_source_shares=0,
-                        realized_exit_shares=?,
-                        realized_exit_size_usd=?,
-                        realized_exit_pnl_usd=?,
-                        partial_exit_count=?,
-                        {pnl_column}=?
-                    WHERE id=?
-                    """,
-                    (
-                        now_ts,
-                        exit_trade_id,
-                        cumulative_exit_price,
-                        realized_exit_shares,
-                        realized_exit_size,
-                        exit_fee_rate_bps or int(entry.get("exit_fee_rate_bps") or 0),
-                        cumulative_exit_fee_usd,
-                        cumulative_exit_fixed_cost,
-                        cumulative_exit_gross_price,
-                        cumulative_exit_gross_shares,
-                        cumulative_exit_gross_size,
-                        exit_order_id,
-                        exit_reason,
-                        now_ts,
-                        realized_exit_shares,
-                        realized_exit_size,
-                        realized_exit_pnl,
-                        partial_count,
-                        round(realized_exit_pnl, 2),
-                        int(entry["id"]),
-                    ),
+                close_ratio = min(entry_exit_shares / open_shares, 1.0)
+                closed_cost = round(open_size * close_ratio, 6)
+                closed_source_shares = round(open_source_shares * close_ratio, 6)
+                remaining_shares = max(round(open_shares - entry_exit_shares, 6), 0.0)
+                remaining_size = max(round(open_size - closed_cost, 6), 0.0)
+                remaining_source_shares = max(round(open_source_shares - closed_source_shares, 6), 0.0)
+                realized_exit_shares = round(float(entry.get("realized_exit_shares") or 0.0) + entry_exit_shares, 6)
+                realized_exit_size = round(float(entry.get("realized_exit_size_usd") or 0.0) + entry_exit_notional, 6)
+                realized_exit_pnl = round(
+                    float(entry.get("realized_exit_pnl_usd") or 0.0) + entry_exit_notional - closed_cost,
+                    6,
                 )
-            else:
-                conn.execute(
-                    """
-                    UPDATE trade_log
-                    SET exit_trade_id=?,
-                        exit_price=?,
-                        exit_shares=?,
-                        exit_size_usd=?,
-                        exit_fee_rate_bps=?,
-                        exit_fee_usd=?,
-                        exit_fixed_cost_usd=?,
-                        exit_gross_price=?,
-                        exit_gross_shares=?,
-                        exit_gross_size_usd=?,
-                        exit_order_id=?,
-                        exit_reason=?,
-                        remaining_entry_shares=?,
-                        remaining_entry_size_usd=?,
-                        remaining_source_shares=?,
-                        realized_exit_shares=?,
-                        realized_exit_size_usd=?,
-                        realized_exit_pnl_usd=?,
-                        partial_exit_count=?
-                    WHERE id=?
-                    """,
-                    (
-                        exit_trade_id,
-                        cumulative_exit_price,
-                        realized_exit_shares,
-                        realized_exit_size,
-                        exit_fee_rate_bps or int(entry.get("exit_fee_rate_bps") or 0),
-                        cumulative_exit_fee_usd,
-                        cumulative_exit_fixed_cost,
-                        cumulative_exit_gross_price,
-                        cumulative_exit_gross_shares,
-                        cumulative_exit_gross_size,
-                        exit_order_id,
-                        exit_reason,
-                        remaining_shares,
-                        remaining_size,
-                        remaining_source_shares,
-                        realized_exit_shares,
-                        realized_exit_size,
-                        realized_exit_pnl,
-                        partial_count,
-                        int(entry["id"]),
-                    ),
+                cumulative_exit_fee_usd = round(float(entry.get("exit_fee_usd") or 0.0) + entry_exit_fee_usd, 6)
+                cumulative_exit_fixed_cost = round(
+                    float(entry.get("exit_fixed_cost_usd") or 0.0) + entry_exit_fixed_cost,
+                    6,
                 )
+                cumulative_exit_gross_shares = round(
+                    float(entry.get("exit_gross_shares") or 0.0) + entry_exit_gross_shares,
+                    6,
+                )
+                cumulative_exit_gross_size = round(
+                    float(entry.get("exit_gross_size_usd") or 0.0) + entry_exit_gross_notional,
+                    6,
+                )
+                cumulative_exit_price = round(realized_exit_size / realized_exit_shares, 6) if realized_exit_shares > 0 else 0.0
+                cumulative_exit_gross_price = (
+                    round(cumulative_exit_gross_size / cumulative_exit_gross_shares, 6)
+                    if cumulative_exit_gross_shares > 0
+                    else 0.0
+                )
+                prior_partial_count = int(entry.get("partial_exit_count") or 0)
+                partial_count = prior_partial_count + (1 if remaining_shares > 1e-9 else 0)
+                is_fully_closed = remaining_shares <= 1e-9 or remaining_size <= 1e-9
 
-        if refresh_position_from_trade_log:
-            self._refresh_position_from_trade_log(
-                conn,
-                market_id=market_id,
-                token_id=str(position.get("token_id") or ""),
-                side=str(position.get("side") or ""),
-                real_money=real_money,
-            )
-        conn.commit()
-        conn.close()
+                total_shares += entry_exit_shares
+                total_exit_notional += entry_exit_notional
+                total_pnl += entry_exit_notional - closed_cost
+                remaining_exit_shares = max(round(remaining_exit_shares - entry_exit_shares, 6), 0.0)
+                remaining_exit_notional = max(round(remaining_exit_notional - entry_exit_notional, 6), 0.0)
+                remaining_exit_gross_shares = max(round(remaining_exit_gross_shares - entry_exit_gross_shares, 6), 0.0)
+                remaining_exit_gross_notional = max(round(remaining_exit_gross_notional - entry_exit_gross_notional, 6), 0.0)
+                remaining_exit_fee_usd = max(round(remaining_exit_fee_usd - entry_exit_fee_usd, 6), 0.0)
+                remaining_exit_fixed_cost = max(round(remaining_exit_fixed_cost - entry_exit_fixed_cost, 6), 0.0)
+
+                if is_fully_closed:
+                    conn.execute(
+                        f"""
+                        UPDATE trade_log
+                        SET exited_at=?,
+                            exit_trade_id=?,
+                            exit_price=?,
+                            exit_shares=?,
+                            exit_size_usd=?,
+                            exit_fee_rate_bps=?,
+                            exit_fee_usd=?,
+                            exit_fixed_cost_usd=?,
+                            exit_gross_price=?,
+                            exit_gross_shares=?,
+                            exit_gross_size_usd=?,
+                            exit_order_id=?,
+                            exit_reason=?,
+                            resolved_at=COALESCE(resolved_at, ?),
+                            remaining_entry_shares=0,
+                            remaining_entry_size_usd=0,
+                            remaining_source_shares=0,
+                            realized_exit_shares=?,
+                            realized_exit_size_usd=?,
+                            realized_exit_pnl_usd=?,
+                            partial_exit_count=?,
+                            {pnl_column}=?
+                        WHERE id=?
+                        """,
+                        (
+                            now_ts,
+                            exit_trade_id,
+                            cumulative_exit_price,
+                            realized_exit_shares,
+                            realized_exit_size,
+                            exit_fee_rate_bps or int(entry.get("exit_fee_rate_bps") or 0),
+                            cumulative_exit_fee_usd,
+                            cumulative_exit_fixed_cost,
+                            cumulative_exit_gross_price,
+                            cumulative_exit_gross_shares,
+                            cumulative_exit_gross_size,
+                            exit_order_id,
+                            exit_reason,
+                            now_ts,
+                            realized_exit_shares,
+                            realized_exit_size,
+                            realized_exit_pnl,
+                            partial_count,
+                            round(realized_exit_pnl, 2),
+                            int(entry["id"]),
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE trade_log
+                        SET exit_trade_id=?,
+                            exit_price=?,
+                            exit_shares=?,
+                            exit_size_usd=?,
+                            exit_fee_rate_bps=?,
+                            exit_fee_usd=?,
+                            exit_fixed_cost_usd=?,
+                            exit_gross_price=?,
+                            exit_gross_shares=?,
+                            exit_gross_size_usd=?,
+                            exit_order_id=?,
+                            exit_reason=?,
+                            remaining_entry_shares=?,
+                            remaining_entry_size_usd=?,
+                            remaining_source_shares=?,
+                            realized_exit_shares=?,
+                            realized_exit_size_usd=?,
+                            realized_exit_pnl_usd=?,
+                            partial_exit_count=?
+                        WHERE id=?
+                        """,
+                        (
+                            exit_trade_id,
+                            cumulative_exit_price,
+                            realized_exit_shares,
+                            realized_exit_size,
+                            exit_fee_rate_bps or int(entry.get("exit_fee_rate_bps") or 0),
+                            cumulative_exit_fee_usd,
+                            cumulative_exit_fixed_cost,
+                            cumulative_exit_gross_price,
+                            cumulative_exit_gross_shares,
+                            cumulative_exit_gross_size,
+                            exit_order_id,
+                            exit_reason,
+                            remaining_shares,
+                            remaining_size,
+                            remaining_source_shares,
+                            realized_exit_shares,
+                            realized_exit_size,
+                            realized_exit_pnl,
+                            partial_count,
+                            int(entry["id"]),
+                        ),
+                    )
+
+            if refresh_position_from_trade_log:
+                self._refresh_position_from_trade_log(
+                    conn,
+                    market_id=market_id,
+                    token_id=str(position.get("token_id") or ""),
+                    side=str(position.get("side") or ""),
+                    real_money=real_money,
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         if refresh_position_from_trade_log:
             dedup.load_from_db(rebuild_shadow_positions=False)
         else:

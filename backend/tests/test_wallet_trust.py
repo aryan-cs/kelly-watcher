@@ -345,6 +345,33 @@ class WalletTrustTest(unittest.TestCase):
         self.assertAlmostEqual(adjusted["wallet_trust_effective_multiplier"], 0.05, places=6)
         self.assertIn("wallet is in discovery", adjusted["wallet_trust_note"])
 
+    def test_wallet_trust_rejects_risk_adjusted_size_below_minimum(self) -> None:
+        trust_state = WalletTrustState(
+            wallet_address="0xabc",
+            tier="discovery",
+            size_multiplier=0.05,
+            observed_buy_count=4,
+            resolved_observed_buy_count=1,
+            resolved_copied_buy_count=0,
+            resolved_copied_win_rate=None,
+            resolved_copied_avg_return=None,
+            min_cold_start_observed_buy_count=3,
+            min_observed_buy_count=8,
+            min_resolved_observed_buy_count=3,
+            min_resolved_copied_buy_count=15,
+        )
+
+        with patch.dict(os.environ, {"MIN_BET_USD": "1.00"}, clear=False):
+            adjusted = apply_wallet_trust_sizing(
+                {"dollar_size": 10.0, "kelly_f": 0.10, "full_kelly_f": 0.20},
+                trust_state,
+            )
+
+        self.assertEqual(adjusted["dollar_size"], 0.0)
+        self.assertEqual(adjusted["kelly_f"], 0.0)
+        self.assertEqual(adjusted["wallet_trust_effective_multiplier"], 0.0)
+        self.assertIn("risk-adjusted size $0.50 < min $1.00", adjusted["wallet_trust_note"])
+
     def test_quality_multiplier_scales_trusted_wallet_size_within_cap(self) -> None:
         trust_state = WalletTrustState(
             wallet_address="0xabc",

@@ -29,6 +29,22 @@ class HeuristicSizingTest(unittest.TestCase):
         self.assertEqual(sized["dollar_size"], 100.0)
         self.assertLessEqual(sized["full_kelly_f"], 1.0)
 
+    def test_kelly_size_rejects_computed_size_below_exchange_minimum(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "MAX_BET_FRACTION": "0.10",
+                "MIN_CONFIDENCE": "0.60",
+                "MIN_BET_USD": "10.00",
+            },
+            clear=False,
+        ):
+            sized = kelly_size(0.601, 0.60, 1000.0)
+
+        self.assertEqual(sized["dollar_size"], 0.0)
+        self.assertIn("computed size", sized["reason"])
+        self.assertIn("< min $10.00", sized["reason"])
+
     def test_heuristic_size_rejects_non_finite_score(self) -> None:
         sized = heuristic_size(float("inf"), 1000.0)
 

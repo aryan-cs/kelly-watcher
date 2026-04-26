@@ -24,6 +24,15 @@ class ConstantReturnModel:
         return np.full(len(X), self.target_value, dtype=float)
 
 
+class ConstantProbabilityModel:
+    def __init__(self, probability: float):
+        self.probability = float(probability)
+
+    def predict_proba(self, X):
+        probabilities = np.full(len(X), self.probability, dtype=float)
+        return np.column_stack((1.0 - probabilities, probabilities))
+
+
 class IdentityCalibrator:
     def predict(self, values):
         return np.asarray(values, dtype=float)
@@ -85,6 +94,57 @@ class ExpectedReturnModelTest(unittest.TestCase):
             self.assertAlmostEqual(result["expected_return"], 0.35, places=4)
             self.assertTrue(result["passed"])
             self.assertAlmostEqual(result["edge_threshold"], 0.01, places=4)
+
+    def test_signal_engine_rejects_nonfinite_expected_return_prediction(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = self._trusted_model_artifact(float("nan"))
+            joblib.dump(artifact, model_file)
+
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            market_features = SimpleNamespace(execution_price=0.4, mid=0.4, days_to_res=0.5)
+            with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch.object(
+                engine.market_scorer,
+                "score",
+                return_value={"score": 0.7, "veto": None},
+            ), patch(
+                "kelly_watcher.engine.signal_engine.build_feature_map",
+                return_value={column: 0.5 for column in FEATURE_COLS[:3]},
+            ):
+                result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertEqual(result["reason"], "model expected return was non-finite")
+
+    def test_signal_engine_rejects_out_of_range_probability_prediction(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = self._trusted_model_artifact(0.35)
+            artifact["model"] = ConstantProbabilityModel(1.2)
+            artifact["prediction_mode"] = "probability"
+            artifact["probability_calibrator"] = None
+            joblib.dump(artifact, model_file)
+
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
+                engine = signal_engine.SignalEngine()
+
+            market_features = SimpleNamespace(execution_price=0.4, mid=0.4, days_to_res=0.5)
+            with patch.object(engine.trader_scorer, "score", return_value={"score": 0.8}), patch.object(
+                engine.market_scorer,
+                "score",
+                return_value={"score": 0.7, "veto": None},
+            ), patch(
+                "kelly_watcher.engine.signal_engine.build_feature_map",
+                return_value={column: 0.5 for column in FEATURE_COLS[:3]},
+            ):
+                result = engine._evaluate_xgb(SimpleNamespace(), market_features, 10.0)
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertEqual(result["reason"], "model confidence 1.200 outside [0, 1]")
 
     def test_signal_engine_tags_segment_metadata_for_runtime_scoring(self) -> None:
         with patch(

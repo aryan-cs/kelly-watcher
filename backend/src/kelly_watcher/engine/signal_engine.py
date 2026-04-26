@@ -674,6 +674,40 @@ class SignalEngine:
             expected_return = None
             base_confidence = None
             confidence = float(self._xgb.predict_proba(ordered)[0, 1])
+        invalid_prediction_reason = None
+        if expected_return is not None and not np.isfinite(expected_return):
+            invalid_prediction_reason = "model expected return was non-finite"
+        elif base_confidence is not None and not np.isfinite(base_confidence):
+            invalid_prediction_reason = "model raw confidence was non-finite"
+        elif not np.isfinite(confidence):
+            invalid_prediction_reason = "model confidence was non-finite"
+        elif not (0.0 <= confidence <= 1.0):
+            invalid_prediction_reason = f"model confidence {confidence:.3f} outside [0, 1]"
+        if invalid_prediction_reason:
+            safe_raw_confidence = base_confidence if base_confidence is not None and np.isfinite(base_confidence) else 0.0
+            safe_expected_return = expected_return if expected_return is not None and np.isfinite(expected_return) else None
+            return {
+                "confidence": 0.0,
+                "raw_confidence": round(safe_raw_confidence, 4),
+                "expected_return": round(safe_expected_return, 4) if safe_expected_return is not None else None,
+                "edge": 0.0,
+                "entry_price_band": entry_price_band,
+                "global_allowed_entry_price_bands": list(global_allowed_entry_price_bands),
+                "allowed_entry_price_bands": list(mode_allowed_entry_price_bands),
+                "edge_threshold": 0.0,
+                "base_edge_threshold": round(float(self._xgb_policy.get("edge_threshold", 0.0)), 4),
+                "time_to_close_seconds": round(time_to_close_seconds, 3),
+                "time_to_close_band": time_to_close_band,
+                "allowed_time_to_close_bands": list(global_allowed_time_to_close_bands),
+                "min_time_to_close_seconds": round(min_time_to_close_seconds, 3),
+                "passed": False,
+                "reason": invalid_prediction_reason,
+                "veto": None,
+                "mode": "xgboost",
+                "trader": trader_result,
+                "market": market_result,
+                **self._segment_payload(segment_policy, segment_context),
+            }
         edge = confidence - execution_price
         base_edge_threshold = float(self._xgb_policy.get("edge_threshold", 0.0))
         edge_threshold = base_edge_threshold

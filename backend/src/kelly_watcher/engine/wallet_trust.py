@@ -390,7 +390,16 @@ def apply_wallet_trust_sizing(
         scaled_size = round(min(scaled_size, max_size_usd), 2)
     min_bet = min_bet_usd()
     if 0.0 < scaled_size < min_bet:
-        scaled_size = min_bet if max_size_usd is None or max_size_usd >= min_bet else max_size_usd
+        adjusted["dollar_size"] = 0.0
+        adjusted["kelly_f"] = 0.0
+        adjusted["full_kelly_f"] = 0.0
+        adjusted["wallet_trust_multiplier"] = trust_state.size_multiplier
+        adjusted["wallet_trust_effective_multiplier"] = 0.0
+        adjusted["wallet_trust_note"] = (
+            f"{trust_state.tier_note}, risk-adjusted size ${scaled_size:.2f} < min ${min_bet:.2f}"
+        )
+        adjusted["reason"] = adjusted["wallet_trust_note"]
+        return adjusted
     scaled_size = round(max(scaled_size, 0.0), 2)
     effective_multiplier = (scaled_size / base_size) if base_size > 0 else 0.0
 

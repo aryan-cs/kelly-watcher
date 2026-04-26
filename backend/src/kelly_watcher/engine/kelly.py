@@ -209,4 +209,4 @@ def _apply_minimum_bet(size: float, bankroll_usd: float) -> tuple[float, str | N
     if max_size < min_bet:
         return 0.0, f"max size ${max_size:.2f} < min ${min_bet:.2f}"
 
-    return round(min_bet, 2), None
+    return 0.0, f"computed size ${size:.2f} < min ${min_bet:.2f}"

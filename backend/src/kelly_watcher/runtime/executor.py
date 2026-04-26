@@ -166,22 +166,22 @@ class PolymarketExecutor:
         except (TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _build_orderbook_snapshot(raw_book: dict[str, Any] | None) -> dict[str, float] | None:
+    @classmethod
+    def _build_orderbook_snapshot(cls, raw_book: dict[str, Any] | None) -> dict[str, float] | None:
         if not isinstance(raw_book, dict):
             return None
-        bids = raw_book.get("bids", [])
-        asks = raw_book.get("asks", [])
-        best_bid = _to_float(bids[0].get("price")) if bids else 0.0
-        best_ask = _to_float(asks[0].get("price")) if asks else 0.0
+        bids = cls._book_levels(raw_book, "bids")
+        asks = cls._book_levels(raw_book, "asks")
+        best_bid = bids[0][0] if bids else 0.0
+        best_ask = asks[0][0] if asks else 0.0
         if best_bid <= 0 and best_ask <= 0:
             return None
         return {
             "best_bid": best_bid,
             "best_ask": best_ask,
             "mid": (best_bid + best_ask) / 2 if best_bid > 0 and best_ask > 0 else 0.0,
-            "bid_depth_usd": sum(_to_float(level.get("size")) * _to_float(level.get("price")) for level in bids[:5] if isinstance(level, dict)),
-            "ask_depth_usd": sum(_to_float(level.get("size")) * _to_float(level.get("price")) for level in asks[:5] if isinstance(level, dict)),
+            "bid_depth_usd": sum(size * price for price, size in bids[:5]),
+            "ask_depth_usd": sum(size * price for price, size in asks[:5]),
         }
 
     def get_fee_rate_bps(

@@ -415,16 +415,21 @@ def _get_duration_seconds(
         return float("inf")
 
     try:
-        seconds = max(float(value), 0.0)
+        seconds = float(value)
     except ValueError:
         unit = value[-1:] if value else ""
         number = value[:-1]
         if unit not in _DURATION_UNITS or not number:
             raise ConfigError(f"{name} must look like 1h, 24h, 7d, or unlimited, got {raw!r}")
         try:
-            seconds = max(float(number) * _DURATION_UNITS[unit], 0.0)
+            seconds = float(number) * _DURATION_UNITS[unit]
         except ValueError as exc:
             raise ConfigError(f"{name} must look like 1h, 24h, 7d, or unlimited, got {raw!r}") from exc
+        if not math.isfinite(seconds):
+            raise ConfigError(f"{name} must be finite, got {raw!r}")
+    else:
+        if not math.isfinite(seconds):
+            raise ConfigError(f"{name} must be finite, got {raw!r}")
 
     if minimum_seconds is not None and seconds < minimum_seconds:
         raise ConfigError(f"{name} must be >= {minimum_seconds} seconds, got {seconds}")
@@ -465,7 +470,7 @@ def warm_poll_interval_multiplier() -> int:
 
 
 def discovery_poll_interval_multiplier() -> int:
-    raw = _get_env_file_value("DISCOVERY_POLL_INTERVAL_MULTIPLIER") or _get("DISCOVERY_POLL_INTERVAL_MULTIPLIER", "20")
+    raw = _get_env_file_value("DISCOVERY_POLL_INTERVAL_MULTIPLIER") or _get("DISCOVERY_POLL_INTERVAL_MULTIPLIER", "12")
     try:
         value = int(raw)
     except ValueError as exc:

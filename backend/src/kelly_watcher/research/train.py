@@ -333,16 +333,17 @@ def train(
             "reason": "insufficient class diversity",
         }, provenance)
 
-    if final_fit["probability_calibrator"] is None:
-        holdout_report = raw_holdout_report
-        selected_prediction_path = "raw"
-        selected_probability_calibrator = None
-        selected_calibration_method = "identity"
-    else:
-        holdout_report = calibrated_holdout_report
-        selected_prediction_path = "calibrated"
-        selected_probability_calibrator = final_fit["probability_calibrator"]
-        selected_calibration_method = final_fit["calibration_method"]
+    (
+        holdout_report,
+        selected_prediction_path,
+        selected_probability_calibrator,
+        selected_calibration_method,
+    ) = _select_prediction_path(
+        calibrated_report=calibrated_holdout_report,
+        raw_report=raw_holdout_report,
+        probability_calibrator=final_fit["probability_calibrator"],
+        calibration_method=final_fit["calibration_method"],
+    )
 
     importances = _feature_ranking(final_fit["base_model"], feature_cols, final_train_df)
     top_features = sorted(importances.items(), key=lambda item: -item[1])

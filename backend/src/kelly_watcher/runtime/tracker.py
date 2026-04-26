@@ -555,7 +555,8 @@ class PolymarketTracker:
                         WHEN 'discovery' THEN 2
                         ELSE 3
                     END,
-                    source_ts DESC,
+                    CASE WHEN source_ts > 0 THEN 0 ELSE 1 END,
+                    source_ts ASC,
                     first_seen_at ASC
                 {limit_clause}
                 """,
@@ -885,7 +886,7 @@ class PolymarketTracker:
                 rows.append(raw)
                 added += 1
 
-            if reached_cursor or reached_freshness_cutoff or len(batch) < page_limit or added == 0:
+            if reached_cursor or reached_freshness_cutoff or len(batch) < page_limit:
                 break
 
         return rows

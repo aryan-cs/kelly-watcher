@@ -244,6 +244,95 @@ class TrainingSearchTest(unittest.TestCase):
         self.assertIs(calibrator, calibrator_obj)
         self.assertEqual(method, "sigmoid")
 
+    def test_train_reports_raw_path_when_final_calibration_is_worse(self) -> None:
+        rows = 30
+        df = pd.DataFrame(
+            {
+                "label_ts": np.arange(rows, dtype=float),
+                "effective_price": np.full(rows, 0.5, dtype=float),
+                "f_price": np.linspace(0.4, 0.6, rows),
+                train.LABEL_COL: np.linspace(-0.1, 0.1, rows),
+                train.OUTCOME_COL: np.array([0, 1] * (rows // 2), dtype=int),
+                train.RETURN_COL: np.linspace(-0.2, 0.2, rows),
+                train.SAMPLE_WEIGHT_COL: np.ones(rows, dtype=float),
+                "skipped": np.zeros(rows, dtype=bool),
+            }
+        )
+        calibrated_report = {
+            "n_eval": 10,
+            "log_loss": 0.91,
+            "log_loss_base": 0.80,
+            "brier_score": 0.31,
+            "brier_base": 0.25,
+            "beats_baseline": False,
+            "selected_trades": 21,
+            "total_pnl": 5.0,
+            "avg_pnl": 0.2,
+            "win_rate": 0.55,
+            "edge_threshold": 0.04,
+            "preds": np.full(10, 0.6, dtype=float),
+        }
+        raw_report = calibrated_report | {
+            "log_loss": 0.62,
+            "brier_score": 0.22,
+            "beats_baseline": True,
+            "preds": np.full(10, 0.55, dtype=float),
+        }
+        candidate = {
+            "name": "stub",
+            "backend": "stub_backend",
+            "search_edge_threshold": 0.04,
+            "search_log_loss": 0.60,
+            "search_log_loss_base": 0.70,
+            "search_brier_score": 0.20,
+            "search_brier_base": 0.24,
+            "search_beats_baseline": True,
+            "search_passed": True,
+            "search_selected_trades": 12,
+            "search_total_pnl": 3.0,
+            "search_avg_pnl": 0.25,
+            "search_win_rate": 0.58,
+        }
+
+        with mock.patch("kelly_watcher.research.train.min_samples_required", return_value=1), mock.patch(
+            "kelly_watcher.research.train._select_feature_cols", return_value=["f_price"]
+        ), mock.patch(
+            "kelly_watcher.research.train._build_training_plan",
+            return_value=train.TrainingPlan(
+                search_windows=(),
+                final_train_end=10,
+                final_cal_end=20,
+                holdout_end=30,
+            ),
+        ), mock.patch("kelly_watcher.research.train._candidate_specs", return_value=[{"name": "stub"}]), mock.patch(
+            "kelly_watcher.research.train._evaluate_candidate_spec", return_value=candidate
+        ), mock.patch(
+            "kelly_watcher.research.train._fit_calibrated_model",
+            return_value={
+                "base_model": object(),
+                "probability_calibrator": object(),
+                "backend": "stub_backend",
+                "requested_calibration_mode": "auto",
+                "calibration_method": "sigmoid",
+            },
+        ), mock.patch(
+            "kelly_watcher.research.train._evaluate_window",
+            side_effect=[calibrated_report, raw_report],
+        ), mock.patch("kelly_watcher.research.train._feature_ranking", return_value={"f_price": 1.0}), mock.patch(
+            "kelly_watcher.research.train._load_model_artifact", return_value=None
+        ), mock.patch(
+            "kelly_watcher.research.train._compare_against_incumbent",
+            return_value={"incumbent_present": False, "beats_incumbent": True},
+        ), mock.patch(
+            "kelly_watcher.research.train._should_deploy_candidate", return_value=(False, "rejected")
+        ):
+            metrics = train.train(df)
+
+        self.assertEqual(metrics["selected_prediction_path"], "raw")
+        self.assertEqual(metrics["calibration_method"], "identity")
+        self.assertEqual(metrics["log_loss"], round(raw_report["log_loss"], 4))
+        self.assertEqual(metrics["brier_score"], round(raw_report["brier_score"], 4))
+
     def test_score_predictions_handles_single_class_eval_windows(self) -> None:
         outcomes = np.array([1, 1, 1, 1, 1], dtype=int)
         preds = np.array([0.72, 0.75, 0.78, 0.81, 0.76], dtype=float)

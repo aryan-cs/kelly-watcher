@@ -36,6 +36,32 @@ class ProductionReadinessTest(unittest.TestCase):
         self.assertAlmostEqual(fill.shares, 9.99, places=6)
         self.assertAlmostEqual(fill.avg_price, expected_spent / 9.99, places=6)
 
+    def test_orderbook_snapshot_uses_sorted_executable_levels(self) -> None:
+        book = {
+            "bids": [
+                {"price": "0.20", "size": "100"},
+                {"price": "0.40", "size": "50"},
+                {"price": "0", "size": "999"},
+                {"price": "0.45", "size": "0"},
+            ],
+            "asks": [
+                {"price": "0.80", "size": "100"},
+                {"price": "0.50", "size": "60"},
+                {"price": "0.55", "size": "0"},
+                {"price": "-0.10", "size": "999"},
+            ],
+        }
+
+        snapshot = PolymarketExecutor._build_orderbook_snapshot(book)
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertAlmostEqual(snapshot["best_bid"], 0.40, places=6)
+        self.assertAlmostEqual(snapshot["best_ask"], 0.50, places=6)
+        self.assertAlmostEqual(snapshot["mid"], 0.45, places=6)
+        self.assertAlmostEqual(snapshot["bid_depth_usd"], (0.40 * 50) + (0.20 * 100), places=6)
+        self.assertAlmostEqual(snapshot["ask_depth_usd"], (0.50 * 60) + (0.80 * 100), places=6)
+
     def test_live_entry_ensures_allowance_before_posting_order(self) -> None:
         ops: list[str] = []
         executor = object.__new__(PolymarketExecutor)
@@ -475,6 +501,83 @@ class ProductionReadinessTest(unittest.TestCase):
 
                 self.assertEqual([row["trade_id"] for row in hot_rows], ["hot-older"])
                 self.assertEqual([row["trade_id"] for row in remaining_rows], ["warm-newer", "discovery-newest"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_source_queue_claims_oldest_valid_rows_within_tier_first(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, '{}', 'pending', 0, ?, ?, ?, '')
+                        """,
+                        [
+                            ("hot-newest", "market-newest", "token-newest", now_ts - 5, now_ts - 5, now_ts - 5, now_ts - 5),
+                            ("hot-oldest", "market-oldest", "token-oldest", now_ts - 25, now_ts - 25, now_ts - 25, now_ts - 25),
+                            ("hot-middle", "market-middle", "token-middle", now_ts - 15, now_ts - 15, now_ts - 15, now_ts - 15),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=300
+                    ):
+                        rows = tracker_obj._claim_source_queue_rows(limit=2, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in rows], ["hot-oldest", "hot-middle"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_wallet_trade_pagination_continues_past_cursor_duplicate_page(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                tracker_obj = tracker.PolymarketTracker(["0xabc"])
+                now_ts = 1_700_000_100
+                requested_offsets: list[int] = []
+
+                def fake_request_json(url, *, params=None, **kwargs):
+                    requested_offsets.append(int((params or {}).get("offset") or 0))
+                    offset = int((params or {}).get("offset") or 0)
+                    if offset == 0:
+                        return [
+                            {"id": "seen-1", "timestamp": now_ts},
+                            {"id": "seen-2", "timestamp": now_ts},
+                        ], True
+                    if offset == 2:
+                        return [{"id": "unseen-peer", "timestamp": now_ts}], True
+                    return [], True
+
+                tracker_obj._request_json = fake_request_json
+                try:
+                    rows = tracker_obj.get_wallet_trades(
+                        "0xabc",
+                        limit=2,
+                        cursor=tracker.WalletCursor(last_source_ts=now_ts, last_trade_ids={"seen-1", "seen-2"}),
+                    )
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["id"] for row in rows], ["unseen-peer"])
+                self.assertEqual(requested_offsets, [0, 2])
             finally:
                 db.DB_PATH = original_db_path
 

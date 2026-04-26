@@ -6302,7 +6302,7 @@ class RuntimeFixesTest(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "must be a finite non-negative number"):
                 config.replay_search_score_weights()
 
-    def test_replay_auto_promote_defaults_true_without_explicit_env(self) -> None:
+    def test_replay_auto_promote_defaults_false_without_explicit_env(self) -> None:
         def fake_get(name: str, default: str = "") -> str:
             return default
 
@@ -6310,7 +6310,7 @@ class RuntimeFixesTest(unittest.TestCase):
             patch.object(config, "_get_env_file_value", return_value=None),
             patch.object(config, "_get", side_effect=fake_get),
         ):
-            self.assertTrue(config.replay_auto_promote())
+            self.assertFalse(config.replay_auto_promote())
 
     def test_validate_startup_blocks_live_until_post_promotion_shadow_history_is_ready(self) -> None:
         valid_wallet = "0x1111111111111111111111111111111111111111"

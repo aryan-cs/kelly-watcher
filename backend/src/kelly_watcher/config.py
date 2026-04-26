@@ -1114,8 +1114,8 @@ def replay_search_window_count() -> int:
 
 def replay_auto_promote() -> bool:
     if _get_env_file_value("REPLAY_AUTO_PROMOTE_ENABLED") is not None or _get("REPLAY_AUTO_PROMOTE_ENABLED"):
-        return _get_env_file_bool("REPLAY_AUTO_PROMOTE_ENABLED", "true")
-    return _get_env_file_bool("REPLAY_AUTO_PROMOTE", "true")
+        return _get_env_file_bool("REPLAY_AUTO_PROMOTE_ENABLED", "false")
+    return _get_env_file_bool("REPLAY_AUTO_PROMOTE", "false")
 
 
 def replay_auto_promote_min_score_delta() -> float:

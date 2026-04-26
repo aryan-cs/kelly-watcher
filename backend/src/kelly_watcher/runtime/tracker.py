@@ -148,6 +148,7 @@ class PolymarketTracker:
         wallet_addresses: list[str],
         activity_callback: Callable[[], None] | None = None,
     ):
+        self._closed = False
         self.wallets = [address.lower() for address in wallet_addresses if address]
         connection_limit = max(wallet_trade_fetch_workers(), enrichment_fetch_workers(), 12)
         self.client = httpx.Client(
@@ -158,23 +159,36 @@ class PolymarketTracker:
                 max_keepalive_connections=max(connection_limit // 2, 6),
             ),
         )
-        self.activity_callback = activity_callback
-        self.seen_ids: set[str] = set()
-        self.wallet_cursors = self._load_wallet_cursors()
-        self.last_trade_poll_ok_at = 0
-        self.consecutive_trade_poll_failures = 0
-        self._market_metadata_cache: dict[str, tuple[float, tuple[dict[str, Any], int]]] = {}
-        self._orderbook_cache: dict[str, tuple[float, tuple[dict[str, float] | None, dict[str, Any] | None, int]]] = {}
-        self._price_history_cache: dict[tuple[str, str], tuple[float, list[dict[str, float]]]] = {}
-        self._dirty_wallet_cursors: set[str] = set()
-        self._data_api_rate_limiter = HostRateLimiter(
-            rate_per_second=data_api_request_rate_per_second(),
-            burst=data_api_request_burst(),
-            cooldown_seconds=data_api_429_cooldown_seconds(),
-        )
+        try:
+            self.activity_callback = activity_callback
+            self.seen_ids: set[str] = set()
+            self.wallet_cursors = self._load_wallet_cursors()
+            self.last_trade_poll_ok_at = 0
+            self.consecutive_trade_poll_failures = 0
+            self._market_metadata_cache: dict[str, tuple[float, tuple[dict[str, Any], int]]] = {}
+            self._orderbook_cache: dict[str, tuple[float, tuple[dict[str, float] | None, dict[str, Any] | None, int]]] = {}
+            self._price_history_cache: dict[tuple[str, str], tuple[float, list[dict[str, float]]]] = {}
+            self._dirty_wallet_cursors: set[str] = set()
+            self._data_api_rate_limiter = HostRateLimiter(
+                rate_per_second=data_api_request_rate_per_second(),
+                burst=data_api_request_burst(),
+                cooldown_seconds=data_api_429_cooldown_seconds(),
+            )
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
-        self.client.close()
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(getattr(self, "client", None), "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception:
+            logger.debug("Tracker HTTP client close skipped", exc_info=True)
 
     @staticmethod
     def _new_http_client() -> httpx.Client:

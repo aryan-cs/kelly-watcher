@@ -318,6 +318,33 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(telegram_runtime._command_poll_failure_count, 0)
         self.assertEqual(telegram_runtime._last_command_poll_warning_at, 0.0)
 
+    def test_tracker_close_suppresses_client_close_errors(self) -> None:
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        client = Mock()
+        client.close.side_effect = RuntimeError("close failed")
+        tracker_obj.client = client
+        tracker_obj._closed = False
+
+        tracker_obj.close()
+        tracker_obj.close()
+
+        client.close.assert_called_once()
+        self.assertTrue(tracker_obj._closed)
+
+    def test_tracker_init_closes_http_client_when_cursor_load_fails(self) -> None:
+        client = Mock()
+        client.close.side_effect = RuntimeError("close failed")
+
+        with patch("kelly_watcher.runtime.tracker.httpx.Client", return_value=client), patch.object(
+            tracker.PolymarketTracker,
+            "_load_wallet_cursors",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+                tracker.PolymarketTracker(["0xabc"])
+
+        client.close.assert_called_once()
+
     def test_build_trade_entry_alert_formats_market_line(self) -> None:
         message = alerter.build_trade_entry_alert(
             mode="shadow",

@@ -2227,6 +2227,61 @@ def _is_non_actionable_exit_reason(reason: str) -> bool:
     return (reason or "").strip().lower() == "watched trader exited, but we had no matching position open to close"
 
 
+def _prepare_runtime_signal(signal: dict, event, trust_state=None) -> dict:
+    prepared = dict(signal)
+    prepared["watch_tier"] = event.watch_tier or str(prepared.get("watch_tier") or "")
+    segment_meta = prepared.get("segment")
+    if isinstance(segment_meta, dict):
+        prepared["segment_id"] = str(segment_meta.get("segment_id") or prepared.get("segment_id") or "")
+        prepared["segment_watch_tier"] = str(segment_meta.get("watch_tier") or prepared["watch_tier"] or "")
+        prepared["segment_horizon_bucket"] = str(segment_meta.get("horizon_bucket") or "")
+        prepared["policy_id"] = str(segment_meta.get("policy_id") or prepared.get("policy_id") or "")
+        prepared["policy_bundle_version"] = segment_meta.get("policy_bundle_version") or prepared.get(
+            "policy_bundle_version"
+        )
+        prepared["segment_policy_id"] = prepared["policy_id"]
+        prepared["segment_policy_bundle_version"] = prepared["policy_bundle_version"]
+    if trust_state is not None:
+        prepared["wallet_trust"] = trust_state.as_dict()
+    return prepared
+
+
+def _evaluate_signal_for_entry_quote(
+    *,
+    engine,
+    event,
+    trader_f,
+    order_size_usd: float,
+    sizing_effective_price: float,
+    trust_state=None,
+) -> tuple[dict | None, object | None, str | None]:
+    market_f = build_market_features(
+        event.snapshot,
+        event.close_time,
+        order_size_usd,
+        sizing_effective_price,
+    )
+    if market_f is None:
+        return None, None, "failed to build market features for execution quote"
+
+    signal = _prepare_runtime_signal(
+        engine.evaluate(
+            trader_f,
+            market_f,
+            order_size_usd,
+            trader_address=event.trader_address,
+            watch_tier=event.watch_tier,
+        ),
+        event,
+        trust_state=trust_state,
+    )
+    if signal.get("veto"):
+        return signal, market_f, _humanize_market_veto(signal["veto"])
+    if not signal.get("passed", False):
+        return signal, market_f, _humanize_reason(signal.get("reason") or "signal rejected after execution quote")
+    return signal, market_f, None
+
+
 def process_event(
     event,
     engine,
@@ -2468,19 +2523,7 @@ def process_event(
         trader_address=event.trader_address,
         watch_tier=event.watch_tier,
     )
-    signal = dict(signal)
-    signal["watch_tier"] = event.watch_tier or str(signal.get("watch_tier") or "")
-    segment_meta = signal.get("segment")
-    if isinstance(segment_meta, dict):
-        signal["segment_id"] = str(segment_meta.get("segment_id") or signal.get("segment_id") or "")
-        signal["segment_watch_tier"] = str(segment_meta.get("watch_tier") or signal["watch_tier"] or "")
-        signal["segment_horizon_bucket"] = str(segment_meta.get("horizon_bucket") or "")
-        signal["policy_id"] = str(segment_meta.get("policy_id") or signal.get("policy_id") or "")
-        signal["policy_bundle_version"] = segment_meta.get("policy_bundle_version") or signal.get(
-            "policy_bundle_version"
-        )
-        signal["segment_policy_id"] = signal["policy_id"]
-        signal["segment_policy_bundle_version"] = signal["policy_bundle_version"]
+    signal = _prepare_runtime_signal(signal, event)
     if signal.get("veto"):
         reason = _humanize_market_veto(signal["veto"])
         executor.log_skip(
@@ -2565,8 +2608,7 @@ def process_event(
         return 0.0
 
     trust_state = get_wallet_trust_state(event.trader_address)
-    signal = dict(signal)
-    signal["wallet_trust"] = trust_state.as_dict()
+    signal = _prepare_runtime_signal(signal, event, trust_state=trust_state)
     wallet_quality_score = signal.get("trader", {}).get("score")
     if trust_state.skip_reason:
         executor.log_skip(
@@ -2623,6 +2665,26 @@ def process_event(
             market_meta=getattr(event, "raw_market_metadata", None),
         )
         if fill_economics is None:
+            break
+        quoted_signal, quoted_market_f, quote_reject_reason = _evaluate_signal_for_entry_quote(
+            engine=engine,
+            event=event,
+            trader_f=trader_f,
+            order_size_usd=sizing["dollar_size"],
+            sizing_effective_price=fill_economics.sizing_effective_price,
+            trust_state=trust_state,
+        )
+        if quoted_signal is not None:
+            signal = quoted_signal
+        if quoted_market_f is not None:
+            market_f = quoted_market_f
+        if quote_reject_reason:
+            sizing = {
+                **sizing,
+                "dollar_size": 0.0,
+                "kelly_f": 0.0,
+                "reason": quote_reject_reason,
+            }
             break
         next_sizing = size_signal(
             signal["confidence"],
@@ -2810,12 +2872,90 @@ def process_event(
         _skip_event(event, sizing["dollar_size"], exposure_block_reason)
         return 0.0
 
-    market_f_final = build_market_features(
-        event.snapshot,
-        event.close_time,
-        sizing["dollar_size"],
-        fill_economics.sizing_effective_price,
+    final_signal, market_f_final, final_quote_reason = _evaluate_signal_for_entry_quote(
+        engine=engine,
+        event=event,
+        trader_f=trader_f,
+        order_size_usd=sizing["dollar_size"],
+        sizing_effective_price=fill_economics.sizing_effective_price,
+        trust_state=trust_state,
     )
+    if final_signal is not None:
+        signal = final_signal
+    if final_quote_reason:
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal.get("confidence", 0.0),
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=final_quote_reason,
+            trader_f=trader_f,
+            market_f=market_f_final or market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, signal.get("confidence", 0.0), sizing["dollar_size"], final_quote_reason)
+        return 0.0
+
+    final_sizing = size_signal(
+        signal["confidence"],
+        fill_estimate.avg_price if fill_estimate.avg_price > 0 else event.price,
+        bankroll,
+        signal.get("mode", "heuristic"),
+        effective_market_price=fill_economics.sizing_effective_price,
+        min_confidence_override=signal.get("min_confidence"),
+    )
+    final_sizing = apply_wallet_trust_sizing(
+        final_sizing,
+        trust_state,
+        quality_score=signal.get("trader", {}).get("score"),
+        max_size_usd=max_wallet_size_usd,
+    )
+    final_sizing, clip_note = _apply_total_exposure_cap_to_sizing(
+        executor,
+        final_sizing,
+        bankroll=bankroll,
+        account_equity=account_equity,
+        trader_address=event.trader_address,
+    )
+    if clip_note:
+        logger.info("Trade %s: %s", event.trade_id, clip_note)
+    if final_sizing["dollar_size"] + 0.01 < sizing["dollar_size"]:
+        reason = (
+            final_sizing.get("reason")
+            if final_sizing["dollar_size"] <= 0
+            else (
+                f"final signal size ${final_sizing['dollar_size']:.2f} "
+                f"< quoted size ${sizing['dollar_size']:.2f} after execution costs"
+            )
+        )
+        reason = _humanize_reason(str(reason or "final signal sizing rejected the execution quote"))
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=sizing["dollar_size"],
+            confidence=signal["confidence"],
+            kelly_f=sizing.get("kelly_f", 0.0),
+            reason=reason,
+            trader_f=trader_f,
+            market_f=market_f_final or market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, signal["confidence"], sizing["dollar_size"], reason)
+        return 0.0
+
     result = executor.execute(
         trade_id=event.trade_id,
         market_id=event.market_id,

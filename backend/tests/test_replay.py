@@ -393,6 +393,60 @@ class ReplayTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_run_replay_ignores_nonfinite_continuity_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload({"initial_bankroll_usd": 1000.0}),
+                    db_path=test_db_path,
+                    start_ts=1_700_000_000,
+                    end_ts=1_700_000_100,
+                    initial_state={
+                        "realized_pnl_usd": "inf",
+                        "live_guard_start_equity": "nan",
+                        "daily_guard_start_equity": "-inf",
+                        "open_positions": [
+                            {
+                                "close_ts": "inf",
+                                "market_id": "market-bad-size",
+                                "trader_address": "0xbad",
+                                "size_usd": "inf",
+                                "pnl_usd": "inf",
+                            },
+                            {
+                                "close_ts": 1_700_000_050,
+                                "market_id": "market-bad-pnl",
+                                "trader_address": "0xbad",
+                                "size_usd": 10.0,
+                                "pnl_usd": "nan",
+                            },
+                        ],
+                    },
+                )
+
+                for key in (
+                    "initial_bankroll_usd",
+                    "final_equity_usd",
+                    "final_bankroll_usd",
+                    "total_pnl_usd",
+                    "peak_equity_usd",
+                    "min_equity_usd",
+                ):
+                    self.assertTrue(math.isfinite(float(result[key])), key)
+                self.assertEqual(result["initial_bankroll_usd"], 1000.0)
+                self.assertEqual(result["final_equity_usd"], 1000.0)
+                self.assertEqual(result["final_bankroll_usd"], 1000.0)
+                self.assertEqual(result["total_pnl_usd"], 0.0)
+                self.assertEqual(result["accepted_count"], 0)
+                self.assertEqual(result["continuity_state"]["open_positions"], [])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_run_replay_rejects_skipped_counterfactual_rows_without_fill_proof(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

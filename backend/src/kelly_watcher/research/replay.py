@@ -351,13 +351,17 @@ def _simulate(
     for raw_position in continuity_seed.get("open_positions") or []:
         if not isinstance(raw_position, dict):
             continue
+        size_usd = _coalesce_float(raw_position.get("size_usd"))
+        pnl_usd = _coalesce_float(raw_position.get("pnl_usd"))
+        if size_usd is None or size_usd <= 0 or pnl_usd is None:
+            continue
         open_positions.append(
             {
-                "close_ts": int(raw_position.get("close_ts") or 10**12 + 1),
+                "close_ts": _coalesce_nonnegative_int(raw_position.get("close_ts"), default=10**12 + 1),
                 "market_id": str(raw_position.get("market_id") or ""),
                 "trader_address": str(raw_position.get("trader_address") or "").lower(),
-                "size_usd": float(raw_position.get("size_usd") or 0.0),
-                "pnl_usd": float(raw_position.get("pnl_usd") or 0.0),
+                "size_usd": size_usd,
+                "pnl_usd": pnl_usd,
                 "signal_mode": _canonical_signal_mode(raw_position.get("signal_mode") or "heuristic"),
                 "entry_price": _coalesce_float(raw_position.get("entry_price")),
                 "source_status": str(raw_position.get("source_status") or ""),
@@ -365,7 +369,7 @@ def _simulate(
                 "carry_resolution": True,
             }
         )
-    realized_pnl = float(continuity_seed.get("realized_pnl_usd") or 0.0)
+    realized_pnl = _coalesce_float(continuity_seed.get("realized_pnl_usd"), 0.0) or 0.0
     peak_equity = 0.0
     min_equity = 0.0
     max_drawdown_pct = 0.0
@@ -383,12 +387,12 @@ def _simulate(
     carry_resolved_win_count = 0
     live_guard_triggered = bool(continuity_seed.get("live_guard_triggered"))
     live_guard_start_equity = max(
-        float(continuity_seed.get("live_guard_start_equity") or policy.initial_bankroll_usd),
+        _coalesce_float(continuity_seed.get("live_guard_start_equity"), policy.initial_bankroll_usd) or 0.0,
         0.0,
     )
     live_guard_stop_equity = max(live_guard_start_equity * (1.0 - policy.max_live_drawdown_pct), 0.0)
     daily_guard_start_equity = max(
-        float(continuity_seed.get("daily_guard_start_equity") or policy.initial_bankroll_usd),
+        _coalesce_float(continuity_seed.get("daily_guard_start_equity"), policy.initial_bankroll_usd) or 0.0,
         0.0,
     )
     daily_guard_day_key = str(continuity_seed.get("daily_guard_day_key") or "")
@@ -1846,6 +1850,13 @@ def _coalesce_float(*values: Any) -> float | None:
         if math.isfinite(numeric):
             return numeric
     return None
+
+
+def _coalesce_nonnegative_int(value: Any, *, default: int) -> int:
+    numeric = _coalesce_float(value)
+    if numeric is None or numeric < 0:
+        return default
+    return int(numeric)
 
 
 def _nonfinite_signal_fields(signal: dict[str, Any]) -> list[str]:

@@ -6722,7 +6722,8 @@ def main() -> None:
             executor = PolymarketExecutor()
             _set_startup_detail("checking wallet balance")
             executor.validate_live_wallet_ready(min_required_balance_usd=min_bet_usd())
-            _persist_bot_state(bankroll_usd=round(executor.get_usdc_balance(), 2))
+            last_known_bankroll = round(executor.get_usdc_balance(), 2)
+            _persist_bot_state(bankroll_usd=last_known_bankroll)
             _set_startup_detail("starting telegram replies")
             telegram_command_stop = threading.Event()
             telegram_command_thread = threading.Thread(
@@ -6989,7 +6990,7 @@ def main() -> None:
                 _heartbeat(force=True)
                 event_count = 0
                 polled_wallet_count = 0
-                bankroll = 0.0
+                bankroll = float(last_known_bankroll)
                 account_equity = 0.0
                 entry_block_reason = None
                 source_events_fetched = 0
@@ -7014,11 +7015,12 @@ def main() -> None:
                     entry_context_ready = False
 
                     def _ensure_entry_context() -> None:
-                        nonlocal account_equity, bankroll, entry_block_reason, entry_context_ready
+                        nonlocal account_equity, bankroll, entry_block_reason, entry_context_ready, last_known_bankroll
                         if entry_context_ready:
                             return
                         _persist_bot_state(poll_stage="checking_balance")
                         bankroll = executor.get_usdc_balance()
+                        last_known_bankroll = round(bankroll, 2)
                         account_equity = executor.get_account_equity_usd()
                         low_balance_entry_block_reason = None
                         if bankroll < 1.0:
@@ -7069,7 +7071,7 @@ def main() -> None:
                         entry_context_ready = True
 
                     def _process_queued_events(events_to_process: list[Any]) -> None:
-                        nonlocal bankroll, account_equity, event_count
+                        nonlocal bankroll, account_equity, event_count, last_known_bankroll
                         if not events_to_process:
                             return
                         for event in events_to_process:
@@ -7096,6 +7098,7 @@ def main() -> None:
                                     entry_block_reason=entry_block_reason,
                                 )
                                 bankroll = max(bankroll + bankroll_delta, 0.0)
+                                last_known_bankroll = round(bankroll, 2)
                                 tracker.mark_source_event_processed(event.trade_id)
                                 if use_real_money() and abs(float(bankroll_delta or 0.0)) > 1e-9:
                                     account_equity = executor.get_account_equity_usd()

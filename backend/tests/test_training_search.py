@@ -33,6 +33,7 @@ class TrainingSearchTest(unittest.TestCase):
                 "f_price": np.array([0.4, 0.42, 0.38, 0.41, 0.39, 0.43], dtype=float),
                 "effective_price": np.array([0.4, 0.42, 0.38, 0.41, 0.39, 0.43], dtype=float),
                 train.OUTCOME_COL: np.array([1, 0, 1, 0, 1, 0], dtype=int),
+                train.RETURN_COL: np.array([1.5, -1.0, 1.631579, -1.0, 1.564103, -1.0], dtype=float),
             }
         )
         holdout_df = pd.DataFrame(
@@ -40,6 +41,7 @@ class TrainingSearchTest(unittest.TestCase):
                 "f_price": prices,
                 "effective_price": prices,
                 train.OUTCOME_COL: outcomes,
+                train.RETURN_COL: np.where(outcomes == 1, 1.5, -1.0),
             }
         )
         return final_train_df, holdout_df
@@ -78,6 +80,7 @@ class TrainingSearchTest(unittest.TestCase):
                 "preds": profitable_preds,
                 "prices": profitable_prices,
                 "outcomes": profitable_outcomes,
+                "returns": np.where(profitable_outcomes == 1, 1.5, -1.0),
             },
             {
                 "n_eval": 12,
@@ -88,6 +91,7 @@ class TrainingSearchTest(unittest.TestCase):
                 "preds": profitable_preds,
                 "prices": profitable_prices,
                 "outcomes": profitable_outcomes,
+                "returns": np.where(profitable_outcomes == 1, 1.5, -1.0),
             },
         ]
 
@@ -342,6 +346,7 @@ class TrainingSearchTest(unittest.TestCase):
             preds=preds,
             outcomes=outcomes,
             prices=prices,
+            returns=np.array([(1 - price) / price for price in prices], dtype=float),
             baseline_rate=1.0,
         )
 
@@ -358,12 +363,14 @@ class TrainingSearchTest(unittest.TestCase):
             preds=preds,
             outcomes=outcomes,
             prices=prices,
+            returns=np.where(outcomes == 1, 1.0, -1.0),
             baseline_rate=0.5,
         )
         fixed = train._score_predictions(
             preds=preds,
             outcomes=outcomes,
             prices=prices,
+            returns=np.where(outcomes == 1, 1.0, -1.0),
             baseline_rate=0.5,
             fixed_edge_threshold=0.0,
         )
@@ -372,6 +379,25 @@ class TrainingSearchTest(unittest.TestCase):
         self.assertEqual(fixed["edge_threshold"], 0.0)
         self.assertEqual(fixed["selected_trades"], 20)
         self.assertLess(fixed["total_pnl"], optimized["total_pnl"])
+
+    def test_score_predictions_uses_realized_returns_for_decision_pnl(self) -> None:
+        outcomes = np.array([1, 1, 1, 1, 1], dtype=int)
+        prices = np.array([0.50, 0.50, 0.50, 0.50, 0.50], dtype=float)
+        preds = np.array([0.80, 0.81, 0.82, 0.83, 0.84], dtype=float)
+        realized_returns = np.array([-0.10, -0.20, -0.30, -0.40, -0.50], dtype=float)
+
+        report = train._score_predictions(
+            preds=preds,
+            outcomes=outcomes,
+            prices=prices,
+            returns=realized_returns,
+            baseline_rate=1.0,
+            fixed_edge_threshold=0.0,
+        )
+
+        self.assertEqual(report["selected_trades"], 5)
+        self.assertAlmostEqual(report["total_pnl"], -1.5, places=6)
+        self.assertAlmostEqual(report["avg_pnl"], -0.3, places=6)
 
     def test_fit_calibrated_model_falls_back_to_identity_when_calibration_window_is_single_class(self) -> None:
         class StubRegressor:

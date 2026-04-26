@@ -5341,20 +5341,26 @@ class RuntimeFixesTest(unittest.TestCase):
 
     def test_live_order_response_fill_overrides_book_estimate_for_entries(self) -> None:
         executor = object.__new__(PolymarketExecutor)
-        executor._clob = SimpleNamespace(
-            create_market_order=lambda order: order,
-            post_order=lambda signed, order_type: {
+        call_order: list[str] = []
+
+        def _post_order(signed, order_type):
+            call_order.append("post_order")
+            return {
                 "success": True,
                 "status": "matched",
                 "orderID": "order-1",
                 "makingAmount": "10.0",
                 "takingAmount": "20.0",
-            },
+            }
+
+        executor._clob = SimpleNamespace(
+            create_market_order=lambda order: order,
+            post_order=_post_order,
         )
         executor.refresh_event_market_data = lambda event: (True, None)
         executor.get_fee_rate_bps = lambda token_id, market_meta=None: (0, None)
         executor._ensure_live_token_allowance = lambda token_id: None
-        executor.get_usdc_balance = lambda: 100.0
+        executor.get_usdc_balance = lambda: call_order.append("balance_before") or 100.0
         executor._measure_live_balance_change = lambda before, expect_increase=False: (before, 0.0)
         executor._sync_live_positions = lambda *args, **kwargs: None
         executor.estimate_entry_fill = lambda raw_book, amount: (SimpleNamespace(spent_usd=7.0, shares=7.0, avg_price=1.0), None)
@@ -5418,6 +5424,7 @@ class RuntimeFixesTest(unittest.TestCase):
             )
 
         self.assertTrue(result.placed)
+        self.assertLess(call_order.index("balance_before"), call_order.index("post_order"))
         self.assertAlmostEqual(result.dollar_size, 10.0, places=6)
         self.assertAlmostEqual(result.shares, 20.0, places=6)
         self.assertAlmostEqual(float(captured["actual_entry_price"]), 0.5, places=6)

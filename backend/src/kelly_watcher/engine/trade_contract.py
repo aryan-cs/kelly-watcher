@@ -6,7 +6,10 @@ DATA_CONTRACT_VERSION = 7
 MODEL_LABEL_MODE = "expected_return_executed_fee_aware_v1"
 DEFAULT_EXPERIMENT_ARM = "champion"
 CHALLENGER_EXPERIMENT_ARM = "challenger"
-RESOLVED_PNL_SQL = "COALESCE(actual_pnl_usd, shadow_pnl_usd)"
+RESOLVED_PNL_SQL = (
+    "CASE WHEN COALESCE(real_money, 0)=1 "
+    "THEN actual_pnl_usd ELSE shadow_pnl_usd END"
+)
 REALIZED_CLOSE_TS_SQL = "COALESCE(exited_at, resolved_at, placed_at)"
 PROFITABLE_TRADE_SQL = f"CASE WHEN {RESOLVED_PNL_SQL} > 0 THEN 1 ELSE 0 END"
 
@@ -134,7 +137,10 @@ def remaining_source_shares_expr(alias: str = "") -> str:
 
 def resolved_pnl_expr(alias: str = "") -> str:
     prefix = f"{alias}." if alias else ""
-    return f"COALESCE({prefix}actual_pnl_usd, {prefix}shadow_pnl_usd)"
+    return (
+        f"CASE WHEN COALESCE({prefix}real_money, 0)=1 "
+        f"THEN {prefix}actual_pnl_usd ELSE {prefix}shadow_pnl_usd END"
+    )
 
 
 def profitable_trade_expr(alias: str = "") -> str:

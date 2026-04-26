@@ -1035,10 +1035,10 @@ def _deployment_reject_reason(
 
 
 def _shared_eval_df(eval_df, feature_cols: list[str]):
-    missing = [column for column in feature_cols if column not in eval_df.columns]
+    required_cols = list(dict.fromkeys([*feature_cols, OUTCOME_COL, RETURN_COL, "effective_price"]))
+    missing = [column for column in required_cols if column not in eval_df.columns]
     if missing:
         return None
-    required_cols = list(dict.fromkeys([*feature_cols, OUTCOME_COL, "effective_price"]))
     shared = eval_df.dropna(subset=required_cols).copy()
     if shared.empty:
         return None
@@ -1058,6 +1058,7 @@ def _evaluate_prediction_report(
     y_eval = eval_df[OUTCOME_COL].astype(int).values
 
     prices = eval_df["effective_price"].astype(float).values
+    returns = eval_df[RETURN_COL].astype(float).values
     X_eval = eval_df[feature_cols].values
     preds = _predict_model_confidence(
         model=model,
@@ -1070,12 +1071,14 @@ def _evaluate_prediction_report(
         preds=preds,
         outcomes=y_eval,
         prices=prices,
+        returns=returns,
         baseline_rate=baseline_rate,
         fixed_edge_threshold=fixed_edge_threshold,
     )
     metrics["preds"] = preds
     metrics["prices"] = prices
     metrics["outcomes"] = y_eval
+    metrics["returns"] = returns
     return metrics
 
 
@@ -1114,10 +1117,12 @@ def _aggregate_search_reports(fold_reports: list[dict[str, Any]]) -> dict[str, A
     combined_preds = np.concatenate([report["preds"] for report in fold_reports])
     combined_prices = np.concatenate([report["prices"] for report in fold_reports])
     combined_outcomes = np.concatenate([report["outcomes"] for report in fold_reports])
+    combined_returns = np.concatenate([report["returns"] for report in fold_reports])
     strategy = _select_decision_policy(
         preds=combined_preds,
         prices=combined_prices,
         outcomes=combined_outcomes,
+        returns=combined_returns,
     )
     min_selected = _min_required_search_trades(total_eval)
     beats_baseline = weighted_ll < weighted_ll_base and weighted_brier < weighted_brier_base
@@ -1146,6 +1151,7 @@ def _score_predictions(
     preds,
     outcomes,
     prices,
+    returns,
     baseline_rate: float,
     fixed_edge_threshold: float | None = None,
 ) -> dict[str, Any]:
@@ -1166,12 +1172,13 @@ def _score_predictions(
     ll = log_loss(outcomes, preds, labels=[0, 1])
     brier = brier_score_loss(outcomes, preds)
     if fixed_edge_threshold is None:
-        strategy = _select_decision_policy(preds=preds, prices=prices, outcomes=outcomes)
+        strategy = _select_decision_policy(preds=preds, prices=prices, outcomes=outcomes, returns=returns)
     else:
         strategy = _decision_metrics_for_threshold(
             preds=preds,
             prices=prices,
             outcomes=outcomes,
+            returns=returns,
             edge_threshold=fixed_edge_threshold,
         )
     return {
@@ -1355,6 +1362,7 @@ def _cohort_summaries(df, *, preds=None, baseline_rate: float | None = None) -> 
                 preds=pred_values[mask],
                 outcomes=outcomes[mask].astype(int),
                 prices=prices[mask],
+                returns=returns[mask],
                 baseline_rate=float(baseline_rate),
             )
             summary.update(
@@ -1389,10 +1397,11 @@ def _min_required_search_trades(n_eval: int) -> int:
     return min(MIN_VALIDATION_TRADES, max(5, n_eval // 10))
 
 
-def _select_decision_policy(preds, prices, outcomes) -> dict[str, Any]:
+def _select_decision_policy(preds, prices, outcomes, returns) -> dict[str, Any]:
     import numpy as np
 
     prices = np.clip(prices.astype(float), 0.01, 0.99)
+    returns = np.asarray(returns, dtype=float)
     edges = preds - prices
 
     candidates = {0.0}
@@ -1420,6 +1429,7 @@ def _select_decision_policy(preds, prices, outcomes) -> dict[str, Any]:
             preds=preds,
             prices=prices,
             outcomes=outcomes,
+            returns=returns,
             edge_threshold=threshold,
         )
         total_pnl = float(metrics["total_pnl"])
@@ -1441,6 +1451,7 @@ def _select_decision_policy(preds, prices, outcomes) -> dict[str, Any]:
             preds=preds,
             prices=prices,
             outcomes=outcomes,
+            returns=returns,
             edge_threshold=0.0,
         )
         selected = int(fallback["selected_trades"])
@@ -1458,7 +1469,7 @@ def _select_decision_policy(preds, prices, outcomes) -> dict[str, Any]:
     return best
 
 
-def _decision_metrics_for_threshold(*, preds, prices, outcomes, edge_threshold: float) -> dict[str, Any]:
+def _decision_metrics_for_threshold(*, preds, prices, outcomes, returns, edge_threshold: float) -> dict[str, Any]:
     import numpy as np
 
     threshold = float(edge_threshold)
@@ -1467,7 +1478,12 @@ def _decision_metrics_for_threshold(*, preds, prices, outcomes, edge_threshold: 
     prices = np.clip(np.asarray(prices, dtype=float), 0.01, 0.99)
     preds = np.asarray(preds, dtype=float)
     outcomes = np.asarray(outcomes, dtype=int)
-    pnl_per_dollar = np.where(outcomes == 1, (1 - prices) / prices, -1.0)
+    returns = np.asarray(returns, dtype=float)
+    if len(returns) != len(outcomes):
+        raise ValueError("returns must align with outcomes before scoring")
+    if not np.all(np.isfinite(returns)):
+        raise ValueError("realized returns must be finite before scoring")
+    pnl_per_dollar = returns
     mask = (preds - prices) >= threshold
     selected = int(mask.sum())
     if selected <= 0:

@@ -686,7 +686,6 @@ class PolymarketTracker:
                 event.watch_tier = candidate.watch_tier or event.watch_tier or ""
                 events.append(event)
 
-        events.sort(key=lambda event: event.timestamp)
         return events
 
     def mark_source_event_processed(self, trade_id: str) -> None:

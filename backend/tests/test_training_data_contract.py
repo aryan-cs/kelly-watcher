@@ -260,6 +260,114 @@ class TrainingDataContractTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_load_training_data_does_not_use_shadow_pnl_for_live_rows(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at,
+                        actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        entry_gross_price, entry_gross_shares, entry_gross_size_usd,
+                        actual_pnl_usd, shadow_pnl_usd, resolved_at, label_applied_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        (
+                            "live-shadow-only",
+                            "market-live-shadow",
+                            "Live row with only shadow pnl",
+                            "0xaaa",
+                            "yes",
+                            "buy",
+                            0.40,
+                            10.0,
+                            0.71,
+                            0.10,
+                            1,
+                            0,
+                            1_700_000_000,
+                            0.40,
+                            25.0,
+                            10.0,
+                            0.40,
+                            25.0,
+                            10.0,
+                            None,
+                            5.0,
+                            1_700_000_100,
+                            1_700_000_100,
+                        ),
+                        (
+                            "live-actual",
+                            "market-live-actual",
+                            "Live row with actual pnl",
+                            "0xbbb",
+                            "yes",
+                            "buy",
+                            0.40,
+                            10.0,
+                            0.71,
+                            0.10,
+                            1,
+                            0,
+                            1_700_000_010,
+                            0.40,
+                            25.0,
+                            10.0,
+                            0.40,
+                            25.0,
+                            10.0,
+                            4.0,
+                            -9.0,
+                            1_700_000_110,
+                            1_700_000_110,
+                        ),
+                        (
+                            "shadow-row",
+                            "market-shadow",
+                            "Shadow row with shadow pnl",
+                            "0xccc",
+                            "yes",
+                            "buy",
+                            0.40,
+                            10.0,
+                            0.71,
+                            0.10,
+                            0,
+                            0,
+                            1_700_000_020,
+                            0.40,
+                            25.0,
+                            10.0,
+                            0.40,
+                            25.0,
+                            10.0,
+                            None,
+                            3.0,
+                            1_700_000_120,
+                            1_700_000_120,
+                        ),
+                    ],
+                )
+                conn.commit()
+                conn.close()
+
+                df = train.load_training_data()
+
+                self.assertEqual(list(df["trade_id"]), ["live-actual", "shadow-row"])
+                returns = dict(zip(df["trade_id"], df[train.RETURN_COL]))
+                self.assertAlmostEqual(float(returns["live-actual"]), 0.4, places=6)
+                self.assertAlmostEqual(float(returns["shadow-row"]), 0.3, places=6)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_load_training_data_excludes_counterfactual_skips_from_model_samples(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

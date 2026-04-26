@@ -845,6 +845,96 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_load_queued_events_preserves_claim_priority_order(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+
+                def raw_trade(trade_id: str, market_id: str, token_id: str, source_ts: int) -> dict[str, object]:
+                    return {
+                        "id": trade_id,
+                        "conditionId": market_id,
+                        "side": "BUY",
+                        "asset": token_id,
+                        "size": 10,
+                        "price": 0.42,
+                        "timestamp": source_ts,
+                        "outcome": "Yes",
+                    }
+
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, ?, 'pending', 0, ?, ?, ?, '')
+                        """,
+                        [
+                            (
+                                "newer",
+                                "market-newer",
+                                "token-newer",
+                                now_ts - 5,
+                                json.dumps(raw_trade("newer", "market-newer", "token-newer", now_ts - 5)),
+                                now_ts - 5,
+                                now_ts - 5,
+                                now_ts - 5,
+                            ),
+                            (
+                                "older",
+                                "market-older",
+                                "token-older",
+                                now_ts - 25,
+                                json.dumps(raw_trade("older", "market-older", "token-older", now_ts - 25)),
+                                now_ts - 25,
+                                now_ts - 25,
+                                now_ts - 25,
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                tracker_obj._fetch_market_metadata_batch = Mock(
+                    return_value={
+                        "market-newer": ({"question": "Newer market", "endDate": str(now_ts + 7200)}, now_ts),
+                        "market-older": ({"question": "Older market", "endDate": str(now_ts + 7200)}, now_ts),
+                    }
+                )
+                tracker_obj._fetch_orderbook_snapshots_batch = Mock(
+                    return_value={
+                        "token-newer": (
+                            {"best_bid": 0.41, "best_ask": 0.43, "mid": 0.42},
+                            {"bids": [], "asks": []},
+                            now_ts,
+                        ),
+                        "token-older": (
+                            {"best_bid": 0.41, "best_ask": 0.43, "mid": 0.42},
+                            {"bids": [], "asks": []},
+                            now_ts,
+                        ),
+                    }
+                )
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=180
+                    ):
+                        events = tracker_obj.load_queued_events(limit=2, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([event.trade_id for event in events], ["newer", "older"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_single_orderbook_enrichment_failure_isolated(self) -> None:
         tracker_obj = tracker.PolymarketTracker(["0xhot"])
         tracker_obj.get_orderbook_snapshot = Mock(side_effect=RuntimeError("bad orderbook"))

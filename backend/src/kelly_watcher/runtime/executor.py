@@ -1356,6 +1356,7 @@ class PolymarketExecutor:
                 side=BUY,
             )
             signed = self._clob.create_market_order(order)
+            balance_before = self.get_usdc_balance()
             response = self._clob.post_order(signed, OrderType.FOK)
             order_id = self._extract_order_id(response)
             if self._is_unfilled_fok_response(response):
@@ -1372,7 +1373,6 @@ class PolymarketExecutor:
                     0.0,
                     "FOK order cancelled - order book too thin",
                 )
-            balance_before = self.get_usdc_balance()
             reconciled_fill = self._reconcile_live_order_fill(
                 order_id=order_id,
                 response=response,

@@ -51,6 +51,7 @@ REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "heuristic_min_time_to_close_seconds": "HEURISTIC_MIN_TIME_TO_CLOSE",
     "model_edge_mid_confidence": "MODEL_EDGE_MID_CONFIDENCE",
     "model_edge_high_confidence": "MODEL_EDGE_HIGH_CONFIDENCE",
+    "edge_threshold": "MODEL_BASE_EDGE_THRESHOLD",
     "model_edge_mid_threshold": "MODEL_EDGE_MID_THRESHOLD",
     "model_edge_high_threshold": "MODEL_EDGE_HIGH_THRESHOLD",
     "xgboost_allowed_entry_price_bands": "XGBOOST_ALLOWED_ENTRY_PRICE_BANDS",
@@ -95,6 +96,7 @@ class ReplayPolicy:
     heuristic_min_time_to_close_seconds: int
     model_edge_mid_confidence: float
     model_edge_high_confidence: float
+    edge_threshold: float
     model_edge_mid_threshold: float
     model_edge_high_threshold: float
     xgboost_allowed_entry_price_bands: tuple[str, ...]
@@ -123,6 +125,7 @@ class ReplayPolicy:
             heuristic_min_time_to_close_seconds=int(heuristic_min_time_to_close_seconds()),
             model_edge_mid_confidence=float(model_edge_mid_confidence()),
             model_edge_high_confidence=float(model_edge_high_confidence()),
+            edge_threshold=0.0,
             model_edge_mid_threshold=float(model_edge_mid_threshold()),
             model_edge_high_threshold=float(model_edge_high_threshold()),
             xgboost_allowed_entry_price_bands=tuple(xgboost_allowed_entry_price_bands()),
@@ -163,6 +166,7 @@ class ReplayPolicy:
             ),
             model_edge_mid_confidence=_clamp(float(base["model_edge_mid_confidence"]), 0.0, 1.0),
             model_edge_high_confidence=_clamp(float(base["model_edge_high_confidence"]), 0.0, 1.0),
+            edge_threshold=float(base["edge_threshold"]),
             model_edge_mid_threshold=float(base["model_edge_mid_threshold"]),
             model_edge_high_threshold=float(base["model_edge_high_threshold"]),
             xgboost_allowed_entry_price_bands=_normalize_segment_filter(
@@ -1000,7 +1004,7 @@ def _evaluate_trade(
         if confidence >= policy.model_edge_high_confidence:
             edge_threshold = policy.model_edge_high_threshold
         elif confidence < policy.model_edge_mid_confidence:
-            edge_threshold = 0.0
+            edge_threshold = policy.edge_threshold
         metadata["edge_threshold"] = round(edge_threshold, 6)
         if edge is None or edge < edge_threshold:
             return False, "model_edge_below_threshold", 0.0, metadata

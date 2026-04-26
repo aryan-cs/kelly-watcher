@@ -940,14 +940,15 @@ class PolymarketTracker:
                     continue
                 trade_id = self._raw_trade_id(raw)
                 source_ts = self._raw_trade_timestamp(raw)
-                # The trade feed is newest-first; do not backfill pages that will be rejected as stale.
+                # The trade feed is expected to be newest-first, but scan the whole page
+                # so one out-of-order stale row cannot hide fresher peers.
                 if freshness_cutoff > 0 and source_ts > 0 and source_ts < freshness_cutoff:
                     reached_freshness_cutoff = True
-                    break
+                    continue
                 if cursor is not None and source_ts > 0:
                     if source_ts < cursor.last_source_ts:
                         reached_cursor = True
-                        break
+                        continue
                     if source_ts == cursor.last_source_ts and trade_id in cursor.last_trade_ids:
                         # Multiple trades can share the cursor timestamp; keep scanning for unseen peers.
                         continue

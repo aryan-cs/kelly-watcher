@@ -43,6 +43,8 @@ SEGMENT_SHADOW_MAX_FILL_COST_OVERSHOOT_RATIO = 0.50
 UNASSIGNED_SEGMENT_ID = "unassigned"
 UNKNOWN_CLOSE_TS_RESOLUTION_DELAY_S = 24 * 3600
 UNRESOLVED_MARKET_RECHECK_DELAY_S = 60 * 60
+CLOSED_MISSING_WINNER_RECHECK_DELAY_S = 12 * 60 * 60
+CLOSED_MISSING_WINNER_REASON = "closed market missing explicit winner"
 
 CLOB_API = "https://clob.polymarket.com"
 SPORTS_PAGE_BASE = "https://polymarket.com/sports"
@@ -595,11 +597,27 @@ def _resolve_shadow_trades_locked(
             )
             """
         )
-        where_clauses.append("COALESCE(resolution_checked_at, 0) <= ?")
+        where_clauses.append(
+            """
+            (
+                (
+                    COALESCE(resolution_error, '') = ?
+                    AND COALESCE(resolution_checked_at, 0) <= ?
+                )
+                OR (
+                    COALESCE(resolution_error, '') != ?
+                    AND COALESCE(resolution_checked_at, 0) <= ?
+                )
+            )
+            """
+        )
         params.extend(
             [
                 now_ts,
                 now_ts - UNKNOWN_CLOSE_TS_RESOLUTION_DELAY_S,
+                CLOSED_MISSING_WINNER_REASON,
+                now_ts - CLOSED_MISSING_WINNER_RECHECK_DELAY_S,
+                CLOSED_MISSING_WINNER_REASON,
                 now_ts - UNRESOLVED_MARKET_RECHECK_DELAY_S,
             ]
         )
@@ -622,6 +640,7 @@ def _resolve_shadow_trades_locked(
                    snapshot_json,
                    remaining_entry_shares, remaining_entry_size_usd, realized_exit_pnl_usd,
                    shadow_pnl_usd, actual_pnl_usd, resolution_fixed_cost_usd,
+                   resolution_error,
                    real_money, skipped, source_action, exited_at, source_shares
             FROM trade_log
             WHERE {" AND ".join(where_clauses)}
@@ -676,8 +695,14 @@ def _resolve_shadow_trades_locked(
                             if market and _market_is_closed(market):
                                 result = _winning_outcome(market)
                                 if result is None:
-                                    no_result_reason = "closed market missing explicit winner"
-                                    logger.info(
+                                    no_result_reason = CLOSED_MISSING_WINNER_REASON
+                                    prior_resolution_error = str(row["resolution_error"] or "").strip()
+                                    log_fn = (
+                                        logger.debug
+                                        if prior_resolution_error == CLOSED_MISSING_WINNER_REASON and not manual_scope
+                                        else logger.info
+                                    )
+                                    log_fn(
                                         "Closed market %s is missing an explicit winner after sports-page fallback",
                                         row_market_id[:12],
                                     )

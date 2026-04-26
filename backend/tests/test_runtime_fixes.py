@@ -4642,6 +4642,136 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_resolve_shadow_trades_backs_off_closed_markets_missing_winner(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_800_000_000
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at, market_close_ts,
+                        resolution_checked_at, resolution_error
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-missing-winner-recent",
+                        "market-missing-winner-recent",
+                        "Will Team A win?",
+                        "0xabc",
+                        "yes",
+                        "buy",
+                        0.5,
+                        10.0,
+                        0.61,
+                        0.10,
+                        0,
+                        0,
+                        now_ts - 86_400,
+                        now_ts - 10,
+                        now_ts - 2 * 3600,
+                        evaluator.CLOSED_MISSING_WINNER_REASON,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("kelly_watcher.runtime.evaluator.time.time", return_value=now_ts), patch(
+                    "kelly_watcher.runtime.evaluator._fetch_sports_page_snapshot"
+                ) as fetch_sports_mock, patch("kelly_watcher.runtime.evaluator._fetch_market") as fetch_market_mock:
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual(resolved, [])
+                fetch_sports_mock.assert_not_called()
+                fetch_market_mock.assert_not_called()
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_resolve_shadow_trades_retries_missing_winner_after_backoff_without_info_noise(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_800_000_000
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side,
+                        source_action, price_at_signal, signal_size_usd, confidence,
+                        kelly_fraction, real_money, skipped, placed_at, market_close_ts,
+                        resolution_checked_at, resolution_error
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "trade-missing-winner-old",
+                        "market-missing-winner-old",
+                        "Will Team A win?",
+                        "0xabc",
+                        "yes",
+                        "buy",
+                        0.5,
+                        10.0,
+                        0.61,
+                        0.10,
+                        0,
+                        0,
+                        now_ts - 86_400,
+                        now_ts - 10,
+                        now_ts - evaluator.CLOSED_MISSING_WINNER_RECHECK_DELAY_S - 1,
+                        evaluator.CLOSED_MISSING_WINNER_REASON,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                closed_market_without_winner = {
+                    "closed": True,
+                    "tokens": [
+                        {"outcome": "Yes", "winner": False},
+                        {"outcome": "No", "winner": False},
+                    ],
+                }
+                with patch("kelly_watcher.runtime.evaluator.time.time", return_value=now_ts), patch(
+                    "kelly_watcher.runtime.evaluator._fetch_sports_page_snapshot", return_value=None
+                ), patch(
+                    "kelly_watcher.runtime.evaluator._fetch_market",
+                    return_value=closed_market_without_winner,
+                ) as fetch_market_mock, patch(
+                    "kelly_watcher.runtime.evaluator.logger.info"
+                ) as info_mock, patch(
+                    "kelly_watcher.runtime.evaluator.logger.debug"
+                ) as debug_mock, patch(
+                    "kelly_watcher.runtime.evaluator.sync_belief_priors", return_value=0
+                ):
+                    resolved = evaluator.resolve_shadow_trades()
+
+                self.assertEqual(resolved, [])
+                fetch_market_mock.assert_called_once()
+                info_mock.assert_not_called()
+                debug_mock.assert_called()
+
+                conn = db.get_conn()
+                row = conn.execute(
+                    """
+                    SELECT resolution_checked_at, resolution_error
+                    FROM trade_log
+                    WHERE trade_id=?
+                    """,
+                    ("trade-missing-winner-old",),
+                ).fetchone()
+                conn.close()
+                self.assertEqual(int(row["resolution_checked_at"]), now_ts)
+                self.assertEqual(row["resolution_error"], evaluator.CLOSED_MISSING_WINNER_REASON)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_resolve_shadow_trades_falls_back_to_sports_page_for_team_market(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -7863,6 +7993,82 @@ class RuntimeFixesTest(unittest.TestCase):
         )
 
         self.assertEqual([row["id"] for row in rows], ["new-same-second"])
+        self.assertEqual(calls, [0])
+
+    def test_tracker_scans_current_page_after_out_of_order_stale_trade(self) -> None:
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        calls: list[int] = []
+
+        def fake_request_json(_url, *, params=None, **_kwargs):
+            offset = int((params or {}).get("offset") or 0)
+            calls.append(offset)
+            if offset > 0:
+                self.fail("stale row on first page should stop pagination after scanning the page")
+            return [
+                {
+                    "id": "stale-first",
+                    "timestamp": 1_700_000_090,
+                    "conditionId": "market-stale",
+                    "asset": "token-stale",
+                },
+                {
+                    "id": "fresh-later",
+                    "timestamp": 1_700_000_110,
+                    "conditionId": "market-fresh",
+                    "asset": "token-fresh",
+                },
+            ], True
+
+        tracker_obj._request_json = fake_request_json
+        tracker_obj._record_trade_feed_result = lambda _ok: None
+
+        rows = tracker_obj.get_wallet_trades(
+            "0xabc",
+            limit=2,
+            cursor=None,
+            fresh_after_ts=1_700_000_100,
+        )
+
+        self.assertEqual([row["id"] for row in rows], ["fresh-later"])
+        self.assertEqual(calls, [0])
+
+    def test_tracker_scans_current_page_after_out_of_order_older_cursor_trade(self) -> None:
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        calls: list[int] = []
+
+        def fake_request_json(_url, *, params=None, **_kwargs):
+            offset = int((params or {}).get("offset") or 0)
+            calls.append(offset)
+            if offset > 0:
+                self.fail("older cursor row should stop pagination after scanning the page")
+            return [
+                {
+                    "id": "older-first",
+                    "timestamp": 1_700_000_190,
+                    "conditionId": "market-old",
+                    "asset": "token-old",
+                },
+                {
+                    "id": "new-same-cursor-second",
+                    "timestamp": 1_700_000_200,
+                    "conditionId": "market-new",
+                    "asset": "token-new",
+                },
+            ], True
+
+        tracker_obj._request_json = fake_request_json
+        tracker_obj._record_trade_feed_result = lambda _ok: None
+
+        rows = tracker_obj.get_wallet_trades(
+            "0xabc",
+            limit=2,
+            cursor=tracker.WalletCursor(
+                last_source_ts=1_700_000_200,
+                last_trade_ids={"seen-at-cursor"},
+            ),
+        )
+
+        self.assertEqual([row["id"] for row in rows], ["new-same-cursor-second"])
         self.assertEqual(calls, [0])
 
     def test_tracker_load_wallet_cursors_ignores_malformed_json_bytes(self) -> None:

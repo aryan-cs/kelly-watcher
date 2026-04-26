@@ -519,11 +519,15 @@ def runtime_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
 def preferred_python_executable() -> str:
     if os.name == "nt":
         candidates = [
+            REPO_ROOT / "backend" / ".venv" / "Scripts" / "python.exe",
+            REPO_ROOT / "backend" / ".venv" / "Scripts" / "python",
             REPO_ROOT / ".venv" / "Scripts" / "python.exe",
             REPO_ROOT / ".venv" / "Scripts" / "python",
         ]
     else:
         candidates = [
+            REPO_ROOT / "backend" / ".venv" / "bin" / "python",
+            REPO_ROOT / "backend" / ".venv" / "bin" / "python3",
             REPO_ROOT / ".venv" / "bin" / "python",
             REPO_ROOT / ".venv" / "bin" / "python3",
         ]

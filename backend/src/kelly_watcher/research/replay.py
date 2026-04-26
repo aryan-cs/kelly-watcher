@@ -385,7 +385,7 @@ def _simulate(
     carry_resolved_count = 0
     carry_resolved_size_usd = 0.0
     carry_resolved_win_count = 0
-    live_guard_triggered = bool(continuity_seed.get("live_guard_triggered"))
+    live_guard_triggered = _coerce_state_bool(continuity_seed.get("live_guard_triggered"))
     live_guard_start_equity = max(
         _coalesce_float(continuity_seed.get("live_guard_start_equity"), policy.initial_bankroll_usd) or 0.0,
         0.0,
@@ -396,7 +396,7 @@ def _simulate(
         0.0,
     )
     daily_guard_day_key = str(continuity_seed.get("daily_guard_day_key") or "")
-    daily_guard_locked = bool(continuity_seed.get("daily_guard_locked"))
+    daily_guard_locked = _coerce_state_bool(continuity_seed.get("daily_guard_locked"))
     simulation_start_ts = int(start_ts) if start_ts is not None else 0
     simulation_end_ts = int(end_ts) if end_ts is not None else 10**12
 
@@ -1906,6 +1906,15 @@ def _coerce_bool(raw: Any, field_name: str) -> bool:
     if value in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{field_name} must be boolean")
+
+
+def _coerce_state_bool(raw: Any, *, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    try:
+        return _coerce_bool(raw, "continuity_state boolean")
+    except ValueError:
+        return default
 
 
 def np_interp(x: float, xp: list[float], fp: list[float]) -> float:

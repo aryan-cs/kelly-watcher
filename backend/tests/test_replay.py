@@ -447,6 +447,73 @@ class ReplayTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_run_replay_parses_string_false_continuity_guards(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="live-pass",
+                    market_id="market-live-pass",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.70,
+                    price_at_signal=0.68,
+                    actual_entry_price=0.68,
+                    actual_entry_size_usd=100.0,
+                    actual_pnl_usd=20.0,
+                    placed_at=1_700_000_000,
+                    resolved_at=1_700_000_100,
+                    real_money=1,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.85},
+                        "min_confidence": 0.55,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "mode": "live",
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                            "max_daily_loss_pct": 0.10,
+                            "max_live_drawdown_pct": 0.10,
+                        }
+                    ),
+                    db_path=test_db_path,
+                    label="live-continuity-string-false",
+                    initial_state={
+                        "live_guard_triggered": "false",
+                        "live_guard_start_equity": 1000.0,
+                        "daily_guard_locked": "false",
+                        "daily_guard_start_equity": 1000.0,
+                    },
+                )
+
+                self.assertEqual(result["accepted_count"], 1)
+                self.assertEqual(result["reject_reason_summary"].get("live_drawdown_guard", 0), 0)
+                self.assertEqual(result["reject_reason_summary"].get("daily_loss_guard", 0), 0)
+                self.assertFalse(result["continuity_state"]["live_guard_triggered"])
+                self.assertTrue(result["continuity_state"]["daily_guard_locked"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_run_replay_rejects_skipped_counterfactual_rows_without_fill_proof(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

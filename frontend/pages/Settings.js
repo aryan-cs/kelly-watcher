@@ -177,7 +177,7 @@ const CONFIG_BLURBS = {
     RETRAIN_HOUR_LOCAL: 'Sets the local hour for scheduled retraining.',
     RETRAIN_EARLY_CHECK_INTERVAL: 'Checks for early retraining on this interval.',
     RETRAIN_MIN_NEW_LABELS: 'Needs this many new labels for early retraining.',
-    RETRAIN_MIN_SAMPLES: 'Needs this many samples before retraining starts.',
+    RETRAIN_MIN_SAMPLES: 'Needs this many fee-aware trainable samples before retraining starts.',
     LOG_LEVEL: 'Sets the bot process log verbosity.',
     MODEL_PATH: 'Sets the deployed model artifact path.'
 };

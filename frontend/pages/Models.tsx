@@ -495,7 +495,7 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
       {label: 'Early trigger', text: 'Minimum new labels needed to fire an unscheduled retrain.'},
       {
         label: 'Trigger progress',
-        text: 'Progress toward the next retrain trigger. With a deployed model this counts new eligible labels since that model went live; before the first model it falls back to total labeled samples versus the minimum sample gate.'
+        text: 'Progress toward the next retrain trigger. With a runtime-compatible deployed model this counts new eligible labels since that model went live; otherwise it shows total fee-aware executed samples versus the minimum sample gate.'
             },
             {label: 'Manual run', text: 'Manual retrain is only available while the runtime is healthy and not restarting. When available, press t on this panel to queue an in-process retrain.'},
             {label: 'Shared gate', text: 'Latest apples-to-apples challenger versus incumbent comparison on the same final holdout. This is the actual deployment guardrail.'}
@@ -552,10 +552,18 @@ ${EXECUTED_ENTRY_WHERE}
 AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
 `
 
+const FEE_AWARE_EXECUTED_ENTRY_WHERE = `
+${EXECUTED_ENTRY_WHERE}
+AND entry_gross_price IS NOT NULL
+AND entry_gross_shares IS NOT NULL
+AND entry_gross_size_usd IS NOT NULL
+`
+
 const CHAMPION_TRADE_LOG_WHERE = `
 LOWER(COALESCE(experiment_arm, 'champion')) = 'champion'
 `
 
+const RESOLVED_PNL_SQL = `CASE WHEN COALESCE(real_money, 0)=1 THEN actual_pnl_usd ELSE shadow_pnl_usd END`
 const PROFITABLE_TRADE_SQL = `CASE WHEN COALESCE(actual_pnl_usd, shadow_pnl_usd) > 0 THEN 1 ELSE 0 END`
 
 const LOW_CONF_SKIP_WHERE = `
@@ -570,31 +578,10 @@ AND (
 )
 `
 
-const TRAINABLE_SKIPPED_REASON_WHERE = `
-(
-  LOWER(COALESCE(skip_reason, '')) LIKE 'signal confidence was %below the % minimum'
-  OR LOWER(COALESCE(skip_reason, '')) LIKE 'confidence was %below the % minimum needed to place a trade'
-  OR LOWER(COALESCE(skip_reason, '')) LIKE 'heuristic score was %below the % minimum needed to place a trade'
-  OR LOWER(COALESCE(skip_reason, '')) LIKE 'model edge was %below the % threshold'
-  OR LOWER(COALESCE(skip_reason, '')) = 'trade did not pass the signal checks'
-  OR LOWER(COALESCE(skip_reason, '')) = 'kelly sizing found no positive edge at this price, so the trade was skipped'
-)
-`
-
-const RESOLVED_TRAINABLE_SKIPPED_BUY_WHERE = `
-skipped=1
-AND COALESCE(source_action, 'buy')='buy'
-AND counterfactual_return IS NOT NULL
-AND ${TRAINABLE_SKIPPED_REASON_WHERE}
-`
-
 const RESOLVED_TRAINING_SAMPLE_WHERE = `
 (
-  ${RESOLVED_EXECUTED_ENTRY_WHERE}
-)
-OR
-(
-  ${RESOLVED_TRAINABLE_SKIPPED_BUY_WHERE}
+  ${FEE_AWARE_EXECUTED_ENTRY_WHERE}
+  AND ${RESOLVED_PNL_SQL} IS NOT NULL
 )
 `
 
@@ -1584,6 +1571,7 @@ function modeLabel(mode: string): string {
   if (normalized === 'xgboost') return 'XGBoost'
   if (normalized === 'ml') return 'XGBoost'
   if (normalized === 'hist_gradient_boosting') return 'XGBoost'
+  if (normalized === 'heuristic_bootstrap') return 'Shadow bootstrap'
   if (normalized === 'heuristic') return 'Heuristic'
   if (normalized === 'disabled') return 'No scorer'
   if (normalized === 'shadow') return 'Tracker'
@@ -5431,12 +5419,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
   const earlyTriggerValue = formatConfigValue('RETRAIN_MIN_NEW_LABELS')
   const earlyTriggerThreshold = parseNonNegativeInt(rawConfigValue('RETRAIN_MIN_NEW_LABELS'), 100)
   const minSamplesThreshold = parseNonNegativeInt(rawConfigValue('RETRAIN_MIN_SAMPLES'), 200)
-  const hasDeployedModel = Number(trainingProgress?.last_deployed_trained_at || 0) > 0
-  const triggerProgressCurrent = hasDeployedModel
+  const hasUsableDeployedModel = Number(trainingProgress?.last_deployed_trained_at || 0) > 0
+    && Boolean(botState.model_runtime_compatible)
+    && Boolean(botState.model_training_provenance_trusted)
+  const triggerProgressCurrent = hasUsableDeployedModel
     ? Math.max(0, Number(trainingProgress?.new_labeled || 0))
     : Math.max(0, Number(trainingProgress?.total_labeled || 0))
-  const triggerProgressTarget = hasDeployedModel ? earlyTriggerThreshold : minSamplesThreshold
-  const triggerProgressValue = `${formatCount(triggerProgressCurrent)} / ${formatCount(triggerProgressTarget)}${hasDeployedModel ? ' new' : ' total'}`
+  const triggerProgressTarget = hasUsableDeployedModel ? earlyTriggerThreshold : minSamplesThreshold
+  const triggerProgressValue = `${formatCount(triggerProgressCurrent)} / ${formatCount(triggerProgressTarget)}${hasUsableDeployedModel ? ' new' : ' eligible'}`
   const manualRunItem = manualRetrainLabel(
     Number(botState.started_at || 0),
     Number(botState.last_activity_at || 0),
@@ -6311,6 +6301,21 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     : loadedScorerLabel === 'No scorer'
       ? theme.red
       : theme.yellow
+  const xgboostRuntimeStatus = useMemo(() => {
+    const xgboostEnabled = botState.xgboost_enabled
+    if (xgboostEnabled === false) return 'Disabled'
+    if (loadedScorerLabel === 'XGBoost') return 'Active'
+    if (xgboostEnabled === true) {
+      const reason = String(botState.model_fallback_reason || '').trim()
+      return reason ? `Fallback: ${reason.replace(/_/g, ' ')}` : 'Fallback'
+    }
+    return '-'
+  }, [botState.model_fallback_reason, botState.xgboost_enabled, loadedScorerLabel])
+  const xgboostRuntimeColor = xgboostRuntimeStatus === 'Active'
+    ? theme.green
+    : xgboostRuntimeStatus === '-' || xgboostRuntimeStatus === 'Disabled'
+      ? theme.dim
+      : theme.red
   const scorerConfigLabel = useMemo(() => {
     const heuristicEnabled = botState.heuristic_enabled
     const xgboostEnabled = botState.xgboost_enabled
@@ -6789,6 +6794,11 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         color: loadedScorerColor
       },
       {
+        label: 'XGB runtime',
+        value: xgboostRuntimeStatus,
+        color: xgboostRuntimeColor
+      },
+      {
         label: 'Model artifact',
         value: deployedModelLabel,
         color: deployedModelColor
@@ -6878,7 +6888,9 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
       shadowValidationColor,
       shadowValidationValue,
       loadedScorerColor,
-      loadedScorerLabel
+      loadedScorerLabel,
+      xgboostRuntimeColor,
+      xgboostRuntimeStatus
     ]
   )
   const recentRetrainRuns = useMemo(

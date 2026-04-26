@@ -695,7 +695,7 @@ export const editableConfigFields = [
         key: 'RETRAIN_MIN_SAMPLES',
         label: 'Train Min Samples',
         kind: 'int',
-        description: 'Minimum labeled samples required before a retrain can run. Restart bot to apply.',
+        description: 'Minimum fee-aware trainable samples required before a retrain can run. Restart bot to apply.',
         defaultValue: '200',
         liveApplies: false
     },

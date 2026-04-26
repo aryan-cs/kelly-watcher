@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
@@ -479,6 +480,7 @@ def _simulate(
         decision_context = _json_dict(row["decision_context_json"])
         signal = decision_context.get("signal") if isinstance(decision_context.get("signal"), dict) else {}
         signal_mode = _canonical_signal_mode(row["signal_mode"] or signal.get("mode") or "heuristic")
+        nonfinite_signal_fields = _nonfinite_signal_fields(signal)
         close_ts = int(row["close_ts"] or placed_at)
         market_close_ts = int(row["market_close_ts"] or 0)
         horizon_close_ts = market_close_ts if market_close_ts > placed_at else close_ts
@@ -509,6 +511,8 @@ def _simulate(
             time_to_close_band=time_to_close_band,
             policy=policy,
         )
+        if nonfinite_signal_fields:
+            base_metadata["nonfinite_signal_fields"] = nonfinite_signal_fields
 
         segment_filter_reason = _segment_filter_reason(
             policy=policy,
@@ -1044,10 +1048,18 @@ def _evaluate_trade(
     metadata = dict(base_metadata)
     entry_price_band = str(metadata.get("entry_price_band") or "")
     time_to_close_seconds = int(metadata.get("time_to_close_seconds") or 0)
+    if metadata.get("nonfinite_signal_fields"):
+        return False, "nonfinite_signal_value", 0.0, metadata
     if available_cash <= 0:
         return False, "bankroll_depleted", 0.0, metadata
-    if entry_price is None or not (0.0 < entry_price < 1.0):
+    if entry_price is None or not math.isfinite(entry_price) or not (0.0 < entry_price < 1.0):
         return False, "invalid_entry_price", 0.0, metadata
+    if not math.isfinite(confidence) or not math.isfinite(effective_min_confidence):
+        return False, "nonfinite_signal_value", 0.0, metadata
+    if market_score is not None and not math.isfinite(market_score):
+        return False, "nonfinite_signal_value", 0.0, metadata
+    if edge is not None and not math.isfinite(edge):
+        return False, "nonfinite_signal_value", 0.0, metadata
     if confidence < effective_min_confidence:
         return False, "confidence_below_floor", 0.0, metadata
 
@@ -1142,7 +1154,12 @@ def _kelly_size(
     min_bet: float,
     max_fraction: float,
 ) -> float:
-    if confidence < min_confidence or bankroll_usd <= 0 or not (0.01 < market_price < 0.99):
+    if (
+        not all(math.isfinite(value) for value in (confidence, market_price, bankroll_usd, min_confidence, min_bet, max_fraction))
+        or confidence < min_confidence
+        or bankroll_usd <= 0
+        or not (0.01 < market_price < 0.99)
+    ):
         return 0.0
     b = (1 - market_price) / market_price
     f_star = (confidence * (b + 1) - 1) / b
@@ -1162,7 +1179,22 @@ def _heuristic_size(
     quoted_market_price: float,
     effective_market_price: float,
 ) -> float:
-    if score < min_confidence or bankroll_usd <= 0:
+    if (
+        not all(
+            math.isfinite(value)
+            for value in (
+                score,
+                bankroll_usd,
+                min_confidence,
+                min_bet,
+                max_fraction,
+                quoted_market_price,
+                effective_market_price,
+            )
+        )
+        or score < min_confidence
+        or bankroll_usd <= 0
+    ):
         return 0.0
     span = max(1.0 - min_confidence, 1e-6)
     raw_edge = min(max((score - min_confidence) / span, 0.0), 1.0)
@@ -1175,6 +1207,8 @@ def _heuristic_size(
 
 
 def _apply_minimum_bet(size: float, bankroll_usd: float, min_bet: float, max_fraction: float) -> float:
+    if not all(math.isfinite(value) for value in (size, bankroll_usd, min_bet, max_fraction)):
+        return 0.0
     if size <= 0:
         return 0.0
     if size >= min_bet:
@@ -1783,10 +1817,34 @@ def _coalesce_float(*values: Any) -> float | None:
         if value is None:
             continue
         try:
-            return float(value)
+            numeric = float(value)
         except (TypeError, ValueError):
             continue
+        if math.isfinite(numeric):
+            return numeric
     return None
+
+
+def _nonfinite_signal_fields(signal: dict[str, Any]) -> list[str]:
+    fields: list[tuple[str, Any]] = [
+        ("confidence", signal.get("confidence")),
+        ("edge", signal.get("edge")),
+        ("min_confidence", signal.get("min_confidence")),
+    ]
+    market = signal.get("market")
+    if isinstance(market, dict):
+        fields.append(("market.score", market.get("score")))
+    nonfinite: list[str] = []
+    for name, value in fields:
+        if value is None:
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(numeric):
+            nonfinite.append(name)
+    return nonfinite
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:

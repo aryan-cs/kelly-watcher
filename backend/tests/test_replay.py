@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import unittest
 from pathlib import Path
@@ -270,6 +271,92 @@ class ReplayTest(unittest.TestCase):
                 self.assertIn(("<=5m", 1, 11.548), [(row["segment_value"], row["accepted_count"], round(float(row["total_pnl_usd"]), 3)) for row in horizon_segment])
                 self.assertEqual(result["segment_leaders"]["signal_mode"]["best"]["segment_value"], "heuristic")
                 self.assertEqual(result["segment_leaders"]["time_to_close_band"]["best"]["segment_value"], "<=5m")
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_rejects_nonfinite_signal_values(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                base_trade = {
+                    "market_id": "market-nonfinite",
+                    "trader_address": "0xaaa",
+                    "confidence": 0.70,
+                    "price_at_signal": 0.68,
+                    "actual_entry_price": 0.68,
+                    "actual_entry_size_usd": 100.0,
+                    "shadow_pnl_usd": 25.0,
+                    "placed_at": 1_700_000_000,
+                    "resolved_at": 1_700_000_100,
+                }
+                _insert_trade(
+                    conn,
+                    trade_id="nan-confidence",
+                    signal_mode="heuristic",
+                    signal_payload={
+                        "mode": "heuristic",
+                        "confidence": math.nan,
+                        "market": {"score": 0.95},
+                    },
+                    **base_trade,
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="nan-market-score",
+                    signal_mode="heuristic",
+                    signal_payload={
+                        "mode": "heuristic",
+                        "confidence": 0.70,
+                        "market": {"score": math.nan},
+                    },
+                    **base_trade,
+                )
+                _insert_trade(
+                    conn,
+                    trade_id="nan-model-edge",
+                    signal_mode="xgboost",
+                    signal_payload={
+                        "mode": "xgboost",
+                        "confidence": 0.70,
+                        "edge": math.nan,
+                    },
+                    **base_trade,
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.65,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.0,
+                            "model_edge_high_threshold": 0.0,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                    label="unit-test",
+                )
+
+                self.assertEqual(result["trade_count"], 3)
+                self.assertEqual(result["accepted_count"], 0)
+                self.assertEqual(result["rejected_count"], 3)
+                self.assertEqual(result["reject_reason_summary"]["nonfinite_signal_value"], 3)
+                self.assertAlmostEqual(result["total_pnl_usd"], 0.0)
             finally:
                 db.DB_PATH = original_db_path
 

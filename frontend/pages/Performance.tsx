@@ -1966,6 +1966,33 @@ function groupTodayHourlyPnl(rows: PositionRow[], nowDate: Date): DailyPnlEntry[
   return filledEntries
 }
 
+function groupHistoricalHourlyPnl(rows: PositionRow[], nowDate: Date): DailyPnlEntry[] {
+  const totals = new Map<string, number>()
+  const dayStart = new Date(nowDate.getTime())
+  dayStart.setHours(0, 0, 0, 0)
+
+  rows.forEach((row) => {
+    const pnl = row.pnl_usd
+    if (pnl == null) {
+      return
+    }
+    const ts = row.resolution_ts || row.market_close_ts || row.entered_at
+    if (!ts) {
+      return
+    }
+    const bucketDate = floorToPnlBucket(new Date(ts * 1000))
+    if (bucketDate >= dayStart) {
+      return
+    }
+    const bucket = formatPnlBucketKey(bucketDate)
+    totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3))
+  })
+
+  return Array.from(totals.entries())
+    .sort(([left], [right]) => right.localeCompare(left))
+    .map(([bucket, pnl]) => ({day: bucket, pnl, label: formatDollar(pnl)}))
+}
+
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
   const levelCount = 4
   const gapWidth = 0
@@ -2247,13 +2274,25 @@ export function Performance({
     },
     [confidenceRows, effectivePositions, resolvedPerformancePositions]
   )
-  const dailyEntries = useMemo<DailyPnlEntry[]>(
+  const hourlyPnlRows = useMemo(
+    () => pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'),
+    [pastPositions]
+  )
+  const todayHourlyEntries = useMemo<DailyPnlEntry[]>(
     () =>
       groupTodayHourlyPnl(
-        pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'),
+        hourlyPnlRows,
         new Date(nowTs * 1000)
       ),
-    [nowTs, pastPositions]
+    [hourlyPnlRows, nowTs]
+  )
+  const historicalHourlyEntries = useMemo<DailyPnlEntry[]>(
+    () => groupHistoricalHourlyPnl(hourlyPnlRows, new Date(nowTs * 1000)),
+    [hourlyPnlRows, nowTs]
+  )
+  const dailyEntries = useMemo<DailyPnlEntry[]>(
+    () => [...todayHourlyEntries, ...historicalHourlyEntries],
+    [historicalHourlyEntries, todayHourlyEntries]
   )
   useEffect(() => {
     if (!pendingPerfExits.length || !onPendingPerfExitSettlement) {
@@ -2291,14 +2330,14 @@ export function Performance({
   )
   const dailyPreviewCapacity = useMemo(
     () =>
-      dailyEntries.length
-        ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
+      todayHourlyEntries.length
+        ? Math.min(todayHourlyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
         : 0,
-    [dailyEntries.length, dailyPanelContentWidth]
+    [dailyPanelContentWidth, todayHourlyEntries.length]
   )
   const dailyPreviewEntries = useMemo(
-    () => dailyEntries.slice(0, dailyPreviewCapacity).reverse(),
-    [dailyEntries, dailyPreviewCapacity]
+    () => todayHourlyEntries.slice(0, dailyPreviewCapacity).reverse(),
+    [dailyPreviewCapacity, todayHourlyEntries]
   )
   const dailyValueWidth = useMemo(
     () => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10),

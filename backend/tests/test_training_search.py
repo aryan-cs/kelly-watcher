@@ -231,6 +231,20 @@ class TrainingSearchTest(unittest.TestCase):
         ):
             self.assertFalse(train._artifact_runtime_compatible(artifact))
 
+    def test_training_provenance_treats_string_false_routed_only_as_untrusted(self) -> None:
+        provenance = train._training_provenance_payload(
+            since_ts=1_700_000_400,
+            routed_only="false",  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(provenance["training_scope"], "since_ts")
+        self.assertFalse(provenance["training_routed_only"])
+        self.assertFalse(provenance["training_provenance_trusted"])
+        self.assertEqual(
+            provenance["training_provenance_block_reason"],
+            "artifact training scope included non-routed shadow history",
+        )
+
     def test_artifact_runtime_compatible_accepts_current_routed_provenance(self) -> None:
         artifact = {
             "data_contract_version": train.DATA_CONTRACT_VERSION,

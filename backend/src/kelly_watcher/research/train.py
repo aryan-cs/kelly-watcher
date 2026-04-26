@@ -101,7 +101,7 @@ def _training_provenance_payload(
     routed_only: bool,
 ) -> dict[str, Any]:
     effective_since_ts = max(int(since_ts or 0), 0)
-    routed_only = bool(routed_only)
+    routed_only = _artifact_bool(routed_only)
     if effective_since_ts > 0 and routed_only:
         scope = "current_evidence_window"
         trusted = True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import unittest
 from pathlib import Path
@@ -130,6 +131,30 @@ class DbRecoveryToolingTest(unittest.TestCase):
             integrity = db.database_integrity_state(db_path)
             self.assertTrue(integrity["db_integrity_known"])
             self.assertTrue(integrity["db_integrity_ok"])
+
+    def test_recover_db_from_verified_backup_cleans_temp_restore_when_fsync_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "data" / "trading.db"
+            backup_path = db_path.with_suffix(".db.bak")
+            temp_restore = db_path.with_name(f"{db_path.name}.{os.getpid()}.recovering")
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            db.init_db(path=db_path)
+            shutil.copy2(db_path, backup_path)
+
+            def _fail_fsync(path: Path) -> None:
+                self.assertEqual(path, temp_restore)
+                Path(f"{path}-wal").write_text("temp wal", encoding="utf-8")
+                Path(f"{path}-shm").write_text("temp shm", encoding="utf-8")
+                raise OSError("fsync failed")
+
+            with patch.object(db, "_fsync_file", side_effect=_fail_fsync):
+                with self.assertRaisesRegex(OSError, "fsync failed"):
+                    db.recover_db_from_verified_backup(path=db_path, backup_path=backup_path)
+
+            self.assertTrue(db_path.exists())
+            self.assertFalse(temp_restore.exists())
+            self.assertFalse(Path(f"{temp_restore}-wal").exists())
+            self.assertFalse(Path(f"{temp_restore}-shm").exists())
 
     def test_create_verified_backup_removes_temp_file_when_finalize_fails(self) -> None:
         with TemporaryDirectory() as tmpdir:

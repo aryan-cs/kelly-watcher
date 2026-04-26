@@ -105,6 +105,16 @@ def _fsync_parent(path: Path) -> None:
         os.close(directory_fd)
 
 
+def _remove_db_file_and_sidecars(path: Path, *, label: str) -> None:
+    for cleanup_path in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            cleanup_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Failed to remove %s %s", label, cleanup_path, exc_info=True)
+
+
 def rollback_safely(conn: sqlite3.Connection, *, label: str = "SQLite transaction") -> None:
     try:
         conn.rollback()
@@ -448,99 +458,89 @@ def recover_db_from_verified_backup(
         except FileNotFoundError:
             pass
 
-    src_conn: sqlite3.Connection | None = None
-    dst_conn: sqlite3.Connection | None = None
     try:
-        src_conn = _connect_sqlite(candidate, apply_runtime_pragmas=False)
-        dst_conn = _connect_sqlite(temp_restore, apply_runtime_pragmas=False)
-        src_conn.backup(dst_conn)
-    finally:
-        if dst_conn is not None:
-            dst_conn.close()
-        if src_conn is not None:
-            src_conn.close()
-
-    restore_integrity = database_integrity_state(temp_restore)
-    if restore_integrity.get("db_integrity_known") and not restore_integrity.get("db_integrity_ok"):
-        detail = str(restore_integrity.get("db_integrity_message") or "").strip()
+        src_conn: sqlite3.Connection | None = None
+        dst_conn: sqlite3.Connection | None = None
         try:
-            temp_restore.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            logger.warning("Failed to remove invalid DB recovery temp file %s", temp_restore, exc_info=True)
-        message = "temporary DB recovery copy failed integrity check"
-        if detail:
-            message += f": {detail.splitlines()[0].strip()}"
+            src_conn = _connect_sqlite(candidate, apply_runtime_pragmas=False)
+            dst_conn = _connect_sqlite(temp_restore, apply_runtime_pragmas=False)
+            src_conn.backup(dst_conn)
+        finally:
+            if dst_conn is not None:
+                dst_conn.close()
+            if src_conn is not None:
+                src_conn.close()
+
+        restore_integrity = database_integrity_state(temp_restore)
+        if restore_integrity.get("db_integrity_known") and not restore_integrity.get("db_integrity_ok"):
+            detail = str(restore_integrity.get("db_integrity_message") or "").strip()
+            message = "temporary DB recovery copy failed integrity check"
+            if detail:
+                message += f": {detail.splitlines()[0].strip()}"
+            return {
+                "ok": False,
+                "backup_path": str(candidate),
+                "restored_path": str(target),
+                "quarantined_path": "",
+                "message": message,
+                "restored_at": 0,
+            }
+        _fsync_file(temp_restore)
+
+        quarantined_path = ""
+        quarantined_target: Path | None = None
+        sidecar_quarantine_base: Path | None = None
+        quarantined_sidecars: list[tuple[Path, Path]] = []
+        sidecar_paths = (
+            Path(f"{target}-wal"),
+            Path(f"{target}-shm"),
+        )
+        try:
+            if target.exists():
+                quarantined_target = _timestamped_recovery_quarantine_path(target)
+                sidecar_quarantine_base = quarantined_target
+                target.replace(quarantined_target)
+                quarantined_path = str(quarantined_target)
+            for sidecar_path in sidecar_paths:
+                if not sidecar_path.exists():
+                    continue
+                if sidecar_quarantine_base is None:
+                    sidecar_quarantine_base = _timestamped_recovery_quarantine_path(target)
+                archived_sidecar = Path(f"{sidecar_quarantine_base}{sidecar_path.name[len(target.name):]}")
+                sidecar_path.replace(archived_sidecar)
+                quarantined_sidecars.append((archived_sidecar, sidecar_path))
+            temp_restore.replace(target)
+            _fsync_parent(target)
+        except Exception:
+            if not target.exists() and quarantined_target is not None and quarantined_target.exists():
+                try:
+                    quarantined_target.replace(target)
+                except OSError:
+                    logger.warning("Failed to roll back quarantined DB %s", quarantined_target, exc_info=True)
+            for archived_sidecar, original_sidecar in reversed(quarantined_sidecars):
+                if not archived_sidecar.exists() or original_sidecar.exists():
+                    continue
+                try:
+                    archived_sidecar.replace(original_sidecar)
+                except OSError:
+                    logger.warning(
+                        "Failed to roll back quarantined DB sidecar %s",
+                        archived_sidecar,
+                        exc_info=True,
+                    )
+            raise
+
+        _prune_recovery_quarantine(target)
         return {
-            "ok": False,
+            "ok": True,
             "backup_path": str(candidate),
             "restored_path": str(target),
-            "quarantined_path": "",
-            "message": message,
-            "restored_at": 0,
+            "quarantined_path": quarantined_path,
+            "message": "verified backup restored",
+            "restored_at": int(target.stat().st_mtime),
         }
-    _fsync_file(temp_restore)
-
-    quarantined_path = ""
-    quarantined_target: Path | None = None
-    sidecar_quarantine_base: Path | None = None
-    quarantined_sidecars: list[tuple[Path, Path]] = []
-    sidecar_paths = (
-        Path(f"{target}-wal"),
-        Path(f"{target}-shm"),
-    )
-    try:
-        if target.exists():
-            quarantined_target = _timestamped_recovery_quarantine_path(target)
-            sidecar_quarantine_base = quarantined_target
-            target.replace(quarantined_target)
-            quarantined_path = str(quarantined_target)
-        for sidecar_path in sidecar_paths:
-            if not sidecar_path.exists():
-                continue
-            if sidecar_quarantine_base is None:
-                sidecar_quarantine_base = _timestamped_recovery_quarantine_path(target)
-            archived_sidecar = Path(f"{sidecar_quarantine_base}{sidecar_path.name[len(target.name):]}")
-            sidecar_path.replace(archived_sidecar)
-            quarantined_sidecars.append((archived_sidecar, sidecar_path))
-        temp_restore.replace(target)
-        _fsync_parent(target)
-    except Exception:
-        if not target.exists() and quarantined_target is not None and quarantined_target.exists():
-            try:
-                quarantined_target.replace(target)
-            except OSError:
-                logger.warning("Failed to roll back quarantined DB %s", quarantined_target, exc_info=True)
-        for archived_sidecar, original_sidecar in reversed(quarantined_sidecars):
-            if not archived_sidecar.exists() or original_sidecar.exists():
-                continue
-            try:
-                archived_sidecar.replace(original_sidecar)
-            except OSError:
-                logger.warning(
-                    "Failed to roll back quarantined DB sidecar %s",
-                    archived_sidecar,
-                    exc_info=True,
-                )
-        raise
     finally:
-        try:
-            temp_restore.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            logger.warning("Failed to remove DB recovery temp file %s", temp_restore, exc_info=True)
-
-    _prune_recovery_quarantine(target)
-    return {
-        "ok": True,
-        "backup_path": str(candidate),
-        "restored_path": str(target),
-        "quarantined_path": quarantined_path,
-        "message": "verified backup restored",
-        "restored_at": int(target.stat().st_mtime),
-    }
+        _remove_db_file_and_sidecars(temp_restore, label="DB recovery temp file")
 
 
 def _ensure_table_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:

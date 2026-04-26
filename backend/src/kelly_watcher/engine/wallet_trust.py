@@ -395,7 +395,24 @@ def apply_wallet_trust_sizing(
     combined_multiplier = trust_multiplier * quality_multiplier
     scaled_size = round(base_size * combined_multiplier, 2)
     max_size = _finite_float(max_size_usd)
-    if max_size is not None and max_size > 0:
+    if max_size_usd is not None:
+        if max_size is None:
+            cap_reason = "wallet max size cap is not finite"
+        elif max_size <= 0:
+            cap_reason = "wallet max size cap is not positive"
+        else:
+            cap_reason = ""
+        if cap_reason:
+            adjusted["dollar_size"] = 0.0
+            adjusted["kelly_f"] = 0.0
+            adjusted["full_kelly_f"] = 0.0
+            adjusted["wallet_trust_multiplier"] = trust_multiplier
+            adjusted["wallet_trust_effective_multiplier"] = 0.0
+            adjusted["wallet_quality_effective_multiplier"] = 0.0
+            adjusted["wallet_trust_note"] = cap_reason
+            adjusted["reason"] = adjusted["wallet_trust_note"]
+            return adjusted
+    if max_size is not None:
         scaled_size = round(min(scaled_size, max_size), 2)
     min_bet = min_bet_usd()
     if 0.0 < scaled_size < min_bet:

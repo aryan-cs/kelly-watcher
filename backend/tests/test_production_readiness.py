@@ -837,6 +837,114 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_stage_source_events_does_not_reset_failed_backoff_or_processing_lease(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+
+                def raw_trade(trade_id: str, market_id: str, token_id: str, source_ts: int) -> dict[str, object]:
+                    return {
+                        "id": trade_id,
+                        "conditionId": market_id,
+                        "side": "BUY",
+                        "asset": token_id,
+                        "size": 10,
+                        "price": 0.42,
+                        "timestamp": source_ts,
+                        "outcome": "Yes",
+                    }
+
+                failed_raw = raw_trade("failed-recent", "market-failed", "token-failed", now_ts - 5)
+                processing_raw = raw_trade("processing-active", "market-processing", "token-processing", now_ts - 6)
+                fresh_raw = raw_trade("fresh-pending", "market-fresh", "token-fresh", now_ts - 7)
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                "failed-recent",
+                                "market-failed",
+                                "token-failed",
+                                now_ts - 5,
+                                json.dumps(failed_raw),
+                                "failed",
+                                now_ts - 5,
+                                now_ts - 5,
+                                now_ts - 2,
+                                "source event metadata unavailable; will retry",
+                            ),
+                            (
+                                "processing-active",
+                                "market-processing",
+                                "token-processing",
+                                now_ts - 6,
+                                json.dumps(processing_raw),
+                                "processing",
+                                now_ts - 6,
+                                now_ts - 6,
+                                now_ts - 5,
+                                "",
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                tracker_obj._fetch_wallet_trades_batch = Mock(
+                    return_value={
+                        "0xhot": [
+                            failed_raw,
+                            processing_raw,
+                            fresh_raw,
+                        ]
+                    }
+                )
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=45
+                    ), patch("kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=180):
+                        ingestion = tracker_obj.stage_source_events(["0xhot"], trade_limit=50, watch_tier="hot")
+                        rows = tracker_obj._claim_source_queue_rows(limit=10, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual(ingestion.queued, 3)
+                self.assertEqual([row["trade_id"] for row in rows], ["fresh-pending"])
+                conn = db.get_conn()
+                try:
+                    states = {
+                        row["trade_id"]: (row["status"], row["attempts"], row["updated_at"], row["last_error"])
+                        for row in conn.execute(
+                            """
+                            SELECT trade_id, status, attempts, updated_at, last_error
+                            FROM source_event_queue
+                            ORDER BY trade_id
+                            """
+                        ).fetchall()
+                    }
+                finally:
+                    conn.close()
+                self.assertEqual(
+                    states["failed-recent"],
+                    ("failed", 1, now_ts - 2, "source event metadata unavailable; will retry"),
+                )
+                self.assertEqual(states["processing-active"], ("processing", 1, now_ts - 5, ""))
+                self.assertEqual(states["fresh-pending"], ("processing", 1, now_ts, ""))
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_source_queue_reclaims_processing_rows_before_freshness_window_expires(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

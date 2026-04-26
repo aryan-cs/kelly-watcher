@@ -340,13 +340,24 @@ class PolymarketTracker:
                 source_ts=excluded.source_ts,
                 source_trade_json=excluded.source_trade_json,
                 observed_at=excluded.observed_at,
-                updated_at=excluded.updated_at,
+                updated_at=CASE
+                    WHEN source_event_queue.status IN ('failed', 'processing')
+                         AND excluded.status='pending'
+                    THEN source_event_queue.updated_at
+                    ELSE excluded.updated_at
+                END,
                 status=CASE
                     WHEN source_event_queue.status IN ('processed', 'stale', 'malformed') THEN source_event_queue.status
+                    WHEN source_event_queue.status IN ('failed', 'processing')
+                         AND excluded.status='pending'
+                    THEN source_event_queue.status
                     ELSE excluded.status
                 END,
                 last_error=CASE
                     WHEN source_event_queue.status IN ('processed', 'stale', 'malformed') THEN source_event_queue.last_error
+                    WHEN source_event_queue.status IN ('failed', 'processing')
+                         AND excluded.status='pending'
+                    THEN source_event_queue.last_error
                     ELSE excluded.last_error
                 END
             """

@@ -2946,6 +2946,8 @@ class ReplaySearchTest(unittest.TestCase):
             "30",
             "--window-count",
             "2",
+            "--min-total-pnl-usd",
+            "-1000000000",
         ]
         with (
             patch.object(replay_search, "run_replay", side_effect=fake_run_replay),
@@ -2996,6 +2998,24 @@ class ReplaySearchTest(unittest.TestCase):
 
         self.assertEqual(breakdown["mode_inactivity_penalty_usd"], 0.0)
         self.assertEqual(breakdown["score_usd"], 20.0)
+
+    def test_score_breakdown_rejects_nonfinite_score_inputs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            replay_search._score_breakdown(
+                {
+                    "total_pnl_usd": 20.0,
+                    "max_drawdown_pct": 0.1,
+                },
+                initial_bankroll_usd=3000.0,
+                drawdown_penalty=float("nan"),
+                window_stddev_penalty=0.0,
+                worst_window_penalty=0.0,
+                pause_guard_penalty=0.0,
+            )
+
+    def test_replay_fraction_constraints_reject_nonfinite_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "fraction must be finite"):
+            replay_search._clamp_fraction(float("nan"))
 
     def test_score_breakdown_penalizes_global_window_inactivity(self) -> None:
         breakdown = replay_search._score_breakdown(
@@ -14617,6 +14637,8 @@ class ReplaySearchTest(unittest.TestCase):
             "-10",
             "--max-worst-window-drawdown-pct",
             "0.10",
+            "--min-total-pnl-usd",
+            "-1000000000",
         ]
         with (
             patch.object(replay_search, "_latest_trade_ts", return_value=5_184_000),
@@ -14801,7 +14823,7 @@ class ReplaySearchTest(unittest.TestCase):
                 "min_resolved_count": 0,
                 "min_resolved_share": 0.0,
                 "min_resolved_size_share": 0.0,
-                "min_total_pnl_usd": -1000000000.0,
+                "min_total_pnl_usd": 0.0,
                 "min_time_to_close_band_count": 0,
                 "min_trader_count": 0,
                 "min_win_rate": 0.0,

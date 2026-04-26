@@ -90,6 +90,16 @@ def _iter_policy_overrides(grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _require_finite_float(value: Any, *, field_name: str) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be finite") from exc
+    if not math.isfinite(numeric):
+        raise ValueError(f"{field_name} must be finite")
+    return numeric
+
+
 def _score_breakdown(
     result: dict[str, Any],
     *,
@@ -692,7 +702,7 @@ def _score_breakdown(
         - entry_price_band_size_concentration_penalty_usd
         - time_to_close_band_size_concentration_penalty_usd
     )
-    return {
+    breakdown = {
         "pnl_usd": round(pnl, 6),
         "drawdown_penalty_usd": round(drawdown_penalty_usd, 6),
         "window_stddev_penalty_usd": round(window_stddev_penalty_usd, 6),
@@ -758,6 +768,15 @@ def _score_breakdown(
         "time_to_close_band_size_concentration_penalty_usd": round(time_to_close_band_size_concentration_penalty_usd, 6),
         "score_usd": round(score_usd, 6),
     }
+    nonfinite_keys = [
+        key
+        for key, value in breakdown.items()
+        if not math.isfinite(float(value))
+    ]
+    if nonfinite_keys:
+        joined_keys = ", ".join(nonfinite_keys)
+        raise ValueError(f"Replay score breakdown contains non-finite value(s): {joined_keys}")
+    return breakdown
 
 
 def _score_result(
@@ -2870,7 +2889,8 @@ def _inverse_count_risk(raw_count: Any) -> float:
 
 
 def _clamp_fraction(raw: float) -> float:
-    return min(max(float(raw), 0.0), 1.0)
+    value = _require_finite_float(raw, field_name="fraction")
+    return min(max(value, 0.0), 1.0)
 
 
 def _constraint_failures(

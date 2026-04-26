@@ -460,6 +460,43 @@ class WalletTrustTest(unittest.TestCase):
         self.assertAlmostEqual(adjusted["kelly_f"], 0.11, places=6)
         self.assertIn("size scaled to 110%", adjusted["wallet_trust_note"])
 
+    def test_invalid_hard_max_size_cap_forces_no_bet(self) -> None:
+        trust_state = WalletTrustState(
+            wallet_address="0xabc",
+            tier="trusted",
+            size_multiplier=1.0,
+            observed_buy_count=40,
+            resolved_observed_buy_count=30,
+            resolved_copied_buy_count=20,
+            resolved_copied_win_rate=0.65,
+            resolved_copied_avg_return=0.07,
+            min_cold_start_observed_buy_count=3,
+            min_observed_buy_count=8,
+            min_resolved_observed_buy_count=3,
+            min_resolved_copied_buy_count=15,
+        )
+
+        cases = [
+            (float("nan"), "wallet max size cap is not finite"),
+            (float("inf"), "wallet max size cap is not finite"),
+            (0.0, "wallet max size cap is not positive"),
+            (-1.0, "wallet max size cap is not positive"),
+        ]
+        for max_size_usd, expected_reason in cases:
+            with self.subTest(max_size_usd=max_size_usd):
+                adjusted = apply_wallet_trust_sizing(
+                    {"dollar_size": 20.0, "kelly_f": 0.10, "full_kelly_f": 0.20},
+                    trust_state,
+                    max_size_usd=max_size_usd,
+                )
+
+                self.assertEqual(adjusted["dollar_size"], 0.0)
+                self.assertEqual(adjusted["kelly_f"], 0.0)
+                self.assertEqual(adjusted["full_kelly_f"], 0.0)
+                self.assertEqual(adjusted["wallet_trust_effective_multiplier"], 0.0)
+                self.assertEqual(adjusted["wallet_quality_effective_multiplier"], 0.0)
+                self.assertIn(expected_reason, adjusted["reason"])
+
     def test_nonfinite_quality_score_is_neutral_and_not_reported(self) -> None:
         trust_state = WalletTrustState(
             wallet_address="0xabc",

@@ -911,6 +911,62 @@ class RuntimeFixesTest(unittest.TestCase):
         assert row is not None
         self.assertEqual(int(row["id"]), expected_id)
 
+    def test_performance_preview_preserves_persisted_trade_log_pnl(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO trade_log (
+                            trade_id, market_id, question, trader_address, side, source_action,
+                            price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                            real_money, skipped, placed_at, actual_entry_price, actual_entry_shares,
+                            actual_entry_size_usd, shadow_pnl_usd, resolved_at, outcome
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            "preview-persisted-pnl",
+                            "market-preview",
+                            "Will persisted PnL be preserved?",
+                            "0xabc",
+                            "yes",
+                            "buy",
+                            0.5,
+                            5.0,
+                            0.7,
+                            0.1,
+                            0,
+                            0,
+                            1_700_000_000,
+                            0.5,
+                            10.0,
+                            5.0,
+                            1.23,
+                            1_700_000_100,
+                            1,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                summary = performance_preview.compute_tracker_preview_summary(
+                    now_ts=1_700_000_200,
+                    mode="shadow",
+                    db_path=db.DB_PATH,
+                    use_bot_state_balance=False,
+                )
+            finally:
+                db.DB_PATH = original_db_path
+
+        self.assertEqual(summary.resolved, 1)
+        self.assertAlmostEqual(summary.total_pnl, 1.23, places=6)
+        self.assertAlmostEqual(float(summary.expectancy_usd or 0.0), 1.23, places=6)
+
     def test_persist_replay_search_run_runtime_context_updates_trigger_message_and_status(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

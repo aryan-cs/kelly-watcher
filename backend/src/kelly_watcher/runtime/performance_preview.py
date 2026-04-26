@@ -319,6 +319,14 @@ def _round_to(value: float, digits: int) -> float:
     return float(f"{value:.{digits}f}")
 
 
+def _finite_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def _format_dollar(value: float | None) -> str:
     if value is None or math.isnan(value):
         return "-"
@@ -546,7 +554,11 @@ def _normalize_effective_position(
             "exit_size_usd": exit_size_usd,
         }
     )
-    normalized["pnl_usd"] = _compute_position_profit(normalized)
+    persisted_pnl_usd = _finite_float(row.get("pnl_usd"))
+    if row.get("source_kind") == "trade_log" and edit is None and persisted_pnl_usd is not None:
+        normalized["pnl_usd"] = _round_to(persisted_pnl_usd, 3)
+    else:
+        normalized["pnl_usd"] = _compute_position_profit(normalized)
     return normalized
 
 

@@ -77,6 +77,8 @@ SAFE_ENV_KEYS = {
     "WALLET_QUALITY_SIZE_MIN_MULTIPLIER",
     "WALLET_QUALITY_SIZE_MAX_MULTIPLIER",
     "MAX_SOURCE_TRADE_AGE",
+    "MAX_SOURCE_TRADE_AGE_FAR",
+    "SOURCE_TRADE_AGE_FAR_MARKET_HORIZON",
     "MAX_FEED_STALENESS",
     "MAX_ORDERBOOK_STALENESS",
     "MIN_EXECUTION_WINDOW",
@@ -1557,12 +1559,15 @@ class DashboardApiHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self._set_cors_headers()
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self._set_cors_headers()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+            logger.debug("Dashboard API client disconnected while sending response for %s: %s", self.path, exc)
 
     def _read_json_body(self) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length") or 0)

@@ -368,7 +368,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 try:
                     with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
                         "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=30
-                    ):
+                    ), patch("kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=30):
                         ingestion = tracker_obj.stage_source_events(["0xabc"], trade_limit=50)
                 finally:
                     tracker_obj.close()
@@ -417,7 +417,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 try:
                     with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
                         "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=30
-                    ):
+                    ), patch("kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=30):
                         rows = tracker_obj._claim_source_queue_rows(limit=10)
                 finally:
                     tracker_obj.close()

@@ -685,6 +685,50 @@ def max_source_trade_age_seconds() -> int:
     return max(int(seconds), 30)
 
 
+def max_source_trade_age_far_seconds() -> int:
+    raw = _get_env_file_value("MAX_SOURCE_TRADE_AGE_FAR") or _get("MAX_SOURCE_TRADE_AGE_FAR", "3m")
+    seconds = _parse_duration(raw, 3 * 60.0)
+    if seconds == float("inf"):
+        return max_source_trade_age_seconds()
+    return max(int(seconds), max_source_trade_age_seconds())
+
+
+def source_trade_age_far_market_horizon_seconds() -> int:
+    raw = _get_env_file_value("SOURCE_TRADE_AGE_FAR_MARKET_HORIZON") or _get(
+        "SOURCE_TRADE_AGE_FAR_MARKET_HORIZON", "1h"
+    )
+    seconds = _parse_duration(raw, 3600.0)
+    if seconds == float("inf"):
+        return int(max_market_horizon_seconds()) if math.isfinite(max_market_horizon_seconds()) else 24 * 3600
+    return max(int(seconds), 0)
+
+
+def max_source_trade_age_ceiling_seconds() -> int:
+    return max(max_source_trade_age_seconds(), max_source_trade_age_far_seconds())
+
+
+def source_trade_age_limit_seconds(
+    market_close_ts: int | float | None = None,
+    *,
+    now_ts: int | float | None = None,
+) -> int:
+    base_limit = max_source_trade_age_seconds()
+    close_value = float(market_close_ts or 0)
+    if close_value <= 0 or not math.isfinite(close_value):
+        return base_limit
+
+    now_value = float(now_ts if now_ts is not None else 0)
+    if now_value <= 0 or not math.isfinite(now_value):
+        import time
+
+        now_value = time.time()
+
+    time_to_close = close_value - now_value
+    if time_to_close >= source_trade_age_far_market_horizon_seconds():
+        return max_source_trade_age_far_seconds()
+    return base_limit
+
+
 def source_event_process_batch_size() -> int:
     return _get_bounded_int("SOURCE_EVENT_PROCESS_BATCH_SIZE", "75", minimum=1, maximum=1000)
 

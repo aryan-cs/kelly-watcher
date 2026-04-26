@@ -58,7 +58,10 @@ from kelly_watcher.config import (
     max_live_drawdown_pct,
     max_live_health_failures,
     max_market_horizon_seconds,
+    max_source_trade_age_far_seconds,
     max_source_trade_age_seconds,
+    source_trade_age_far_market_horizon_seconds,
+    source_trade_age_limit_seconds,
     max_market_exposure_fraction,
     max_total_open_exposure_fraction,
     max_trader_exposure_fraction,
@@ -2302,7 +2305,8 @@ def process_event(
         _pause_event(event, 0.0, entry_block_reason)
         return 0.0
 
-    max_source_age = max_source_trade_age_seconds()
+    market_close_ts = int(getattr(event, "market_close_ts", 0) or 0)
+    max_source_age = source_trade_age_limit_seconds(market_close_ts, now_ts=time.time())
     source_age_s = int(time.time()) - int(getattr(event, "timestamp", 0) or int(time.time()))
     if max_source_age > 0 and source_age_s > max_source_age:
         reason = _humanize_reason(f"source trade is stale ({source_age_s}s old, limit {max_source_age}s)")
@@ -5267,6 +5271,8 @@ def _validate_startup() -> None:
     min_window_seconds = _capture_config(min_execution_window_seconds)
     max_horizon_seconds = _capture_config(max_market_horizon_seconds)
     _capture_config(max_source_trade_age_seconds)
+    _capture_config(max_source_trade_age_far_seconds)
+    _capture_config(source_trade_age_far_market_horizon_seconds)
     total_open_exposure_limit = _capture_config(max_total_open_exposure_fraction)
     retrain_hour_value = _capture_config(retrain_hour_local)
     _capture_config(retrain_min_samples)

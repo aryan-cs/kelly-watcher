@@ -96,8 +96,24 @@ export const editableConfigFields: EditableConfigField[] = [
     key: 'MAX_SOURCE_TRADE_AGE',
     label: 'Source Trade Age',
     kind: 'duration',
-    description: 'Oldest source trade age the tracker will still consider copyable. Applies live on the next loop.',
-    defaultValue: '90s',
+    description: 'Strict source-trade age limit for near-resolution markets. Farther-out markets can use the separate far-age limit below.',
+    defaultValue: '45s',
+    liveApplies: true
+  },
+  {
+    key: 'MAX_SOURCE_TRADE_AGE_FAR',
+    label: 'Far Source Trade Age',
+    kind: 'duration',
+    description: 'Source-trade age limit for markets whose resolution is at least the configured far-horizon threshold away.',
+    defaultValue: '3m',
+    liveApplies: true
+  },
+  {
+    key: 'SOURCE_TRADE_AGE_FAR_MARKET_HORIZON',
+    label: 'Far Trade Horizon',
+    kind: 'duration',
+    description: 'Minimum time until market resolution required before the far source-trade age limit applies.',
+    defaultValue: '1h',
     liveApplies: true
   },
   {

@@ -18,7 +18,9 @@ from kelly_watcher.config import (
     data_api_429_cooldown_seconds,
     data_api_request_burst,
     data_api_request_rate_per_second,
+    max_source_trade_age_ceiling_seconds,
     max_source_trade_age_seconds,
+    source_trade_age_limit_seconds,
 )
 from kelly_watcher.data.db import get_conn, init_db
 from kelly_watcher.data.identity_cache import hydrate_observed_identity, resolve_username_for_wallet
@@ -480,7 +482,7 @@ class PolymarketTracker:
         return {str(row["status"] or ""): int(row["n"] or 0) for row in rows}
 
     def expire_stale_source_queue_rows(self, *, now_ts: int | None = None) -> int:
-        max_age = max_source_trade_age_seconds()
+        max_age = max_source_trade_age_ceiling_seconds()
         if max_age <= 0:
             return 0
         now_value = int(now_ts if now_ts is not None else time.time())
@@ -961,7 +963,7 @@ class PolymarketTracker:
     ) -> dict[str, list[dict]]:
         def fetch_for_wallet(wallet: str) -> list[dict]:
             fresh_after_ts = 0
-            max_age = max_source_trade_age_seconds()
+            max_age = max_source_trade_age_ceiling_seconds()
             if max_age > 0:
                 fresh_after_ts = int(time.time()) - int(max_age)
             try:
@@ -1082,14 +1084,14 @@ class PolymarketTracker:
 
     @staticmethod
     def _is_stale_event(event: TradeEvent, poll_started_at: int) -> bool:
-        max_age = max_source_trade_age_seconds()
+        max_age = source_trade_age_limit_seconds(getattr(event, "market_close_ts", 0), now_ts=poll_started_at)
         if max_age <= 0:
             return False
         return (poll_started_at - int(event.timestamp or poll_started_at)) > max_age
 
     @staticmethod
     def _is_stale_source_timestamp(source_ts: int, poll_started_at: int) -> bool:
-        max_age = max_source_trade_age_seconds()
+        max_age = max_source_trade_age_ceiling_seconds()
         if max_age <= 0:
             return False
         return (poll_started_at - int(source_ts or poll_started_at)) > max_age

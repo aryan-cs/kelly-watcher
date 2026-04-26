@@ -703,6 +703,7 @@ WITH latest_search AS (
     current_candidate_result_json,
     best_vs_current_pnl_usd,
     best_vs_current_score,
+    best_feasible_candidate_index,
     best_feasible_score,
     drawdown_penalty,
     window_stddev_penalty,
@@ -804,9 +805,10 @@ SELECT
   latest_search.current_candidate_max_drawdown_pct,
   latest_search.current_candidate_constraint_failures_json,
   latest_search.current_candidate_result_json,
-  latest_search.best_vs_current_pnl_usd,
-  latest_search.best_vs_current_score,
-  latest_search.best_feasible_score,
+    latest_search.best_vs_current_pnl_usd,
+    latest_search.best_vs_current_score,
+    latest_search.best_feasible_candidate_index,
+    latest_search.best_feasible_score,
   latest_search.drawdown_penalty,
   latest_search.window_stddev_penalty,
   latest_search.worst_window_penalty,
@@ -6762,14 +6764,16 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [scoringMixStats]
   )
   const modelsContentWidth = Math.max(3, terminal.width - 14)
-  const modelsColumnGap = modelsContentWidth >= 40 ? (terminal.compact ? 1 : 2) : 0
-  const modelsUsableWidth = Math.max(3, modelsContentWidth - modelsColumnGap * 2)
-  const leftModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth * 0.26))
-  const middleModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth * 0.27))
-  const modelsColumnWidths: [number, number, number] = [
-    leftModelsColumnWidth,
-    middleModelsColumnWidth,
-    Math.max(1, modelsUsableWidth - leftModelsColumnWidth - middleModelsColumnWidth)
+  const modelsColumnCount = 5
+  const modelsColumnGap = modelsContentWidth >= 40 ? 1 : 0
+  const modelsUsableWidth = Math.max(3, modelsContentWidth - modelsColumnGap * (modelsColumnCount - 1))
+  const baseModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth / modelsColumnCount))
+  const modelsColumnWidths: [number, number, number, number, number] = [
+    baseModelsColumnWidth,
+    baseModelsColumnWidth,
+    baseModelsColumnWidth,
+    baseModelsColumnWidth,
+    Math.max(1, modelsUsableWidth - baseModelsColumnWidth * 4)
   ]
   const modelPanelHeight = Math.max(12, terminal.height - 9)
   const predictionQualityStats = useMemo<CompactStatItem[]>(
@@ -6889,6 +6893,35 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     () => scoringMixStats.slice(4),
     [scoringMixStats]
   )
+  const replayLabColumns = useMemo(
+    () => splitIntoColumns(replayLabStats, 2),
+    [replayLabStats]
+  )
+  const compactRecentExitRows = recentExitAudits.slice(0, 3).map<CompactStatItem>((row, index) => ({
+    label: index === 0 ? 'Last exit' : `Exit ${index + 1}`,
+    value: `${formatShortDateTime(row.audited_at)} ${exitDecisionLabel(row.decision, row.reason)}`,
+    color: exitDecisionColor(row.decision, row.reason)
+  }))
+  const compactRecentRetrainRows = recentRetrainRuns.slice(0, 6).map<CompactStatItem>((row, index) => ({
+    label: index === 0 ? 'Last train' : `Train ${index + 1}`,
+    value: `${formatShortDateTime(row.finished_at)} ${retrainRunStateCompactLabel(row.status, row.deployed)}`,
+    color: retrainRunStateColor(row.status, row.deployed)
+  }))
+  const modelRowLabelWidth = (width: number) => Math.max(8, Math.min(13, Math.floor(width * 0.43)))
+  const renderModelRows = (items: CompactStatItem[], width: number, labelWidth = modelRowLabelWidth(width)) =>
+    items.map((item) => (
+      <DenseModelsRow
+        key={item.label}
+        label={item.label}
+        value={item.value}
+        color={item.color ?? theme.white}
+        selected={clampedSelectedPanelIndex === 6 && item.label === 'Manual run'}
+        backgroundColor={selectedRowBackground}
+        width={width}
+        labelWidth={labelWidth}
+        minValueWidth={8}
+      />
+    ))
 
   const renderPageBody = () => (
     <InkBox width="100%" flexDirection="column">
@@ -6896,290 +6929,177 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
         <Text color={theme.accent} bold>{fit('Model', modelsContentWidth)}</Text>
       </InkBox>
       <InkBox width="100%">
-      <InkBox width={modelsColumnWidths[0]} flexDirection="column">
-        <ModelsSectionTitle
-          title="Prediction Quality"
-          width={modelsColumnWidths[0]}
-          selected={clampedSelectedPanelIndex === 0}
-          backgroundColor={selectedRowBackground}
-        />
-        {predictionQualityStats.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
+        <InkBox width={modelsColumnWidths[0]} flexDirection="column">
+          <ModelsSectionTitle
+            title="Prediction Quality"
             width={modelsColumnWidths[0]}
-            labelWidth={14}
+            selected={clampedSelectedPanelIndex === 0}
+            backgroundColor={selectedRowBackground}
           />
-        ))}
-        <ModelsSpacer />
-        <ModelsSectionTitle
-          title="Tracker Health"
-          width={modelsColumnWidths[0]}
-          selected={clampedSelectedPanelIndex === 1}
-          backgroundColor={selectedRowBackground}
-        />
-        {trackerHealthStats.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
+          {renderModelRows(predictionQualityStats, modelsColumnWidths[0])}
+          <ModelsSpacer />
+          <ModelsSectionTitle
+            title="Tracker Health"
             width={modelsColumnWidths[0]}
-            labelWidth={14}
+            selected={clampedSelectedPanelIndex === 1}
+            backgroundColor={selectedRowBackground}
           />
-        ))}
-        <ModelsSpacer />
-        <ModelsSubsectionTitle title="Shadow Snapshot" width={modelsColumnWidths[0]} />
-        {shadowSnapshotPerformanceRows.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
-            width={modelsColumnWidths[0]}
-            labelWidth={14}
-          />
-        ))}
-        <ModelsSpacer />
-        <ModelsSectionTitle
-          title="Replay Lab"
-          width={modelsColumnWidths[0]}
-          selected={clampedSelectedPanelIndex === 2}
-          backgroundColor={selectedRowBackground}
-        />
-        {replayLabStats.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
-            width={modelsColumnWidths[0]}
-            labelWidth={14}
-          />
-        ))}
-      </InkBox>
+          {renderModelRows(trackerHealthStats, modelsColumnWidths[0])}
+          <ModelsSpacer />
+          <ModelsSubsectionTitle title="Shadow Snapshot" width={modelsColumnWidths[0]} />
+          {renderModelRows(shadowSnapshotPerformanceRows, modelsColumnWidths[0])}
+        </InkBox>
 
-      <InkBox width={modelsColumnGap} />
+        <InkBox width={modelsColumnGap} />
 
-      <InkBox width={modelsColumnWidths[1]} flexDirection="column">
-        <ModelsSectionTitle
-          title="Confidence + Modes"
-          width={modelsColumnWidths[1]}
-          selected={clampedSelectedPanelIndex === 3}
-          backgroundColor={selectedRowBackground}
-        />
-        {confusionCells.map((cell) => (
-          <DenseModelsRow
-            key={cell.label}
-            label={cell.label}
-            value={formatCount(cell.value)}
-            color={confusionHeatColor(cell.value, confusionScale, cell.kind)}
+        <InkBox width={modelsColumnWidths[1]} flexDirection="column">
+          <ModelsSectionTitle
+            title="Replay Lab A"
             width={modelsColumnWidths[1]}
-            labelWidth={12}
+            selected={clampedSelectedPanelIndex === 2}
+            backgroundColor={selectedRowBackground}
           />
-        ))}
-        <ModelsSpacer />
-        <ModelsSubsectionTitle title="Calibration" width={modelsColumnWidths[1]} />
-        {confidenceCheckStats.map((item) => (
+          {renderModelRows(replayLabColumns[0] ?? [], modelsColumnWidths[1])}
+        </InkBox>
+
+        <InkBox width={modelsColumnGap} />
+
+        <InkBox width={modelsColumnWidths[2]} flexDirection="column">
+          <ModelsSectionTitle
+            title="Replay Lab B"
+            width={modelsColumnWidths[2]}
+            selected={clampedSelectedPanelIndex === 2}
+            backgroundColor={selectedRowBackground}
+          />
+          {renderModelRows(replayLabColumns[1] ?? [], modelsColumnWidths[2])}
+          <ModelsSpacer />
+          <ModelsSectionTitle
+            title="Confidence"
+            width={modelsColumnWidths[2]}
+            selected={clampedSelectedPanelIndex === 3}
+            backgroundColor={selectedRowBackground}
+          />
+          {confusionCells.map((cell) => (
+            <DenseModelsRow
+              key={cell.label}
+              label={cell.label}
+              value={formatCount(cell.value)}
+              color={confusionHeatColor(cell.value, confusionScale, cell.kind)}
+              width={modelsColumnWidths[2]}
+              labelWidth={modelRowLabelWidth(modelsColumnWidths[2])}
+              minValueWidth={8}
+            />
+          ))}
+          {renderModelRows(confidenceCheckStats, modelsColumnWidths[2])}
+        </InkBox>
+
+        <InkBox width={modelsColumnGap} />
+
+        <InkBox width={modelsColumnWidths[3]} flexDirection="column">
+          <ModelsSectionTitle
+            title="Modes + Exits"
+            width={modelsColumnWidths[3]}
+            selected={clampedSelectedPanelIndex === 4}
+            backgroundColor={selectedRowBackground}
+          />
           <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
-            width={modelsColumnWidths[1]}
-            labelWidth={12}
+            label="Recent path"
+            value={activeScorerLabel}
+            color={activeScorerColor}
+            width={modelsColumnWidths[3]}
+            labelWidth={modelRowLabelWidth(modelsColumnWidths[3])}
+            minValueWidth={8}
           />
-        ))}
-        <ModelsSpacer />
-        <ModelsSubsectionTitle title="Decision Paths" width={modelsColumnWidths[1]} />
-        <DenseModelsRow
-          label="Recent path"
-          value={activeScorerLabel}
-          color={activeScorerColor}
-          width={modelsColumnWidths[1]}
-          labelWidth={12}
-        />
-        <DenseModelsRow
-          label="Primary path"
-          value={primaryMode ? modeLabel(primaryMode) : '-'}
-          color={primaryMode ? theme.accent : theme.dim}
-          width={modelsColumnWidths[1]}
-          labelWidth={12}
-        />
-        {signalModeCards.length ? (
-          signalModeCards.map((card, index) => (
-            <React.Fragment key={card.title}>
-              <ModelsSpacer />
+          <DenseModelsRow
+            label="Primary path"
+            value={primaryMode ? modeLabel(primaryMode) : '-'}
+            color={primaryMode ? theme.accent : theme.dim}
+            width={modelsColumnWidths[3]}
+            labelWidth={modelRowLabelWidth(modelsColumnWidths[3])}
+            minValueWidth={8}
+          />
+          {signalModeCards.length ? (
+            signalModeCards.flatMap((card) => [
               <ModelsSubsectionTitle
+                key={`${card.title}-title`}
                 title={card.title}
-                width={modelsColumnWidths[1]}
+                width={modelsColumnWidths[3]}
                 color={card.titleColor ?? theme.white}
-              />
-              {card.rows.map((item) => (
+              />,
+              ...card.rows.map((item) => (
                 <DenseModelsRow
                   key={`${card.title}-${item.label}`}
                   label={item.label}
                   value={item.value}
                   color={item.color ?? theme.white}
-                  width={modelsColumnWidths[1]}
-                  labelWidth={12}
+                  width={modelsColumnWidths[3]}
+                  labelWidth={modelRowLabelWidth(modelsColumnWidths[3])}
+                  minValueWidth={8}
                 />
-              ))}
-            </React.Fragment>
-          ))
-        ) : (
-          <Text color={theme.dim}>{fit('No tracker signals yet.', modelsColumnWidths[1])}</Text>
-        )}
-        <ModelsSpacer />
-        <ModelsSectionTitle
-          title="Exit Guard"
-          width={modelsColumnWidths[1]}
-          selected={clampedSelectedPanelIndex === 4}
-          backgroundColor={selectedRowBackground}
-        />
-        {exitGuardStats.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
-            width={modelsColumnWidths[1]}
-            labelWidth={12}
-          />
-        ))}
-        <ModelsSpacer />
-        <RecentExitHeaderRow width={modelsColumnWidths[1]} />
-        {recentExitAudits.length ? (
-          recentExitAudits.map((row, index) => (
-            <RecentExitDataRow
-              key={`${row.audited_at}-${row.decision || 'decision'}-${index}`}
-              width={modelsColumnWidths[1]}
-              timestamp={formatShortDateTime(row.audited_at)}
-              timestampColor={theme.dim}
-              action={exitDecisionLabel(row.decision, row.reason)}
-              actionColor={exitDecisionColor(row.decision, row.reason)}
-              estimatedReturn={formatPct(row.estimated_return_pct, 1)}
-              estimatedReturnColor={signedMetricColor(row.estimated_return_pct)}
-              reason={String(row.reason || '').trim() || '-'}
-              reasonColor={theme.dim}
-            />
-          ))
-        ) : (
-          <Text color={theme.dim}>{fit('No exit audits logged yet.', modelsColumnWidths[1])}</Text>
-        )}
-      </InkBox>
-
-      <InkBox width={modelsColumnGap} />
-
-      <InkBox width={modelsColumnWidths[2]} flexDirection="column">
-        <ModelsSectionTitle
-          title="How It Works"
-          width={modelsColumnWidths[2]}
-          selected={clampedSelectedPanelIndex === 5}
-          backgroundColor={selectedRowBackground}
-        />
-        {howItWorksScoreRows.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
-            width={modelsColumnWidths[2]}
-            labelWidth={14}
-          />
-        ))}
-        <ModelsSpacer />
-        <ModelsSpacer />
-        <ModelsSubsectionTitle title="History Nudge" width={modelsColumnWidths[2]} />
-        {howItWorksHistoryRows.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
-            width={modelsColumnWidths[2]}
-            labelWidth={14}
-          />
-        ))}
-        <ModelsSpacer />
-        <ModelsSectionTitle
-          title="Training Cycle"
-          width={modelsColumnWidths[2]}
-          selected={clampedSelectedPanelIndex === 6}
-          backgroundColor={selectedRowBackground}
-        />
-        {trainingCycleDisplayStats.map((item) => (
-          <DenseModelsRow
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            color={item.color ?? theme.white}
-            selected={clampedSelectedPanelIndex === 6 && item.label === 'Manual run'}
+              ))
+            ])
+          ) : (
+            <Text color={theme.dim}>{fit('No tracker signals yet.', modelsColumnWidths[3])}</Text>
+          )}
+          <ModelsSpacer />
+          <ModelsSubsectionTitle title="Exit Guard" width={modelsColumnWidths[3]} />
+          {renderModelRows(exitGuardStats, modelsColumnWidths[3])}
+          {compactRecentExitRows.length ? renderModelRows(compactRecentExitRows, modelsColumnWidths[3]) : null}
+          <ModelsSpacer />
+          <ModelsSectionTitle
+            title="How It Works"
+            width={modelsColumnWidths[3]}
+            selected={clampedSelectedPanelIndex === 5}
             backgroundColor={selectedRowBackground}
-            width={modelsColumnWidths[2]}
-            labelWidth={11}
-            minValueWidth={16}
           />
-        ))}
+          {renderModelRows(howItWorksScoreRows, modelsColumnWidths[3])}
+          <ModelsSubsectionTitle title="History Nudge" width={modelsColumnWidths[3]} />
+          {renderModelRows(howItWorksHistoryRows, modelsColumnWidths[3])}
+        </InkBox>
 
-        {latestSharedHoldoutRun && latestSharedHoldout ? (
-          <>
-            <DenseModelsRow
-              label="Holdout gate"
-              value={sharedHoldoutGateReadCompact(latestSharedHoldoutRun)}
-              color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
-              width={modelsColumnWidths[2]}
-              labelWidth={11}
-              minValueWidth={16}
-            />
-            <DenseModelsRow
-              label="Gate run"
-              value={formatShortDateTime(latestSharedHoldoutRun.finished_at)}
-              width={modelsColumnWidths[2]}
-              labelWidth={11}
-              minValueWidth={16}
-            />
-            <DenseModelsRow
-              label="LL c / i"
-              value={`${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} / ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}`}
-              color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
-              width={modelsColumnWidths[2]}
-              labelWidth={11}
-              minValueWidth={16}
-            />
-            <DenseModelsRow
-              label="Brier c / i"
-              value={`${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`}
-              color={sharedHoldoutGateReadColor(latestSharedHoldoutRun)}
-              width={modelsColumnWidths[2]}
-              labelWidth={11}
-              minValueWidth={16}
-            />
-          </>
-        ) : null}
-        <ModelsSpacer />
-        <RecentRunsHeaderRow width={modelsColumnWidths[2]} />
-        {recentRetrainRuns.length ? (
-          recentRetrainRuns.map((row, index) => (
-            <RecentRunsDataRow
-              key={`${row.finished_at}-${row.status || 'run'}-${index}`}
-              width={modelsColumnWidths[2]}
-              timestamp={formatShortDateTime(row.finished_at)}
-              timestampColor={theme.dim}
-              logLoss={formatNumber(row.log_loss, 3)}
-              logLossColor={lowerIsBetterColor(row.log_loss, 0.55, 0.69)}
-              brier={formatNumber(row.brier_score, 3)}
-              brierColor={lowerIsBetterColor(row.brier_score, 0.18, 0.25)}
-              result={retrainRunStateCompactLabel(row.status, row.deployed)}
-              resultColor={retrainRunStateColor(row.status, row.deployed)}
-            />
-          ))
-        ) : (
-          <Text color={theme.dim}>{fit('No retrain attempts logged yet.', modelsColumnWidths[2])}</Text>
-        )}
-      </InkBox>
+        <InkBox width={modelsColumnGap} />
+
+        <InkBox width={modelsColumnWidths[4]} flexDirection="column">
+          <ModelsSectionTitle
+            title="Training Cycle"
+            width={modelsColumnWidths[4]}
+            selected={clampedSelectedPanelIndex === 6}
+            backgroundColor={selectedRowBackground}
+          />
+          {renderModelRows(trainingCycleDisplayStats, modelsColumnWidths[4])}
+          {latestSharedHoldoutRun && latestSharedHoldout ? (
+            <>
+              {renderModelRows(
+                [
+                  {
+                    label: 'Holdout gate',
+                    value: sharedHoldoutGateReadCompact(latestSharedHoldoutRun),
+                    color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                  },
+                  {label: 'Gate run', value: formatShortDateTime(latestSharedHoldoutRun.finished_at)},
+                  {
+                    label: 'LL c / i',
+                    value: `${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} / ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}`,
+                    color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                  },
+                  {
+                    label: 'Brier c/i',
+                    value: `${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`,
+                    color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                  }
+                ],
+                modelsColumnWidths[4]
+              )}
+            </>
+          ) : null}
+          <ModelsSpacer />
+          <ModelsSubsectionTitle title="Recent Training" width={modelsColumnWidths[4]} />
+          {compactRecentRetrainRows.length ? (
+            renderModelRows(compactRecentRetrainRows, modelsColumnWidths[4])
+          ) : (
+            <Text color={theme.dim}>{fit('No retrain attempts logged yet.', modelsColumnWidths[4])}</Text>
+          )}
+        </InkBox>
       </InkBox>
     </InkBox>
   )

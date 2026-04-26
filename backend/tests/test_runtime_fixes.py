@@ -16,8 +16,15 @@ from unittest.mock import Mock, patch
 
 if "apscheduler.schedulers.background" not in sys.modules:
     apscheduler_module = types.ModuleType("apscheduler")
+    executors_module = types.ModuleType("apscheduler.executors")
+    pool_module = types.ModuleType("apscheduler.executors.pool")
     schedulers_module = types.ModuleType("apscheduler.schedulers")
     background_module = types.ModuleType("apscheduler.schedulers.background")
+
+    class _SchedulerThreadPoolExecutor:
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args
+            self.kwargs = kwargs
 
     class _BackgroundScheduler:
         def add_job(self, *args, **kwargs) -> None:
@@ -26,10 +33,15 @@ if "apscheduler.schedulers.background" not in sys.modules:
         def start(self) -> None:
             return None
 
+    pool_module.ThreadPoolExecutor = _SchedulerThreadPoolExecutor
+    executors_module.pool = pool_module
     background_module.BackgroundScheduler = _BackgroundScheduler
+    apscheduler_module.executors = executors_module
     schedulers_module.background = background_module
     apscheduler_module.schedulers = schedulers_module
     sys.modules["apscheduler"] = apscheduler_module
+    sys.modules["apscheduler.executors"] = executors_module
+    sys.modules["apscheduler.executors.pool"] = pool_module
     sys.modules["apscheduler.schedulers"] = schedulers_module
     sys.modules["apscheduler.schedulers.background"] = background_module
 
@@ -7507,9 +7519,38 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertFalse(tracker_obj._is_new_for_wallet("0xabc", duplicate_event))
         self.assertTrue(tracker_obj._is_new_for_wallet("0xabc", new_same_ts))
-        with patch("kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=30):
+        with patch("kelly_watcher.config.max_source_trade_age_seconds", return_value=30):
             self.assertTrue(tracker_obj._is_stale_event(stale_event, poll_started_at=200))
             self.assertFalse(tracker_obj._is_stale_event(new_same_ts, poll_started_at=220))
+
+        far_event = tracker.TradeEvent(
+            trade_id="t-far",
+            market_id="m1",
+            question="Question",
+            side="yes",
+            action="buy",
+            price=0.5,
+            shares=10.0,
+            size_usd=5.0,
+            token_id="token-1",
+            trader_name="Trader",
+            trader_address="0xabc",
+            timestamp=100,
+            close_time="",
+            market_close_ts=200 + 7200,
+        )
+        with patch("kelly_watcher.config.max_source_trade_age_seconds", return_value=30), patch(
+            "kelly_watcher.config.max_source_trade_age_far_seconds", return_value=180
+        ), patch("kelly_watcher.config.source_trade_age_far_market_horizon_seconds", return_value=3600):
+            self.assertFalse(tracker_obj._is_stale_event(far_event, poll_started_at=200))
+
+    def test_source_trade_age_limit_uses_far_window_for_far_horizon_markets(self) -> None:
+        with patch("kelly_watcher.config.max_source_trade_age_seconds", return_value=45), patch(
+            "kelly_watcher.config.max_source_trade_age_far_seconds", return_value=180
+        ), patch("kelly_watcher.config.source_trade_age_far_market_horizon_seconds", return_value=3600):
+            self.assertEqual(config.source_trade_age_limit_seconds(10_000, now_ts=5_000), 180)
+            self.assertEqual(config.source_trade_age_limit_seconds(5_300, now_ts=5_000), 45)
+            self.assertEqual(config.source_trade_age_limit_seconds(0, now_ts=5_000), 45)
 
     def test_tracker_rejects_missing_timestamp_and_missing_price(self) -> None:
         tracker_obj = object.__new__(tracker.PolymarketTracker)

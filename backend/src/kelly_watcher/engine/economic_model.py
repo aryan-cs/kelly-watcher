@@ -55,7 +55,12 @@ def inverse_return_target(value: Any):
 
 
 def clip_confidence(value: Any):
-    clipped = np.clip(np.asarray(value, dtype=float), MIN_CONFIDENCE_CLIP, MAX_CONFIDENCE_CLIP)
+    values = np.asarray(value, dtype=float)
+    clipped = np.where(
+        np.isfinite(values),
+        np.clip(values, MIN_CONFIDENCE_CLIP, MAX_CONFIDENCE_CLIP),
+        np.nan,
+    )
     if np.ndim(clipped) == 0:
         return float(clipped)
     return clipped
@@ -63,8 +68,13 @@ def clip_confidence(value: Any):
 
 def expected_return_to_confidence(expected_return: Any, price: Any):
     returns = np.asarray(expected_return, dtype=float)
-    prices = np.clip(np.asarray(price, dtype=float), 0.01, 0.99)
-    implied = prices * (1.0 + returns)
+    raw_prices = np.asarray(price, dtype=float)
+    prices = np.clip(raw_prices, 0.01, 0.99)
+    implied = np.where(
+        np.isfinite(returns) & np.isfinite(raw_prices),
+        prices * (1.0 + returns),
+        np.nan,
+    )
     return clip_confidence(implied)
 
 

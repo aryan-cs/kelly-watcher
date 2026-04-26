@@ -116,6 +116,26 @@ class ReplayTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "heuristic_min_time_to_close_seconds"):
             ReplayPolicy.from_payload({"heuristic_min_time_to_close_seconds": "-5m"})
 
+    def test_replay_policy_parses_boolean_strings_and_rejects_nonfinite_values(self) -> None:
+        policy = ReplayPolicy.from_payload(
+            {
+                "allow_heuristic": "false",
+                "allow_xgboost": "0",
+            }
+        )
+
+        self.assertFalse(policy.allow_heuristic)
+        self.assertFalse(policy.allow_xgboost)
+
+        with self.assertRaisesRegex(ValueError, "allow_heuristic must be boolean"):
+            ReplayPolicy.from_payload({"allow_heuristic": "definitely"})
+        with self.assertRaisesRegex(ValueError, "min_confidence must be finite"):
+            ReplayPolicy.from_payload({"min_confidence": "nan"})
+        with self.assertRaisesRegex(ValueError, "max_bet_fraction must be finite"):
+            ReplayPolicy.from_payload({"max_bet_fraction": "inf"})
+        with self.assertRaisesRegex(ValueError, "heuristic_min_time_to_close_seconds must be finite"):
+            ReplayPolicy.from_payload({"heuristic_min_time_to_close_seconds": "inf"})
+
     def test_run_replay_persists_summary_and_trade_decisions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

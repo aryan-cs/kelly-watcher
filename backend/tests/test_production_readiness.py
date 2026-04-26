@@ -1102,6 +1102,122 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_iter_queued_event_batches_yields_each_enriched_chunk_in_claim_order(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+
+                def raw_trade(trade_id: str, market_id: str, token_id: str, source_ts: int) -> dict[str, object]:
+                    return {
+                        "id": trade_id,
+                        "conditionId": market_id,
+                        "side": "BUY",
+                        "asset": token_id,
+                        "size": 10,
+                        "price": 0.42,
+                        "timestamp": source_ts,
+                        "outcome": "Yes",
+                    }
+
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, ?, 'pending', 0, ?, ?, ?, '')
+                        """,
+                        [
+                            (
+                                "newer",
+                                "market-newer",
+                                "token-newer",
+                                now_ts - 5,
+                                json.dumps(raw_trade("newer", "market-newer", "token-newer", now_ts - 5)),
+                                now_ts - 5,
+                                now_ts - 5,
+                                now_ts - 5,
+                            ),
+                            (
+                                "older",
+                                "market-older",
+                                "token-older",
+                                now_ts - 25,
+                                json.dumps(raw_trade("older", "market-older", "token-older", now_ts - 25)),
+                                now_ts - 25,
+                                now_ts - 25,
+                                now_ts - 25,
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                def metadata_batch(condition_ids):
+                    return {
+                        condition_id: (
+                            {"question": condition_id, "endDate": str(now_ts + 7200)},
+                            now_ts,
+                        )
+                        for condition_id in condition_ids
+                    }
+
+                def orderbook_batch(token_ids):
+                    return {
+                        token_id: (
+                            {"best_bid": 0.41, "best_ask": 0.43, "mid": 0.42},
+                            {"bids": [], "asks": []},
+                            now_ts,
+                        )
+                        for token_id in token_ids
+                    }
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                tracker_obj._fetch_market_metadata_batch = Mock(side_effect=metadata_batch)
+                tracker_obj._fetch_orderbook_snapshots_batch = Mock(side_effect=orderbook_batch)
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=180
+                    ):
+                        batches = list(
+                            tracker_obj.iter_queued_event_batches(
+                                limit=2,
+                                watch_tiers=("hot",),
+                                batch_size=1,
+                            )
+                        )
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual(
+                    [[event.trade_id for event in batch] for batch in batches],
+                    [["newer"], ["older"]],
+                )
+                self.assertEqual(
+                    tracker_obj._fetch_market_metadata_batch.call_args_list[0].args[0],
+                    ["market-newer"],
+                )
+                self.assertEqual(
+                    tracker_obj._fetch_market_metadata_batch.call_args_list[1].args[0],
+                    ["market-older"],
+                )
+                self.assertEqual(
+                    tracker_obj._fetch_orderbook_snapshots_batch.call_args_list[0].args[0],
+                    ["token-newer"],
+                )
+                self.assertEqual(
+                    tracker_obj._fetch_orderbook_snapshots_batch.call_args_list[1].args[0],
+                    ["token-older"],
+                )
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_load_queued_events_retries_when_metadata_unavailable(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

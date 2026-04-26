@@ -7160,15 +7160,18 @@ def main() -> None:
                             source_events_processing=queue_counts.get("processing", 0),
                             poll_stage=f"loading_source_queue:{batch.watch_tier or 'unknown'}",
                         )
-                        events = tracker.load_queued_events(
+                        for events in tracker.iter_queued_event_batches(
                             limit=remaining_budget,
                             watch_tiers=(batch.watch_tier,),
-                        )
-                        _persist_bot_state(
-                            last_event_count=event_count + len(events),
-                            poll_stage=f"processing_source_queue:{batch.watch_tier or 'unknown'}",
-                        )
-                        _process_queued_events(events)
+                        ):
+                            _persist_bot_state(
+                                last_event_count=event_count + len(events),
+                                poll_stage=f"processing_source_queue:{batch.watch_tier or 'unknown'}",
+                            )
+                            _process_queued_events(events)
+                            remaining_budget = max(event_budget - event_count, 0)
+                            if remaining_budget <= 0 or shutdown_event.is_set():
+                                break
 
                     remaining_budget = max(event_budget - event_count, 0)
                     if remaining_budget > 0 and not shutdown_event.is_set():
@@ -7184,12 +7187,15 @@ def main() -> None:
                             source_events_processing=queue_counts.get("processing", 0),
                             poll_stage="loading_source_queue:remaining",
                         )
-                        events = tracker.load_queued_events(limit=remaining_budget)
-                        _persist_bot_state(
-                            last_event_count=event_count + len(events),
-                            poll_stage="processing_source_queue:remaining",
-                        )
-                        _process_queued_events(events)
+                        for events in tracker.iter_queued_event_batches(limit=remaining_budget):
+                            _persist_bot_state(
+                                last_event_count=event_count + len(events),
+                                poll_stage="processing_source_queue:remaining",
+                            )
+                            _process_queued_events(events)
+                            remaining_budget = max(event_budget - event_count, 0)
+                            if remaining_budget <= 0 or shutdown_event.is_set():
+                                break
                     queue_counts = tracker.source_queue_counts()
                 except Exception as exc:
                     loop_error_at = int(time.time())

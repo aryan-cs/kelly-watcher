@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -61,6 +62,65 @@ USDC_DECIMALS = 1_000_000.0
 EXECUTION_ORDERBOOK_TIMEOUT_S = 3.0
 FEE_RATE_TIMEOUT_S = 3.0
 FEE_RATE_CACHE_TTL_S = 300.0
+_PY_CLOB_HTTP_CLIENT_LOCK = threading.Lock()
+_PY_CLOB_HTTP_CLIENT_USERS = 0
+
+
+def _py_clob_helpers_module() -> Any | None:
+    try:
+        import py_clob_client.http_helpers.helpers as helpers
+    except Exception:
+        return None
+    return helpers
+
+
+def _close_http_client_safely(client: Any, *, label: str) -> None:
+    close = getattr(client, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        logger.debug("%s close skipped", label, exc_info=True)
+
+
+def _register_py_clob_http_client_user() -> bool:
+    global _PY_CLOB_HTTP_CLIENT_USERS
+    helpers = _py_clob_helpers_module()
+    if helpers is None:
+        return False
+    with _PY_CLOB_HTTP_CLIENT_LOCK:
+        client = getattr(helpers, "_http_client", None)
+        if client is None or bool(getattr(client, "is_closed", False)):
+            helpers._http_client = httpx.Client(http2=True)
+        _PY_CLOB_HTTP_CLIENT_USERS += 1
+    return True
+
+
+def _close_py_clob_http_client_if_unused() -> None:
+    helpers = _py_clob_helpers_module()
+    if helpers is None:
+        return
+    with _PY_CLOB_HTTP_CLIENT_LOCK:
+        if _PY_CLOB_HTTP_CLIENT_USERS > 0:
+            return
+        client = getattr(helpers, "_http_client", None)
+        helpers._http_client = None
+    _close_http_client_safely(client, label="py_clob_client HTTP client")
+
+
+def _release_py_clob_http_client_user() -> None:
+    global _PY_CLOB_HTTP_CLIENT_USERS
+    helpers = _py_clob_helpers_module()
+    if helpers is None:
+        return
+    with _PY_CLOB_HTTP_CLIENT_LOCK:
+        _PY_CLOB_HTTP_CLIENT_USERS = max(_PY_CLOB_HTTP_CLIENT_USERS - 1, 0)
+        if _PY_CLOB_HTTP_CLIENT_USERS > 0:
+            return
+        client = getattr(helpers, "_http_client", None)
+        helpers._http_client = None
+    _close_http_client_safely(client, label="py_clob_client HTTP client")
 
 
 @dataclass
@@ -119,6 +179,8 @@ def _market_url_from_metadata(meta: Any) -> str | None:
 class PolymarketExecutor:
     def __init__(self):
         self._clob = None
+        self._closed = False
+        self._uses_py_clob_http_client = False
         self._http_client = httpx.Client(
             timeout=10.0,
             follow_redirects=True,
@@ -133,11 +195,23 @@ class PolymarketExecutor:
         try:
             self._init_clob()
         except Exception:
-            self._http_client.close()
+            self.close()
+            _close_py_clob_http_client_if_unused()
             raise
 
     def close(self) -> None:
-        self._http_client.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._http_client.close()
+        finally:
+            clob = self._clob
+            self._clob = None
+            _close_http_client_safely(clob, label="CLOB client")
+            if self._uses_py_clob_http_client:
+                self._uses_py_clob_http_client = False
+                _release_py_clob_http_client_user()
 
     @staticmethod
     def _fees_enabled_from_metadata(meta: Any) -> bool | None:
@@ -405,10 +479,12 @@ class PolymarketExecutor:
             logger.info("Shadow mode active - CLOB client not initialized")
             return
 
+        registered_py_clob_client = False
         try:
             from py_clob_client.client import ClobClient
             from kelly_watcher.config import private_key, wallet_address
 
+            registered_py_clob_client = _register_py_clob_http_client_user()
             self._clob = ClobClient(
                 "https://clob.polymarket.com",
                 key=private_key(),
@@ -417,8 +493,12 @@ class PolymarketExecutor:
                 funder=wallet_address(),
             )
             self._clob.set_api_creds(self._clob.create_or_derive_api_creds())
+            self._uses_py_clob_http_client = registered_py_clob_client
+            registered_py_clob_client = False
             logger.info("CLOB client initialized for live trading")
         except Exception as exc:
+            if registered_py_clob_client:
+                _release_py_clob_http_client_user()
             logger.error("CLOB client init failed: %s", exc)
             raise
 

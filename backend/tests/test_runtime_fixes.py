@@ -99,6 +99,7 @@ import httpx
 import kelly_watcher.data.identity_cache as identity_cache
 import kelly_watcher.main as main
 import kelly_watcher.runtime.performance_preview as performance_preview
+import kelly_watcher.runtime.executor as executor_module
 import kelly_watcher.shadow_reset as shadow_reset
 import kelly_watcher.engine.shadow_evidence as shadow_evidence
 import kelly_watcher.runtime.tracker as tracker
@@ -1334,6 +1335,100 @@ class RuntimeFixesTest(unittest.TestCase):
                 PolymarketExecutor()
 
         http_client.close.assert_called_once()
+
+    def test_executor_close_releases_py_clob_helper_http_client(self) -> None:
+        py_clob_module = types.ModuleType("py_clob_client")
+        py_clob_module.__path__ = []
+        http_helpers_module = types.ModuleType("py_clob_client.http_helpers")
+        http_helpers_module.__path__ = []
+        helpers_module = types.ModuleType("py_clob_client.http_helpers.helpers")
+        py_client = Mock()
+        py_client.is_closed = False
+        helpers_module._http_client = py_client
+        http_helpers_module.helpers = helpers_module
+        py_clob_module.http_helpers = http_helpers_module
+
+        executor = object.__new__(PolymarketExecutor)
+        clob_client = Mock()
+        executor._http_client = Mock()
+        executor._clob = clob_client
+        executor._closed = False
+        executor._uses_py_clob_http_client = True
+
+        original_users = executor_module._PY_CLOB_HTTP_CLIENT_USERS
+        try:
+            executor_module._PY_CLOB_HTTP_CLIENT_USERS = 1
+            with patch.dict(
+                sys.modules,
+                {
+                    "py_clob_client": py_clob_module,
+                    "py_clob_client.http_helpers": http_helpers_module,
+                    "py_clob_client.http_helpers.helpers": helpers_module,
+                },
+            ):
+                executor.close()
+        finally:
+            executor_module._PY_CLOB_HTTP_CLIENT_USERS = original_users
+
+        executor._http_client.close.assert_called_once()
+        clob_client.close.assert_called_once()
+        py_client.close.assert_called_once()
+        self.assertIsNone(helpers_module._http_client)
+
+    def test_py_clob_helper_http_client_reopens_after_prior_close(self) -> None:
+        py_clob_module = types.ModuleType("py_clob_client")
+        py_clob_module.__path__ = []
+        http_helpers_module = types.ModuleType("py_clob_client.http_helpers")
+        http_helpers_module.__path__ = []
+        helpers_module = types.ModuleType("py_clob_client.http_helpers.helpers")
+        closed_client = Mock()
+        closed_client.is_closed = True
+        replacement_client = Mock()
+        helpers_module._http_client = closed_client
+        http_helpers_module.helpers = helpers_module
+        py_clob_module.http_helpers = http_helpers_module
+
+        original_users = executor_module._PY_CLOB_HTTP_CLIENT_USERS
+        try:
+            executor_module._PY_CLOB_HTTP_CLIENT_USERS = 0
+            with patch.dict(
+                sys.modules,
+                {
+                    "py_clob_client": py_clob_module,
+                    "py_clob_client.http_helpers": http_helpers_module,
+                    "py_clob_client.http_helpers.helpers": helpers_module,
+                },
+            ), patch("kelly_watcher.runtime.executor.httpx.Client", return_value=replacement_client):
+                self.assertTrue(executor_module._register_py_clob_http_client_user())
+                self.assertIs(helpers_module._http_client, replacement_client)
+                executor_module._release_py_clob_http_client_user()
+        finally:
+            executor_module._PY_CLOB_HTTP_CLIENT_USERS = original_users
+
+        replacement_client.close.assert_called_once()
+
+    def test_connect_sqlite_closes_connection_when_runtime_pragmas_fail(self) -> None:
+        fake_conn = Mock()
+        fake_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "locked.db"
+            with patch.object(db.sqlite3, "connect", return_value=fake_conn):
+                with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
+                    db.get_conn_for_path(db_path, apply_runtime_pragmas=True)
+
+        fake_conn.close.assert_called_once()
+
+    def test_init_db_closes_connection_when_schema_setup_fails(self) -> None:
+        fake_conn = Mock()
+        fake_conn.executescript.side_effect = sqlite3.OperationalError("schema failed")
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trading.db"
+            with patch.object(db, "get_conn_for_path", return_value=fake_conn):
+                with self.assertRaisesRegex(sqlite3.OperationalError, "schema failed"):
+                    db.init_db(db_path, run_heavy_maintenance=False)
+
+        fake_conn.close.assert_called_once()
+        fake_conn.rollback.assert_called_once()
 
     def test_database_integrity_state_reports_sqlite_error(self) -> None:
         with TemporaryDirectory() as tmpdir:

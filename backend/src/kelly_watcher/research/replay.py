@@ -150,13 +150,18 @@ class ReplayPolicy:
                 if key not in base or value is None:
                     continue
                 base[key] = value
+        finite = _finite_float
         return cls(
             mode=str(base["mode"] or "shadow").strip().lower() or "shadow",
-            initial_bankroll_usd=max(float(base["initial_bankroll_usd"]), 0.0),
-            min_confidence=_clamp(float(base["min_confidence"]), 0.0, 1.0),
-            min_bet_usd=max(float(base["min_bet_usd"]), 0.0),
-            heuristic_min_entry_price=_clamp(float(base["heuristic_min_entry_price"]), 0.0, 1.0),
-            heuristic_max_entry_price=_clamp(float(base["heuristic_max_entry_price"]), 0.0, 1.0),
+            initial_bankroll_usd=max(finite(base["initial_bankroll_usd"], "initial_bankroll_usd"), 0.0),
+            min_confidence=_clamp(finite(base["min_confidence"], "min_confidence"), 0.0, 1.0),
+            min_bet_usd=max(finite(base["min_bet_usd"], "min_bet_usd"), 0.0),
+            heuristic_min_entry_price=_clamp(
+                finite(base["heuristic_min_entry_price"], "heuristic_min_entry_price"), 0.0, 1.0
+            ),
+            heuristic_max_entry_price=_clamp(
+                finite(base["heuristic_max_entry_price"], "heuristic_max_entry_price"), 0.0, 1.0
+            ),
             heuristic_allowed_entry_price_bands=_normalize_segment_filter(
                 base["heuristic_allowed_entry_price_bands"],
                 allowed_values=ENTRY_PRICE_BAND_CHOICES,
@@ -166,11 +171,15 @@ class ReplayPolicy:
                 base["heuristic_min_time_to_close_seconds"],
                 field_name="heuristic_min_time_to_close_seconds",
             ),
-            model_edge_mid_confidence=_clamp(float(base["model_edge_mid_confidence"]), 0.0, 1.0),
-            model_edge_high_confidence=_clamp(float(base["model_edge_high_confidence"]), 0.0, 1.0),
-            edge_threshold=float(base["edge_threshold"]),
-            model_edge_mid_threshold=float(base["model_edge_mid_threshold"]),
-            model_edge_high_threshold=float(base["model_edge_high_threshold"]),
+            model_edge_mid_confidence=_clamp(
+                finite(base["model_edge_mid_confidence"], "model_edge_mid_confidence"), 0.0, 1.0
+            ),
+            model_edge_high_confidence=_clamp(
+                finite(base["model_edge_high_confidence"], "model_edge_high_confidence"), 0.0, 1.0
+            ),
+            edge_threshold=finite(base["edge_threshold"], "edge_threshold"),
+            model_edge_mid_threshold=finite(base["model_edge_mid_threshold"], "model_edge_mid_threshold"),
+            model_edge_high_threshold=finite(base["model_edge_high_threshold"], "model_edge_high_threshold"),
             xgboost_allowed_entry_price_bands=_normalize_segment_filter(
                 base["xgboost_allowed_entry_price_bands"],
                 allowed_values=ENTRY_PRICE_BAND_CHOICES,
@@ -180,12 +189,20 @@ class ReplayPolicy:
                 base["model_min_time_to_close_seconds"],
                 field_name="model_min_time_to_close_seconds",
             ),
-            max_bet_fraction=_clamp(float(base["max_bet_fraction"]), 0.0, 1.0),
-            max_total_open_exposure_fraction=_clamp(float(base["max_total_open_exposure_fraction"]), 0.0, 1.0),
-            max_market_exposure_fraction=_clamp(float(base["max_market_exposure_fraction"]), 0.0, 1.0),
-            max_trader_exposure_fraction=_clamp(float(base["max_trader_exposure_fraction"]), 0.0, 1.0),
-            max_daily_loss_pct=_clamp(float(base["max_daily_loss_pct"]), 0.0, 1.0),
-            max_live_drawdown_pct=_clamp(float(base["max_live_drawdown_pct"]), 0.0, 1.0),
+            max_bet_fraction=_clamp(finite(base["max_bet_fraction"], "max_bet_fraction"), 0.0, 1.0),
+            max_total_open_exposure_fraction=_clamp(
+                finite(base["max_total_open_exposure_fraction"], "max_total_open_exposure_fraction"), 0.0, 1.0
+            ),
+            max_market_exposure_fraction=_clamp(
+                finite(base["max_market_exposure_fraction"], "max_market_exposure_fraction"), 0.0, 1.0
+            ),
+            max_trader_exposure_fraction=_clamp(
+                finite(base["max_trader_exposure_fraction"], "max_trader_exposure_fraction"), 0.0, 1.0
+            ),
+            max_daily_loss_pct=_clamp(finite(base["max_daily_loss_pct"], "max_daily_loss_pct"), 0.0, 1.0),
+            max_live_drawdown_pct=_clamp(
+                finite(base["max_live_drawdown_pct"], "max_live_drawdown_pct"), 0.0, 1.0
+            ),
             allowed_entry_price_bands=_normalize_segment_filter(
                 base["allowed_entry_price_bands"],
                 allowed_values=ENTRY_PRICE_BANDS,
@@ -196,8 +213,8 @@ class ReplayPolicy:
                 allowed_values=TIME_TO_CLOSE_BANDS,
                 field_name="allowed_time_to_close_bands",
             ),
-            allow_heuristic=bool(base["allow_heuristic"]),
-            allow_xgboost=bool(base["allow_xgboost"]),
+            allow_heuristic=_coerce_bool(base["allow_heuristic"], "allow_heuristic"),
+            allow_xgboost=_coerce_bool(base["allow_xgboost"], "allow_xgboost"),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -1795,6 +1812,8 @@ def _coerce_nonnegative_seconds(raw: Any, *, field_name: str) -> int:
                 seconds = float(number) * unit_seconds[unit]
             except ValueError as exc:
                 raise ValueError(f"{field_name} must be a non-negative duration or seconds value") from exc
+    if not math.isfinite(seconds):
+        raise ValueError(f"{field_name} must be finite")
     if seconds < 0:
         raise ValueError(f"{field_name} must be >= 0")
     return int(seconds)
@@ -1849,6 +1868,29 @@ def _nonfinite_signal_fields(signal: dict[str, Any]) -> list[str]:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(value, upper))
+
+
+def _finite_float(raw: Any, field_name: str) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be numeric") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{field_name} must be finite")
+    return value
+
+
+def _coerce_bool(raw: Any, field_name: str) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)) and math.isfinite(float(raw)) and float(raw) in {0.0, 1.0}:
+        return bool(int(raw))
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{field_name} must be boolean")
 
 
 def np_interp(x: float, xp: list[float], fp: list[float]) -> float:

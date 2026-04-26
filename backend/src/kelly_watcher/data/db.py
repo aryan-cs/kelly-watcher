@@ -63,17 +63,21 @@ def _connect_sqlite(path: Path, *, apply_runtime_pragmas: bool) -> sqlite3.Conne
     except ValueError:
         busy_timeout_ms = 30000
     conn = sqlite3.connect(path, timeout=connect_timeout_s, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
-    if apply_runtime_pragmas:
-        conn.execute("PRAGMA foreign_keys=ON")
-        resolved_path = _resolved_db_path_text(path)
-        if resolved_path not in _RUNTIME_JOURNAL_MODE_PATHS:
-            with _RUNTIME_JOURNAL_MODE_LOCK:
-                if resolved_path not in _RUNTIME_JOURNAL_MODE_PATHS:
-                    conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(path)}")
-                    _RUNTIME_JOURNAL_MODE_PATHS.add(resolved_path)
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+        if apply_runtime_pragmas:
+            conn.execute("PRAGMA foreign_keys=ON")
+            resolved_path = _resolved_db_path_text(path)
+            if resolved_path not in _RUNTIME_JOURNAL_MODE_PATHS:
+                with _RUNTIME_JOURNAL_MODE_LOCK:
+                    if resolved_path not in _RUNTIME_JOURNAL_MODE_PATHS:
+                        conn.execute(f"PRAGMA journal_mode={_preferred_journal_mode(path)}")
+                        _RUNTIME_JOURNAL_MODE_PATHS.add(resolved_path)
+        return conn
+    except BaseException:
+        conn.close()
+        raise
 
 
 def get_conn() -> sqlite3.Connection:
@@ -748,6 +752,24 @@ def _backfill_retrain_run_shared_holdout_metrics(conn: sqlite3.Connection) -> No
 def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = None) -> None:
     target = Path(path) if path is not None else DB_PATH
     conn = get_conn_for_path(target, apply_runtime_pragmas=True)
+    try:
+        _init_db_with_connection(conn, target, run_heavy_maintenance=run_heavy_maintenance)
+    except BaseException:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def _init_db_with_connection(
+    conn: sqlite3.Connection,
+    target: Path,
+    *,
+    run_heavy_maintenance: bool | None,
+) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS seen_trades (
@@ -1792,7 +1814,6 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
             "Skipping heavy startup DB maintenance for shared/network path: %s",
             target,
         )
-    conn.close()
 
 
 if __name__ == "__main__":

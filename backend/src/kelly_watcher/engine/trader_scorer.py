@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -629,28 +630,32 @@ class TraderScorer:
 
     @staticmethod
     def _score_win_rate(win_rate: float, n_trades: int) -> float:
-        clipped = float(np.clip(win_rate, 0, 1))
-        if n_trades <= 0:
+        clipped = float(np.clip(_finite_or_default(win_rate, 0.5), 0, 1))
+        safe_trades = max(_finite_or_default(n_trades, 0.0), 0.0)
+        if safe_trades <= 0:
             return 0.5
-        evidence_weight = n_trades / (n_trades + 20.0)
+        evidence_weight = safe_trades / (safe_trades + 20.0)
         shrunk = 0.5 + (clipped - 0.5) * evidence_weight
         return float(np.clip(shrunk, 0, 1))
 
     @staticmethod
     def _score_consistency(sharpe_like: float) -> float:
-        return float(np.clip(sharpe_like / 3.0, 0, 1))
+        return float(np.clip(_finite_or_default(sharpe_like, 0.0) / 3.0, 0, 1))
 
     @staticmethod
     def _score_age(days: int) -> float:
-        return float(np.clip(np.log1p(days) / np.log1p(365), 0, 1))
+        safe_days = max(_finite_or_default(days, 0.0), 0.0)
+        return float(np.clip(np.log1p(safe_days) / np.log1p(365), 0, 1))
 
     @staticmethod
     def _score_conviction(ratio: float) -> float:
-        return float(1 / (1 + np.exp(-2 * (ratio - 1))))
+        safe_ratio = float(np.clip(_finite_or_default(ratio, 1.0), -50.0, 50.0))
+        return float(1 / (1 + np.exp(-2 * (safe_ratio - 1))))
 
     @staticmethod
     def _score_diversity(n_markets: int) -> float:
-        return float(np.clip(n_markets / 10, 0, 1))
+        safe_markets = max(_finite_or_default(n_markets, 0.0), 0.0)
+        return float(np.clip(safe_markets / 10, 0, 1))
 
     def score(self, features: TraderFeatures) -> dict:
         components = {
@@ -666,3 +671,11 @@ class TraderScorer:
             "score": round(float(confidence), 4),
             "components": {key: round(value, 3) for key, value in components.items()},
         }
+
+
+def _finite_or_default(value: Any, default: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    return numeric if math.isfinite(numeric) else default

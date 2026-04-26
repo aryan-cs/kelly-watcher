@@ -66,7 +66,10 @@ def _drop_telegram_command_client() -> None:
         _COMMAND_CLIENT = None
     close = getattr(client, "close", None)
     if callable(close):
-        close()
+        try:
+            close()
+        except Exception:
+            logger.debug("Telegram command client close skipped", exc_info=True)
 
 
 def _reset_command_poll_backoff() -> None:

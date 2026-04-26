@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 
@@ -129,6 +130,15 @@ def adjust_heuristic_confidence(
     trader_features: TraderFeatures,
     market_features: MarketFeatures,
 ) -> BeliefAdjustment:
+    if _finite_float(base_confidence) is None:
+        return BeliefAdjustment(
+            adjusted_confidence=0.0,
+            prior_confidence=0.5,
+            blend=0.0,
+            matched_buckets=0,
+            evidence=0,
+        )
+    base_confidence = _clamp_probability(base_confidence)
     prior_map = _load_belief_map()
     global_entry = prior_map.get(("__global__", "all"))
     global_posterior, global_evidence = _posterior_and_evidence(global_entry)
@@ -200,7 +210,10 @@ def _load_belief_map() -> dict[tuple[str, str], tuple[float, float]]:
         conn.close()
 
     _belief_cache = {
-        (str(row["feature_name"]), str(row["bucket"])): (float(row["wins"]), float(row["losses"]))
+        (str(row["feature_name"]), str(row["bucket"])): (
+            _nonnegative_finite(row["wins"]),
+            _nonnegative_finite(row["losses"]),
+        )
         for row in rows
     }
     _belief_cache_loaded_at = time.time()
@@ -230,6 +243,8 @@ def _apply_bucket_update(
 
 def _posterior_and_evidence(entry: tuple[float, float] | None) -> tuple[float, int]:
     wins, losses = entry or (0.0, 0.0)
+    wins = _nonnegative_finite(wins)
+    losses = _nonnegative_finite(losses)
     evidence = int(wins + losses)
     posterior = (wins + PRIOR_ALPHA) / (wins + losses + PRIOR_ALPHA + PRIOR_BETA)
     return posterior, evidence
@@ -237,16 +252,16 @@ def _posterior_and_evidence(entry: tuple[float, float] | None) -> tuple[float, i
 
 def _belief_label_and_weight(row) -> tuple[int, float] | None:
     if is_fill_aware_executed_buy(row):
-        resolved_pnl = row["resolved_pnl_usd"]
+        resolved_pnl = _finite_float(row["resolved_pnl_usd"])
         if resolved_pnl is None:
             return None
-        return (1 if float(resolved_pnl) > 0 else 0, 1.0)
+        return (1 if resolved_pnl > 0 else 0, 1.0)
 
     if _is_counterfactual_signal_reject(row):
-        counterfactual_return = row["counterfactual_return"]
+        counterfactual_return = _finite_float(row["counterfactual_return"])
         if counterfactual_return is None:
             return None
-        return (1 if float(counterfactual_return) > 0 else 0, COUNTERFACTUAL_SKIP_WEIGHT)
+        return (1 if counterfactual_return > 0 else 0, COUNTERFACTUAL_SKIP_WEIGHT)
 
     return None
 
@@ -326,8 +341,8 @@ def _feature_buckets_from_live_signal(
 
 
 def _average_depth(bid_depth: float | None, ask_depth: float | None) -> float | None:
-    bid = float(bid_depth or 0.0)
-    ask = float(ask_depth or 0.0)
+    bid = _nonnegative_finite(bid_depth)
+    ask = _nonnegative_finite(ask_depth)
     avg = (bid + ask) / 2
     return avg if avg > 0 else None
 
@@ -335,7 +350,10 @@ def _average_depth(bid_depth: float | None, ask_depth: float | None) -> float | 
 def _depth_ratio(size_usd: float | None, avg_depth: float | None) -> float | None:
     if size_usd is None or avg_depth is None or avg_depth <= 0:
         return None
-    return float(size_usd) / avg_depth
+    size = _nonnegative_finite(size_usd)
+    if size <= 0:
+        return None
+    return size / avg_depth
 
 
 def _bucket_confidence(value: float | None) -> str:
@@ -383,14 +401,38 @@ def _bucket_depth_ratio(value: float | None) -> str:
 
 
 def _bucket_numeric(value: float | None, cutoffs: list[float], prefix: str) -> str:
-    if value is None:
+    numeric = _finite_float(value)
+    if numeric is None:
         return f"{prefix}:unknown"
 
-    numeric = float(value)
     for cutoff in cutoffs:
         if numeric < cutoff:
             return f"{prefix}:<{_fmt(cutoff)}"
     return f"{prefix}:>={_fmt(cutoffs[-1])}"
+
+
+def _finite_float(value: float | None) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _nonnegative_finite(value: float | None) -> float:
+    numeric = _finite_float(value)
+    if numeric is None:
+        return 0.0
+    return max(numeric, 0.0)
+
+
+def _clamp_probability(value: float | None) -> float:
+    numeric = _finite_float(value)
+    if numeric is None:
+        return 0.0
+    return max(0.0, min(1.0, numeric))
 
 
 def _fmt(value: float) -> str:

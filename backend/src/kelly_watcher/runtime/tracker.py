@@ -706,7 +706,8 @@ class PolymarketTracker:
 
         remaining = requested_limit
         claim_size = max(int(batch_size or SOURCE_QUEUE_ENRICHMENT_BATCH_SIZE), 1)
-        max_batches = ((requested_limit + claim_size - 1) // claim_size) + SOURCE_QUEUE_CLAIM_MAX_BATCHES
+        batches_per_legacy_claim = (requested_limit + claim_size - 1) // claim_size
+        max_batches = max(1, batches_per_legacy_claim * SOURCE_QUEUE_CLAIM_MAX_BATCHES)
         batches = 0
         while remaining > 0 and batches < max_batches:
             rows = self._claim_source_queue_rows(limit=min(remaining, claim_size), watch_tiers=watch_tiers)

@@ -3,9 +3,12 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import kelly_watcher.engine.beliefs as beliefs
 import kelly_watcher.data.db as db
+from kelly_watcher.engine.market_scorer import MarketFeatures
+from kelly_watcher.engine.trader_scorer import TraderFeatures
 
 
 def _insert_trade(
@@ -70,7 +73,85 @@ def _insert_trade(
     )
 
 
+def _trader_features() -> TraderFeatures:
+    return TraderFeatures(
+        win_rate=0.62,
+        n_trades=40,
+        consistency=0.35,
+        account_age_d=90,
+        volume_usd=25_000.0,
+        avg_size_usd=40.0,
+        diversity=12,
+        conviction_ratio=1.1,
+    )
+
+
+def _market_features() -> MarketFeatures:
+    return MarketFeatures(
+        best_bid=0.49,
+        best_ask=0.51,
+        mid=0.50,
+        execution_price=0.51,
+        bid_depth_usd=5_000.0,
+        ask_depth_usd=5_000.0,
+        days_to_res=1.0,
+        price_1h_ago=0.50,
+        volume_24h_usd=20_000.0,
+        volume_7d_avg_usd=18_000.0,
+        oi_usd=100_000.0,
+        top_holder_pct=0.20,
+        order_size_usd=10.0,
+    )
+
+
 class BeliefsCounterfactualTest(unittest.TestCase):
+    def test_adjust_heuristic_confidence_rejects_nonfinite_base_confidence_even_with_positive_priors(self) -> None:
+        prior_map = {
+            ("__global__", "all"): (50.0, 0.0),
+            ("confidence", "conf:>=0.8"): (50.0, 0.0),
+        }
+        with patch.object(beliefs, "_load_belief_map", return_value=prior_map):
+            adjustment = beliefs.adjust_heuristic_confidence(
+                float("nan"),
+                _trader_features(),
+                _market_features(),
+            )
+
+        self.assertEqual(adjustment.adjusted_confidence, 0.0)
+        self.assertEqual(adjustment.prior_confidence, 0.5)
+        self.assertEqual(adjustment.blend, 0.0)
+        self.assertEqual(adjustment.evidence, 0)
+
+    def test_belief_buckets_treat_nonfinite_values_as_unknown(self) -> None:
+        self.assertEqual(beliefs._bucket_confidence(float("nan")), "conf:unknown")
+        self.assertEqual(beliefs._bucket_oi_usd(float("inf")), "oi:unknown")
+        self.assertIsNone(beliefs._average_depth(float("inf"), float("nan")))
+        self.assertIsNone(beliefs._depth_ratio(float("inf"), 1_000.0))
+
+    def test_belief_label_ignores_nonfinite_realized_and_counterfactual_returns(self) -> None:
+        executed_row = {
+            "skipped": 0,
+            "source_action": "buy",
+            "actual_entry_price": 0.50,
+            "actual_entry_shares": 20.0,
+            "actual_entry_size_usd": 10.0,
+            "resolved_pnl_usd": float("inf"),
+        }
+        rejected_row = {
+            "skipped": 1,
+            "source_action": "buy",
+            "actual_entry_price": None,
+            "actual_entry_shares": None,
+            "actual_entry_size_usd": None,
+            "signal_mode": "heuristic",
+            "market_veto": None,
+            "skip_reason": "confidence was 59.0%, below the 60.0% minimum needed to place a trade",
+            "counterfactual_return": float("-inf"),
+        }
+
+        self.assertIsNone(beliefs._belief_label_and_weight(executed_row))
+        self.assertIsNone(beliefs._belief_label_and_weight(rejected_row))
+
     def test_sync_beliefs_learns_from_low_confidence_missed_winners_without_counting_operational_skips(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

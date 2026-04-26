@@ -294,6 +294,30 @@ class RuntimeFixesTest(unittest.TestCase):
 
         client.post.assert_called_once()
 
+    def test_close_telegram_alert_client_suppresses_close_errors(self) -> None:
+        client = Mock()
+        client.close.side_effect = RuntimeError("close failed")
+        alerter._TELEGRAM_CLIENT = client
+
+        alerter.close_telegram_alert_client()
+
+        client.close.assert_called_once()
+        self.assertIsNone(alerter._TELEGRAM_CLIENT)
+
+    def test_close_telegram_command_client_suppresses_close_errors(self) -> None:
+        client = Mock()
+        client.close.side_effect = RuntimeError("close failed")
+        telegram_runtime._COMMAND_CLIENT = client
+        telegram_runtime._command_poll_failure_count = 3
+        telegram_runtime._last_command_poll_warning_at = 123.0
+
+        telegram_runtime.close_telegram_command_client()
+
+        client.close.assert_called_once()
+        self.assertIsNone(telegram_runtime._COMMAND_CLIENT)
+        self.assertEqual(telegram_runtime._command_poll_failure_count, 0)
+        self.assertEqual(telegram_runtime._last_command_poll_warning_at, 0.0)
+
     def test_build_trade_entry_alert_formats_market_line(self) -> None:
         message = alerter.build_trade_entry_alert(
             mode="shadow",
@@ -1356,8 +1380,10 @@ class RuntimeFixesTest(unittest.TestCase):
         executor._uses_py_clob_http_client = True
 
         original_users = executor_module._PY_CLOB_HTTP_CLIENT_USERS
+        original_managed = executor_module._PY_CLOB_HTTP_CLIENT_MANAGED
         try:
             executor_module._PY_CLOB_HTTP_CLIENT_USERS = 1
+            executor_module._PY_CLOB_HTTP_CLIENT_MANAGED = True
             with patch.dict(
                 sys.modules,
                 {
@@ -1369,11 +1395,48 @@ class RuntimeFixesTest(unittest.TestCase):
                 executor.close()
         finally:
             executor_module._PY_CLOB_HTTP_CLIENT_USERS = original_users
+            executor_module._PY_CLOB_HTTP_CLIENT_MANAGED = original_managed
 
         executor._http_client.close.assert_called_once()
         clob_client.close.assert_called_once()
         py_client.close.assert_called_once()
         self.assertIsNone(helpers_module._http_client)
+
+    def test_py_clob_helper_http_client_replaces_unmanaged_default_client(self) -> None:
+        py_clob_module = types.ModuleType("py_clob_client")
+        py_clob_module.__path__ = []
+        http_helpers_module = types.ModuleType("py_clob_client.http_helpers")
+        http_helpers_module.__path__ = []
+        helpers_module = types.ModuleType("py_clob_client.http_helpers.helpers")
+        default_client = Mock()
+        default_client.is_closed = False
+        replacement_client = Mock()
+        helpers_module._http_client = default_client
+        http_helpers_module.helpers = helpers_module
+        py_clob_module.http_helpers = http_helpers_module
+
+        original_users = executor_module._PY_CLOB_HTTP_CLIENT_USERS
+        original_managed = executor_module._PY_CLOB_HTTP_CLIENT_MANAGED
+        try:
+            executor_module._PY_CLOB_HTTP_CLIENT_USERS = 0
+            executor_module._PY_CLOB_HTTP_CLIENT_MANAGED = False
+            with patch.dict(
+                sys.modules,
+                {
+                    "py_clob_client": py_clob_module,
+                    "py_clob_client.http_helpers": http_helpers_module,
+                    "py_clob_client.http_helpers.helpers": helpers_module,
+                },
+            ), patch.object(executor_module, "_new_py_clob_http_client", return_value=replacement_client):
+                self.assertTrue(executor_module._register_py_clob_http_client_user())
+                self.assertIs(helpers_module._http_client, replacement_client)
+                executor_module._release_py_clob_http_client_user()
+        finally:
+            executor_module._PY_CLOB_HTTP_CLIENT_USERS = original_users
+            executor_module._PY_CLOB_HTTP_CLIENT_MANAGED = original_managed
+
+        default_client.close.assert_called_once()
+        replacement_client.close.assert_called_once()
 
     def test_py_clob_helper_http_client_reopens_after_prior_close(self) -> None:
         py_clob_module = types.ModuleType("py_clob_client")
@@ -1389,8 +1452,10 @@ class RuntimeFixesTest(unittest.TestCase):
         py_clob_module.http_helpers = http_helpers_module
 
         original_users = executor_module._PY_CLOB_HTTP_CLIENT_USERS
+        original_managed = executor_module._PY_CLOB_HTTP_CLIENT_MANAGED
         try:
             executor_module._PY_CLOB_HTTP_CLIENT_USERS = 0
+            executor_module._PY_CLOB_HTTP_CLIENT_MANAGED = True
             with patch.dict(
                 sys.modules,
                 {
@@ -1404,6 +1469,7 @@ class RuntimeFixesTest(unittest.TestCase):
                 executor_module._release_py_clob_http_client_user()
         finally:
             executor_module._PY_CLOB_HTTP_CLIENT_USERS = original_users
+            executor_module._PY_CLOB_HTTP_CLIENT_MANAGED = original_managed
 
         replacement_client.close.assert_called_once()
 

@@ -36,7 +36,10 @@ def close_telegram_alert_client() -> None:
         _TELEGRAM_CLIENT = None
     close = getattr(client, "close", None)
     if callable(close):
-        close()
+        try:
+            close()
+        except Exception:
+            logger.debug("Telegram alert client close skipped", exc_info=True)
 
 
 def _one_line(value: object) -> str:

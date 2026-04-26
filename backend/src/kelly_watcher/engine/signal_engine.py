@@ -645,9 +645,7 @@ class SignalEngine:
         ordered = np.array(
             [
                 [
-                    np.nan
-                    if feature_map.get(column) is None
-                    else float(feature_map.get(column))
+                    _model_feature_value(feature_map.get(column))
                     for column in self._xgb_cols
                 ]
             ],
@@ -765,3 +763,15 @@ class SignalEngine:
             "market": market_result,
             **self._segment_payload(segment_policy, segment_context),
         }
+
+
+def _model_feature_value(value: object) -> float:
+    if value is None:
+        return float("nan")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    if not np.isfinite(numeric):
+        return float("nan")
+    return numeric

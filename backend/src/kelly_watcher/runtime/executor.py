@@ -62,8 +62,10 @@ USDC_DECIMALS = 1_000_000.0
 EXECUTION_ORDERBOOK_TIMEOUT_S = 3.0
 FEE_RATE_TIMEOUT_S = 3.0
 FEE_RATE_CACHE_TTL_S = 300.0
+PY_CLOB_HTTP_TIMEOUT_S = 10.0
 _PY_CLOB_HTTP_CLIENT_LOCK = threading.Lock()
 _PY_CLOB_HTTP_CLIENT_USERS = 0
+_PY_CLOB_HTTP_CLIENT_MANAGED = False
 
 
 def _py_clob_helpers_module() -> Any | None:
@@ -84,20 +86,39 @@ def _close_http_client_safely(client: Any, *, label: str) -> None:
         logger.debug("%s close skipped", label, exc_info=True)
 
 
+def _new_py_clob_http_client() -> httpx.Client:
+    return httpx.Client(
+        http2=True,
+        timeout=PY_CLOB_HTTP_TIMEOUT_S,
+        limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+    )
+
+
 def _register_py_clob_http_client_user() -> bool:
-    global _PY_CLOB_HTTP_CLIENT_USERS
+    global _PY_CLOB_HTTP_CLIENT_MANAGED, _PY_CLOB_HTTP_CLIENT_USERS
     helpers = _py_clob_helpers_module()
     if helpers is None:
         return False
+    stale_client = None
     with _PY_CLOB_HTTP_CLIENT_LOCK:
         client = getattr(helpers, "_http_client", None)
-        if client is None or bool(getattr(client, "is_closed", False)):
-            helpers._http_client = httpx.Client(http2=True)
+        if (
+            client is None
+            or bool(getattr(client, "is_closed", False))
+            or (_PY_CLOB_HTTP_CLIENT_USERS <= 0 and not _PY_CLOB_HTTP_CLIENT_MANAGED)
+        ):
+            replacement = _new_py_clob_http_client()
+            if client is not None and not bool(getattr(client, "is_closed", False)):
+                stale_client = client
+            helpers._http_client = replacement
+            _PY_CLOB_HTTP_CLIENT_MANAGED = True
         _PY_CLOB_HTTP_CLIENT_USERS += 1
+    _close_http_client_safely(stale_client, label="py_clob_client default HTTP client")
     return True
 
 
 def _close_py_clob_http_client_if_unused() -> None:
+    global _PY_CLOB_HTTP_CLIENT_MANAGED
     helpers = _py_clob_helpers_module()
     if helpers is None:
         return
@@ -106,11 +127,12 @@ def _close_py_clob_http_client_if_unused() -> None:
             return
         client = getattr(helpers, "_http_client", None)
         helpers._http_client = None
+        _PY_CLOB_HTTP_CLIENT_MANAGED = False
     _close_http_client_safely(client, label="py_clob_client HTTP client")
 
 
 def _release_py_clob_http_client_user() -> None:
-    global _PY_CLOB_HTTP_CLIENT_USERS
+    global _PY_CLOB_HTTP_CLIENT_MANAGED, _PY_CLOB_HTTP_CLIENT_USERS
     helpers = _py_clob_helpers_module()
     if helpers is None:
         return
@@ -120,6 +142,7 @@ def _release_py_clob_http_client_user() -> None:
             return
         client = getattr(helpers, "_http_client", None)
         helpers._http_client = None
+        _PY_CLOB_HTTP_CLIENT_MANAGED = False
     _close_http_client_safely(client, label="py_clob_client HTTP client")
 
 

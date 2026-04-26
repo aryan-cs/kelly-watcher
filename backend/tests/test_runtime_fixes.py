@@ -237,6 +237,9 @@ class RuntimeFixesTest(unittest.TestCase):
         alerter.close_telegram_alert_client()
         telegram_runtime.close_telegram_command_client()
 
+    def test_scheduler_has_spare_worker_capacity_for_slow_jobs(self) -> None:
+        self.assertGreaterEqual(main.SCHEDULER_MAX_WORKERS, 3)
+
     def test_quarantine_runtime_model_artifact_moves_current_artifact_to_quarantine(self) -> None:
         with TemporaryDirectory() as tmpdir:
             artifact_path = Path(tmpdir) / "save" / "model.joblib"

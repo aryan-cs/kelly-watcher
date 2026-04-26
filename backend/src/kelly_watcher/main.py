@@ -218,6 +218,7 @@ if str(os.getenv("KELLY_VERBOSE_SCHEDULER_LOGS", "")).strip().lower() not in {"1
     logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 
 logger = logging.getLogger("main")
+SCHEDULER_MAX_WORKERS = 3
 _emit_count = 0
 _event_lock = threading.Lock()
 WATCHED_WALLETS = watched_wallets()
@@ -6788,7 +6789,7 @@ def main() -> None:
                 _run_stop_loss_checks(tracker, executor, dedup)
 
             scheduler = BackgroundScheduler(
-                executors={"default": APSchedulerThreadPoolExecutor(max_workers=1)},
+                executors={"default": APSchedulerThreadPoolExecutor(max_workers=SCHEDULER_MAX_WORKERS)},
                 job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
             )
             scheduler.add_job(

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
+import joblib
 import numpy as np
 import pandas as pd
 
@@ -257,6 +260,30 @@ class TrainingSearchTest(unittest.TestCase):
         self.assertIn("log_loss", report)
         self.assertIn("brier_score", report)
 
+    def test_score_predictions_can_use_preselected_edge_threshold_without_holdout_tuning(self) -> None:
+        outcomes = np.array([0] * 10 + [1] * 10, dtype=int)
+        prices = np.array([0.50] * 20, dtype=float)
+        preds = np.array([0.51] * 10 + [0.80] * 10, dtype=float)
+
+        optimized = train._score_predictions(
+            preds=preds,
+            outcomes=outcomes,
+            prices=prices,
+            baseline_rate=0.5,
+        )
+        fixed = train._score_predictions(
+            preds=preds,
+            outcomes=outcomes,
+            prices=prices,
+            baseline_rate=0.5,
+            fixed_edge_threshold=0.0,
+        )
+
+        self.assertGreater(optimized["edge_threshold"], 0.0)
+        self.assertEqual(fixed["edge_threshold"], 0.0)
+        self.assertEqual(fixed["selected_trades"], 20)
+        self.assertLess(fixed["total_pnl"], optimized["total_pnl"])
+
     def test_fit_calibrated_model_falls_back_to_identity_when_calibration_window_is_single_class(self) -> None:
         class StubRegressor:
             def fit(self, X, y, sample_weight=None):
@@ -296,6 +323,36 @@ class TrainingSearchTest(unittest.TestCase):
         assert fit_result is not None
         self.assertEqual(fit_result["calibration_method"], "identity")
         self.assertIsNone(fit_result["probability_calibrator"])
+
+    def test_fit_probability_calibrator_rejects_unknown_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported calibration mode"):
+            train._fit_probability_calibrator(
+                np.array([0.35, 0.65], dtype=float),
+                np.array([0, 1], dtype=int),
+                np.ones(2, dtype=float),
+                requested_mode="magic",
+            )
+
+    def test_dump_model_artifact_atomic_writes_loadable_artifact(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_path = Path(tmpdir) / "model.joblib"
+
+            train._dump_model_artifact_atomic({"value": 7}, model_path)
+
+            self.assertEqual(joblib.load(model_path)["value"], 7)
+            self.assertFalse(list(model_path.parent.glob("*.tmp")))
+
+    def test_dump_model_artifact_atomic_preserves_existing_artifact_on_failure(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_path = Path(tmpdir) / "model.joblib"
+            model_path.write_text("existing-artifact", encoding="utf-8")
+
+            with mock.patch("joblib.dump", side_effect=RuntimeError("boom")):
+                with self.assertRaisesRegex(RuntimeError, "boom"):
+                    train._dump_model_artifact_atomic({"value": 8}, model_path)
+
+            self.assertEqual(model_path.read_text(encoding="utf-8"), "existing-artifact")
+            self.assertFalse(list(model_path.parent.glob("*.tmp")))
 
     def test_compare_against_incumbent_passes_when_no_model_is_live(self) -> None:
         final_train_df, holdout_df = self._comparison_frames()

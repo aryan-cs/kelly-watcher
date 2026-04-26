@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from kelly_watcher.config import model_path, retrain_min_samples
@@ -201,8 +203,6 @@ def train(
     training_since_ts: int | None = None,
     training_routed_only: bool = False,
 ) -> dict:
-    import joblib
-
     provenance = _training_provenance_payload(
         since_ts=training_since_ts,
         routed_only=training_routed_only,
@@ -282,6 +282,7 @@ def train(
         best_candidate["search_total_pnl"],
         best_candidate["search_beats_baseline"],
     )
+    selected_edge_threshold = float(best_candidate["search_edge_threshold"])
 
     final_fit = _fit_calibrated_model(
         spec=best_candidate,
@@ -304,6 +305,7 @@ def train(
         train_df=final_train_df,
         eval_df=holdout_df,
         feature_cols=feature_cols,
+        fixed_edge_threshold=selected_edge_threshold,
     )
     if calibrated_holdout_report is None:
         logger.warning("Training skipped: holdout evaluation could not satisfy class diversity requirements")
@@ -320,6 +322,7 @@ def train(
         train_df=final_train_df,
         eval_df=holdout_df,
         feature_cols=feature_cols,
+        fixed_edge_threshold=selected_edge_threshold,
     )
     if raw_holdout_report is None:
         logger.warning("Training skipped: raw holdout evaluation could not satisfy class diversity requirements")
@@ -330,17 +333,16 @@ def train(
             "reason": "insufficient class diversity",
         }, provenance)
 
-    (
-        holdout_report,
-        selected_prediction_path,
-        selected_probability_calibrator,
-        selected_calibration_method,
-    ) = _select_prediction_path(
-        calibrated_report=calibrated_holdout_report,
-        raw_report=raw_holdout_report,
-        probability_calibrator=final_fit["probability_calibrator"],
-        calibration_method=final_fit["calibration_method"],
-    )
+    if final_fit["probability_calibrator"] is None:
+        holdout_report = raw_holdout_report
+        selected_prediction_path = "raw"
+        selected_probability_calibrator = None
+        selected_calibration_method = "identity"
+    else:
+        holdout_report = calibrated_holdout_report
+        selected_prediction_path = "calibrated"
+        selected_probability_calibrator = final_fit["probability_calibrator"]
+        selected_calibration_method = final_fit["calibration_method"]
 
     importances = _feature_ranking(final_fit["base_model"], feature_cols, final_train_df)
     top_features = sorted(importances.items(), key=lambda item: -item[1])
@@ -394,6 +396,7 @@ def train(
         "search_avg_pnl": round(best_candidate["search_avg_pnl"], 4),
         "search_win_rate": round(best_candidate["search_win_rate"], 4),
         "search_edge_threshold": round(best_candidate["search_edge_threshold"], 4),
+        "decision_threshold_source": "search_cv",
         "dataset_cohorts": _cohort_summaries(df),
         "train_cohorts": _cohort_summaries(final_train_df),
         "calibration_cohorts": _cohort_summaries(final_cal_df),
@@ -468,35 +471,37 @@ def train(
         },
         "metrics": metrics,
     }
-    joblib.dump(artifact, path)
+    _dump_model_artifact_atomic(artifact, path)
 
     conn = get_conn()
-    conn.execute("UPDATE model_history SET deployed=0")
-    conn.execute(
-        """
-        INSERT INTO model_history
-        (
-            trained_at, n_samples, brier_score, log_loss, feature_cols, model_path, deployed,
-            training_scope, training_since_ts, training_routed_only, training_provenance_trusted
+    try:
+        conn.execute("UPDATE model_history SET deployed=0")
+        conn.execute(
+            """
+            INSERT INTO model_history
+            (
+                trained_at, n_samples, brier_score, log_loss, feature_cols, model_path, deployed,
+                training_scope, training_since_ts, training_routed_only, training_provenance_trusted
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                trained_at,
+                len(df),
+                float(holdout_report["brier_score"]),
+                float(holdout_report["log_loss"]),
+                json.dumps(feature_cols),
+                path,
+                1,
+                str(provenance["training_scope"]),
+                int(provenance["training_since_ts"]),
+                1 if provenance["training_routed_only"] else 0,
+                1 if provenance["training_provenance_trusted"] else 0,
+            ),
         )
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            trained_at,
-            len(df),
-            float(holdout_report["brier_score"]),
-            float(holdout_report["log_loss"]),
-            json.dumps(feature_cols),
-            path,
-            1,
-            str(provenance["training_scope"]),
-            int(provenance["training_since_ts"]),
-            1 if provenance["training_routed_only"] else 0,
-            1 if provenance["training_provenance_trusted"] else 0,
-        ),
-    )
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
     logger.info("Model saved to %s", path)
     return metrics | {"deployed": True}
@@ -810,10 +815,32 @@ def _evaluate_candidate_spec(
 
 
 def _fit_probability_calibrator(base_confidence, outcomes, sample_weight, *, requested_mode: str = "auto"):
+    import numpy as np
     from sklearn.isotonic import IsotonicRegression
     from sklearn.linear_model import LogisticRegression
 
+    requested_mode = str(requested_mode or "auto").strip().lower()
+    allowed_modes = {"identity", "auto", "sigmoid", "isotonic"}
+    if requested_mode not in allowed_modes:
+        raise ValueError(f"unsupported calibration mode {requested_mode!r}")
     if requested_mode == "identity":
+        return None, "identity"
+
+    base_confidence = np.asarray(base_confidence, dtype=float)
+    outcomes = np.asarray(outcomes, dtype=int)
+    sample_weight = np.asarray(sample_weight, dtype=float)
+    if (
+        len(base_confidence) == 0
+        or len(base_confidence) != len(outcomes)
+        or len(base_confidence) != len(sample_weight)
+    ):
+        raise ValueError("calibration inputs must be non-empty and aligned")
+    if (
+        not np.all(np.isfinite(base_confidence))
+        or not np.all(np.isfinite(sample_weight))
+        or np.unique(outcomes).size < 2
+        or float(np.std(base_confidence)) <= 1e-9
+    ):
         return None, "identity"
 
     method = requested_mode
@@ -1023,6 +1050,7 @@ def _evaluate_prediction_report(
     eval_df,
     feature_cols: list[str],
     baseline_rate: float,
+    fixed_edge_threshold: float | None = None,
 ) -> dict[str, Any] | None:
     y_eval = eval_df[OUTCOME_COL].astype(int).values
 
@@ -1040,6 +1068,7 @@ def _evaluate_prediction_report(
         outcomes=y_eval,
         prices=prices,
         baseline_rate=baseline_rate,
+        fixed_edge_threshold=fixed_edge_threshold,
     )
     metrics["preds"] = preds
     metrics["prices"] = prices
@@ -1054,6 +1083,7 @@ def _evaluate_window(
     train_df,
     eval_df,
     feature_cols: list[str],
+    fixed_edge_threshold: float | None = None,
 ) -> dict[str, Any] | None:
     return _evaluate_prediction_report(
         model=base_model,
@@ -1062,6 +1092,7 @@ def _evaluate_window(
         eval_df=eval_df,
         feature_cols=feature_cols,
         baseline_rate=float(train_df[OUTCOME_COL].astype(int).mean()),
+        fixed_edge_threshold=fixed_edge_threshold,
     )
 
 
@@ -1107,7 +1138,14 @@ def _aggregate_search_reports(fold_reports: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-def _score_predictions(*, preds, outcomes, prices, baseline_rate: float) -> dict[str, Any]:
+def _score_predictions(
+    *,
+    preds,
+    outcomes,
+    prices,
+    baseline_rate: float,
+    fixed_edge_threshold: float | None = None,
+) -> dict[str, Any]:
     import numpy as np
     from sklearn.metrics import brier_score_loss, log_loss
 
@@ -1124,7 +1162,15 @@ def _score_predictions(*, preds, outcomes, prices, baseline_rate: float) -> dict
     baseline_brier = brier_score_loss(outcomes, baseline_pred)
     ll = log_loss(outcomes, preds, labels=[0, 1])
     brier = brier_score_loss(outcomes, preds)
-    strategy = _select_decision_policy(preds=preds, prices=prices, outcomes=outcomes)
+    if fixed_edge_threshold is None:
+        strategy = _select_decision_policy(preds=preds, prices=prices, outcomes=outcomes)
+    else:
+        strategy = _decision_metrics_for_threshold(
+            preds=preds,
+            prices=prices,
+            outcomes=outcomes,
+            edge_threshold=fixed_edge_threshold,
+        )
     return {
         "n_eval": len(outcomes),
         "log_loss": float(ll),
@@ -1242,6 +1288,42 @@ def _select_prediction_path(
     return calibrated_report, "calibrated", probability_calibrator, calibration_method
 
 
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_parent(path: Path) -> None:
+    parent = path.parent if str(path.parent) else Path(".")
+    try:
+        directory_fd = os.open(parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _dump_model_artifact_atomic(artifact: dict[str, Any], path: str | Path) -> None:
+    import joblib
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_name(f".{target.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        joblib.dump(artifact, tmp_path, compress=3)
+        _fsync_file(tmp_path)
+        tmp_path.replace(target)
+        _fsync_parent(target)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _cohort_summaries(df, *, preds=None, baseline_rate: float | None = None) -> dict[str, dict[str, Any]]:
     import numpy as np
 
@@ -1308,7 +1390,6 @@ def _select_decision_policy(preds, prices, outcomes) -> dict[str, Any]:
     import numpy as np
 
     prices = np.clip(prices.astype(float), 0.01, 0.99)
-    pnl_per_dollar = np.where(outcomes == 1, (1 - prices) / prices, -1.0)
     edges = preds - prices
 
     candidates = {0.0}
@@ -1332,9 +1413,15 @@ def _select_decision_policy(preds, prices, outcomes) -> dict[str, Any]:
         selected = int(mask.sum())
         if selected < min_trades:
             continue
-        total_pnl = float(pnl_per_dollar[mask].sum())
-        avg_pnl = float(pnl_per_dollar[mask].mean())
-        win_rate = float(outcomes[mask].mean()) if selected else 0.0
+        metrics = _decision_metrics_for_threshold(
+            preds=preds,
+            prices=prices,
+            outcomes=outcomes,
+            edge_threshold=threshold,
+        )
+        total_pnl = float(metrics["total_pnl"])
+        avg_pnl = float(metrics["avg_pnl"])
+        win_rate = float(metrics["win_rate"])
         score = (total_pnl, avg_pnl, selected)
         best_score = (best["total_pnl"], best["avg_pnl"], best["selected_trades"])
         if score > best_score:
@@ -1347,16 +1434,15 @@ def _select_decision_policy(preds, prices, outcomes) -> dict[str, Any]:
             }
 
     if best["selected_trades"] == 0:
-        fallback_mask = edges >= 0
-        selected = int(fallback_mask.sum())
+        fallback = _decision_metrics_for_threshold(
+            preds=preds,
+            prices=prices,
+            outcomes=outcomes,
+            edge_threshold=0.0,
+        )
+        selected = int(fallback["selected_trades"])
         if selected:
-            best = {
-                "edge_threshold": 0.0,
-                "selected_trades": selected,
-                "total_pnl": float(pnl_per_dollar[fallback_mask].sum()),
-                "avg_pnl": float(pnl_per_dollar[fallback_mask].mean()),
-                "win_rate": float(outcomes[fallback_mask].mean()),
-            }
+            best = fallback
         else:
             best = {
                 "edge_threshold": 0.0,
@@ -1367,6 +1453,35 @@ def _select_decision_policy(preds, prices, outcomes) -> dict[str, Any]:
             }
 
     return best
+
+
+def _decision_metrics_for_threshold(*, preds, prices, outcomes, edge_threshold: float) -> dict[str, Any]:
+    import numpy as np
+
+    threshold = float(edge_threshold)
+    if not np.isfinite(threshold):
+        raise ValueError("edge threshold must be finite")
+    prices = np.clip(np.asarray(prices, dtype=float), 0.01, 0.99)
+    preds = np.asarray(preds, dtype=float)
+    outcomes = np.asarray(outcomes, dtype=int)
+    pnl_per_dollar = np.where(outcomes == 1, (1 - prices) / prices, -1.0)
+    mask = (preds - prices) >= threshold
+    selected = int(mask.sum())
+    if selected <= 0:
+        return {
+            "edge_threshold": threshold,
+            "selected_trades": 0,
+            "total_pnl": 0.0,
+            "avg_pnl": 0.0,
+            "win_rate": 0.0,
+        }
+    return {
+        "edge_threshold": threshold,
+        "selected_trades": selected,
+        "total_pnl": float(pnl_per_dollar[mask].sum()),
+        "avg_pnl": float(pnl_per_dollar[mask].mean()),
+        "win_rate": float(outcomes[mask].mean()),
+    }
 
 
 if __name__ == "__main__":

@@ -876,8 +876,8 @@ class PolymarketTracker:
                         reached_cursor = True
                         break
                     if source_ts == cursor.last_source_ts and trade_id in cursor.last_trade_ids:
-                        reached_cursor = True
-                        break
+                        # Multiple trades can share the cursor timestamp; keep scanning for unseen peers.
+                        continue
                 if trade_id and trade_id in seen_ids:
                     continue
                 if trade_id:

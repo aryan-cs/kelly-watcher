@@ -7664,6 +7664,49 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual([row["id"] for row in rows], ["fresh"])
         self.assertEqual(calls, [0])
 
+    def test_tracker_keeps_unseen_same_timestamp_trade_after_seen_cursor_trade(self) -> None:
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        calls: list[int] = []
+
+        def fake_request_json(_url, *, params=None, **_kwargs):
+            offset = int((params or {}).get("offset") or 0)
+            calls.append(offset)
+            return [
+                {
+                    "id": "seen",
+                    "timestamp": 1_700_000_200,
+                    "conditionId": "market-seen",
+                    "asset": "token-seen",
+                },
+                {
+                    "id": "new-same-second",
+                    "timestamp": 1_700_000_200,
+                    "conditionId": "market-new",
+                    "asset": "token-new",
+                },
+                {
+                    "id": "older",
+                    "timestamp": 1_700_000_199,
+                    "conditionId": "market-old",
+                    "asset": "token-old",
+                },
+            ], True
+
+        tracker_obj._request_json = fake_request_json
+        tracker_obj._record_trade_feed_result = lambda _ok: None
+
+        rows = tracker_obj.get_wallet_trades(
+            "0xabc",
+            limit=50,
+            cursor=tracker.WalletCursor(
+                last_source_ts=1_700_000_200,
+                last_trade_ids={"seen"},
+            ),
+        )
+
+        self.assertEqual([row["id"] for row in rows], ["new-same-second"])
+        self.assertEqual(calls, [0])
+
     def test_tracker_load_wallet_cursors_ignores_malformed_json_bytes(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

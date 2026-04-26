@@ -162,6 +162,8 @@ def _get_env_file_bounded_float(
         value = float(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be numeric, got {raw!r}") from exc
+    if not math.isfinite(value):
+        raise ConfigError(f"{name} must be finite, got {raw!r}")
     if minimum is not None and value < minimum:
         raise ConfigError(f"{name} must be >= {minimum}, got {value}")
     if maximum is not None and value > maximum:
@@ -234,15 +236,15 @@ def use_real_money() -> bool:
 
 
 def max_bet_fraction() -> float:
-    return _get_float("MAX_BET_FRACTION", "0.05")
+    return _get_bounded_float("MAX_BET_FRACTION", "0.05", minimum=0.0, maximum=1.0)
 
 
 def min_confidence() -> float:
-    return _get_float("MIN_CONFIDENCE", "0.55")
+    return _get_bounded_float("MIN_CONFIDENCE", "0.55", minimum=0.0, maximum=1.0)
 
 
 def min_bet_usd() -> float:
-    return _get_float("MIN_BET_USD", "1.00")
+    return _get_bounded_float("MIN_BET_USD", "1.00", minimum=0.0)
 
 
 def entry_fixed_cost_usd() -> float:
@@ -393,11 +395,8 @@ def model_edge_high_threshold() -> float:
 
 
 def poll_interval() -> float:
-    raw = _get_env_file_value("POLL_INTERVAL_SECONDS") or _get("POLL_INTERVAL_SECONDS", "45")
-    try:
-        return max(MIN_POLL_INTERVAL_SECONDS, float(raw))
-    except ValueError:
-        return 45.0
+    value = _get_env_file_bounded_float("POLL_INTERVAL_SECONDS", "45", minimum=0.0)
+    return max(MIN_POLL_INTERVAL_SECONDS, value)
 
 
 def _get_duration_seconds(
@@ -666,8 +665,12 @@ def _parse_duration(raw: str, default_seconds: float) -> float:
 
 
 def max_market_horizon_seconds() -> float:
-    raw = _get_env_file_value("MAX_MARKET_HORIZON") or _get("MAX_MARKET_HORIZON", "6h")
-    seconds = _parse_duration(raw, 6 * 3600.0)
+    seconds = _get_duration_seconds(
+        "MAX_MARKET_HORIZON",
+        "6h",
+        minimum_seconds=60.0,
+        allow_unlimited=True,
+    )
     return seconds if seconds == float("inf") else max(60.0, seconds)
 
 
@@ -678,26 +681,36 @@ def max_market_horizon_label() -> str:
 
 
 def max_source_trade_age_seconds() -> int:
-    raw = _get_env_file_value("MAX_SOURCE_TRADE_AGE") or _get("MAX_SOURCE_TRADE_AGE", "10m")
-    seconds = _parse_duration(raw, 10 * 60.0)
+    seconds = _get_duration_seconds(
+        "MAX_SOURCE_TRADE_AGE",
+        "10m",
+        minimum_seconds=30.0,
+        allow_unlimited=True,
+    )
     if seconds == float("inf"):
         return 10 * 60
     return max(int(seconds), 30)
 
 
 def max_source_trade_age_far_seconds() -> int:
-    raw = _get_env_file_value("MAX_SOURCE_TRADE_AGE_FAR") or _get("MAX_SOURCE_TRADE_AGE_FAR", "3m")
-    seconds = _parse_duration(raw, 3 * 60.0)
+    seconds = _get_duration_seconds(
+        "MAX_SOURCE_TRADE_AGE_FAR",
+        "3m",
+        minimum_seconds=0.0,
+        allow_unlimited=True,
+    )
     if seconds == float("inf"):
         return max_source_trade_age_seconds()
     return max(int(seconds), max_source_trade_age_seconds())
 
 
 def source_trade_age_far_market_horizon_seconds() -> int:
-    raw = _get_env_file_value("SOURCE_TRADE_AGE_FAR_MARKET_HORIZON") or _get(
-        "SOURCE_TRADE_AGE_FAR_MARKET_HORIZON", "1h"
+    seconds = _get_duration_seconds(
+        "SOURCE_TRADE_AGE_FAR_MARKET_HORIZON",
+        "1h",
+        minimum_seconds=0.0,
+        allow_unlimited=True,
     )
-    seconds = _parse_duration(raw, 3600.0)
     if seconds == float("inf"):
         return int(max_market_horizon_seconds()) if math.isfinite(max_market_horizon_seconds()) else 24 * 3600
     return max(int(seconds), 0)
@@ -750,24 +763,36 @@ def telegram_balance_cache_max_age_seconds() -> int:
 
 
 def max_feed_staleness_seconds() -> int:
-    raw = _get_env_file_value("MAX_FEED_STALENESS") or _get("MAX_FEED_STALENESS", "3m")
-    seconds = _parse_duration(raw, 3 * 60.0)
+    seconds = _get_duration_seconds(
+        "MAX_FEED_STALENESS",
+        "3m",
+        minimum_seconds=30.0,
+        allow_unlimited=True,
+    )
     if seconds == float("inf"):
         return 3 * 60
     return max(int(seconds), 30)
 
 
 def max_orderbook_staleness_seconds() -> int:
-    raw = _get_env_file_value("MAX_ORDERBOOK_STALENESS") or _get("MAX_ORDERBOOK_STALENESS", "3s")
-    seconds = _parse_duration(raw, 3.0)
+    seconds = _get_duration_seconds(
+        "MAX_ORDERBOOK_STALENESS",
+        "3s",
+        minimum_seconds=1.0,
+        allow_unlimited=True,
+    )
     if seconds == float("inf"):
         return 3
     return max(int(seconds), 1)
 
 
 def min_execution_window_seconds() -> int:
-    raw = _get_env_file_value("MIN_EXECUTION_WINDOW") or _get("MIN_EXECUTION_WINDOW", "45s")
-    seconds = _parse_duration(raw, 45.0)
+    seconds = _get_duration_seconds(
+        "MIN_EXECUTION_WINDOW",
+        "45s",
+        minimum_seconds=10.0,
+        allow_unlimited=True,
+    )
     if seconds == float("inf"):
         return 45
     return max(int(seconds), 10)

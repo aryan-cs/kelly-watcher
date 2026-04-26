@@ -43,47 +43,49 @@ def _record_retrain_run(report: dict[str, object]) -> None:
     metrics = report.get("metrics")
     metrics_dict = metrics if isinstance(metrics, dict) else {}
     conn = get_conn()
-    conn.execute(
-        """
-        INSERT INTO retrain_runs (
-            started_at, finished_at, trigger, status, ok, deployed,
-            sample_count, min_samples, brier_score, log_loss,
-            candidate_name, candidate_count, search_beats_baseline,
-            search_total_pnl, val_selected_trades, val_total_pnl,
-            challenger_shared_log_loss, challenger_shared_brier_score,
-            incumbent_log_loss, incumbent_brier_score, message
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            int(report.get("started_at") or 0),
-            int(report.get("finished_at") or 0),
-            str(report.get("trigger") or "manual"),
-            str(report.get("status") or ""),
-            1 if report.get("ok") else 0,
-            1 if report.get("deployed") else 0,
-            int(report.get("sample_count") or 0),
-            int(report.get("min_samples") or 0),
-            _float_or_none(metrics_dict.get("brier_score")),
-            _float_or_none(metrics_dict.get("log_loss")),
-            str(metrics_dict.get("candidate_name") or "") or None,
-            _int_or_none(metrics_dict.get("candidate_count")),
+    try:
+        conn.execute(
+            """
+            INSERT INTO retrain_runs (
+                started_at, finished_at, trigger, status, ok, deployed,
+                sample_count, min_samples, brier_score, log_loss,
+                candidate_name, candidate_count, search_beats_baseline,
+                search_total_pnl, val_selected_trades, val_total_pnl,
+                challenger_shared_log_loss, challenger_shared_brier_score,
+                incumbent_log_loss, incumbent_brier_score, message
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
             (
-                None
-                if metrics_dict.get("search_beats_baseline") is None
-                else 1 if metrics_dict.get("search_beats_baseline") else 0
+                int(report.get("started_at") or 0),
+                int(report.get("finished_at") or 0),
+                str(report.get("trigger") or "manual"),
+                str(report.get("status") or ""),
+                1 if report.get("ok") else 0,
+                1 if report.get("deployed") else 0,
+                int(report.get("sample_count") or 0),
+                int(report.get("min_samples") or 0),
+                _float_or_none(metrics_dict.get("brier_score")),
+                _float_or_none(metrics_dict.get("log_loss")),
+                str(metrics_dict.get("candidate_name") or "") or None,
+                _int_or_none(metrics_dict.get("candidate_count")),
+                (
+                    None
+                    if metrics_dict.get("search_beats_baseline") is None
+                    else 1 if metrics_dict.get("search_beats_baseline") else 0
+                ),
+                _float_or_none(metrics_dict.get("search_total_pnl")),
+                _int_or_none(metrics_dict.get("val_selected_trades")),
+                _float_or_none(metrics_dict.get("val_total_pnl")),
+                _float_or_none(metrics_dict.get("challenger_shared_log_loss")),
+                _float_or_none(metrics_dict.get("challenger_shared_brier_score")),
+                _float_or_none(metrics_dict.get("incumbent_log_loss")),
+                _float_or_none(metrics_dict.get("incumbent_brier_score")),
+                str(report.get("message") or ""),
             ),
-            _float_or_none(metrics_dict.get("search_total_pnl")),
-            _int_or_none(metrics_dict.get("val_selected_trades")),
-            _float_or_none(metrics_dict.get("val_total_pnl")),
-            _float_or_none(metrics_dict.get("challenger_shared_log_loss")),
-            _float_or_none(metrics_dict.get("challenger_shared_brier_score")),
-            _float_or_none(metrics_dict.get("incumbent_log_loss")),
-            _float_or_none(metrics_dict.get("incumbent_brier_score")),
-            str(report.get("message") or ""),
-        ),
-    )
-    conn.commit()
-    conn.close()
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _finalize_retrain_report(

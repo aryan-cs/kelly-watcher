@@ -84,6 +84,22 @@ def get_conn_for_path(path: Path, *, apply_runtime_pragmas: bool = False) -> sql
     return _connect_sqlite(Path(path), apply_runtime_pragmas=apply_runtime_pragmas)
 
 
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_parent(path: Path) -> None:
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def current_promotion_epoch_id(conn: sqlite3.Connection | None = None) -> int:
     owns_conn = conn is None
     if owns_conn:
@@ -229,6 +245,7 @@ def create_verified_backup(path: Path | None = None) -> dict[str, object]:
             "message": "verified backup integrity check failed",
             "created_at": 0,
         }
+    _fsync_file(tmp_backup)
 
     if primary_backup.exists():
         previous_integrity = database_integrity_state(primary_backup)
@@ -242,6 +259,7 @@ def create_verified_backup(path: Path | None = None) -> dict[str, object]:
                 logger.warning("Failed to remove stale DB backup %s", primary_backup, exc_info=True)
 
     tmp_backup.replace(primary_backup)
+    _fsync_parent(primary_backup)
     _prune_verified_backup_history(source)
     return {
         "ok": True,
@@ -434,6 +452,7 @@ def recover_db_from_verified_backup(
             "message": message,
             "restored_at": 0,
         }
+    _fsync_file(temp_restore)
 
     quarantined_path = ""
     quarantined_target: Path | None = None
@@ -454,6 +473,7 @@ def recover_db_from_verified_backup(
                 sidecar_path.replace(archived_sidecar)
                 quarantined_sidecars.append((archived_sidecar, sidecar_path))
         temp_restore.replace(target)
+        _fsync_parent(target)
     except Exception:
         if not target.exists() and quarantined_target is not None and quarantined_target.exists():
             try:

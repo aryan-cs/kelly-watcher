@@ -10,6 +10,8 @@ from typing import Any
 
 from kelly_watcher.config import (
     ENTRY_PRICE_BAND_CHOICES,
+    allowed_entry_price_bands,
+    allowed_time_to_close_bands,
     entry_price_band_label,
     heuristic_max_entry_price,
     heuristic_allowed_entry_price_bands,
@@ -136,8 +138,8 @@ class ReplayPolicy:
             max_trader_exposure_fraction=float(max_trader_exposure_fraction()),
             max_daily_loss_pct=float(max_daily_loss_pct()),
             max_live_drawdown_pct=float(max_live_drawdown_pct()),
-            allowed_entry_price_bands=(),
-            allowed_time_to_close_bands=(),
+            allowed_entry_price_bands=tuple(allowed_entry_price_bands()),
+            allowed_time_to_close_bands=tuple(allowed_time_to_close_bands()),
         )
 
     @classmethod

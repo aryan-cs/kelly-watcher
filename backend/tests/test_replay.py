@@ -5,6 +5,7 @@ import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import kelly_watcher.data.db as db
 from kelly_watcher.research.replay import ReplayPolicy, run_replay
@@ -70,6 +71,22 @@ def _insert_trade(
 
 
 class ReplayTest(unittest.TestCase):
+    def test_default_replay_policy_uses_global_runtime_filters(self) -> None:
+        with (
+            patch(
+                "kelly_watcher.research.replay.allowed_entry_price_bands",
+                return_value=("0.60-0.69", ">=0.70"),
+            ),
+            patch(
+                "kelly_watcher.research.replay.allowed_time_to_close_bands",
+                return_value=("15m-1h", "1h-2h"),
+            ),
+        ):
+            policy = ReplayPolicy.default()
+
+        self.assertEqual(policy.allowed_entry_price_bands, ("0.60-0.69", ">=0.70"))
+        self.assertEqual(policy.allowed_time_to_close_bands, ("15m-1h", "1h-2h"))
+
     def test_replay_policy_normalizes_segment_filters(self) -> None:
         policy = ReplayPolicy.from_payload(
             {

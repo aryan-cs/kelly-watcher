@@ -7,6 +7,7 @@ import os
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +113,7 @@ def _load_telegram_state() -> dict[str, Any]:
 
 def _persist_telegram_state(state: dict[str, Any]) -> None:
     TELEGRAM_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = TELEGRAM_STATE_FILE.with_name(f"{TELEGRAM_STATE_FILE.name}.{os.getpid()}.tmp")
+    temp_path = TELEGRAM_STATE_FILE.with_name(f"{TELEGRAM_STATE_FILE.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
     temp_path.write_text(f"{json.dumps(state, indent=2)}\n", encoding="utf-8")
     temp_path.replace(TELEGRAM_STATE_FILE)
 
@@ -166,7 +167,9 @@ def _request_manual_retrain(*, source: str = "telegram") -> str:
     }
     try:
         MANUAL_RETRAIN_REQUEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = MANUAL_RETRAIN_REQUEST_FILE.with_name(f"{MANUAL_RETRAIN_REQUEST_FILE.name}.{os.getpid()}.tmp")
+        temp_path = MANUAL_RETRAIN_REQUEST_FILE.with_name(
+            f"{MANUAL_RETRAIN_REQUEST_FILE.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+        )
         temp_path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
         temp_path.replace(MANUAL_RETRAIN_REQUEST_FILE)
         return "Manual retrain requested. The bot should pick it up within about a second."

@@ -877,7 +877,7 @@ def _write_bot_state(*, replace: bool = False, **extra) -> None:
 
 def _write_atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
     temp_path.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
     temp_path.replace(path)
 

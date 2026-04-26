@@ -254,10 +254,18 @@ class SignalEngine:
                         or "artifact missing post-epoch routed training provenance",
                     )
                     return
+                feature_cols = _artifact_feature_cols(artifact.get("feature_cols"))
+                if feature_cols is None:
+                    self._fallback_reason = "feature_schema_mismatch"
+                    logger.warning(
+                        "Ignoring model at %s because its feature schema is incompatible with runtime features",
+                        path,
+                    )
+                    return
                 self._xgb = artifact.get("model")
                 self._xgb_probability_calibrator = artifact.get("probability_calibrator")
                 self._xgb_prediction_mode = str(artifact.get("prediction_mode") or "probability")
-                self._xgb_cols = artifact.get("feature_cols", FEATURE_COLS)
+                self._xgb_cols = feature_cols
                 self._xgb_policy = _sanitize_model_policy(artifact.get("policy"))
                 self._model_backend = artifact.get("model_backend", "ml")
                 self._loaded_at = int(time.time())
@@ -796,6 +804,18 @@ def _model_feature_value(value: object) -> float:
     if not np.isfinite(numeric):
         return float("nan")
     return numeric
+
+
+def _artifact_feature_cols(value: object) -> list[str] | None:
+    if not isinstance(value, (list, tuple)):
+        return None
+    cols = [str(column).strip() for column in value]
+    if not cols or len(set(cols)) != len(cols):
+        return None
+    allowed = set(FEATURE_COLS)
+    if any(column not in allowed for column in cols):
+        return None
+    return cols
 
 
 def _sanitize_model_policy(policy: object) -> dict[str, float]:

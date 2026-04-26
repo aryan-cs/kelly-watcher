@@ -285,16 +285,31 @@ class DedupeCache:
         token_id: str,
         avg_price: float,
         real_money: bool,
+        *,
+        merge: bool = False,
     ) -> None:
         key = _position_key(market_id, token_id, side)
+        effective_size = float(size_usd or 0.0)
+        effective_avg_price = float(avg_price or 0.0)
         with self._lock:
-            self.pending.pop(key, None)
-            self.open_positions[key] = {
+            if merge:
+                existing = self.open_positions.get(key)
+                existing_size = _to_float((existing or {}).get("size"))
+                existing_avg_price = _to_float((existing or {}).get("avg_price"))
+                existing_shares = existing_size / existing_avg_price if existing_size > 0 and existing_avg_price > 0 else 0.0
+                added_shares = effective_size / effective_avg_price if effective_size > 0 and effective_avg_price > 0 else 0.0
+                total_size = existing_size + effective_size
+                total_shares = existing_shares + added_shares
+                if total_size > 0:
+                    effective_size = total_size
+                if total_size > 0 and total_shares > 0:
+                    effective_avg_price = total_size / total_shares
+            effective_position = {
                 "market_id": market_id,
                 "side": side,
-                "size": size_usd,
+                "size": effective_size,
                 "token_id": token_id,
-                "avg_price": avg_price,
+                "avg_price": effective_avg_price,
             }
         conn = get_conn()
         try:
@@ -304,11 +319,22 @@ class DedupeCache:
                     market_id, side, size_usd, avg_price, token_id, entered_at, real_money
                 ) VALUES (?,?,?,?,?,?,?)
                 """,
-                (market_id, side, size_usd, avg_price, token_id, int(time.time()), 1 if real_money else 0),
+                (
+                    market_id,
+                    side,
+                    effective_size,
+                    effective_avg_price,
+                    token_id,
+                    int(time.time()),
+                    1 if real_money else 0,
+                ),
             )
             conn.commit()
         finally:
             conn.close()
+        with self._lock:
+            self.pending.pop(key, None)
+            self.open_positions[key] = effective_position
 
     def release(self, market_id: str, token_id: str = "", side: str = "") -> None:
         with self._lock:

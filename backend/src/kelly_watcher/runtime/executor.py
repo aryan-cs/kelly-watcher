@@ -1288,6 +1288,7 @@ class PolymarketExecutor:
             token_id,
             entry_economics.effective_entry_price,
             real_money=False,
+            merge=True,
         )
         dedup.mark_seen(trade_id, market_id, event.trader_address)
         logger.info(
@@ -1449,14 +1450,18 @@ class PolymarketExecutor:
                 event=event,
                 signal=_signal,
             )
-            dedup.confirm(
-                market_id,
-                side,
-                actual_spend,
-                token_id,
-                actual_price,
-                real_money=True,
-            )
+            if live_position is not None:
+                dedup.release(market_id, token_id, side)
+            else:
+                dedup.confirm(
+                    market_id,
+                    side,
+                    actual_spend,
+                    token_id,
+                    actual_price,
+                    real_money=True,
+                    merge=True,
+                )
             dedup.mark_seen(trade_id, market_id, event.trader_address)
             logger.info(
                 "[LIVE] %s | %s | $%.2f | %.3f sh @ %.3f | conf=%.3f | order=%s",
@@ -2253,62 +2258,70 @@ class PolymarketExecutor:
             target_token = token_id or str(position.get("token_id") or "")
             target_side = str(position.get("side") or event.side or "")
             expected_remaining_shares = max(total_open_shares - actual_exit_shares, 0.0)
+            live_sync_confirmed = False
             for attempt in range(LIVE_SYNC_ATTEMPTS):
                 rows = self._fetch_live_positions()
-                if rows is not None:
-                    dedup.sync_positions_from_rows(rows)
-                remaining_position = self._match_live_position(rows or [], market_id, target_token, target_side)
+                if rows is None:
+                    if attempt < LIVE_SYNC_ATTEMPTS - 1:
+                        time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
+                    continue
+                dedup.sync_positions_from_rows(rows)
+                remaining_position = self._match_live_position(rows, market_id, target_token, target_side)
                 remaining_shares = self._live_position_shares(remaining_position)
 
                 if expected_remaining_shares <= 1e-6:
                     if remaining_shares <= 1e-6:
+                        live_sync_confirmed = True
                         break
                 else:
                     tolerance = max(0.02, expected_remaining_shares * 0.2)
                     if remaining_shares > 1e-6 and abs(remaining_shares - expected_remaining_shares) <= tolerance:
+                        live_sync_confirmed = True
                         break
 
                 if attempt < LIVE_SYNC_ATTEMPTS - 1:
                     time.sleep(LIVE_SYNC_DELAY_S * (attempt + 1))
-            else:
-                if reconciled_fill is None:
-                    logger.error(
-                        "[LIVE EXIT] ambiguous exit state for %s: remaining_shares=%.3f expected=%.3f",
-                        market_id[:12],
-                        remaining_shares,
-                        expected_remaining_shares,
-                    )
-                    send_alert(
-                        build_lines(
-                            append_tracking_detail(
-                                "live exit sync is ambiguous",
-                                getattr(event, "trader_name", None),
-                                getattr(event, "trader_address", None),
-                            ),
-                            build_market_line(
-                                event.question,
-                                _market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
-                            ),
-                            (
-                                f"remaining {_to_float(remaining_shares):.3f} shares; "
-                                f"expected {_to_float(expected_remaining_shares):.3f}"
-                            ),
+
+            if not live_sync_confirmed and reconciled_fill is None:
+                logger.error(
+                    "[LIVE EXIT] ambiguous exit state for %s: remaining_shares=%.3f expected=%.3f",
+                    market_id[:12],
+                    remaining_shares,
+                    expected_remaining_shares,
+                )
+                send_alert(
+                    build_lines(
+                        append_tracking_detail(
+                            "live exit sync is ambiguous",
+                            getattr(event, "trader_name", None),
+                            getattr(event, "trader_address", None),
                         ),
-                        kind="warning",
-                    )
-                    dedup.release(
-                        market_id,
-                        str(position.get("token_id") or token_id or ""),
-                        str(position.get("side") or ""),
-                    )
-                    return ExecutionResult(
-                        False,
-                        False,
-                        order_id if order_id != "unknown" else None,
-                        0.0,
-                        "exit state ambiguous after sync timeout",
-                        action="exit",
-                    )
+                        build_market_line(
+                            event.question,
+                            _market_url_from_metadata(getattr(event, "raw_market_metadata", None)),
+                        ),
+                        (
+                            f"remaining {_to_float(remaining_shares):.3f} shares; "
+                            f"expected {_to_float(expected_remaining_shares):.3f}"
+                        ),
+                    ),
+                    kind="warning",
+                )
+                dedup.release(
+                    market_id,
+                    str(position.get("token_id") or token_id or ""),
+                    str(position.get("side") or ""),
+                )
+                return ExecutionResult(
+                    False,
+                    False,
+                    order_id if order_id != "unknown" else None,
+                    0.0,
+                    "exit state ambiguous after sync timeout",
+                    action="exit",
+                )
+
+            if not live_sync_confirmed:
                 logger.warning(
                     "[LIVE EXIT] position sync timed out for %s but fill reconciliation succeeded; committing exit",
                     market_id[:12],
@@ -2383,7 +2396,7 @@ class PolymarketExecutor:
                 market_id=market_id,
                 trader_address=event.trader_address,
                 dedup=dedup,
-                refresh_position_from_trade_log=False,
+                refresh_position_from_trade_log=not live_sync_confirmed,
             )
             logger.info(
                 "[LIVE EXIT] %s | %s | sold %.3f shares | est. pnl=%+.2f | order=%s",

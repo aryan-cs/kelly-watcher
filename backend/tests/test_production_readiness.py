@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 import kelly_watcher.config as config
 import kelly_watcher.data.db as db
 import kelly_watcher.engine.dedup as dedup
+import kelly_watcher.engine.trader_scorer as trader_scorer
 import kelly_watcher.runtime.evaluator as evaluator
 import kelly_watcher.runtime.tracker as tracker
 import kelly_watcher.research.train as train
@@ -299,7 +300,59 @@ class ProductionReadinessTest(unittest.TestCase):
 
         self.assertTrue(result.placed)
         finalize_mock.assert_called_once()
+        self.assertTrue(finalize_mock.call_args.kwargs["refresh_position_from_trade_log"])
         self.assertAlmostEqual(result.shares, 20.0, places=6)
+
+    def test_live_exit_rejects_when_position_sync_fails_without_reconciled_fill(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor._ensure_live_token_allowance = lambda token_id: None
+        executor._clob = SimpleNamespace(
+            create_market_order=lambda order: order,
+            post_order=lambda signed, order_type: {
+                "success": True,
+                "status": "matched",
+                "orderID": "exit-ambiguous",
+            },
+        )
+        executor.get_usdc_balance = lambda: 100.0
+        executor._measure_live_balance_change = lambda before, expect_increase=False: (before, 12.0)
+        executor._reconcile_live_order_fill = lambda **kwargs: None
+        executor._fetch_live_positions = lambda: None
+        finalize_mock = Mock(return_value=(20.0, 12.0, 2.0))
+        executor._finalize_exit = finalize_mock
+        event = SimpleNamespace(
+            question="Will it happen?",
+            trader_address="0xabc",
+            trader_name="Trader",
+            side="yes",
+            raw_market_metadata=None,
+        )
+        dedup_cache = SimpleNamespace(sync_positions_from_rows=Mock(), release=Mock())
+
+        with patch("kelly_watcher.runtime.executor.send_alert") as alert_mock, patch(
+            "kelly_watcher.runtime.executor.logger.error"
+        ), patch("kelly_watcher.runtime.executor.time.sleep"):
+            result = executor._execute_live_exit(
+                trade_id="trade-exit",
+                market_id="market-1",
+                token_id="token-1",
+                event=event,
+                dedup=dedup_cache,
+                position={"token_id": "token-1", "side": "yes"},
+                entries=[{"remaining_entry_shares": 20.0, "remaining_entry_size_usd": 10.0, "source_shares": 20.0}],
+                exit_price=0.6,
+                shares=20.0,
+                exit_notional=12.0,
+                pnl=2.0,
+                exit_fraction=1.0,
+            )
+
+        self.assertFalse(result.placed)
+        self.assertIn("exit state ambiguous", result.reason)
+        finalize_mock.assert_not_called()
+        dedup_cache.release.assert_called_once_with("market-1", "token-1", "yes")
+        dedup_cache.sync_positions_from_rows.assert_not_called()
+        alert_mock.assert_called_once()
 
     def test_sports_helpers_read_event_level_fields_and_score_objects(self) -> None:
         snapshot = {
@@ -670,6 +723,120 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_source_queue_claim_prioritizes_pending_before_retryable_failed_rows(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, '{}', ?, ?, ?, ?, ?, '')
+                        """,
+                        [
+                            (
+                                "failed-newer",
+                                "market-failed",
+                                "token-failed",
+                                now_ts - 5,
+                                "failed",
+                                1,
+                                now_ts - 5,
+                                now_ts - 5,
+                                now_ts - 30,
+                            ),
+                            (
+                                "pending-older",
+                                "market-pending",
+                                "token-pending",
+                                now_ts - 20,
+                                "pending",
+                                0,
+                                now_ts - 20,
+                                now_ts - 20,
+                                now_ts - 20,
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=300
+                    ):
+                        rows = tracker_obj._claim_source_queue_rows(limit=2, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in rows], ["pending-older", "failed-newer"])
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_source_queue_claim_respects_failed_retry_backoff(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, '{}', 'failed', 1, ?, ?, ?, 'temporary failure')
+                        """,
+                        [
+                            (
+                                "failed-recent",
+                                "market-recent",
+                                "token-recent",
+                                now_ts - 5,
+                                now_ts - 5,
+                                now_ts - 5,
+                                now_ts - 2,
+                            ),
+                            (
+                                "failed-ready",
+                                "market-ready",
+                                "token-ready",
+                                now_ts - 10,
+                                now_ts - 10,
+                                now_ts - 10,
+                                now_ts - 30,
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=300
+                    ):
+                        rows = tracker_obj._claim_source_queue_rows(limit=10, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in rows], ["failed-ready"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_source_queue_claim_uses_immediate_transaction(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -935,6 +1102,72 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_load_queued_events_retries_when_metadata_unavailable(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                raw_trade = {
+                    "id": "needs-meta",
+                    "conditionId": "market-needs-meta",
+                    "side": "BUY",
+                    "asset": "token-needs-meta",
+                    "size": 10,
+                    "price": 0.42,
+                    "timestamp": now_ts - 5,
+                }
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, ?, 'pending', 0, ?, ?, ?, '')
+                        """,
+                        (
+                            "needs-meta",
+                            "market-needs-meta",
+                            "token-needs-meta",
+                            now_ts - 5,
+                            json.dumps(raw_trade),
+                            now_ts - 5,
+                            now_ts - 5,
+                            now_ts - 5,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                tracker_obj._fetch_market_metadata_batch = Mock(return_value={"market-needs-meta": ({}, 0)})
+                tracker_obj.get_market_metadata = Mock(return_value=({}, 0))
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts):
+                        events = tracker_obj.load_queued_events(limit=1, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual(events, [])
+                conn = db.get_conn()
+                try:
+                    row = conn.execute(
+                        "SELECT status, attempts, last_error FROM source_event_queue WHERE trade_id='needs-meta'"
+                    ).fetchone()
+                finally:
+                    conn.close()
+                self.assertIsNotNone(row)
+                assert row is not None
+                self.assertEqual(row["status"], "failed")
+                self.assertEqual(row["attempts"], 1)
+                self.assertIn("metadata unavailable", row["last_error"])
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_single_orderbook_enrichment_failure_isolated(self) -> None:
         tracker_obj = tracker.PolymarketTracker(["0xhot"])
         tracker_obj.get_orderbook_snapshot = Mock(side_effect=RuntimeError("bad orderbook"))
@@ -944,6 +1177,68 @@ class ProductionReadinessTest(unittest.TestCase):
             tracker_obj.close()
 
         self.assertEqual(result, {"token-far": (None, None, 0)})
+
+    def test_dedup_confirm_can_merge_same_side_position_cost_basis(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+
+                cache = dedup.DedupeCache()
+                cache.confirm("market-1", "yes", 10.0, "token-1", 0.50, real_money=False, merge=True)
+                cache.confirm("market-1", "yes", 6.0, "token-1", 0.60, real_money=False, merge=True)
+
+                position = cache.get_position("market-1", "token-1", "yes")
+                self.assertIsNotNone(position)
+                assert position is not None
+                expected_avg = 16.0 / ((10.0 / 0.50) + (6.0 / 0.60))
+                self.assertAlmostEqual(float(position["size"]), 16.0, places=6)
+                self.assertAlmostEqual(float(position["avg_price"]), expected_avg, places=6)
+
+                conn = db.get_conn()
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT size_usd, avg_price
+                        FROM positions
+                        WHERE market_id='market-1'
+                          AND token_id='token-1'
+                          AND side='yes'
+                          AND real_money=0
+                        """
+                    ).fetchone()
+                finally:
+                    conn.close()
+                self.assertIsNotNone(row)
+                self.assertAlmostEqual(float(row["size_usd"]), 16.0, places=6)
+                self.assertAlmostEqual(float(row["avg_price"]), expected_avg, places=6)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_trader_features_can_skip_remote_fetch_on_hot_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+
+                with patch.object(
+                    trader_scorer,
+                    "_fetch_remote_trader_features",
+                    side_effect=AssertionError("remote fetch must not run on hot path"),
+                ):
+                    features = trader_scorer.get_trader_features(
+                        "0xabc",
+                        25.0,
+                        allow_remote=False,
+                    )
+
+                self.assertEqual(features.n_trades, 0)
+                self.assertEqual(features.win_rate, 0.5)
+                self.assertEqual(features.avg_size_usd, 25.0)
+            finally:
+                db.DB_PATH = original_db_path
 
     def test_load_queued_events_refills_after_stale_near_row_to_preserve_far_market_event(self) -> None:
         with TemporaryDirectory() as tmpdir:

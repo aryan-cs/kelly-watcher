@@ -46,6 +46,7 @@ ORDERBOOK_CACHE_TTL_S = 2
 PRICE_HISTORY_CACHE_TTL_S = 60
 INTRADAY_MARKET_METADATA_CACHE_TTL_S = 30
 SOURCE_QUEUE_CLAIM_MAX_BATCHES = 4
+SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS = 10
 
 
 class HostRateLimiter:
@@ -521,10 +522,11 @@ class PolymarketTracker:
         now_ts = int(time.time())
         self.expire_stale_source_queue_rows(now_ts=now_ts)
         stale_processing_cutoff = now_ts - 300
+        failed_retry_cutoff = now_ts - SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS
         base_age_limit = max_source_trade_age_seconds()
         base_stale_cutoff = now_ts - int(base_age_limit) if base_age_limit > 0 else 0
         limit_clause = ""
-        params: list[Any] = [stale_processing_cutoff]
+        params: list[Any] = [failed_retry_cutoff, stale_processing_cutoff]
         tier_clause = ""
         normalized_tiers = tuple(
             str(tier or "").strip().lower()
@@ -549,11 +551,17 @@ class PolymarketTracker:
                 FROM source_event_queue
                 WHERE (
                     status='pending'
-                    OR (status='failed' AND attempts < 5)
+                    OR (status='failed' AND attempts < 5 AND updated_at <= ?)
                     OR (status='processing' AND updated_at < ?)
                 )
                 {tier_clause}
                 ORDER BY
+                    CASE status
+                        WHEN 'pending' THEN 0
+                        WHEN 'failed' THEN 1
+                        WHEN 'processing' THEN 2
+                        ELSE 3
+                    END,
                     CASE LOWER(watch_tier)
                         WHEN 'hot' THEN 0
                         WHEN 'warm' THEN 1
@@ -651,7 +659,18 @@ class PolymarketTracker:
                     watch_tier=candidate.watch_tier,
                 )
                 if event is None:
-                    self.mark_source_event_failed(candidate.trade_id, "source event could not be parsed", terminal=True)
+                    if not meta and self._raw_trade_has_required_fields(candidate.raw):
+                        self.mark_source_event_failed(
+                            candidate.trade_id,
+                            "source event metadata unavailable; will retry",
+                            terminal=False,
+                        )
+                    else:
+                        self.mark_source_event_failed(
+                            candidate.trade_id,
+                            "source event could not be parsed",
+                            terminal=True,
+                        )
                     continue
                 if self._is_stale_event(event, now_ts):
                     max_age = source_trade_age_limit_seconds(getattr(event, "market_close_ts", 0), now_ts=now_ts)
@@ -1188,6 +1207,32 @@ class PolymarketTracker:
         if max_age <= 0:
             return False
         return (poll_started_at - int(source_ts or poll_started_at)) > max_age
+
+    @classmethod
+    def _raw_trade_has_required_fields(cls, raw: dict[str, Any]) -> bool:
+        condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "").strip()
+        token_id = str(
+            raw.get("asset")
+            or raw.get("asset_id")
+            or raw.get("tokenId")
+            or raw.get("token_id")
+            or ""
+        ).strip()
+        source_ts = cls._normalize_timestamp(raw.get("timestamp") or raw.get("createdAt") or raw.get("created_at"))
+        shares = cls._optional_float(raw.get("size"))
+        if shares is None:
+            shares = cls._optional_float(raw.get("shares"))
+        size_usd = cls._optional_float(raw.get("sizeUsd"))
+        if size_usd is None:
+            size_usd = cls._optional_float(raw.get("usdc_size"))
+        price = cls._parse_trade_price(raw, shares=shares, size_usd=size_usd)
+        return (
+            bool(condition_id)
+            and bool(token_id)
+            and source_ts > 0
+            and price is not None
+            and ((shares is not None and shares > 0) or (size_usd is not None and size_usd > 0))
+        )
 
     def _parse_raw_trade(
         self,

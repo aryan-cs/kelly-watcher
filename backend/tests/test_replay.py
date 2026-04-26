@@ -24,6 +24,7 @@ def _insert_trade(
     skipped: bool = False,
     actual_entry_price: float | None = None,
     actual_entry_size_usd: float | None = None,
+    actual_pnl_usd: float | None = None,
     shadow_pnl_usd: float | None = None,
     counterfactual_return: float | None = None,
     signal_payload: dict | None = None,
@@ -35,9 +36,9 @@ def _insert_trade(
             trade_id, market_id, question, trader_address, side, token_id, source_action,
             price_at_signal, signal_size_usd, actual_entry_price, actual_entry_shares,
             actual_entry_size_usd, confidence, kelly_fraction, signal_mode, real_money,
-            skipped, skip_reason, placed_at, resolved_at, counterfactual_return, shadow_pnl_usd,
+            skipped, skip_reason, placed_at, resolved_at, counterfactual_return, actual_pnl_usd, shadow_pnl_usd,
             decision_context_json
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             trade_id,
@@ -61,6 +62,7 @@ def _insert_trade(
             placed_at,
             resolved_at,
             counterfactual_return,
+            actual_pnl_usd,
             shadow_pnl_usd,
             json.dumps({"signal": signal_payload or {}}, separators=(",", ":")),
         ),
@@ -434,6 +436,70 @@ class ReplayTest(unittest.TestCase):
                 )
                 self.assertAlmostEqual(float(heuristic_segment["accepted_size_usd"]), accepted_size_usd)
                 self.assertAlmostEqual(float(heuristic_segment["resolved_size_usd"]), resolved_size_usd)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_live_replay_does_not_use_shadow_pnl_when_actual_pnl_missing(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="live-shadow-fallback",
+                    market_id="market-live",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic",
+                    confidence=0.70,
+                    price_at_signal=0.68,
+                    actual_entry_price=0.68,
+                    actual_entry_size_usd=100.0,
+                    actual_pnl_usd=None,
+                    shadow_pnl_usd=50.0,
+                    placed_at=1_700_000_000,
+                    resolved_at=1_700_000_100,
+                    real_money=1,
+                    signal_payload={
+                        "mode": "heuristic",
+                        "market": {"score": 0.85},
+                        "min_confidence": 0.55,
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "mode": "live",
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.55,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "model_edge_mid_confidence": 0.55,
+                            "model_edge_high_confidence": 0.65,
+                            "model_edge_mid_threshold": 0.05,
+                            "model_edge_high_threshold": 0.05,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                    label="live-no-shadow-fallback",
+                )
+
+                self.assertEqual(result["accepted_count"], 1)
+                self.assertEqual(result["resolved_count"], 0)
+                self.assertEqual(result["unresolved_count"], 1)
+                self.assertEqual(result["total_pnl_usd"], 0.0)
+                self.assertGreater(result["window_end_open_exposure_usd"], 0.0)
             finally:
                 db.DB_PATH = original_db_path
 
@@ -1250,6 +1316,7 @@ class ReplayTest(unittest.TestCase):
                     price_at_signal=0.70,
                     actual_entry_price=0.70,
                     actual_entry_size_usd=100.0,
+                    actual_pnl_usd=-60.0,
                     shadow_pnl_usd=-60.0,
                     placed_at=first_ts,
                     resolved_at=first_ts + 60,
@@ -1265,6 +1332,7 @@ class ReplayTest(unittest.TestCase):
                     price_at_signal=0.70,
                     actual_entry_price=0.70,
                     actual_entry_size_usd=100.0,
+                    actual_pnl_usd=30.0,
                     shadow_pnl_usd=30.0,
                     placed_at=first_ts + 120,
                     resolved_at=first_ts + 180,
@@ -1358,6 +1426,7 @@ class ReplayTest(unittest.TestCase):
                     price_at_signal=0.70,
                     actual_entry_price=0.70,
                     actual_entry_size_usd=100.0,
+                    actual_pnl_usd=-60.0,
                     shadow_pnl_usd=-60.0,
                     placed_at=first_ts,
                     resolved_at=first_ts + 60,
@@ -1373,6 +1442,7 @@ class ReplayTest(unittest.TestCase):
                     price_at_signal=0.70,
                     actual_entry_price=0.70,
                     actual_entry_size_usd=100.0,
+                    actual_pnl_usd=30.0,
                     shadow_pnl_usd=30.0,
                     placed_at=first_ts + 120,
                     resolved_at=first_ts + 180,
@@ -1449,6 +1519,7 @@ class ReplayTest(unittest.TestCase):
                     price_at_signal=0.70,
                     actual_entry_price=0.70,
                     actual_entry_size_usd=100.0,
+                    actual_pnl_usd=-60.0,
                     shadow_pnl_usd=-60.0,
                     placed_at=first_ts,
                     resolved_at=first_ts + 60,
@@ -1465,6 +1536,7 @@ class ReplayTest(unittest.TestCase):
                     price_at_signal=0.70,
                     actual_entry_price=0.70,
                     actual_entry_size_usd=100.0,
+                    actual_pnl_usd=30.0,
                     shadow_pnl_usd=30.0,
                     placed_at=first_ts + 120,
                     resolved_at=first_ts + 180,

@@ -51,6 +51,7 @@ def get_trader_features(
     trader_address: str,
     observed_size_usd: float,
     force_refresh: bool = False,
+    allow_remote: bool = True,
 ) -> TraderFeatures:
     stale_cached = _get_cached_trader_features(
         trader_address,
@@ -66,15 +67,18 @@ def get_trader_features(
         if cached:
             return cached
 
-    remote = _fetch_remote_trader_features(trader_address, observed_size_usd)
-    if remote:
-        remote = _normalize_remote_win_rate(trader_address, observed_size_usd, remote)
-        _store_trader_features(trader_address, remote)
-        return remote
+    if allow_remote:
+        remote = _fetch_remote_trader_features(trader_address, observed_size_usd)
+        if remote:
+            remote = _normalize_remote_win_rate(trader_address, observed_size_usd, remote)
+            _store_trader_features(trader_address, remote)
+            return remote
 
     local = _compute_local_trader_features(trader_address, observed_size_usd)
     if local.n_trades == 0 and stale_cached:
         return stale_cached
+    if not allow_remote:
+        return local
     _store_trader_features(trader_address, local)
     return local
 

@@ -32,7 +32,7 @@ from kelly_watcher.config import (
     xgboost_allowed_entry_price_bands,
 )
 from kelly_watcher.runtime_paths import TRADING_DB_PATH
-from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL
+from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL, resolved_pnl_expr
 
 HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
 HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
@@ -303,7 +303,7 @@ def _simulate(
             resolved_at,
             exited_at,
             counterfactual_return,
-            COALESCE(actual_pnl_usd, shadow_pnl_usd) AS resolved_pnl_usd,
+            {resolved_pnl_expr()} AS resolved_pnl_usd,
             decision_context_json
         FROM trade_log
         WHERE COALESCE(source_action, 'buy')='buy'

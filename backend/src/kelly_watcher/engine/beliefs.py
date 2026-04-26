@@ -57,6 +57,7 @@ def sync_belief_priors() -> int:
                 market_veto,
                 source_action,
                 outcome,
+                counterfactual_return,
                 {resolved_pnl_expr()} AS resolved_pnl_usd,
                 actual_entry_price,
                 actual_entry_shares,
@@ -78,7 +79,7 @@ def sync_belief_priors() -> int:
             WHERE COALESCE(source_action, 'buy')='buy'
               AND (
                   {resolved_pnl_expr()} IS NOT NULL
-                  OR outcome IS NOT NULL
+                  OR (skipped=1 AND counterfactual_return IS NOT NULL)
               )
               AND id NOT IN (SELECT trade_log_id FROM belief_updates)
             ORDER BY id
@@ -242,10 +243,10 @@ def _belief_label_and_weight(row) -> tuple[int, float] | None:
         return (1 if float(resolved_pnl) > 0 else 0, 1.0)
 
     if _is_counterfactual_signal_reject(row):
-        outcome = row["outcome"]
-        if outcome is None:
+        counterfactual_return = row["counterfactual_return"]
+        if counterfactual_return is None:
             return None
-        return (1 if int(outcome) == 1 else 0, COUNTERFACTUAL_SKIP_WEIGHT)
+        return (1 if float(counterfactual_return) > 0 else 0, COUNTERFACTUAL_SKIP_WEIGHT)
 
     return None
 

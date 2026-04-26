@@ -225,7 +225,7 @@ def _load_snapshot() -> AdaptiveFloorSnapshot:
             WHERE COALESCE(source_action, 'buy')='buy'
               AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL}
               AND (
-                  (skipped=1 AND outcome IS NOT NULL)
+                  (skipped=1 AND outcome IS NOT NULL AND counterfactual_return IS NOT NULL)
                   OR (
                       skipped=0
                       AND actual_entry_size_usd IS NOT NULL

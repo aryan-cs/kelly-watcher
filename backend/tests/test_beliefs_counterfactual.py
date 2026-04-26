@@ -17,6 +17,7 @@ def _insert_trade(
     signal_mode: str | None,
     outcome: int,
     shadow_pnl_usd: float | None,
+    counterfactual_return: float | None = None,
 ) -> None:
     actual_entry_price = 0.50 if not skipped else None
     actual_entry_shares = 20.0 if not skipped else None
@@ -27,10 +28,10 @@ def _insert_trade(
             trade_id, market_id, question, trader_address, side, source_action,
             price_at_signal, signal_size_usd, confidence, kelly_fraction,
             real_money, skipped, skip_reason, signal_mode, placed_at, outcome,
-            actual_entry_price, actual_entry_shares, actual_entry_size_usd, shadow_pnl_usd,
+            actual_entry_price, actual_entry_shares, actual_entry_size_usd, shadow_pnl_usd, counterfactual_return,
             f_trader_win_rate, f_conviction_ratio, f_consistency, f_days_to_res, f_price,
             f_spread_pct, f_momentum_1h, f_volume_trend, f_oi_usd, f_bid_depth_usd, f_ask_depth_usd
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             trade_id,
@@ -53,6 +54,7 @@ def _insert_trade(
             actual_entry_shares,
             actual_entry_size_usd,
             shadow_pnl_usd,
+            counterfactual_return,
             0.62,
             0.55,
             0.40,
@@ -94,6 +96,7 @@ class BeliefsCounterfactualTest(unittest.TestCase):
                     signal_mode="heuristic",
                     outcome=1,
                     shadow_pnl_usd=None,
+                    counterfactual_return=0.20,
                 )
                 _insert_trade(
                     conn,
@@ -125,7 +128,7 @@ class BeliefsCounterfactualTest(unittest.TestCase):
                 self.assertEqual(applied, 2)
                 self.assertAlmostEqual(float(global_row["wins"]), 1.35, places=6)
                 self.assertAlmostEqual(float(global_row["losses"]), 0.0, places=6)
-                self.assertEqual(int(update_count), 3)
+                self.assertEqual(int(update_count), 2)
             finally:
                 db.DB_PATH = original_db_path
                 beliefs.invalidate_belief_cache()

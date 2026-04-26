@@ -601,6 +601,32 @@ class ExpectedReturnModelTest(unittest.TestCase):
             self.assertFalse(runtime["model_training_provenance_trusted"])
             self.assertIn("missing post-epoch routed training provenance", runtime["model_training_block_reason"])
 
+    def test_signal_engine_rejects_string_false_training_provenance_flags(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            model_file = Path(tmpdir) / "model.joblib"
+            artifact = self._trusted_model_artifact(0.20)
+            artifact["training_routed_only"] = "false"
+            artifact["training_provenance_trusted"] = "false"
+            joblib.dump(artifact, model_file)
+
+            with patch(
+                "kelly_watcher.engine.signal_engine.read_shadow_evidence_epoch",
+                return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+            ), patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)), patch(
+                "kelly_watcher.engine.signal_engine.allow_heuristic",
+                return_value=True,
+            ):
+                engine = signal_engine.SignalEngine()
+                runtime = engine.runtime_info()
+
+        self.assertEqual(runtime["loaded_scorer"], "heuristic")
+        self.assertEqual(runtime["loaded_model_backend"], "heuristic")
+        self.assertFalse(runtime["model_runtime_compatible"])
+        self.assertEqual(runtime["model_fallback_reason"], "training_provenance_untrusted")
+        self.assertFalse(runtime["model_training_routed_only"])
+        self.assertFalse(runtime["model_training_provenance_trusted"])
+        self.assertIn("not trained on routed-only", runtime["model_training_block_reason"])
+
     def test_signal_engine_runtime_info_reports_loaded_model(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"

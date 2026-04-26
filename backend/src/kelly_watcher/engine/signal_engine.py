@@ -49,6 +49,27 @@ HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
 HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
 SEGMENT_POLICY_ID = "shadow-runtime-segment-policy-v1"
 SEGMENT_POLICY_BUNDLE_VERSION = 1
+_ARTIFACT_BOOL_TRUE = {"1", "true", "t", "yes", "y", "on"}
+_ARTIFACT_BOOL_FALSE = {"0", "false", "f", "no", "n", "off", ""}
+
+
+def _artifact_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _ARTIFACT_BOOL_TRUE:
+            return True
+        if normalized in _ARTIFACT_BOOL_FALSE:
+            return False
+        return False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    if not np.isfinite(numeric):
+        return False
+    return bool(numeric)
 
 
 @dataclass(frozen=True)
@@ -167,12 +188,12 @@ class SignalEngine:
                     ),
                     0,
                 )
-                self._artifact_training_routed_only = bool(
+                self._artifact_training_routed_only = _artifact_bool(
                     artifact.get("training_routed_only")
                     if "training_routed_only" in artifact
                     else artifact_metrics.get("training_routed_only")
                 )
-                self._artifact_training_provenance_trusted = bool(
+                self._artifact_training_provenance_trusted = _artifact_bool(
                     artifact.get("training_provenance_trusted")
                     if "training_provenance_trusted" in artifact
                     else artifact_metrics.get("training_provenance_trusted")

@@ -48,6 +48,7 @@ INTRADAY_MARKET_METADATA_CACHE_TTL_S = 30
 SOURCE_QUEUE_CLAIM_MAX_BATCHES = 4
 SOURCE_QUEUE_ENRICHMENT_BATCH_SIZE = 8
 SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS = 10
+SOURCE_QUEUE_FAILED_RETRY_MAX_BACKOFF_SECONDS = 30
 SOURCE_QUEUE_PROCESSING_RETRY_SECONDS = 30
 
 
@@ -535,11 +536,15 @@ class PolymarketTracker:
         now_ts = int(time.time())
         self.expire_stale_source_queue_rows(now_ts=now_ts)
         stale_processing_cutoff = now_ts - SOURCE_QUEUE_PROCESSING_RETRY_SECONDS
-        failed_retry_cutoff = now_ts - SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS
         base_age_limit = max_source_trade_age_seconds()
         base_stale_cutoff = now_ts - int(base_age_limit) if base_age_limit > 0 else 0
         limit_clause = ""
-        params: list[Any] = [failed_retry_cutoff, stale_processing_cutoff]
+        params: list[Any] = [
+            now_ts,
+            SOURCE_QUEUE_FAILED_RETRY_MAX_BACKOFF_SECONDS,
+            SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS,
+            stale_processing_cutoff,
+        ]
         tier_clause = ""
         normalized_tiers = tuple(
             str(tier or "").strip().lower()
@@ -564,7 +569,18 @@ class PolymarketTracker:
                 FROM source_event_queue
                 WHERE (
                     status='pending'
-                    OR (status='failed' AND updated_at <= ?)
+                    OR (
+                        status='failed'
+                        AND updated_at <= ? - MIN(
+                            ?,
+                            ? * CASE
+                                WHEN attempts <= 1 THEN 1
+                                WHEN attempts = 2 THEN 2
+                                WHEN attempts = 3 THEN 4
+                                ELSE 8
+                            END
+                        )
+                    )
                     OR (status='processing' AND updated_at < ?)
                 )
                 {tier_clause}

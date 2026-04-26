@@ -876,6 +876,16 @@ class ProductionReadinessTest(unittest.TestCase):
                                 now_ts - 10,
                                 now_ts - 30,
                             ),
+                            (
+                                "failed-delayed-high-attempts",
+                                "market-delayed",
+                                "token-delayed",
+                                now_ts - 12,
+                                8,
+                                now_ts - 12,
+                                now_ts - 12,
+                                now_ts - 20,
+                            ),
                         ],
                     )
                     conn.commit()
@@ -903,6 +913,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 finally:
                     conn.close()
                 self.assertEqual(states["failed-recent-high-attempts"], ("failed", 8))
+                self.assertEqual(states["failed-delayed-high-attempts"], ("failed", 8))
                 self.assertEqual(states["failed-ready-high-attempts"], ("processing", 9))
             finally:
                 db.DB_PATH = original_db_path

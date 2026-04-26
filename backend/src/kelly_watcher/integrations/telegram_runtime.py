@@ -126,6 +126,8 @@ def _persist_telegram_state(state: dict[str, Any]) -> None:
             temp_path.unlink()
         except FileNotFoundError:
             pass
+        except Exception:
+            logger.debug("Telegram command state temp cleanup failed for %s", temp_path, exc_info=True)
         raise
 
 

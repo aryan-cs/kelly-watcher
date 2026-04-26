@@ -453,6 +453,22 @@ class TelegramCommandTest(unittest.TestCase):
                 telegram_runtime._next_command_poll_at = original_next_poll_at
                 telegram_runtime._last_command_update_id = original_last_update_id
 
+    def test_persist_telegram_state_preserves_replace_error_when_temp_cleanup_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = telegram_runtime.TELEGRAM_STATE_FILE
+            try:
+                telegram_runtime.TELEGRAM_STATE_FILE = Path(tmpdir) / "telegram_state.json"
+
+                with patch.object(Path, "replace", side_effect=OSError("replace failed")), patch.object(
+                    Path,
+                    "unlink",
+                    side_effect=OSError("unlink failed"),
+                ):
+                    with self.assertRaisesRegex(OSError, "replace failed"):
+                        telegram_runtime._persist_telegram_state({"last_update_id": 3001})
+            finally:
+                telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
+
     def test_balance_command_uses_cached_bot_state_without_db_preview(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_state_file = telegram_runtime.TELEGRAM_STATE_FILE

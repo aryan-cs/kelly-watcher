@@ -260,6 +260,60 @@ class TrainingDataContractTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_load_training_data_uses_decision_price_before_actual_fill_price(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.execute(
+                    """
+                    INSERT INTO trade_log (
+                        trade_id, market_id, question, trader_address, side, source_action,
+                        price_at_signal, signal_size_usd, confidence, kelly_fraction,
+                        real_money, skipped, placed_at,
+                        actual_entry_price, actual_entry_shares, actual_entry_size_usd,
+                        entry_gross_price, entry_gross_shares, entry_gross_size_usd,
+                        shadow_pnl_usd, resolved_at, label_applied_at, decision_context_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "decision-price",
+                        "market-decision-price",
+                        "Decision price should drive training edge features",
+                        "0xaaa",
+                        "yes",
+                        "buy",
+                        0.62,
+                        10.0,
+                        0.71,
+                        0.10,
+                        0,
+                        0,
+                        1_700_000_000,
+                        0.64,
+                        15.625,
+                        10.0,
+                        0.62,
+                        16.129,
+                        10.0,
+                        5.0,
+                        1_700_000_100,
+                        1_700_000_100,
+                        json.dumps({"signal": {"entry_price": 0.72}}),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+
+                df = train.load_training_data()
+
+                self.assertEqual(list(df["trade_id"]), ["decision-price"])
+                self.assertAlmostEqual(float(df.iloc[0]["effective_price"]), 0.72, places=6)
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_load_training_data_does_not_use_shadow_pnl_for_live_rows(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

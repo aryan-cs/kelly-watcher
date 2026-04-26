@@ -165,7 +165,14 @@ def load_training_data(
                 skip_reason,
                 price_at_signal,
                 signal_size_usd,
-                COALESCE(actual_entry_price, price_at_signal) AS effective_price,
+                COALESCE(
+                    CASE
+                        WHEN json_valid(COALESCE(decision_context_json, ''))
+                        THEN CAST(json_extract(decision_context_json, '$.signal.entry_price') AS REAL)
+                    END,
+                    price_at_signal,
+                    actual_entry_price
+                ) AS effective_price,
                 COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
                 counterfactual_return,
                 {TRAINING_RETURN_SQL} AS {RETURN_COL},

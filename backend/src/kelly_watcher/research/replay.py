@@ -485,9 +485,9 @@ def _simulate(
         time_to_close_seconds = max(0, horizon_close_ts - placed_at)
         time_to_close_band = _time_to_close_band(time_to_close_seconds)
         entry_price = _coalesce_float(
-            row["actual_entry_price"],
             signal.get("entry_price"),
             row["price_at_signal"],
+            row["actual_entry_price"],
         )
         entry_price_band = _entry_price_band(entry_price)
         confidence = _coalesce_float(signal.get("confidence"), row["confidence"]) or 0.0

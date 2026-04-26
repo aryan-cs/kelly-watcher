@@ -607,16 +607,20 @@ def _store_trader_features(trader_address: str, features: TraderFeatures) -> Non
 
 def _to_float(value: Any) -> float:
     try:
-        return float(value or 0.0)
+        numeric = float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+    return numeric if math.isfinite(numeric) else 0.0
 
 
 def _to_int(value: Any) -> int:
     try:
-        return int(float(value or 0))
+        numeric = float(value or 0)
     except (TypeError, ValueError):
         return 0
+    if not math.isfinite(numeric):
+        return 0
+    return int(numeric)
 
 
 class TraderScorer:

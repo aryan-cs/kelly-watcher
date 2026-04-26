@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import unittest
 
-from kelly_watcher.engine.trader_scorer import TraderFeatures, TraderScorer
+from kelly_watcher.engine.trader_scorer import TraderFeatures, TraderScorer, _to_float, _to_int
 
 
 class TraderScorerTest(unittest.TestCase):
@@ -25,6 +25,12 @@ class TraderScorerTest(unittest.TestCase):
         self.assertLessEqual(result["score"], 0.5)
         for value in result["components"].values():
             self.assertTrue(math.isfinite(value))
+
+    def test_remote_numeric_coercion_rejects_nonfinite_values(self) -> None:
+        self.assertEqual(_to_float("inf"), 0.0)
+        self.assertEqual(_to_float(float("nan")), 0.0)
+        self.assertEqual(_to_int("inf"), 0)
+        self.assertEqual(_to_int(float("nan")), 0)
 
 
 if __name__ == "__main__":

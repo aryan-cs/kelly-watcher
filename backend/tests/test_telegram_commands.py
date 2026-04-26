@@ -63,9 +63,11 @@ class _ContextClient:
 class TelegramCommandTest(unittest.TestCase):
     def setUp(self) -> None:
         telegram_runtime.close_telegram_command_client()
+        telegram_runtime._last_command_update_id = 0
 
     def tearDown(self) -> None:
         telegram_runtime.close_telegram_command_client()
+        telegram_runtime._last_command_update_id = 0
 
     def test_tracker_preview_summary_matches_performance_box_logic(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -333,6 +335,123 @@ class TelegramCommandTest(unittest.TestCase):
                 telegram_runtime._next_command_poll_at = original_next_poll_at
                 telegram_runtime._command_poll_failure_count = original_failure_count
                 telegram_runtime._last_command_poll_warning_at = original_last_warning_at
+
+    def test_service_telegram_commands_tolerates_invalid_state_and_message_ids(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = telegram_runtime.TELEGRAM_STATE_FILE
+            original_bot_state_file = telegram_runtime.BOT_STATE_FILE
+            original_retrain_request_file = telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE
+            original_next_poll_at = telegram_runtime._next_command_poll_at
+            original_last_update_id = telegram_runtime._last_command_update_id
+            try:
+                tmp_path = Path(tmpdir)
+                telegram_runtime.TELEGRAM_STATE_FILE = tmp_path / "telegram_state.json"
+                telegram_runtime.BOT_STATE_FILE = tmp_path / "bot_state.json"
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = tmp_path / "manual_retrain_request.json"
+                telegram_runtime.TELEGRAM_STATE_FILE.write_text(
+                    json.dumps({"last_update_id": "not-an-int"}),
+                    encoding="utf-8",
+                )
+                telegram_runtime._next_command_poll_at = 0.0
+                telegram_runtime._last_command_update_id = 0
+                client = _HttpClient(
+                    {
+                        "ok": True,
+                        "result": [
+                            {
+                                "update_id": 2001,
+                                "message": {
+                                    "message_id": "not-an-int",
+                                    "chat": {"id": 123},
+                                    "text": "/balance",
+                                },
+                            }
+                        ],
+                    }
+                )
+
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
+                    "kelly_watcher.integrations.telegram_runtime.render_tracker_preview_message", return_value="reply"
+                ), patch("kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True) as send_message:
+                    handled = telegram_runtime.service_telegram_commands()
+
+                self.assertEqual(handled, 1)
+                self.assertEqual(client.get_calls[0][1]["offset"], 1)
+                send_message.assert_called_once_with("reply", chat_id="123", reply_to_message_id=None)
+                saved_state = json.loads(telegram_runtime.TELEGRAM_STATE_FILE.read_text(encoding="utf-8"))
+                self.assertEqual(saved_state["last_update_id"], 2001)
+            finally:
+                telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
+                telegram_runtime.BOT_STATE_FILE = original_bot_state_file
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
+                telegram_runtime._next_command_poll_at = original_next_poll_at
+                telegram_runtime._last_command_update_id = original_last_update_id
+
+    def test_service_telegram_commands_keeps_memory_offset_when_state_persist_fails(self) -> None:
+        class _SequentialClient:
+            def __init__(self) -> None:
+                self.payloads = [
+                    {
+                        "ok": True,
+                        "result": [
+                            {
+                                "update_id": 3001,
+                                "message": {
+                                    "message_id": 77,
+                                    "chat": {"id": 123},
+                                    "text": "/balance",
+                                },
+                            }
+                        ],
+                    },
+                    {"ok": True, "result": []},
+                ]
+                self.get_calls: list[tuple[str, dict | None]] = []
+
+            def get(self, url: str, *, params=None) -> _HttpResponse:
+                self.get_calls.append((url, params))
+                return _HttpResponse(self.payloads.pop(0))
+
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = telegram_runtime.TELEGRAM_STATE_FILE
+            original_bot_state_file = telegram_runtime.BOT_STATE_FILE
+            original_retrain_request_file = telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE
+            original_next_poll_at = telegram_runtime._next_command_poll_at
+            original_last_update_id = telegram_runtime._last_command_update_id
+            try:
+                tmp_path = Path(tmpdir)
+                telegram_runtime.TELEGRAM_STATE_FILE = tmp_path / "telegram_state.json"
+                telegram_runtime.BOT_STATE_FILE = tmp_path / "bot_state.json"
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = tmp_path / "manual_retrain_request.json"
+                telegram_runtime._next_command_poll_at = 0.0
+                telegram_runtime._last_command_update_id = 0
+                client = _SequentialClient()
+
+                with patch("kelly_watcher.integrations.telegram_runtime.telegram_bot_token", return_value="token"), patch(
+                    "kelly_watcher.integrations.telegram_runtime.telegram_chat_id", return_value="123"
+                ), patch("kelly_watcher.integrations.telegram_runtime.httpx.Client", return_value=client), patch(
+                    "kelly_watcher.integrations.telegram_runtime.render_tracker_preview_message", return_value="reply"
+                ), patch("kelly_watcher.integrations.telegram_runtime.send_telegram_message", return_value=True), patch(
+                    "kelly_watcher.integrations.telegram_runtime._persist_telegram_state",
+                    side_effect=OSError("disk full"),
+                ), self.assertLogs("kelly_watcher.integrations.telegram_runtime", level="WARNING") as logs:
+                    first_handled = telegram_runtime.service_telegram_commands()
+                    telegram_runtime._next_command_poll_at = 0.0
+                    second_handled = telegram_runtime.service_telegram_commands()
+
+                self.assertEqual(first_handled, 1)
+                self.assertEqual(second_handled, 0)
+                self.assertEqual(client.get_calls[0][1]["offset"], 1)
+                self.assertEqual(client.get_calls[1][1]["offset"], 3002)
+                self.assertIn("Failed to persist Telegram command state", "\n".join(logs.output))
+            finally:
+                telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
+                telegram_runtime.BOT_STATE_FILE = original_bot_state_file
+                telegram_runtime.MANUAL_RETRAIN_REQUEST_FILE = original_retrain_request_file
+                telegram_runtime._next_command_poll_at = original_next_poll_at
+                telegram_runtime._last_command_update_id = original_last_update_id
 
     def test_balance_command_uses_cached_bot_state_without_db_preview(self) -> None:
         with TemporaryDirectory() as tmpdir:

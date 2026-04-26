@@ -18,7 +18,7 @@ import numpy as np
 from kelly_watcher.integrations.alerter import send_alert
 from kelly_watcher.engine.beliefs import invalidate_belief_cache, sync_belief_priors
 from kelly_watcher.config import entry_fixed_cost_usd, settlement_fixed_cost_usd
-from kelly_watcher.data.db import DB_PATH, database_integrity_state, get_conn, get_conn_for_path
+from kelly_watcher.data.db import DB_PATH, database_integrity_state, get_conn, get_conn_for_path, rollback_safely
 from kelly_watcher.engine.economics import build_entry_economics
 from kelly_watcher.runtime.performance_preview import compute_tracker_preview_summary
 from kelly_watcher.engine.segment_policy import SEGMENT_FALLBACK, SEGMENT_IDS
@@ -841,6 +841,9 @@ def _resolve_shadow_trades_locked(
                             (row["market_id"], side_str, row["real_money"]),
                         )
                     conn.commit()
+                except Exception:
+                    rollback_safely(conn, label="shadow trade resolution")
+                    raise
                 finally:
                     conn.close()
 
@@ -881,6 +884,9 @@ def _resolve_shadow_trades_locked(
                 ],
             )
             conn.commit()
+        except Exception:
+            rollback_safely(conn, label="unresolved market resolution backoff")
+            raise
         finally:
             conn.close()
 
@@ -1233,6 +1239,9 @@ def persist_performance_snapshot(mode: str) -> None:
             ),
         )
         conn.commit()
+    except Exception:
+        rollback_safely(conn, label="performance snapshot")
+        raise
     finally:
         conn.close()
 
@@ -1453,6 +1462,9 @@ def cleanup_premature_resolutions(backup_path: Path | None = None) -> dict[str, 
         conn.execute("DELETE FROM belief_updates")
         conn.execute("DELETE FROM belief_priors")
         conn.commit()
+    except Exception:
+        rollback_safely(conn, label="premature resolution cleanup")
+        raise
     finally:
         conn.close()
 

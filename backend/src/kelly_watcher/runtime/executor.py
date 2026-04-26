@@ -35,7 +35,7 @@ from kelly_watcher.config import (
     use_real_money,
     wallet_address,
 )
-from kelly_watcher.data.db import current_promotion_epoch_id, get_conn
+from kelly_watcher.data.db import current_promotion_epoch_id, get_conn, rollback_safely
 from kelly_watcher.engine.economics import (
     EntryEconomics,
     ExitEconomics,
@@ -2925,6 +2925,9 @@ def log_trade(
         )
         row_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
         conn.commit()
+    except Exception:
+        rollback_safely(conn, label="trade log insert")
+        raise
     finally:
         conn.close()
     return row_id

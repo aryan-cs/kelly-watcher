@@ -1600,6 +1600,59 @@ class RuntimeFixesTest(unittest.TestCase):
         fake_conn.close.assert_called_once()
         fake_conn.rollback.assert_called_once()
 
+    def test_log_trade_rolls_back_failed_insert_before_close(self) -> None:
+        fake_conn = Mock()
+        fake_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+
+        with patch("kelly_watcher.runtime.executor.get_conn", return_value=fake_conn):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
+                log_trade(
+                    trade_id="trade-rollback",
+                    market_id="market-rollback",
+                    question="Will rollback run?",
+                    trader_address="0xabc",
+                    side="yes",
+                    price=0.5,
+                    signal_size_usd=10.0,
+                    confidence=0.7,
+                    kelly_f=0.1,
+                    real_money=False,
+                    order_id=None,
+                    skipped=True,
+                    skip_reason="test",
+                    signal={"promotion_epoch_id": 1},
+                )
+
+        fake_conn.rollback.assert_called_once()
+        fake_conn.close.assert_called_once()
+
+    def test_persist_performance_snapshot_rolls_back_failed_insert_before_close(self) -> None:
+        fake_conn = Mock()
+        fake_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+        report = {
+            "scope": "all_history",
+            "since_ts": 0,
+            "shadow_evidence_epoch_started_at": 0,
+            "shadow_evidence_epoch_source": "",
+            "legacy_resolved_excluded": 0,
+            "total_signals": 0,
+            "acted": 0,
+            "resolved": 0,
+            "win_rate": 0.0,
+            "total_pnl_usd": 0.0,
+            "avg_confidence": 0.0,
+            "sharpe": 0.0,
+        }
+
+        with patch("kelly_watcher.runtime.evaluator.compute_performance_report", return_value=report), patch(
+            "kelly_watcher.runtime.evaluator.get_conn", return_value=fake_conn
+        ):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
+                evaluator.persist_performance_snapshot("shadow")
+
+        fake_conn.rollback.assert_called_once()
+        fake_conn.close.assert_called_once()
+
     def test_database_integrity_state_reports_sqlite_error(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trading.db"

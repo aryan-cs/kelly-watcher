@@ -104,6 +104,13 @@ def _fsync_parent(path: Path) -> None:
         os.close(directory_fd)
 
 
+def rollback_safely(conn: sqlite3.Connection, *, label: str = "SQLite transaction") -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        logger.debug("%s rollback skipped", label, exc_info=True)
+
+
 def current_promotion_epoch_id(conn: sqlite3.Connection | None = None) -> int:
     owns_conn = conn is None
     if owns_conn:

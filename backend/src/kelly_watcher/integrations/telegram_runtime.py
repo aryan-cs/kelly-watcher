@@ -39,6 +39,7 @@ _LEADERBOARD_ROWS_PER_PERIOD = 5
 _next_command_poll_at = 0.0
 _command_poll_failure_count = 0
 _last_command_poll_warning_at = 0.0
+_last_command_update_id = 0
 _COMMAND_CLIENT_LOCK = threading.Lock()
 _COMMAND_CLIENT: httpx.Client | None = None
 
@@ -117,8 +118,22 @@ def _load_telegram_state() -> dict[str, Any]:
 def _persist_telegram_state(state: dict[str, Any]) -> None:
     TELEGRAM_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     temp_path = TELEGRAM_STATE_FILE.with_name(f"{TELEGRAM_STATE_FILE.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
-    temp_path.write_text(f"{json.dumps(state, indent=2)}\n", encoding="utf-8")
-    temp_path.replace(TELEGRAM_STATE_FILE)
+    try:
+        temp_path.write_text(f"{json.dumps(state, indent=2)}\n", encoding="utf-8")
+        temp_path.replace(TELEGRAM_STATE_FILE)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _persist_telegram_state_safely(state: dict[str, Any]) -> None:
+    try:
+        _persist_telegram_state(state)
+    except Exception as exc:
+        logger.warning("Failed to persist Telegram command state: %s", exc)
 
 
 def _load_bot_state() -> dict[str, Any]:
@@ -449,7 +464,7 @@ def _build_command_reply(command: str) -> str | None:
 
 
 def service_telegram_commands() -> int:
-    global _next_command_poll_at
+    global _last_command_update_id, _next_command_poll_at
 
     now_ts = time.time()
     if now_ts < _next_command_poll_at:
@@ -462,7 +477,7 @@ def service_telegram_commands() -> int:
         return 0
 
     state = _load_telegram_state()
-    last_update_id = int(state.get("last_update_id") or 0)
+    last_update_id = max(_optional_int(state.get("last_update_id")), _last_command_update_id)
     params: dict[str, Any] = {
         "timeout": 0,
         "offset": last_update_id + 1,
@@ -488,7 +503,7 @@ def service_telegram_commands() -> int:
         if not isinstance(update, dict):
             continue
 
-        update_id = int(update.get("update_id") or 0)
+        update_id = _optional_int(update.get("update_id"))
         try:
             message = update.get("message")
             if not isinstance(message, dict):
@@ -503,16 +518,19 @@ def service_telegram_commands() -> int:
             if message_chat_id != allowed_chat_id:
                 continue
 
-            reply_to_message_id = int(message.get("message_id") or 0) or None
+            reply_to_message_id = _optional_int(message.get("message_id")) or None
             reply = _build_command_reply(command)
             if not reply:
                 continue
             send_telegram_message(reply, chat_id=message_chat_id, reply_to_message_id=reply_to_message_id)
             handled += 1
+        except Exception as exc:
+            logger.warning("Telegram command update handling failed for update_id=%s: %s", update_id, exc)
         finally:
             if update_id > last_update_id:
                 last_update_id = update_id
+                _last_command_update_id = max(_last_command_update_id, update_id)
                 state["last_update_id"] = update_id
-                _persist_telegram_state(state)
+                _persist_telegram_state_safely(state)
 
     return handled

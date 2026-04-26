@@ -585,6 +585,65 @@ def _simulate(
             )
             continue
 
+        observed_entry_size_usd = _coalesce_float(row["actual_entry_size_usd"])
+        simulated_size_usd = requested_size_usd
+        if source_status.startswith("skipped_"):
+            replay_rows.append(
+                _replay_trade_row(
+                    replay_run_id=0,
+                    trade_log_id=int(row["id"]),
+                    trade_id=str(row["trade_id"] or ""),
+                    placed_at=placed_at,
+                    market_id=str(row["market_id"] or ""),
+                    trader_address=str(row["trader_address"] or "").lower(),
+                    signal_mode=signal_mode,
+                    decision="reject",
+                    reason="unproven_counterfactual_fill",
+                    source_status=source_status,
+                    entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
+                    requested_size_usd=requested_size_usd,
+                    simulated_size_usd=0.0,
+                    return_pct=return_pct,
+                    pnl_usd=None,
+                    bankroll_after_usd=free_cash(),
+                    open_exposure_after_usd=open_exposure(),
+                    metadata=metadata,
+                )
+            )
+            continue
+        if observed_entry_size_usd is not None and observed_entry_size_usd > 0:
+            simulated_size_usd = min(requested_size_usd, observed_entry_size_usd)
+            if simulated_size_usd < requested_size_usd - 1e-9:
+                metadata["requested_size_capped_to_observed_usd"] = round(simulated_size_usd, 6)
+        elif source_status.startswith("executed_"):
+            replay_rows.append(
+                _replay_trade_row(
+                    replay_run_id=0,
+                    trade_log_id=int(row["id"]),
+                    trade_id=str(row["trade_id"] or ""),
+                    placed_at=placed_at,
+                    market_id=str(row["market_id"] or ""),
+                    trader_address=str(row["trader_address"] or "").lower(),
+                    signal_mode=signal_mode,
+                    decision="reject",
+                    reason="unproven_fill_size",
+                    source_status=source_status,
+                    entry_price=entry_price,
+                    time_to_close_seconds=time_to_close_seconds,
+                    time_to_close_band=time_to_close_band,
+                    requested_size_usd=requested_size_usd,
+                    simulated_size_usd=0.0,
+                    return_pct=return_pct,
+                    pnl_usd=None,
+                    bankroll_after_usd=free_cash(),
+                    open_exposure_after_usd=open_exposure(),
+                    metadata=metadata,
+                )
+            )
+            continue
+
         entry_pause_reason = pause_reason(placed_at)
         if entry_pause_reason:
             if return_pct is None:
@@ -627,7 +686,7 @@ def _simulate(
             if position["trader_address"] == str(row["trader_address"] or "").lower()
         )
         equity = account_equity()
-        if policy.max_total_open_exposure_fraction > 0 and total_open + requested_size_usd > equity * policy.max_total_open_exposure_fraction + 1e-9:
+        if policy.max_total_open_exposure_fraction > 0 and total_open + simulated_size_usd > equity * policy.max_total_open_exposure_fraction + 1e-9:
             if return_pct is None:
                 unresolved_count += 1
             replay_rows.append(
@@ -655,7 +714,7 @@ def _simulate(
                 )
             )
             continue
-        if policy.max_market_exposure_fraction > 0 and market_open + requested_size_usd > equity * policy.max_market_exposure_fraction + 1e-9:
+        if policy.max_market_exposure_fraction > 0 and market_open + simulated_size_usd > equity * policy.max_market_exposure_fraction + 1e-9:
             if return_pct is None:
                 unresolved_count += 1
             replay_rows.append(
@@ -683,7 +742,7 @@ def _simulate(
                 )
             )
             continue
-        if policy.max_trader_exposure_fraction > 0 and trader_open + requested_size_usd > equity * policy.max_trader_exposure_fraction + 1e-9:
+        if policy.max_trader_exposure_fraction > 0 and trader_open + simulated_size_usd > equity * policy.max_trader_exposure_fraction + 1e-9:
             if return_pct is None:
                 unresolved_count += 1
             replay_rows.append(
@@ -719,7 +778,7 @@ def _simulate(
                     "close_ts": 10**12 + 1,
                     "market_id": str(row["market_id"] or ""),
                     "trader_address": str(row["trader_address"] or "").lower(),
-                    "size_usd": requested_size_usd,
+                    "size_usd": simulated_size_usd,
                     "pnl_usd": 0.0,
                     "signal_mode": signal_mode,
                     "entry_price": entry_price,
@@ -745,7 +804,7 @@ def _simulate(
                     time_to_close_seconds=time_to_close_seconds,
                     time_to_close_band=time_to_close_band,
                     requested_size_usd=requested_size_usd,
-                    simulated_size_usd=requested_size_usd,
+                    simulated_size_usd=simulated_size_usd,
                     return_pct=None,
                     pnl_usd=None,
                     bankroll_after_usd=free_cash(),
@@ -755,7 +814,7 @@ def _simulate(
             )
             continue
 
-        pnl_usd = requested_size_usd * return_pct
+        pnl_usd = simulated_size_usd * return_pct
         resolves_within_window = close_ts <= simulation_end_ts
         if close_ts <= placed_at:
             realized_pnl += pnl_usd
@@ -773,7 +832,7 @@ def _simulate(
                     "close_ts": close_ts,
                     "market_id": str(row["market_id"] or ""),
                     "trader_address": str(row["trader_address"] or "").lower(),
-                    "size_usd": requested_size_usd,
+                    "size_usd": simulated_size_usd,
                     "pnl_usd": pnl_usd,
                     "signal_mode": signal_mode,
                     "entry_price": entry_price,
@@ -799,7 +858,7 @@ def _simulate(
                 time_to_close_seconds=time_to_close_seconds,
                 time_to_close_band=time_to_close_band,
                 requested_size_usd=requested_size_usd,
-                simulated_size_usd=requested_size_usd,
+                simulated_size_usd=simulated_size_usd,
                 return_pct=return_pct if resolves_within_window else None,
                 pnl_usd=pnl_usd if resolves_within_window else None,
                 bankroll_after_usd=free_cash(),

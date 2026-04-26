@@ -273,7 +273,7 @@ class ReplayTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_run_replay_can_accept_skipped_counterfactual_rows(self) -> None:
+    def test_run_replay_rejects_skipped_counterfactual_rows_without_fill_proof(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -324,8 +324,72 @@ class ReplayTest(unittest.TestCase):
                     db_path=test_db_path,
                 )
 
+                self.assertEqual(result["accepted_count"], 0)
+                self.assertAlmostEqual(result["final_bankroll_usd"], 1000.0, places=3)
+                conn = sqlite3.connect(str(test_db_path))
+                row = conn.execute(
+                    "SELECT decision, reason, simulated_size_usd, pnl_usd FROM replay_trades ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row, ("reject", "unproven_counterfactual_fill", 0.0, None))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_caps_resolved_pnl_to_observed_entry_size(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "data" / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="observed-size-cap",
+                    market_id="market-size-cap",
+                    trader_address="0xcap",
+                    signal_mode="heuristic",
+                    confidence=0.99,
+                    price_at_signal=0.66,
+                    actual_entry_price=0.66,
+                    actual_entry_size_usd=20.0,
+                    shadow_pnl_usd=10.0,
+                    placed_at=1_700_000_000,
+                    resolved_at=1_700_000_100,
+                    signal_payload={"mode": "heuristic", "market": {"score": 0.99}},
+                )
+                conn.commit()
+                conn.close()
+
+                result = run_replay(
+                    policy=ReplayPolicy.from_payload(
+                        {
+                            "initial_bankroll_usd": 1000.0,
+                            "min_confidence": 0.45,
+                            "min_bet_usd": 1.0,
+                            "heuristic_min_entry_price": 0.65,
+                            "heuristic_max_entry_price": 0.75,
+                            "max_bet_fraction": 0.10,
+                            "max_total_open_exposure_fraction": 1.0,
+                            "max_market_exposure_fraction": 1.0,
+                            "max_trader_exposure_fraction": 1.0,
+                        }
+                    ),
+                    db_path=test_db_path,
+                )
+
                 self.assertEqual(result["accepted_count"], 1)
-                self.assertAlmostEqual(result["final_bankroll_usd"], 1015.075, places=3)
+                self.assertAlmostEqual(result["accepted_size_usd"], 20.0, places=6)
+                self.assertAlmostEqual(result["total_pnl_usd"], 10.0, places=6)
+                conn = sqlite3.connect(str(test_db_path))
+                row = conn.execute(
+                    "SELECT requested_size_usd, simulated_size_usd, pnl_usd FROM replay_trades ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                conn.close()
+                self.assertGreater(row[0], row[1])
+                self.assertAlmostEqual(row[1], 20.0, places=6)
+                self.assertAlmostEqual(row[2], 10.0, places=6)
             finally:
                 db.DB_PATH = original_db_path
 

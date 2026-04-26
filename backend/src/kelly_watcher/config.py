@@ -316,7 +316,7 @@ def heuristic_allowed_entry_price_bands() -> tuple[str, ...]:
 
 
 def allow_heuristic() -> bool:
-    return _get_env_file_bool("ALLOW_HEURISTIC", "true")
+    return _get_env_file_bool("ALLOW_HEURISTIC", "false")
 
 
 def xgboost_allowed_entry_price_bands() -> tuple[str, ...]:
@@ -404,7 +404,7 @@ def model_edge_high_threshold() -> float:
 
 
 def poll_interval() -> float:
-    value = _get_env_file_bounded_float("POLL_INTERVAL_SECONDS", "45", minimum=0.0)
+    value = _get_env_file_bounded_float("POLL_INTERVAL_SECONDS", "2", minimum=0.0)
     return max(MIN_POLL_INTERVAL_SECONDS, value)
 
 
@@ -697,7 +697,7 @@ def max_market_horizon_label() -> str:
 def max_source_trade_age_seconds() -> int:
     seconds = _get_duration_seconds(
         "MAX_SOURCE_TRADE_AGE",
-        "10m",
+        "45s",
         minimum_seconds=30.0,
         allow_unlimited=True,
     )
@@ -861,7 +861,7 @@ def stop_loss_min_hold_seconds() -> int:
 
 
 def max_total_open_exposure_fraction() -> float:
-    return _get_bounded_float("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.60", minimum=0.0, maximum=1.0)
+    return _get_bounded_float("MAX_TOTAL_OPEN_EXPOSURE_FRACTION", "0.25", minimum=0.0, maximum=1.0)
 
 
 def exposure_override_total_cap_fraction() -> float:
@@ -885,11 +885,11 @@ def exposure_override_min_avg_return() -> float:
 
 
 def max_market_exposure_fraction() -> float:
-    return _get_bounded_float("MAX_MARKET_EXPOSURE_FRACTION", "0.20", minimum=0.0, maximum=1.0)
+    return _get_bounded_float("MAX_MARKET_EXPOSURE_FRACTION", "0.05", minimum=0.0, maximum=1.0)
 
 
 def max_trader_exposure_fraction() -> float:
-    return _get_bounded_float("MAX_TRADER_EXPOSURE_FRACTION", "0.30", minimum=0.0, maximum=1.0)
+    return _get_bounded_float("MAX_TRADER_EXPOSURE_FRACTION", "0.05", minimum=0.0, maximum=1.0)
 
 
 def max_live_health_failures() -> int:

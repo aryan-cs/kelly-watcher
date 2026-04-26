@@ -33,6 +33,17 @@ class ConfigValidationTest(unittest.TestCase):
                     config.max_source_trade_age_seconds(),
                 )
 
+    def test_missing_env_defaults_stay_production_safe(self) -> None:
+        with patch("kelly_watcher.config._get_env_file_value", return_value=None):
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertFalse(config.allow_heuristic())
+                self.assertEqual(config.poll_interval(), 2.0)
+                self.assertEqual(config.max_source_trade_age_seconds(), 45)
+                self.assertEqual(config.max_source_trade_age_far_seconds(), 180)
+                self.assertEqual(config.max_total_open_exposure_fraction(), 0.25)
+                self.assertEqual(config.max_market_exposure_fraction(), 0.05)
+                self.assertEqual(config.max_trader_exposure_fraction(), 0.05)
+
     def test_invalid_profitability_duration_is_rejected_instead_of_silently_defaulted(self) -> None:
         with patch("kelly_watcher.config._get_env_file_value", return_value=None):
             with patch.dict(os.environ, {"MAX_SOURCE_TRADE_AGE": "soon"}, clear=False):

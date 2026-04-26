@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -39,6 +40,8 @@ MIN_SEARCH_EVAL_SAMPLES = 12
 MIN_SEARCH_TRAIN_SAMPLES = 60
 _ROUTED_TRAINING_SEGMENT_IDS: tuple[str, ...] = (*SEGMENT_IDS, SEGMENT_FALLBACK)
 _ROUTED_TRAINING_SEGMENT_SQL = ",".join("?" for _ in _ROUTED_TRAINING_SEGMENT_IDS)
+_ARTIFACT_BOOL_TRUE = {"1", "true", "t", "yes", "y", "on"}
+_ARTIFACT_BOOL_FALSE = {"0", "false", "f", "no", "n", "off", ""}
 
 
 @dataclass(frozen=True)
@@ -417,17 +420,25 @@ def train(
         ),
     }
     incumbent_artifact = _load_model_artifact()
-    incumbent_gate = _compare_against_incumbent(
-        incumbent_artifact=incumbent_artifact,
-        final_train_df=final_train_df,
-        holdout_df=holdout_df,
-        challenger_model=final_fit["base_model"],
-        challenger_feature_cols=feature_cols,
-        challenger_probability_calibrator=selected_probability_calibrator,
-        challenger_prediction_mode="expected_return",
-    )
-    metrics.update(incumbent_gate)
     incumbent_runtime_compatible = _artifact_runtime_compatible(incumbent_artifact)
+    if incumbent_runtime_compatible:
+        incumbent_gate = _compare_against_incumbent(
+            incumbent_artifact=incumbent_artifact,
+            final_train_df=final_train_df,
+            holdout_df=holdout_df,
+            challenger_model=final_fit["base_model"],
+            challenger_feature_cols=feature_cols,
+            challenger_probability_calibrator=selected_probability_calibrator,
+            challenger_prediction_mode="expected_return",
+        )
+    else:
+        incumbent_gate = {
+            "incumbent_present": bool(incumbent_artifact),
+            "beats_incumbent": True,
+            "incumbent_comparison_skipped": True,
+            "incumbent_comparison_skip_reason": "incumbent artifact is not runtime-compatible",
+        }
+    metrics.update(incumbent_gate)
     metrics["incumbent_runtime_compatible"] = incumbent_runtime_compatible
     deployable, promotion_mode = _should_deploy_candidate(
         best_candidate=best_candidate,
@@ -951,13 +962,34 @@ def _load_model_artifact(path: str | None = None) -> dict[str, Any] | None:
 
     raw_feature_cols = artifact.get("feature_cols")
     feature_cols = [str(col) for col in raw_feature_cols] if isinstance(raw_feature_cols, (list, tuple)) else list(FEATURE_COLS)
+    artifact_metrics = artifact.get("metrics") if isinstance(artifact.get("metrics"), dict) else {}
     return {
         "model": artifact["model"],
         "probability_calibrator": artifact.get("probability_calibrator"),
         "prediction_mode": str(artifact.get("prediction_mode") or "probability"),
         "feature_cols": feature_cols or list(FEATURE_COLS),
-        "data_contract_version": int(artifact.get("data_contract_version") or 0),
+        "data_contract_version": _artifact_nonnegative_int(artifact.get("data_contract_version")),
         "label_mode": str(artifact.get("label_mode") or ""),
+        "training_scope": str(
+            artifact.get("training_scope")
+            or artifact_metrics.get("training_scope")
+            or "unknown"
+        ).strip().lower() or "unknown",
+        "training_since_ts": _artifact_nonnegative_int(
+            artifact.get("training_since_ts")
+            if "training_since_ts" in artifact
+            else artifact_metrics.get("training_since_ts")
+        ),
+        "training_routed_only": _artifact_bool(
+            artifact.get("training_routed_only")
+            if "training_routed_only" in artifact
+            else artifact_metrics.get("training_routed_only")
+        ),
+        "training_provenance_trusted": _artifact_bool(
+            artifact.get("training_provenance_trusted")
+            if "training_provenance_trusted" in artifact
+            else artifact_metrics.get("training_provenance_trusted")
+        ),
         "path": selected_path,
     }
 
@@ -965,10 +997,53 @@ def _load_model_artifact(path: str | None = None) -> dict[str, Any] | None:
 def _artifact_runtime_compatible(artifact: dict[str, Any] | None) -> bool:
     if artifact is None:
         return True
-    return (
-        int(artifact.get("data_contract_version") or 0) == DATA_CONTRACT_VERSION
-        and str(artifact.get("label_mode") or "") == MODEL_LABEL_MODE
+    if (
+        _artifact_nonnegative_int(artifact.get("data_contract_version")) != DATA_CONTRACT_VERSION
+        or str(artifact.get("label_mode") or "") != MODEL_LABEL_MODE
+    ):
+        return False
+    if not _artifact_bool(artifact.get("training_provenance_trusted")):
+        return False
+
+    active_epoch_started_at = _artifact_nonnegative_int(
+        read_shadow_evidence_epoch().get("shadow_evidence_epoch_started_at")
     )
+    if active_epoch_started_at <= 0:
+        return True
+    return (
+        str(artifact.get("training_scope") or "").strip().lower() == "current_evidence_window"
+        and _artifact_bool(artifact.get("training_routed_only"))
+        and _artifact_nonnegative_int(artifact.get("training_since_ts")) >= active_epoch_started_at
+    )
+
+
+def _artifact_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _ARTIFACT_BOOL_TRUE:
+            return True
+        if normalized in _ARTIFACT_BOOL_FALSE:
+            return False
+        return False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(numeric):
+        return False
+    return bool(numeric)
+
+
+def _artifact_nonnegative_int(value: object) -> int:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(numeric):
+        return 0
+    return max(int(numeric), 0)
 
 
 def _should_deploy_candidate(
@@ -1301,15 +1376,9 @@ def _select_prediction_path(
 ) -> tuple[dict[str, Any], str, Any, str]:
     if probability_calibrator is None:
         return raw_report, "raw", None, "identity"
-    if _report_dominates(raw_report, calibrated_report):
-        logger.info(
-            "Raw prediction path outperformed calibrated path on final holdout (raw ll=%.4f brier=%.4f; calibrated ll=%.4f brier=%.4f)",
-            raw_report["log_loss"],
-            raw_report["brier_score"],
-            calibrated_report["log_loss"],
-            calibrated_report["brier_score"],
-        )
-        return raw_report, "raw", None, "identity"
+    # The final holdout is reserved for deployment gating. Do not use it to
+    # choose between raw and calibrated predictions, or the reported holdout
+    # metrics become optimistic model-selection feedback.
     return calibrated_report, "calibrated", probability_calibrator, calibration_method
 
 

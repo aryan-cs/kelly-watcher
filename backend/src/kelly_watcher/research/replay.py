@@ -177,9 +177,13 @@ class ReplayPolicy:
             model_edge_high_confidence=_clamp(
                 finite(base["model_edge_high_confidence"], "model_edge_high_confidence"), 0.0, 1.0
             ),
-            edge_threshold=finite(base["edge_threshold"], "edge_threshold"),
-            model_edge_mid_threshold=finite(base["model_edge_mid_threshold"], "model_edge_mid_threshold"),
-            model_edge_high_threshold=finite(base["model_edge_high_threshold"], "model_edge_high_threshold"),
+            edge_threshold=_clamp(finite(base["edge_threshold"], "edge_threshold"), 0.0, 1.0),
+            model_edge_mid_threshold=_clamp(
+                finite(base["model_edge_mid_threshold"], "model_edge_mid_threshold"), 0.0, 1.0
+            ),
+            model_edge_high_threshold=_clamp(
+                finite(base["model_edge_high_threshold"], "model_edge_high_threshold"), 0.0, 1.0
+            ),
             xgboost_allowed_entry_price_bands=_normalize_segment_filter(
                 base["xgboost_allowed_entry_price_bands"],
                 allowed_values=ENTRY_PRICE_BAND_CHOICES,

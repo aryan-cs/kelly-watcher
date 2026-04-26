@@ -215,25 +215,41 @@ class TrainingSearchTest(unittest.TestCase):
         self.assertFalse(deployable)
         self.assertEqual(mode, "rejected")
 
-    def test_select_prediction_path_prefers_raw_when_calibration_is_worse(self) -> None:
+    def test_artifact_runtime_compatible_rejects_untrusted_training_provenance(self) -> None:
+        artifact = {
+            "data_contract_version": train.DATA_CONTRACT_VERSION,
+            "label_mode": train.MODEL_LABEL_MODE,
+            "training_scope": "current_evidence_window",
+            "training_since_ts": 1_700_000_400,
+            "training_routed_only": "false",
+            "training_provenance_trusted": "true",
+        }
+
+        with mock.patch(
+            "kelly_watcher.research.train.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+        ):
+            self.assertFalse(train._artifact_runtime_compatible(artifact))
+
+    def test_artifact_runtime_compatible_accepts_current_routed_provenance(self) -> None:
+        artifact = {
+            "data_contract_version": train.DATA_CONTRACT_VERSION,
+            "label_mode": train.MODEL_LABEL_MODE,
+            "training_scope": "current_evidence_window",
+            "training_since_ts": 1_700_000_500,
+            "training_routed_only": True,
+            "training_provenance_trusted": True,
+        }
+
+        with mock.patch(
+            "kelly_watcher.research.train.read_shadow_evidence_epoch",
+            return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
+        ):
+            self.assertTrue(train._artifact_runtime_compatible(artifact))
+
+    def test_select_prediction_path_does_not_switch_on_final_holdout_metrics(self) -> None:
         calibrated = {"log_loss": 0.91, "brier_score": 0.31}
         raw = {"log_loss": 0.62, "brier_score": 0.22}
-
-        report, path, calibrator, method = train._select_prediction_path(
-            calibrated_report=calibrated,
-            raw_report=raw,
-            probability_calibrator=object(),
-            calibration_method="sigmoid",
-        )
-
-        self.assertIs(report, raw)
-        self.assertEqual(path, "raw")
-        self.assertIsNone(calibrator)
-        self.assertEqual(method, "identity")
-
-    def test_select_prediction_path_keeps_calibrated_when_it_is_not_worse_on_both_metrics(self) -> None:
-        calibrated = {"log_loss": 0.60, "brier_score": 0.24}
-        raw = {"log_loss": 0.58, "brier_score": 0.26}
         calibrator_obj = object()
 
         report, path, calibrator, method = train._select_prediction_path(
@@ -248,7 +264,23 @@ class TrainingSearchTest(unittest.TestCase):
         self.assertIs(calibrator, calibrator_obj)
         self.assertEqual(method, "sigmoid")
 
-    def test_train_reports_raw_path_when_final_calibration_is_worse(self) -> None:
+    def test_select_prediction_path_uses_raw_when_no_calibrator_was_trained(self) -> None:
+        calibrated = {"log_loss": 0.60, "brier_score": 0.24}
+        raw = {"log_loss": 0.58, "brier_score": 0.26}
+
+        report, path, calibrator, method = train._select_prediction_path(
+            calibrated_report=calibrated,
+            raw_report=raw,
+            probability_calibrator=None,
+            calibration_method="sigmoid",
+        )
+
+        self.assertIs(report, raw)
+        self.assertEqual(path, "raw")
+        self.assertIsNone(calibrator)
+        self.assertEqual(method, "identity")
+
+    def test_train_keeps_search_selected_calibration_path_without_holdout_switching(self) -> None:
         rows = 30
         df = pd.DataFrame(
             {
@@ -332,10 +364,10 @@ class TrainingSearchTest(unittest.TestCase):
         ):
             metrics = train.train(df)
 
-        self.assertEqual(metrics["selected_prediction_path"], "raw")
-        self.assertEqual(metrics["calibration_method"], "identity")
-        self.assertEqual(metrics["log_loss"], round(raw_report["log_loss"], 4))
-        self.assertEqual(metrics["brier_score"], round(raw_report["brier_score"], 4))
+        self.assertEqual(metrics["selected_prediction_path"], "calibrated")
+        self.assertEqual(metrics["calibration_method"], "sigmoid")
+        self.assertEqual(metrics["log_loss"], round(calibrated_report["log_loss"], 4))
+        self.assertEqual(metrics["brier_score"], round(calibrated_report["brier_score"], 4))
 
     def test_score_predictions_handles_single_class_eval_windows(self) -> None:
         outcomes = np.array([1, 1, 1, 1, 1], dtype=int)

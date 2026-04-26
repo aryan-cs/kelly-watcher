@@ -136,6 +136,19 @@ class ReplayTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "heuristic_min_time_to_close_seconds must be finite"):
             ReplayPolicy.from_payload({"heuristic_min_time_to_close_seconds": "inf"})
 
+    def test_replay_policy_clamps_model_edge_thresholds_to_runtime_bounds(self) -> None:
+        policy = ReplayPolicy.from_payload(
+            {
+                "edge_threshold": -0.05,
+                "model_edge_mid_threshold": -0.10,
+                "model_edge_high_threshold": 1.25,
+            }
+        )
+
+        self.assertEqual(policy.edge_threshold, 0.0)
+        self.assertEqual(policy.model_edge_mid_threshold, 0.0)
+        self.assertEqual(policy.model_edge_high_threshold, 1.0)
+
     def test_run_replay_persists_summary_and_trade_decisions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

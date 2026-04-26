@@ -579,7 +579,7 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_source_queue_claims_oldest_valid_rows_within_tier_first(self) -> None:
+    def test_source_queue_claims_newest_valid_rows_within_tier_first(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -615,7 +615,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 finally:
                     tracker_obj.close()
 
-                self.assertEqual([row["trade_id"] for row in rows], ["hot-oldest", "hot-middle"])
+                self.assertEqual([row["trade_id"] for row in rows], ["hot-newest", "hot-middle"])
             finally:
                 db.DB_PATH = original_db_path
 
@@ -638,7 +638,8 @@ class ProductionReadinessTest(unittest.TestCase):
                         """,
                         [
                             ("older-backlog", "market-old", "token-old", now_ts - 70, now_ts - 70, now_ts - 70, now_ts - 70),
-                            ("base-fresh", "market-new", "token-new", now_ts - 10, now_ts - 10, now_ts - 10, now_ts - 10),
+                            ("base-fresh-older", "market-new", "token-new", now_ts - 10, now_ts - 10, now_ts - 10, now_ts - 10),
+                            ("base-fresh-newer", "market-newer", "token-newer", now_ts - 2, now_ts - 2, now_ts - 2, now_ts - 2),
                         ],
                     )
                     conn.commit()
@@ -654,7 +655,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 finally:
                     tracker_obj.close()
 
-                self.assertEqual([row["trade_id"] for row in rows], ["base-fresh"])
+                self.assertEqual([row["trade_id"] for row in rows], ["base-fresh-newer"])
                 conn = db.get_conn()
                 try:
                     statuses = {
@@ -663,7 +664,8 @@ class ProductionReadinessTest(unittest.TestCase):
                     }
                 finally:
                     conn.close()
-                self.assertEqual(statuses["base-fresh"], "processing")
+                self.assertEqual(statuses["base-fresh-newer"], "processing")
+                self.assertEqual(statuses["base-fresh-older"], "pending")
                 self.assertEqual(statuses["older-backlog"], "pending")
             finally:
                 db.DB_PATH = original_db_path
@@ -842,6 +844,16 @@ class ProductionReadinessTest(unittest.TestCase):
                 self.assertEqual(statuses["fresh-far"][0], "processing")
             finally:
                 db.DB_PATH = original_db_path
+
+    def test_single_orderbook_enrichment_failure_isolated(self) -> None:
+        tracker_obj = tracker.PolymarketTracker(["0xhot"])
+        tracker_obj.get_orderbook_snapshot = Mock(side_effect=RuntimeError("bad orderbook"))
+        try:
+            result = tracker_obj._fetch_orderbook_snapshots_batch(["token-far"])
+        finally:
+            tracker_obj.close()
+
+        self.assertEqual(result, {"token-far": (None, None, 0)})
 
     def test_load_queued_events_refills_after_stale_near_row_to_preserve_far_market_event(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -130,7 +130,11 @@ class PolymarketExecutor:
         self._consecutive_live_position_sync_failures = 0
         self._fee_rate_cache: dict[str, tuple[float, int]] = {}
         self._conditional_allowance_cache: dict[str, bool] = {}
-        self._init_clob()
+        try:
+            self._init_clob()
+        except Exception:
+            self._http_client.close()
+            raise
 
     def close(self) -> None:
         self._http_client.close()

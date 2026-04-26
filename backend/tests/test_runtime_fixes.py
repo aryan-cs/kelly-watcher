@@ -1251,6 +1251,34 @@ class RuntimeFixesTest(unittest.TestCase):
             for handler in handlers:
                 handler.close()
 
+    def test_write_bot_state_uses_atomic_json_replace(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_state_file = main.BOT_STATE_FILE
+            try:
+                state_path = Path(tmpdir) / "bot_state.json"
+                main.BOT_STATE_FILE = state_path
+                with patch.object(main, "_write_atomic_json") as write_atomic:
+                    main._write_bot_state(replace=True, bankroll_usd=123.45)
+            finally:
+                main.BOT_STATE_FILE = original_state_file
+
+        write_atomic.assert_called_once()
+        path_arg, payload_arg = write_atomic.call_args.args
+        self.assertEqual(path_arg, state_path)
+        self.assertEqual(payload_arg["bankroll_usd"], 123.45)
+
+    def test_executor_closes_http_client_when_clob_init_fails(self) -> None:
+        http_client = Mock()
+        with patch("kelly_watcher.runtime.executor.httpx.Client", return_value=http_client), patch.object(
+            PolymarketExecutor,
+            "_init_clob",
+            side_effect=RuntimeError("clob failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "clob failed"):
+                PolymarketExecutor()
+
+        http_client.close.assert_called_once()
+
     def test_database_integrity_state_reports_sqlite_error(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trading.db"

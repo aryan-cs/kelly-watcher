@@ -872,7 +872,7 @@ def _write_bot_state(*, replace: bool = False, **extra) -> None:
         }
     )
     state.update(extra)
-    BOT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    _write_atomic_json(BOT_STATE_FILE, state)
 
 
 def _write_atomic_json(path: Path, payload: dict[str, Any]) -> None:

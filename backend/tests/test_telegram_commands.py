@@ -285,6 +285,7 @@ class TelegramCommandTest(unittest.TestCase):
                 saved_state = json.loads(telegram_runtime.TELEGRAM_STATE_FILE.read_text(encoding="utf-8"))
                 self.assertEqual(saved_state["last_update_id"], 1003)
                 self.assertEqual(client.get_calls[0][1]["offset"], 1)
+                self.assertEqual(client.get_calls[0][1]["limit"], telegram_runtime._COMMAND_UPDATE_LIMIT)
             finally:
                 telegram_runtime.TELEGRAM_STATE_FILE = original_state_file
                 telegram_runtime.BOT_STATE_FILE = original_bot_state_file

@@ -562,7 +562,7 @@ class PolymarketTracker:
                     END,
                     CASE WHEN ? > 0 AND source_ts > 0 AND source_ts < ? THEN 1 ELSE 0 END,
                     CASE WHEN source_ts > 0 THEN 0 ELSE 1 END,
-                    source_ts ASC,
+                    source_ts DESC,
                     first_seen_at ASC
                 {limit_clause}
                 """,
@@ -1130,7 +1130,11 @@ class PolymarketTracker:
             return {}
         if len(normalized) == 1:
             token_id = normalized[0]
-            return {token_id: self.get_orderbook_snapshot(token_id)}
+            try:
+                return {token_id: self.get_orderbook_snapshot(token_id)}
+            except Exception as exc:
+                logger.error("Orderbook worker failed for %s: %s", token_id[:12], exc)
+                return {token_id: (None, None, 0)}
 
         results: dict[str, tuple[dict[str, float] | None, dict[str, Any] | None, int]] = {}
         worker_count = min(enrichment_fetch_workers(), len(normalized))

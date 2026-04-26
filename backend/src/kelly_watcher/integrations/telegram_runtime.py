@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _COMMAND_POLL_INTERVAL_S = 2.0
 _COMMAND_POLL_MAX_BACKOFF_S = 300.0
 _COMMAND_POLL_WARNING_INTERVAL_S = 60.0
+_COMMAND_UPDATE_LIMIT = 5
 _LEADERBOARD_PERIODS = (
     ("DAY", "24h"),
     ("WEEK", "7d"),
@@ -111,7 +112,9 @@ def _load_telegram_state() -> dict[str, Any]:
 
 def _persist_telegram_state(state: dict[str, Any]) -> None:
     TELEGRAM_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TELEGRAM_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    temp_path = TELEGRAM_STATE_FILE.with_name(f"{TELEGRAM_STATE_FILE.name}.{os.getpid()}.tmp")
+    temp_path.write_text(f"{json.dumps(state, indent=2)}\n", encoding="utf-8")
+    temp_path.replace(TELEGRAM_STATE_FILE)
 
 
 def _load_bot_state() -> dict[str, Any]:
@@ -457,6 +460,7 @@ def service_telegram_commands() -> int:
     params: dict[str, Any] = {
         "timeout": 0,
         "offset": last_update_id + 1,
+        "limit": _COMMAND_UPDATE_LIMIT,
         "allowed_updates": json.dumps(["message"]),
     }
 
@@ -474,35 +478,35 @@ def service_telegram_commands() -> int:
         return 0
 
     handled = 0
-    max_update_id = last_update_id
     for update in updates:
         if not isinstance(update, dict):
             continue
 
         update_id = int(update.get("update_id") or 0)
-        max_update_id = max(max_update_id, update_id)
-        message = update.get("message")
-        if not isinstance(message, dict):
-            continue
+        try:
+            message = update.get("message")
+            if not isinstance(message, dict):
+                continue
 
-        command = _normalize_message_command(str(message.get("text") or ""))
-        if command not in {"/balance", "/link", "/train", "/leaderboard", "/leaderboards"}:
-            continue
+            command = _normalize_message_command(str(message.get("text") or ""))
+            if command not in {"/balance", "/link", "/train", "/leaderboard", "/leaderboards"}:
+                continue
 
-        chat = message.get("chat")
-        message_chat_id = str(chat.get("id") if isinstance(chat, dict) else "").strip()
-        if message_chat_id != allowed_chat_id:
-            continue
+            chat = message.get("chat")
+            message_chat_id = str(chat.get("id") if isinstance(chat, dict) else "").strip()
+            if message_chat_id != allowed_chat_id:
+                continue
 
-        reply_to_message_id = int(message.get("message_id") or 0) or None
-        reply = _build_command_reply(command)
-        if not reply:
-            continue
-        send_telegram_message(reply, chat_id=message_chat_id, reply_to_message_id=reply_to_message_id)
-        handled += 1
-
-    if max_update_id > last_update_id:
-        state["last_update_id"] = max_update_id
-        _persist_telegram_state(state)
+            reply_to_message_id = int(message.get("message_id") or 0) or None
+            reply = _build_command_reply(command)
+            if not reply:
+                continue
+            send_telegram_message(reply, chat_id=message_chat_id, reply_to_message_id=reply_to_message_id)
+            handled += 1
+        finally:
+            if update_id > last_update_id:
+                last_update_id = update_id
+                state["last_update_id"] = update_id
+                _persist_telegram_state(state)
 
     return handled

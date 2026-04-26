@@ -669,6 +669,12 @@ class PolymarketExecutor:
         raw_book: dict[str, Any] | None,
         dollar_size: float,
     ) -> tuple[SimulatedFill | None, str | None]:
+        try:
+            dollar_size = float(dollar_size)
+        except (TypeError, ValueError):
+            return None, "shadow simulation rejected the buy because the requested size was invalid"
+        if not math.isfinite(dollar_size):
+            return None, "shadow simulation rejected the buy because the requested size was non-finite"
         if dollar_size <= 0:
             return None, "shadow simulation rejected the buy because the requested size was $0.00"
 
@@ -703,6 +709,12 @@ class PolymarketExecutor:
         raw_book: dict[str, Any] | None,
         shares: float,
     ) -> tuple[SimulatedFill | None, str | None]:
+        try:
+            shares = float(shares)
+        except (TypeError, ValueError):
+            return None, "shadow simulation rejected the sell because the requested share size was invalid"
+        if not math.isfinite(shares):
+            return None, "shadow simulation rejected the sell because the requested share size was non-finite"
         if shares <= 0:
             return None, "shadow simulation rejected the sell because the requested share size was 0.000"
 

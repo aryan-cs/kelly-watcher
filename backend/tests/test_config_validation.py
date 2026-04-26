@@ -58,6 +58,34 @@ class ConfigValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "DATA_API_REQUEST_RATE_PER_SECOND must be finite"):
                 config.data_api_request_rate_per_second()
 
+    def test_model_gate_booleans_reject_malformed_values(self) -> None:
+        with patch("kelly_watcher.config._get_env_file_value", return_value="treu"):
+            with self.assertRaisesRegex(config.ConfigError, "ALLOW_XGBOOST must be boolean"):
+                config.allow_xgboost()
+
+        with patch("kelly_watcher.config._get_env_file_value", return_value=None):
+            with patch.dict(os.environ, {"ALLOW_HEURISTIC": "maybe"}, clear=False):
+                with self.assertRaisesRegex(config.ConfigError, "ALLOW_HEURISTIC must be boolean"):
+                    config.allow_heuristic()
+
+    def test_retrain_gate_config_rejects_malformed_values(self) -> None:
+        with patch("kelly_watcher.config._get_env_file_value", return_value=None):
+            with patch.dict(os.environ, {"RETRAIN_EARLY_CHECK_INTERVAL": "soon"}, clear=False):
+                with self.assertRaisesRegex(config.ConfigError, "RETRAIN_EARLY_CHECK_INTERVAL must look like"):
+                    config.retrain_early_check_seconds()
+
+            with patch.dict(os.environ, {"RETRAIN_EARLY_CHECK_INTERVAL": "30m"}, clear=False):
+                with self.assertRaisesRegex(config.ConfigError, "RETRAIN_EARLY_CHECK_INTERVAL must be >= 3600.0 seconds"):
+                    config.retrain_early_check_seconds()
+
+            with patch.dict(os.environ, {"RETRAIN_MIN_NEW_LABELS": "many"}, clear=False):
+                with self.assertRaisesRegex(config.ConfigError, "RETRAIN_MIN_NEW_LABELS must be an integer"):
+                    config.retrain_min_new_labels()
+
+            with patch.dict(os.environ, {"RETRAIN_MIN_SAMPLES": "0"}, clear=False):
+                with self.assertRaisesRegex(config.ConfigError, "RETRAIN_MIN_SAMPLES must be >= 1"):
+                    config.retrain_min_samples()
+
 
 if __name__ == "__main__":
     unittest.main()

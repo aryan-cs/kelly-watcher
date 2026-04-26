@@ -86,16 +86,18 @@ def heuristic_size(
     if bankroll_usd <= 0:
         return _no_bet("bankroll depleted")
 
+    quoted_price, quoted_reject = _optional_probability_price(quoted_market_price, "quoted market price")
+    if quoted_reject:
+        return _no_bet(quoted_reject)
+    effective_price, effective_reject = _optional_probability_price(effective_market_price, "effective market price")
+    if effective_reject:
+        return _no_bet(effective_reject)
+
     span = max(1.0 - threshold, 1e-6)
     raw_edge = min(max((score - threshold) / span, 0.0), 1.0)
     price_drag = 0.0
-    if (
-        quoted_market_price is not None
-        and effective_market_price is not None
-        and quoted_market_price > 0
-        and effective_market_price > 0
-    ):
-        price_drag = max(float(effective_market_price) - float(quoted_market_price), 0.0)
+    if quoted_price is not None and effective_price is not None:
+        price_drag = max(effective_price - quoted_price, 0.0)
         raw_edge = max(raw_edge - price_drag, 0.0)
         if raw_edge <= 0:
             return _no_bet(
@@ -134,9 +136,9 @@ def size_signal(
     min_confidence_override: float | None = None,
 ) -> dict:
     market_price = (
-        float(effective_market_price)
+        effective_market_price
         if effective_market_price is not None
-        else float(quoted_market_price)
+        else quoted_market_price
     )
     if mode == "xgboost":
         return kelly_size(
@@ -169,6 +171,20 @@ def _effective_min_confidence(min_confidence_override: float | None) -> float:
     if not math.isfinite(threshold):
         threshold = 1.0
     return max(0.0, min(threshold, 1.0))
+
+
+def _optional_probability_price(value: float | None, label: str) -> tuple[float | None, str | None]:
+    if value is None:
+        return None, None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None, f"invalid {label}"
+    if not math.isfinite(numeric):
+        return None, f"non-finite {label}"
+    if not (0.0 < numeric < 1.0):
+        return None, f"invalid {label} {numeric:.3f}"
+    return numeric, None
 
 
 def _apply_minimum_bet(size: float, bankroll_usd: float) -> tuple[float, str | None]:

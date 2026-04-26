@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from kelly_watcher.engine.kelly import heuristic_size, kelly_size
+from kelly_watcher.engine.kelly import heuristic_size, kelly_size, size_signal
 
 
 class HeuristicSizingTest(unittest.TestCase):
@@ -71,6 +71,38 @@ class HeuristicSizingTest(unittest.TestCase):
 
         self.assertEqual(sized["dollar_size"], 100.0)
         self.assertAlmostEqual(sized["kelly_f"], 0.10, places=6)
+
+    def test_heuristic_size_rejects_fee_effective_price_outside_bounds(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "MAX_BET_FRACTION": "0.10",
+                "MIN_CONFIDENCE": "0.60",
+                "MIN_BET_USD": "1.00",
+            },
+            clear=False,
+        ):
+            sized = heuristic_size(
+                1.0,
+                1000.0,
+                quoted_market_price=0.10,
+                effective_market_price=1.01,
+            )
+
+        self.assertEqual(sized["dollar_size"], 0.0)
+        self.assertIn("invalid effective market price", sized["reason"])
+
+    def test_size_signal_rejects_invalid_effective_price_without_raising(self) -> None:
+        sized = size_signal(
+            0.90,
+            0.50,
+            1000.0,
+            "heuristic",
+            effective_market_price="not-a-price",
+        )
+
+        self.assertEqual(sized["dollar_size"], 0.0)
+        self.assertIn("invalid effective market price", sized["reason"])
 
 
 if __name__ == "__main__":

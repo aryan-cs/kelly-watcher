@@ -621,11 +621,8 @@ class PolymarketTracker:
         metadata_by_condition = self._fetch_market_metadata_batch(
             [candidate.condition_id for candidate in candidates]
         )
-        orderbooks_by_token = self._fetch_orderbook_snapshots_batch(
-            [candidate.token_id for candidate in candidates]
-        )
-
-        events: list[TradeEvent] = []
+        fresh_events: list[tuple[RawTradeCandidate, TradeEvent]] = []
+        now_ts = int(time.time())
         for candidate in candidates:
             meta, metadata_fetched_at = metadata_by_condition.get(candidate.condition_id, ({}, 0))
             event = self._parse_raw_trade(
@@ -639,7 +636,24 @@ class PolymarketTracker:
             if event is None:
                 self.mark_source_event_failed(candidate.trade_id, "source event could not be parsed", terminal=True)
                 continue
+            if self._is_stale_event(event, now_ts):
+                max_age = source_trade_age_limit_seconds(getattr(event, "market_close_ts", 0), now_ts=now_ts)
+                source_age_s = now_ts - int(getattr(event, "timestamp", 0) or now_ts)
+                self.mark_source_event_stale(
+                    candidate.trade_id,
+                    f"source trade stale before processing ({source_age_s}s old, limit {max_age}s)",
+                )
+                continue
+            fresh_events.append((candidate, event))
 
+        orderbooks_by_token = (
+            self._fetch_orderbook_snapshots_batch([candidate.token_id for candidate, _ in fresh_events])
+            if fresh_events
+            else {}
+        )
+
+        events: list[TradeEvent] = []
+        for candidate, event in fresh_events:
             snap, raw_book, orderbook_fetched_at = orderbooks_by_token.get(
                 candidate.token_id,
                 (None, None, 0),
@@ -674,6 +688,26 @@ class PolymarketTracker:
                 WHERE trade_id=?
                 """,
                 (int(time.time()), normalized),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_source_event_stale(self, trade_id: str, error: str) -> None:
+        normalized = str(trade_id or "").strip()
+        if not normalized:
+            return
+        conn = get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE source_event_queue
+                SET status='stale',
+                    updated_at=?,
+                    last_error=?
+                WHERE trade_id=?
+                """,
+                (int(time.time()), str(error or "")[:500], normalized),
             )
             conn.commit()
         finally:

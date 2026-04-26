@@ -77,15 +77,24 @@ def _get(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def _parse_bool(name: str, raw: str) -> bool:
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be boolean, got {raw!r}")
+
+
 def _get_bool(name: str, default: str = "false") -> bool:
-    return _get(name, default).lower() in {"1", "true", "yes", "on"}
+    return _parse_bool(name, _get(name, default))
 
 
 def _get_env_file_bool(name: str, default: str = "false") -> bool:
     raw = _get_env_file_value(name)
     if raw is None:
         raw = _get(name, default)
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    return _parse_bool(name, str(raw))
 
 
 def _get_float(name: str, default: str) -> float:
@@ -984,27 +993,41 @@ def retrain_hour_local() -> int:
 
 
 def retrain_early_check_seconds() -> int:
-    raw = _get_env_file_value("RETRAIN_EARLY_CHECK_INTERVAL") or _get("RETRAIN_EARLY_CHECK_INTERVAL", "24h")
-    seconds = _parse_duration(raw, 24 * 3600.0)
+    seconds = _get_duration_seconds(
+        "RETRAIN_EARLY_CHECK_INTERVAL",
+        "24h",
+        minimum_seconds=3600.0,
+        allow_unlimited=True,
+    )
     if seconds == float("inf"):
         return 24 * 3600
-    return max(int(seconds), 3600)
+    return int(seconds)
 
 
 def retrain_min_new_labels() -> int:
-    raw = _get_env_file_value("RETRAIN_MIN_NEW_LABELS") or _get("RETRAIN_MIN_NEW_LABELS", "100")
+    raw = _get_env_file_value("RETRAIN_MIN_NEW_LABELS")
+    if raw is None:
+        raw = _get("RETRAIN_MIN_NEW_LABELS", "100")
     try:
-        return max(int(raw), 1)
-    except ValueError:
-        return 100
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"RETRAIN_MIN_NEW_LABELS must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ConfigError(f"RETRAIN_MIN_NEW_LABELS must be >= 1, got {value}")
+    return value
 
 
 def retrain_min_samples() -> int:
-    raw = _get_env_file_value("RETRAIN_MIN_SAMPLES") or _get("RETRAIN_MIN_SAMPLES", "200")
+    raw = _get_env_file_value("RETRAIN_MIN_SAMPLES")
+    if raw is None:
+        raw = _get("RETRAIN_MIN_SAMPLES", "200")
     try:
-        return max(int(raw), 1)
-    except ValueError:
-        return 200
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"RETRAIN_MIN_SAMPLES must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ConfigError(f"RETRAIN_MIN_SAMPLES must be >= 1, got {value}")
+    return value
 
 
 def replay_search_base_cadence() -> str:

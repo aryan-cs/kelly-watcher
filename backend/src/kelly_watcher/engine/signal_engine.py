@@ -237,7 +237,7 @@ class SignalEngine:
                 self._xgb_probability_calibrator = artifact.get("probability_calibrator")
                 self._xgb_prediction_mode = str(artifact.get("prediction_mode") or "probability")
                 self._xgb_cols = artifact.get("feature_cols", FEATURE_COLS)
-                self._xgb_policy = artifact.get("policy", {"edge_threshold": 0.0})
+                self._xgb_policy = _sanitize_model_policy(artifact.get("policy"))
                 self._model_backend = artifact.get("model_backend", "ml")
                 self._loaded_at = int(time.time())
             else:
@@ -775,3 +775,23 @@ def _model_feature_value(value: object) -> float:
     if not np.isfinite(numeric):
         return float("nan")
     return numeric
+
+
+def _sanitize_model_policy(policy: object) -> dict[str, float]:
+    payload = policy if isinstance(policy, dict) else {}
+    return {
+        "edge_threshold": _nonnegative_model_float(
+            payload.get("edge_threshold"),
+            default=0.0,
+        )
+    }
+
+
+def _nonnegative_model_float(value: object, *, default: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(numeric):
+        return default
+    return max(numeric, 0.0)

@@ -227,7 +227,7 @@ class PolymarketExecutor:
             return
         self._closed = True
         try:
-            self._http_client.close()
+            _close_http_client_safely(self._http_client, label="executor HTTP client")
         finally:
             clob = self._clob
             self._clob = None

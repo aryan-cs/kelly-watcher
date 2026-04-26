@@ -94,6 +94,16 @@ def _fsync_parent(path: Path) -> None:
         os.close(directory_fd)
 
 
+def _close_http_client_safely(client: httpx.Client | None) -> None:
+    close = getattr(client, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        logger.debug("Identity lookup HTTP client close skipped", exc_info=True)
+
+
 def _write_identity_cache(cache: dict) -> None:
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = CACHE_PATH.with_name(f".{CACHE_PATH.name}.{os.getpid()}.{time.time_ns()}.tmp")
@@ -297,7 +307,7 @@ def resolve_username_for_wallet(
         return cached_username
     finally:
         if owns_client:
-            client.close()
+            _close_http_client_safely(client)
 
 
 def resolve_wallet_for_username(
@@ -347,7 +357,7 @@ def resolve_wallet_for_username(
                     continue
     finally:
         if owns_client:
-            client.close()
+            _close_http_client_safely(client)
     return None
 
 

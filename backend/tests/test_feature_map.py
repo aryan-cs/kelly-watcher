@@ -5,7 +5,7 @@ import unittest
 
 from kelly_watcher.engine.features import build_feature_map
 from kelly_watcher.engine.market_scorer import MarketFeatures
-from kelly_watcher.engine.signal_engine import _model_feature_value
+from kelly_watcher.engine.signal_engine import _model_feature_value, _sanitize_model_policy
 from kelly_watcher.engine.trader_scorer import TraderFeatures
 
 
@@ -57,6 +57,12 @@ class FeatureMapTest(unittest.TestCase):
         self.assertTrue(math.isnan(_model_feature_value(float("inf"))))
         self.assertTrue(math.isnan(_model_feature_value("not-a-number")))
         self.assertEqual(_model_feature_value("0.42"), 0.42)
+
+    def test_model_policy_sanitizes_edge_threshold_without_lowering_gate(self) -> None:
+        self.assertEqual(_sanitize_model_policy({"edge_threshold": -0.10}), {"edge_threshold": 0.0})
+        self.assertEqual(_sanitize_model_policy({"edge_threshold": float("nan")}), {"edge_threshold": 0.0})
+        self.assertEqual(_sanitize_model_policy("not-a-policy"), {"edge_threshold": 0.0})
+        self.assertEqual(_sanitize_model_policy({"edge_threshold": "0.025"}), {"edge_threshold": 0.025})
 
 
 if __name__ == "__main__":

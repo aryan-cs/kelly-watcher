@@ -48,6 +48,7 @@ INTRADAY_MARKET_METADATA_CACHE_TTL_S = 30
 SOURCE_QUEUE_CLAIM_MAX_BATCHES = 4
 SOURCE_QUEUE_ENRICHMENT_BATCH_SIZE = 8
 SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS = 10
+SOURCE_QUEUE_PROCESSING_RETRY_SECONDS = 30
 
 
 class HostRateLimiter:
@@ -522,7 +523,7 @@ class PolymarketTracker:
     ) -> list[sqlite3.Row]:
         now_ts = int(time.time())
         self.expire_stale_source_queue_rows(now_ts=now_ts)
-        stale_processing_cutoff = now_ts - 300
+        stale_processing_cutoff = now_ts - SOURCE_QUEUE_PROCESSING_RETRY_SECONDS
         failed_retry_cutoff = now_ts - SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS
         base_age_limit = max_source_trade_age_seconds()
         base_stale_cutoff = now_ts - int(base_age_limit) if base_age_limit > 0 else 0

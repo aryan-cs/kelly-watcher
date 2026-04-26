@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import statistics
 import time
 from dataclasses import dataclass
@@ -81,7 +82,7 @@ def adaptive_min_confidence_for_signal(
     days_to_res: float | None,
     trader_address: str | None = None,
 ) -> AdaptiveFloorDecision:
-    base_floor = round(float(min_confidence()), 4)
+    base_floor = round(_clamp_probability(min_confidence(), fallback=1.0), 4)
     bucket = _bucket_from_days_to_res(days_to_res)
     snapshot = _load_snapshot()
     bucket_stats = snapshot.bucket_stats.get(bucket, BucketStats())
@@ -101,13 +102,14 @@ def derive_adaptive_floor(
     bucket_stats: BucketStats,
     local_stats: LocalCopyStats | None = None,
 ) -> AdaptiveFloorDecision:
+    base_floor = round(_clamp_probability(base_floor, fallback=1.0), 4)
     min_floor = max(0.0, round(base_floor - MAX_LOWERING, 4))
     max_floor = min(1.0, round(base_floor + MAX_RAISE, 4))
     floor = base_floor
     reasons: list[str] = []
 
     if bucket == "under_15m":
-        executed_avg = bucket_stats.resolved_executed_avg_return
+        executed_avg = _finite_float(bucket_stats.resolved_executed_avg_return)
         if (
             bucket_stats.resolved_executed_count >= 5
             and executed_avg is not None
@@ -121,7 +123,7 @@ def derive_adaptive_floor(
             floor = suggested_floor
             reasons.append("resolved low-confidence misses support a lower floor")
 
-        executed_avg = bucket_stats.resolved_executed_avg_return
+        executed_avg = _finite_float(bucket_stats.resolved_executed_avg_return)
         if (
             bucket_stats.resolved_executed_count >= 5
             and executed_avg is not None
@@ -134,7 +136,9 @@ def derive_adaptive_floor(
                 reasons.append("live bucket returns are soft, limiting the floor reduction")
 
     if local_stats and local_stats.resolved_copied_count >= 3 and local_stats.copied_avg_return is not None:
-        local_avg = local_stats.copied_avg_return
+        local_avg = _finite_float(local_stats.copied_avg_return)
+        if local_avg is None:
+            local_avg = 0.0
         if local_avg < -0.10:
             floor = max(floor, round(base_floor + 0.01, 4))
             reasons.append("local copied returns for this wallet are materially negative")
@@ -150,6 +154,7 @@ def derive_adaptive_floor(
             reasons.append("local copied returns for this wallet are strong")
 
     clamped_floor = round(min(max(floor, min_floor), max_floor), 4)
+    reported_local_avg = _finite_float(local_stats.copied_avg_return) if local_stats else None
     return AdaptiveFloorDecision(
         floor=clamped_floor,
         base_floor=base_floor,
@@ -157,7 +162,7 @@ def derive_adaptive_floor(
         bucket_low_conf_samples=len(bucket_stats.low_conf_samples),
         bucket_executed_samples=bucket_stats.resolved_executed_count,
         local_resolved_copied_count=(local_stats.resolved_copied_count if local_stats else 0),
-        local_copied_avg_return=(local_stats.copied_avg_return if local_stats else None),
+        local_copied_avg_return=reported_local_avg,
         adjustment=round(clamped_floor - base_floor, 4),
         reasons=tuple(dict.fromkeys(reasons)),
     )
@@ -191,11 +196,18 @@ def _counterfactual_stats(
     rows: tuple[CounterfactualRow, ...],
     threshold: float,
 ) -> tuple[int, float, float] | None:
-    qualifying = [row for row in rows if row.confidence >= threshold]
+    qualifying: list[tuple[bool, float]] = []
+    for row in rows:
+        confidence = _finite_float(row.confidence)
+        counterfactual_return = _finite_float(row.counterfactual_return)
+        if confidence is None or counterfactual_return is None:
+            continue
+        if confidence >= threshold:
+            qualifying.append((bool(row.won), counterfactual_return))
     if not qualifying:
         return None
-    win_rate = sum(1 for row in qualifying if row.won) / len(qualifying)
-    avg_return = statistics.fmean(row.counterfactual_return for row in qualifying)
+    win_rate = sum(1 for won, _ in qualifying if won) / len(qualifying)
+    avg_return = statistics.fmean(counterfactual_return for _, counterfactual_return in qualifying)
     return len(qualifying), float(win_rate), float(avg_return)
 
 
@@ -250,9 +262,11 @@ def _load_snapshot() -> AdaptiveFloorSnapshot:
         if bool(row["skipped"]):
             if not _is_low_conf_skip_reason(row["skip_reason"]):
                 continue
-            confidence = float(row["confidence"] or 0.0)
+            confidence = _finite_float(row["confidence"])
+            counterfactual = _finite_float(row["counterfactual_return"])
+            if confidence is None or counterfactual is None:
+                continue
             outcome = bool(int(row["outcome"] or 0))
-            counterfactual = float(row["counterfactual_return"] or 0.0)
             bucket_counterfactuals.setdefault(bucket, []).append(
                 CounterfactualRow(
                     confidence=confidence,
@@ -262,10 +276,12 @@ def _load_snapshot() -> AdaptiveFloorSnapshot:
             )
             continue
 
-        size = float(row["actual_entry_size_usd"] or 0.0)
+        size = _finite_float(row["actual_entry_size_usd"]) or 0.0
         if size <= 0 or pnl is None:
             continue
         ret = float(pnl) / size
+        if not math.isfinite(ret):
+            continue
         bucket_executed_returns.setdefault(bucket, []).append(ret)
         wallet = str(row["trader_address"] or "").strip().lower()
         if wallet:
@@ -300,12 +316,13 @@ def _load_snapshot() -> AdaptiveFloorSnapshot:
 
 
 def _bucket_from_days_to_res(days_to_res: float | None) -> str:
-    seconds = float(days_to_res or 0.0) * 86400.0
+    days = _finite_float(days_to_res) or 0.0
+    seconds = days * 86400.0
     return _bucket_from_seconds(seconds)
 
 
 def _bucket_from_seconds(seconds: float | None) -> str:
-    value = float(seconds or 0.0)
+    value = _finite_float(seconds) or 0.0
     if value < SHORT_WINDOW_SECONDS:
         return "under_15m"
     if value < INTRAHOUR_WINDOW_SECONDS:
@@ -319,7 +336,7 @@ def _lead_seconds(source_ts: object, close_ts: object) -> float:
     try:
         source_value = int(float(source_ts or 0))
         close_value = int(float(close_ts or 0))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return 0.0
     if source_value <= 0 or close_value <= 0:
         return 0.0
@@ -328,12 +345,26 @@ def _lead_seconds(source_ts: object, close_ts: object) -> float:
 
 def _resolved_pnl(actual_pnl: object, shadow_pnl: object) -> float | None:
     value = actual_pnl if actual_pnl is not None else shadow_pnl
+    return _finite_float(value)
+
+
+def _finite_float(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)
+        numeric = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _clamp_probability(value: object, *, fallback: float) -> float:
+    numeric = _finite_float(value)
+    if numeric is None:
+        return fallback
+    return max(0.0, min(1.0, numeric))
 
 
 def _is_low_conf_skip_reason(reason: object) -> bool:

@@ -75,6 +75,43 @@ class AdaptiveConfidenceFloorTest(unittest.TestCase):
         self.assertEqual(decision.floor, 0.60)
         self.assertEqual(decision.adjustment, 0.0)
 
+    def test_nonfinite_counterfactual_evidence_cannot_lower_floor(self) -> None:
+        samples = tuple(
+            CounterfactualRow(confidence=0.594, won=True, counterfactual_return=float("inf"))
+            for _ in range(8)
+        )
+        decision = derive_adaptive_floor(
+            base_floor=0.60,
+            bucket="15m_1h",
+            bucket_stats=BucketStats(
+                resolved_executed_count=0,
+                resolved_executed_avg_return=None,
+                low_conf_samples=samples,
+            ),
+        )
+
+        self.assertEqual(decision.floor, 0.60)
+        self.assertEqual(decision.adjustment, 0.0)
+
+    def test_nonfinite_local_copy_average_cannot_lower_floor(self) -> None:
+        decision = derive_adaptive_floor(
+            base_floor=0.60,
+            bucket="15m_1h",
+            bucket_stats=BucketStats(
+                resolved_executed_count=0,
+                resolved_executed_avg_return=None,
+                low_conf_samples=(),
+            ),
+            local_stats=LocalCopyStats(
+                resolved_copied_count=5,
+                copied_avg_return=float("inf"),
+                copied_win_rate=1.0,
+            ),
+        )
+
+        self.assertEqual(decision.floor, 0.60)
+        self.assertEqual(decision.adjustment, 0.0)
+
     def test_local_negative_feedback_raises_floor(self) -> None:
         decision = derive_adaptive_floor(
             base_floor=0.60,
@@ -95,7 +132,11 @@ class AdaptiveConfidenceFloorTest(unittest.TestCase):
         self.assertGreater(decision.adjustment, 0.0)
 
     def test_heuristic_size_respects_min_confidence_override(self) -> None:
-        with patch.dict(os.environ, {"MIN_CONFIDENCE": "0.60"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"MIN_CONFIDENCE": "0.60", "MAX_BET_FRACTION": "0.10"},
+            clear=False,
+        ):
             rejected = heuristic_size(0.59, 100.0)
             accepted = heuristic_size(0.59, 100.0, min_confidence_override=0.585)
 

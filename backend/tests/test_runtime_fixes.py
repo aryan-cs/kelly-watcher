@@ -440,6 +440,80 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 identity_cache.CACHE_PATH = original_cache_path
 
+    def test_resolve_username_for_wallet_suppresses_owned_client_close_errors(self) -> None:
+        wallet = "0x1234567890abcdef1234567890abcdef12345678"
+
+        class _Response:
+            text = '<link rel="canonical" href="https://polymarket.com/@TraderName">'
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class _Client:
+            close_called = False
+
+            def get(self, url: str) -> _Response:
+                self.url = url
+                return _Response()
+
+            def close(self) -> None:
+                self.close_called = True
+                raise RuntimeError("close failed")
+
+        with TemporaryDirectory() as tmpdir:
+            original_cache_path = identity_cache.CACHE_PATH
+            try:
+                identity_cache.CACHE_PATH = Path(tmpdir) / "kelly_watcher.data.identity_cache.json"
+                client = _Client()
+                with patch("kelly_watcher.data.identity_cache.httpx.Client", return_value=client):
+                    resolved = identity_cache.resolve_username_for_wallet(wallet, force=True)
+
+                self.assertEqual(resolved, "TraderName")
+                self.assertEqual(client.url, f"https://polymarket.com/profile/{wallet}")
+                self.assertTrue(client.close_called)
+                self.assertEqual(identity_cache.lookup_username(wallet), "TraderName")
+            finally:
+                identity_cache.CACHE_PATH = original_cache_path
+
+    def test_resolve_wallet_for_username_suppresses_owned_client_close_errors(self) -> None:
+        wallet = "0x1234567890abcdef1234567890abcdef12345678"
+
+        class _Response:
+            text = (
+                '<script id="__NEXT_DATA__" type="application/json" crossorigin="anonymous">'
+                f'{{"props":{{"pageProps":{{"proxyAddress":"{wallet}"}}}}}}'
+                "</script>"
+            )
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class _Client:
+            close_called = False
+
+            def get(self, url: str) -> _Response:
+                self.url = url
+                return _Response()
+
+            def close(self) -> None:
+                self.close_called = True
+                raise RuntimeError("close failed")
+
+        with TemporaryDirectory() as tmpdir:
+            original_cache_path = identity_cache.CACHE_PATH
+            try:
+                identity_cache.CACHE_PATH = Path(tmpdir) / "kelly_watcher.data.identity_cache.json"
+                client = _Client()
+                with patch("kelly_watcher.data.identity_cache.httpx.Client", return_value=client):
+                    resolved = identity_cache.resolve_wallet_for_username("TraderName", force=True)
+
+                self.assertEqual(resolved, wallet)
+                self.assertEqual(client.url, "https://polymarket.com/@TraderName")
+                self.assertTrue(client.close_called)
+                self.assertEqual(identity_cache.lookup_wallet("TraderName"), wallet)
+            finally:
+                identity_cache.CACHE_PATH = original_cache_path
+
     def test_identity_cache_write_cleans_temp_file_when_replace_fails(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_cache_path = identity_cache.CACHE_PATH
@@ -1359,6 +1433,36 @@ class RuntimeFixesTest(unittest.TestCase):
                 PolymarketExecutor()
 
         http_client.close.assert_called_once()
+
+    def test_executor_init_failure_preserves_clob_error_when_http_close_fails(self) -> None:
+        http_client = Mock()
+        http_client.close.side_effect = RuntimeError("close failed")
+        with patch("kelly_watcher.runtime.executor.httpx.Client", return_value=http_client), patch.object(
+            PolymarketExecutor,
+            "_init_clob",
+            side_effect=RuntimeError("clob failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "clob failed"):
+                PolymarketExecutor()
+
+        http_client.close.assert_called_once()
+
+    def test_executor_close_suppresses_owned_http_client_close_errors(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        http_client = Mock()
+        http_client.close.side_effect = RuntimeError("close failed")
+        clob_client = Mock()
+        executor._http_client = http_client
+        executor._clob = clob_client
+        executor._closed = False
+        executor._uses_py_clob_http_client = False
+
+        executor.close()
+
+        http_client.close.assert_called_once()
+        clob_client.close.assert_called_once()
+        self.assertTrue(executor._closed)
+        self.assertIsNone(executor._clob)
 
     def test_executor_close_releases_py_clob_helper_http_client(self) -> None:
         py_clob_module = types.ModuleType("py_clob_client")

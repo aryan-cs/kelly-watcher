@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 
@@ -182,11 +183,7 @@ def get_wallet_trust_state(wallet_address: str) -> WalletTrustState:
     resolved_observed_buy_count = int((row["resolved_observed_buy_count"] or 0) if row else 0)
     resolved_copied_buy_count = int((row["resolved_copied_buy_count"] or 0) if row else 0)
     resolved_copied_wins = int((row["resolved_copied_wins"] or 0) if row else 0)
-    resolved_copied_avg_return = (
-        float(row["resolved_copied_avg_return"])
-        if row and row["resolved_copied_avg_return"] is not None
-        else None
-    )
+    resolved_copied_avg_return = _finite_float(row["resolved_copied_avg_return"] if row else None)
     resolved_copied_win_rate = (
         resolved_copied_wins / resolved_copied_buy_count
         if resolved_copied_buy_count > 0
@@ -317,7 +314,9 @@ def _load_wallet_skip_override_stats() -> dict[str, WalletSkipOverrideStats]:
         if not wallet_key:
             continue
         reason = str(row["skip_reason"] or "").strip().lower()
-        ret = float(row["counterfactual_return"] or 0.0)
+        ret = _finite_float(row["counterfactual_return"])
+        if ret is None:
+            continue
         bucket = None
         if reason.startswith("we already had this side of the market open"):
             bucket = "duplicate"
@@ -350,9 +349,10 @@ def _load_wallet_skip_override_stats() -> dict[str, WalletSkipOverrideStats]:
 def wallet_quality_multiplier(quality_score: float | None) -> float:
     minimum = wallet_quality_size_min_multiplier()
     maximum = wallet_quality_size_max_multiplier()
-    if quality_score is None:
+    quality = _finite_float(quality_score)
+    if quality is None:
         return 1.0
-    clipped_score = max(0.0, min(float(quality_score), 1.0))
+    clipped_score = max(0.0, min(quality, 1.0))
     return minimum + (clipped_score * (maximum - minimum))
 
 
@@ -364,36 +364,45 @@ def apply_wallet_trust_sizing(
     max_size_usd: float | None = None,
 ) -> dict:
     adjusted = dict(sizing)
+    safe_quality_score = _finite_float(quality_score)
     adjusted["wallet_trust"] = trust_state.as_dict()
     adjusted["wallet_quality_score"] = (
-        round(float(quality_score), 4) if quality_score is not None else None
+        round(safe_quality_score, 4) if safe_quality_score is not None else None
     )
 
-    base_size = float(adjusted.get("dollar_size", 0.0) or 0.0)
-    quality_multiplier = wallet_quality_multiplier(quality_score) if base_size > 0 else 1.0
+    base_size = _nonnegative_finite(adjusted.get("dollar_size", 0.0))
+    trust_multiplier = _clamp_fraction(trust_state.size_multiplier)
+    quality_multiplier = wallet_quality_multiplier(safe_quality_score) if base_size > 0 else 1.0
     adjusted["wallet_quality_multiplier"] = round(quality_multiplier, 5)
     adjusted["wallet_quality_effective_multiplier"] = (
-        round(quality_multiplier, 5) if base_size > 0 and trust_state.size_multiplier > 0 else 0.0
+        round(quality_multiplier, 5) if base_size > 0 and trust_multiplier > 0 else 0.0
     )
 
-    if base_size <= 0 or trust_state.size_multiplier <= 0:
-        adjusted["wallet_trust_note"] = trust_state.tier_note
-        adjusted["wallet_trust_multiplier"] = trust_state.size_multiplier
+    if base_size <= 0 or trust_multiplier <= 0:
+        trust_note = trust_state.tier_note or trust_state.skip_reason
+        adjusted["wallet_trust_note"] = trust_note
+        adjusted["wallet_trust_multiplier"] = trust_multiplier
         adjusted["wallet_trust_effective_multiplier"] = (
-            0.0 if trust_state.size_multiplier <= 0 else 1.0
+            0.0 if trust_multiplier <= 0 else 1.0
         )
+        adjusted["dollar_size"] = 0.0
+        adjusted["kelly_f"] = 0.0
+        adjusted["full_kelly_f"] = 0.0
+        if trust_multiplier <= 0:
+            adjusted["reason"] = trust_note or "wallet trust multiplier is zero"
         return adjusted
 
-    combined_multiplier = trust_state.size_multiplier * quality_multiplier
+    combined_multiplier = trust_multiplier * quality_multiplier
     scaled_size = round(base_size * combined_multiplier, 2)
-    if max_size_usd is not None and max_size_usd > 0:
-        scaled_size = round(min(scaled_size, max_size_usd), 2)
+    max_size = _finite_float(max_size_usd)
+    if max_size is not None and max_size > 0:
+        scaled_size = round(min(scaled_size, max_size), 2)
     min_bet = min_bet_usd()
     if 0.0 < scaled_size < min_bet:
         adjusted["dollar_size"] = 0.0
         adjusted["kelly_f"] = 0.0
         adjusted["full_kelly_f"] = 0.0
-        adjusted["wallet_trust_multiplier"] = trust_state.size_multiplier
+        adjusted["wallet_trust_multiplier"] = trust_multiplier
         adjusted["wallet_trust_effective_multiplier"] = 0.0
         adjusted["wallet_trust_note"] = (
             f"{trust_state.tier_note}, risk-adjusted size ${scaled_size:.2f} < min ${min_bet:.2f}"
@@ -404,14 +413,14 @@ def apply_wallet_trust_sizing(
     effective_multiplier = (scaled_size / base_size) if base_size > 0 else 0.0
 
     adjusted["dollar_size"] = scaled_size
-    adjusted["kelly_f"] = round(float(adjusted.get("kelly_f", 0.0) or 0.0) * effective_multiplier, 5)
-    adjusted["full_kelly_f"] = round(float(adjusted.get("full_kelly_f", 0.0) or 0.0) * effective_multiplier, 5)
-    adjusted["wallet_trust_multiplier"] = trust_state.size_multiplier
+    adjusted["kelly_f"] = round(_nonnegative_finite(adjusted.get("kelly_f", 0.0)) * effective_multiplier, 5)
+    adjusted["full_kelly_f"] = round(_nonnegative_finite(adjusted.get("full_kelly_f", 0.0)) * effective_multiplier, 5)
+    adjusted["wallet_trust_multiplier"] = trust_multiplier
     adjusted["wallet_trust_effective_multiplier"] = round(effective_multiplier, 5)
     trust_prefix = trust_state.tier_note
     quality_note = (
         f"wallet quality {adjusted['wallet_quality_score']:.2f} -> {quality_multiplier * 100:.0f}%"
-        if quality_score is not None
+        if safe_quality_score is not None
         else "wallet quality neutral"
     )
     scaling_note = (
@@ -422,3 +431,29 @@ def apply_wallet_trust_sizing(
     note_parts = [part for part in (trust_prefix, quality_note, scaling_note) if part]
     adjusted["wallet_trust_note"] = ", ".join(note_parts)
     return adjusted
+
+
+def _finite_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _nonnegative_finite(value: object) -> float:
+    numeric = _finite_float(value)
+    if numeric is None:
+        return 0.0
+    return max(numeric, 0.0)
+
+
+def _clamp_fraction(value: object) -> float:
+    numeric = _finite_float(value)
+    if numeric is None:
+        return 0.0
+    return max(0.0, min(numeric, 1.0))

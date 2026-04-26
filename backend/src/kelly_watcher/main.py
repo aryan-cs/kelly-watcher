@@ -313,6 +313,15 @@ def _restore_shutdown_signal_handlers(previous_handlers: dict[int, Any]) -> None
             continue
 
 
+def _send_alert_safely(message: str, *, kind: str = "other") -> bool:
+    try:
+        send_alert(message, kind=kind)
+        return True
+    except Exception:
+        logger.warning("Alert delivery failed while handling runtime state", exc_info=True)
+        return False
+
+
 def _terminate_child_process(process: subprocess.Popen[str], command: list[str], *, timeout_s: float = 5.0) -> None:
     if process.poll() is not None:
         return
@@ -610,6 +619,9 @@ def _base_bot_state_snapshot(*, session_id: str, started_at: int) -> dict[str, o
         "source_events_processing": 0,
         "polled_wallet_count": 0,
         "poll_stage": "",
+        "last_loop_error_at": 0,
+        "last_loop_error_stage": "",
+        "last_loop_error_message": "",
         "retrain_in_progress": False,
         "retrain_started_at": 0,
         "last_retrain_started_at": 0,
@@ -1960,7 +1972,12 @@ def _process_manual_trade_request(
             _skip_event(event, amount_usd, exposure_block_reason, decision="MANUAL")
             return
 
-        market_f = build_market_features(snapshot, close_time, amount_usd, fill_estimate.avg_price)
+        market_f = build_market_features(
+            snapshot,
+            close_time,
+            amount_usd,
+            fill_economics.sizing_effective_price,
+        )
         if market_f is None:
             event = _manual_trade_event(
                 request,
@@ -2418,7 +2435,12 @@ def process_event(
         _reject_event(event, 0.0, rough_size, reason)
         return 0.0
 
-    market_f = build_market_features(event.snapshot, event.close_time, rough_size, rough_fill.avg_price)
+    market_f = build_market_features(
+        event.snapshot,
+        event.close_time,
+        rough_size,
+        rough_entry_economics.sizing_effective_price,
+    )
     if market_f is None:
         reason = _humanize_reason("failed to build market features")
         executor.log_skip(
@@ -2792,7 +2814,7 @@ def process_event(
         event.snapshot,
         event.close_time,
         sizing["dollar_size"],
-        fill_estimate.avg_price,
+        fill_economics.sizing_effective_price,
     )
     result = executor.execute(
         trade_id=event.trade_id,
@@ -4757,6 +4779,7 @@ def _evaluate_exit_guard(
         close_time,
         open_size_usd,
         execution_price=quoted_price if quoted_price > 0 else None,
+        execution_side="sell",
     )
     market_result = MarketScorer().score(market_features) if market_features is not None else {"score": None, "veto": "missing_market_features"}
     market_score = float(market_result["score"]) if market_result.get("score") is not None else None
@@ -6797,6 +6820,9 @@ def main() -> None:
                 source_events_malformed = 0
                 source_events_duplicate = 0
                 queue_counts: dict[str, int] = {}
+                loop_error_at = 0
+                loop_error_stage = ""
+                loop_error_message = ""
                 try:
                     _persist_bot_state(poll_stage="checking_balance")
                     bankroll = executor.get_usdc_balance()
@@ -6956,8 +6982,16 @@ def main() -> None:
                             _process_queued_events(events)
                         queue_counts = tracker.source_queue_counts()
                 except Exception as exc:
+                    loop_error_at = int(time.time())
+                    loop_error_stage = str(bot_state_snapshot.get("poll_stage") or "")
+                    loop_error_message = str(exc)
                     logger.error("Main loop error: %s", exc, exc_info=True)
-                    send_alert(build_lines("bot loop error", str(exc)), kind="error")
+                    _persist_bot_state(
+                        last_loop_error_at=loop_error_at,
+                        last_loop_error_stage=loop_error_stage,
+                        last_loop_error_message=loop_error_message,
+                    )
+                    _send_alert_safely(build_lines("bot loop error", str(exc)), kind="error")
 
                 elapsed = time.time() - loop_start
                 state_snapshot = {
@@ -6980,6 +7014,9 @@ def main() -> None:
                     "polled_wallet_count": polled_wallet_count,
                     "loop_in_progress": False,
                     "poll_stage": "",
+                    "last_loop_error_at": loop_error_at,
+                    "last_loop_error_stage": loop_error_stage,
+                    "last_loop_error_message": loop_error_message,
                     **watchlist.state_fields(),
                 }
                 current_loop_started_at = 0

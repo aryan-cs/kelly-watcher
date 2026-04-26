@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -105,9 +106,10 @@ class LiveExchangeFill:
 
 def _to_float(value: Any) -> float:
     try:
-        return float(value or 0.0)
+        numeric = float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+    return numeric if math.isfinite(numeric) else 0.0
 
 
 def _market_url_from_metadata(meta: Any) -> str | None:
@@ -279,6 +281,12 @@ class PolymarketExecutor:
                 snapshot.update(refreshed_snapshot)
                 event.raw_orderbook = raw_book
                 event.orderbook_fetched_at = fetched_at
+
+        if getattr(event, "raw_orderbook", None) is not None:
+            normalized_snapshot = self._build_orderbook_snapshot(getattr(event, "raw_orderbook", None))
+            if normalized_snapshot is None:
+                return False, "current order book quote was unavailable at execution time"
+            snapshot.update(normalized_snapshot)
 
         fee_rate_bps, fee_reason = self.get_fee_rate_bps(
             token_id,
@@ -647,7 +655,7 @@ class PolymarketExecutor:
                 continue
             price = _to_float(level.get("price"))
             size = _to_float(level.get("size"))
-            if price <= 0 or size <= 0:
+            if not (0.0 < price < 1.0) or size <= 0:
                 continue
             normalized.append((price, size))
 

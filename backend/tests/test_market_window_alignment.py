@@ -96,6 +96,87 @@ class MarketWindowAlignmentTest(unittest.TestCase):
 
         self.assertEqual(result["veto"], "beyond max horizon 6h")
 
+    def test_market_features_drop_nonfinite_quote_values(self) -> None:
+        snapshot = dict(self.snapshot)
+        snapshot["best_bid"] = "nan"
+
+        features = build_market_features(
+            snapshot,
+            _close_time_in(3 * 3600),
+            order_size_usd=25.0,
+            execution_price=0.61,
+        )
+        self.assertIsNotNone(features)
+        assert features is not None
+
+        result = MarketScorer().score(features)
+
+        self.assertEqual(result["veto"], "missing two-sided order book")
+
+    def test_market_features_reject_nonfinite_execution_price(self) -> None:
+        features = build_market_features(
+            self.snapshot,
+            _close_time_in(3 * 3600),
+            order_size_usd=25.0,
+            execution_price=float("nan"),
+        )
+
+        self.assertIsNone(features)
+
+    def test_market_depth_scores_buy_side_executable_liquidity(self) -> None:
+        snapshot = dict(self.snapshot)
+        snapshot["bid_depth_usd"] = 10_000.0
+        snapshot["ask_depth_usd"] = 10.0
+
+        features = build_market_features(
+            snapshot,
+            _close_time_in(3 * 3600),
+            order_size_usd=25.0,
+            execution_price=0.61,
+            execution_side="buy",
+        )
+        self.assertIsNotNone(features)
+        assert features is not None
+
+        result = MarketScorer().score(features)
+
+        self.assertIsNone(result["veto"])
+        self.assertEqual(result["components"]["depth"], 0.0)
+
+    def test_market_depth_scores_sell_side_executable_liquidity(self) -> None:
+        snapshot = dict(self.snapshot)
+        snapshot["bid_depth_usd"] = 10.0
+        snapshot["ask_depth_usd"] = 10_000.0
+
+        features = build_market_features(
+            snapshot,
+            _close_time_in(3 * 3600),
+            order_size_usd=25.0,
+            execution_price=0.59,
+            execution_side="sell",
+        )
+        self.assertIsNotNone(features)
+        assert features is not None
+
+        result = MarketScorer().score(features)
+
+        self.assertIsNone(result["veto"])
+        self.assertEqual(result["components"]["depth"], 0.0)
+
+    def test_market_score_rejects_fee_effective_entry_price_outside_bounds(self) -> None:
+        features = build_market_features(
+            self.snapshot,
+            _close_time_in(3 * 3600),
+            order_size_usd=25.0,
+            execution_price=1.01,
+        )
+        self.assertIsNotNone(features)
+        assert features is not None
+
+        result = MarketScorer().score(features)
+
+        self.assertEqual(result["veto"], "invalid execution price")
+
 
 if __name__ == "__main__":
     unittest.main()

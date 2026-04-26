@@ -62,6 +62,57 @@ class ProductionReadinessTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot["bid_depth_usd"], (0.40 * 50) + (0.20 * 100), places=6)
         self.assertAlmostEqual(snapshot["ask_depth_usd"], (0.50 * 60) + (0.80 * 100), places=6)
 
+    def test_orderbook_snapshot_ignores_nonfinite_levels(self) -> None:
+        book = {
+            "bids": [
+                {"price": "nan", "size": "100"},
+                {"price": "inf", "size": "100"},
+                {"price": "0.40", "size": "50"},
+            ],
+            "asks": [
+                {"price": "-inf", "size": "100"},
+                {"price": "1.20", "size": "100"},
+                {"price": "0.55", "size": "50"},
+            ],
+        }
+
+        snapshot = PolymarketExecutor._build_orderbook_snapshot(book)
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertAlmostEqual(snapshot["best_bid"], 0.40, places=6)
+        self.assertAlmostEqual(snapshot["best_ask"], 0.55, places=6)
+
+    def test_refresh_event_market_data_normalizes_cached_raw_orderbook(self) -> None:
+        executor = object.__new__(PolymarketExecutor)
+        executor.get_fee_rate_bps = lambda token_id, market_meta=None: (0, None)
+        executor.fetch_execution_orderbook = Mock(side_effect=AssertionError("fresh cached book should not refresh"))
+        event = SimpleNamespace(
+            token_id="token-1",
+            snapshot={"best_bid": 0.20, "best_ask": 0.80, "mid": 0.50},
+            raw_orderbook={
+                "bids": [
+                    {"price": "0.20", "size": "100"},
+                    {"price": "0.42", "size": "50"},
+                ],
+                "asks": [
+                    {"price": "0.70", "size": "100"},
+                    {"price": "0.48", "size": "60"},
+                ],
+            },
+            orderbook_fetched_at=int(time.time()),
+            raw_market_metadata={},
+        )
+
+        with patch("kelly_watcher.runtime.executor.max_orderbook_staleness_seconds", return_value=3):
+            ok, reason = executor.refresh_event_market_data(event)
+
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        self.assertAlmostEqual(event.snapshot["best_bid"], 0.42, places=6)
+        self.assertAlmostEqual(event.snapshot["best_ask"], 0.48, places=6)
+        self.assertAlmostEqual(event.snapshot["mid"], 0.45, places=6)
+
     def test_live_entry_ensures_allowance_before_posting_order(self) -> None:
         ops: list[str] = []
         executor = object.__new__(PolymarketExecutor)

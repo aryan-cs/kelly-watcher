@@ -1150,6 +1150,9 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertFalse(snapshot["manual_trade_pending"])
         self.assertEqual(snapshot["manual_trade_requested_at"], 0)
         self.assertEqual(snapshot["manual_trade_message"], "")
+        self.assertEqual(snapshot["last_loop_error_at"], 0)
+        self.assertEqual(snapshot["last_loop_error_stage"], "")
+        self.assertEqual(snapshot["last_loop_error_message"], "")
         self.assertFalse(snapshot["shadow_evidence_epoch_known"])
         self.assertEqual(snapshot["shadow_evidence_epoch_started_at"], 0)
         self.assertEqual(snapshot["shadow_evidence_epoch_source"], "")
@@ -1164,6 +1167,7 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertEqual(snapshot["routed_shadow_epoch_active_scope_label"], "all history")
         self.assertEqual(snapshot["routed_shadow_epoch_status"], "all_history")
         self.assertFalse(snapshot["shadow_snapshot_state_known"])
+
         self.assertEqual(snapshot["shadow_snapshot_scope"], "all_history")
         self.assertEqual(snapshot["shadow_snapshot_started_at"], 0)
         self.assertEqual(snapshot["shadow_snapshot_status"], "checking")
@@ -1224,6 +1228,12 @@ class RuntimeFixesTest(unittest.TestCase):
         self.assertFalse(snapshot["db_recovery_shadow_ready"])
         self.assertEqual(snapshot["db_recovery_shadow_segment_summary_json"], "[]")
         self.assertEqual(snapshot["db_recovery_shadow_block_reason"], "")
+
+    def test_send_alert_safely_suppresses_alert_transport_errors(self) -> None:
+        with patch.object(main, "send_alert", side_effect=RuntimeError("telegram down")):
+            delivered = main._send_alert_safely("loop failed", kind="error")
+
+        self.assertFalse(delivered)
 
     def test_database_integrity_state_reports_sqlite_error(self) -> None:
         with TemporaryDirectory() as tmpdir:

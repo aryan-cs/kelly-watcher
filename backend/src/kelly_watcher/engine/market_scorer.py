@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 from typing import Any
 
 import numpy as np
@@ -26,6 +27,7 @@ class MarketFeatures:
     oi_usd: float | None
     top_holder_pct: float | None
     order_size_usd: float
+    execution_side: str = "buy"
 
 
 def build_market_features(
@@ -33,16 +35,23 @@ def build_market_features(
     close_time_iso: str,
     order_size_usd: float,
     execution_price: float | None = None,
+    execution_side: str = "buy",
 ) -> MarketFeatures | None:
     if not snapshot:
         return None
 
-    best_bid = _optional_float(snapshot.get("best_bid"), min_value=0.0) or 0.0
-    best_ask = _optional_float(snapshot.get("best_ask"), min_value=0.0) or 0.0
+    best_bid = _optional_float(snapshot.get("best_bid"), min_value=0.0, max_value=1.0) or 0.0
+    best_ask = _optional_float(snapshot.get("best_ask"), min_value=0.0, max_value=1.0) or 0.0
     inferred_mid = (best_bid + best_ask) / 2 if best_bid and best_ask else 0.0
-    mid = _optional_float(snapshot.get("mid"), min_value=0.0) or inferred_mid
-    effective_execution_price = float(execution_price or 0.0)
-    if not (0.0 < effective_execution_price < 1.0):
+    mid = _optional_float(snapshot.get("mid"), min_value=0.0, max_value=1.0) or inferred_mid
+    if execution_price is None:
+        effective_execution_price = 0.0
+    else:
+        parsed_execution_price = _optional_float(execution_price, min_value=0.0)
+        if parsed_execution_price is None:
+            return None
+        effective_execution_price = parsed_execution_price
+    if effective_execution_price <= 0.0:
         effective_execution_price = best_ask if 0.0 < best_ask < 1.0 else mid
 
     if not close_time_iso:
@@ -60,15 +69,16 @@ def build_market_features(
         best_ask=best_ask,
         mid=mid,
         execution_price=effective_execution_price,
-        bid_depth_usd=float(snapshot.get("bid_depth_usd", 0.0)),
-        ask_depth_usd=float(snapshot.get("ask_depth_usd", 0.0)),
+        bid_depth_usd=_optional_float(snapshot.get("bid_depth_usd"), min_value=0.0) or 0.0,
+        ask_depth_usd=_optional_float(snapshot.get("ask_depth_usd"), min_value=0.0) or 0.0,
         days_to_res=days_to_res,
         price_1h_ago=price_1h_ago,
         volume_24h_usd=_optional_float(snapshot.get("volume_24h_usd"), min_value=0.0),
         volume_7d_avg_usd=_optional_float(snapshot.get("volume_7d_avg_usd"), min_value=0.0),
         oi_usd=_optional_float(snapshot.get("oi_usd"), min_value=0.0),
         top_holder_pct=_optional_float(snapshot.get("top_holder_pct"), min_value=0.0, max_value=1.0),
-        order_size_usd=order_size_usd,
+        order_size_usd=_optional_float(order_size_usd, min_value=0.0) or 0.0,
+        execution_side=_normalize_execution_side(execution_side),
     )
 
 
@@ -84,11 +94,18 @@ def _optional_float(
         numeric = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(numeric):
+        return None
     if min_value is not None and numeric < min_value:
         return None
     if max_value is not None and numeric > max_value:
         return None
     return numeric
+
+
+def _normalize_execution_side(value: Any) -> str:
+    side = str(value or "").strip().lower()
+    return side if side in {"buy", "sell"} else "buy"
 
 
 def _extract_price_1h_ago(history: Any, fallback: float) -> float | None:
@@ -138,24 +155,49 @@ class MarketScorer:
         return (features.best_ask - features.best_bid) / features.mid if features.mid > 0 else 1.0
 
     @staticmethod
+    def _execution_depth(features: MarketFeatures) -> float:
+        side = _normalize_execution_side(getattr(features, "execution_side", "buy"))
+        if side == "sell":
+            return features.bid_depth_usd
+        return features.ask_depth_usd
+
+    @staticmethod
     def _min_execution_window_seconds() -> float:
         # Only veto when our polling cadence plus order submission time makes
         # the remaining window effectively impossible to trade.
         return float(max(min_execution_window_seconds(), poll_interval() + EXECUTION_BUFFER_SECONDS))
 
     def _veto(self, features: MarketFeatures) -> str | None:
+        numeric_values = (
+            features.best_bid,
+            features.best_ask,
+            features.mid,
+            features.execution_price,
+            features.bid_depth_usd,
+            features.ask_depth_usd,
+            features.days_to_res,
+            features.order_size_usd,
+        )
+        if any(not math.isfinite(float(value)) for value in numeric_values):
+            return "invalid market numeric value"
         if features.mid <= 0 or features.mid >= 1:
             return "invalid market mid"
+        if features.execution_price <= 0 or features.execution_price >= 1:
+            return "invalid execution price"
         if features.best_bid < 0 or features.best_ask < 0:
             return "invalid order book values"
         if features.best_ask < features.best_bid:
             return "crossed order book"
-        if features.best_bid == 0 and features.best_ask == 0:
-            return "missing order book"
+        if features.best_bid <= 0 or features.best_ask <= 0:
+            return "missing two-sided order book"
         if features.bid_depth_usd <= 0 and features.ask_depth_usd <= 0:
             return "no visible order book depth"
+        side = _normalize_execution_side(getattr(features, "execution_side", "buy"))
+        if side == "buy" and features.ask_depth_usd <= 0:
+            return "no visible ask depth"
+        if side == "sell" and features.bid_depth_usd <= 0:
+            return "no visible bid depth"
 
-        spread = self._spread(features)
         min_window_seconds = self._min_execution_window_seconds()
         if features.days_to_res * 86400 < min_window_seconds:
             return f"expires in <{int(min_window_seconds)}s"
@@ -168,7 +210,7 @@ class MarketScorer:
 
     @staticmethod
     def _score_depth(features: MarketFeatures) -> float:
-        depth = (features.bid_depth_usd + features.ask_depth_usd) / 2
+        depth = MarketScorer._execution_depth(features)
         if depth <= 0:
             return 0.0
         return float(np.clip(1 - features.order_size_usd / depth, 0, 1))

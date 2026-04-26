@@ -3017,6 +3017,88 @@ class ReplaySearchTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fraction must be finite"):
             replay_search._clamp_fraction(float("nan"))
 
+    def test_constraint_failures_reject_nonfinite_replay_metrics(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 6,
+                "resolved_count": 6,
+                "accepted_size_usd": 120.0,
+                "resolved_size_usd": 120.0,
+                "trade_count": 6,
+                "win_rate": float("nan"),
+                "total_pnl_usd": float("nan"),
+                "max_drawdown_pct": float("nan"),
+                "max_open_exposure_share": float("nan"),
+                "worst_window_pnl_usd": 0.0,
+                "worst_window_drawdown_pct": 0.0,
+                "trader_concentration": {
+                    "trader_count": 2,
+                    "top_accepted_share": float("nan"),
+                },
+            },
+            **self._constraint_defaults(
+                min_win_rate=0.5,
+                min_total_pnl_usd=0.0,
+                max_drawdown_pct=0.25,
+                max_open_exposure_share=0.5,
+                max_top_trader_accepted_share=0.75,
+            ),
+        )
+
+        self.assertEqual(
+            failures,
+            [
+                "win_rate",
+                "total_pnl_usd",
+                "max_drawdown_pct",
+                "max_open_exposure_share",
+                "top_trader_accepted_share",
+            ],
+        )
+
+    def test_constraint_failures_reject_nonfinite_mode_pnl(self) -> None:
+        failures = replay_search._constraint_failures(
+            {
+                "accepted_count": 4,
+                "resolved_count": 4,
+                "accepted_size_usd": 100.0,
+                "resolved_size_usd": 100.0,
+                "win_rate": 0.75,
+                "total_pnl_usd": 10.0,
+                "max_drawdown_pct": 0.0,
+                "signal_mode_summary": {
+                    "heuristic": {
+                        "accepted_count": 2,
+                        "resolved_count": 2,
+                        "accepted_size_usd": 50.0,
+                        "resolved_size_usd": 50.0,
+                        "total_pnl_usd": float("nan"),
+                        "win_count": 2,
+                    },
+                    "xgboost": {
+                        "accepted_count": 2,
+                        "resolved_count": 2,
+                        "accepted_size_usd": 50.0,
+                        "resolved_size_usd": 50.0,
+                        "total_pnl_usd": float("nan"),
+                        "win_count": 1,
+                    },
+                },
+            },
+            **self._constraint_defaults(
+                min_heuristic_pnl_usd=0.0,
+                min_xgboost_pnl_usd=0.0,
+            ),
+        )
+
+        self.assertEqual(
+            failures,
+            [
+                "heuristic_total_pnl_usd",
+                "xgboost_total_pnl_usd",
+            ],
+        )
+
     def test_score_breakdown_penalizes_global_window_inactivity(self) -> None:
         breakdown = replay_search._score_breakdown(
             {

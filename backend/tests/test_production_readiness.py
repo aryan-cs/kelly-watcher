@@ -837,6 +837,75 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_source_queue_retries_recoverable_failed_rows_while_still_fresh(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, '{}', 'failed', ?, ?, ?, ?, 'temporary failure')
+                        """,
+                        [
+                            (
+                                "failed-recent-high-attempts",
+                                "market-recent",
+                                "token-recent",
+                                now_ts - 5,
+                                8,
+                                now_ts - 5,
+                                now_ts - 5,
+                                now_ts - 2,
+                            ),
+                            (
+                                "failed-ready-high-attempts",
+                                "market-ready",
+                                "token-ready",
+                                now_ts - 10,
+                                8,
+                                now_ts - 10,
+                                now_ts - 10,
+                                now_ts - 30,
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=45
+                    ), patch("kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=180):
+                        rows = tracker_obj._claim_source_queue_rows(limit=10, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in rows], ["failed-ready-high-attempts"])
+                conn = db.get_conn()
+                try:
+                    states = {
+                        row["trade_id"]: (row["status"], row["attempts"])
+                        for row in conn.execute(
+                            "SELECT trade_id, status, attempts FROM source_event_queue ORDER BY trade_id"
+                        ).fetchall()
+                    }
+                finally:
+                    conn.close()
+                self.assertEqual(states["failed-recent-high-attempts"], ("failed", 8))
+                self.assertEqual(states["failed-ready-high-attempts"], ("processing", 9))
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_stage_source_events_does_not_reset_failed_backoff_or_processing_lease(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

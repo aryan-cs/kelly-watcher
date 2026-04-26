@@ -564,7 +564,7 @@ class PolymarketTracker:
                 FROM source_event_queue
                 WHERE (
                     status='pending'
-                    OR (status='failed' AND attempts < 5 AND updated_at <= ?)
+                    OR (status='failed' AND updated_at <= ?)
                     OR (status='processing' AND updated_at < ?)
                 )
                 {tier_clause}

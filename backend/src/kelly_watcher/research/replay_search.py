@@ -2893,6 +2893,41 @@ def _clamp_fraction(raw: float) -> float:
     return min(max(value, 0.0), 1.0)
 
 
+def _finite_float_or_default(raw: Any, *, default: float) -> tuple[float, bool]:
+    if raw is None:
+        return default, True
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default, False
+    if not math.isfinite(value):
+        return default, False
+    return value, True
+
+
+def _finite_float_or_none(raw: Any) -> tuple[float | None, bool]:
+    if raw is None:
+        return None, True
+    value, is_finite = _finite_float_or_default(raw, default=0.0)
+    if not is_finite:
+        return None, False
+    return value, True
+
+
+def _append_if_high_metric(
+    failures: list[str],
+    *,
+    raw_value: Any,
+    max_value: float,
+    failure_name: str,
+) -> None:
+    if max_value <= 0:
+        return
+    value, is_finite = _finite_float_or_default(raw_value, default=0.0)
+    if not is_finite or value > max_value:
+        failures.append(failure_name)
+
+
 def _constraint_failures(
     result: dict[str, Any],
     *,
@@ -3014,11 +3049,19 @@ def _constraint_failures(
     market_concentration = _market_concentration(result)
     entry_price_band_concentration = _entry_price_band_concentration(result)
     time_to_close_band_concentration = _time_to_close_band_concentration(result)
-    raw_win_rate = result.get("win_rate")
-    win_rate = float(raw_win_rate) if raw_win_rate is not None else None
-    total_pnl_usd = float(result.get("total_pnl_usd") or 0.0)
-    drawdown_pct = float(result.get("max_drawdown_pct") or 0.0)
-    open_exposure_share = float(result.get("max_open_exposure_share") or 0.0)
+    win_rate, win_rate_is_finite = _finite_float_or_none(result.get("win_rate"))
+    total_pnl_usd, total_pnl_is_finite = _finite_float_or_default(
+        result.get("total_pnl_usd"),
+        default=0.0,
+    )
+    drawdown_pct, drawdown_pct_is_finite = _finite_float_or_default(
+        result.get("max_drawdown_pct"),
+        default=0.0,
+    )
+    open_exposure_share, open_exposure_share_is_finite = _finite_float_or_default(
+        result.get("max_open_exposure_share"),
+        default=0.0,
+    )
     window_end_open_exposure_share = _max_window_end_open_exposure_share(result)
     avg_window_end_open_exposure_share = _avg_window_end_open_exposure_share(result)
     carry_window_share = _carry_window_share(result)
@@ -3054,13 +3097,21 @@ def _constraint_failures(
         failures.append("resolved_share")
     if min_resolved_size_share > 0 and resolved_size_share < min_resolved_size_share:
         failures.append("resolved_size_share")
-    if min_win_rate > 0 and (win_rate is None or win_rate < min_win_rate):
+    if not win_rate_is_finite:
         failures.append("win_rate")
-    if total_pnl_usd < min_total_pnl_usd:
+    elif min_win_rate > 0 and (win_rate is None or win_rate < min_win_rate):
+        failures.append("win_rate")
+    if not total_pnl_is_finite:
         failures.append("total_pnl_usd")
-    if max_drawdown_pct > 0 and drawdown_pct > max_drawdown_pct:
+    elif total_pnl_usd < min_total_pnl_usd:
+        failures.append("total_pnl_usd")
+    if not drawdown_pct_is_finite:
         failures.append("max_drawdown_pct")
-    if max_open_exposure_share > 0 and open_exposure_share > max_open_exposure_share:
+    elif max_drawdown_pct > 0 and drawdown_pct > max_drawdown_pct:
+        failures.append("max_drawdown_pct")
+    if not open_exposure_share_is_finite:
+        failures.append("max_open_exposure_share")
+    elif max_open_exposure_share > 0 and open_exposure_share > max_open_exposure_share:
         failures.append("max_open_exposure_share")
     if (
         max_window_end_open_exposure_share > 0
@@ -3102,11 +3153,15 @@ def _constraint_failures(
         failures.append("heuristic_resolved_count")
     if allow_xgboost and int(signal_mode_summary.get("xgboost", {}).get("resolved_count") or 0) < max(min_xgboost_resolved_count, 0):
         failures.append("xgboost_resolved_count")
-    heuristic_win_rate = signal_mode_summary.get("heuristic", {}).get("win_rate")
-    xgboost_win_rate = signal_mode_summary.get("xgboost", {}).get("win_rate")
-    if allow_heuristic and min_heuristic_win_rate > 0 and (heuristic_win_rate is None or float(heuristic_win_rate) < min_heuristic_win_rate):
+    heuristic_win_rate, heuristic_win_rate_is_finite = _finite_float_or_none(signal_mode_summary.get("heuristic", {}).get("win_rate"))
+    xgboost_win_rate, xgboost_win_rate_is_finite = _finite_float_or_none(signal_mode_summary.get("xgboost", {}).get("win_rate"))
+    if allow_heuristic and not heuristic_win_rate_is_finite:
         failures.append("heuristic_win_rate")
-    if allow_xgboost and min_xgboost_win_rate > 0 and (xgboost_win_rate is None or float(xgboost_win_rate) < min_xgboost_win_rate):
+    elif allow_heuristic and min_heuristic_win_rate > 0 and (heuristic_win_rate is None or heuristic_win_rate < min_heuristic_win_rate):
+        failures.append("heuristic_win_rate")
+    if allow_xgboost and not xgboost_win_rate_is_finite:
+        failures.append("xgboost_win_rate")
+    elif allow_xgboost and min_xgboost_win_rate > 0 and (xgboost_win_rate is None or xgboost_win_rate < min_xgboost_win_rate):
         failures.append("xgboost_win_rate")
     if allow_heuristic and min_heuristic_resolved_share > 0 and _resolved_share(signal_mode_summary, "heuristic") < min_heuristic_resolved_share:
         failures.append("heuristic_resolved_share")
@@ -3124,9 +3179,21 @@ def _constraint_failures(
         and _resolved_size_share(signal_mode_summary, "xgboost") < min_xgboost_resolved_size_share
     ):
         failures.append("xgboost_resolved_size_share")
-    if allow_heuristic and float(signal_mode_summary.get("heuristic", {}).get("total_pnl_usd") or 0.0) < min_heuristic_pnl_usd:
+    heuristic_pnl_usd, heuristic_pnl_is_finite = _finite_float_or_default(
+        signal_mode_summary.get("heuristic", {}).get("total_pnl_usd"),
+        default=0.0,
+    )
+    xgboost_pnl_usd, xgboost_pnl_is_finite = _finite_float_or_default(
+        signal_mode_summary.get("xgboost", {}).get("total_pnl_usd"),
+        default=0.0,
+    )
+    if allow_heuristic and not heuristic_pnl_is_finite:
         failures.append("heuristic_total_pnl_usd")
-    if allow_xgboost and float(signal_mode_summary.get("xgboost", {}).get("total_pnl_usd") or 0.0) < min_xgboost_pnl_usd:
+    elif allow_heuristic and heuristic_pnl_usd < min_heuristic_pnl_usd:
+        failures.append("heuristic_total_pnl_usd")
+    if allow_xgboost and not xgboost_pnl_is_finite:
+        failures.append("xgboost_total_pnl_usd")
+    elif allow_xgboost and xgboost_pnl_usd < min_xgboost_pnl_usd:
         failures.append("xgboost_total_pnl_usd")
     mode_window_count = max(int(result.get("window_count") or 0), 0)
     if (
@@ -3486,30 +3553,50 @@ def _constraint_failures(
         failures.append("entry_price_band_count")
     if int(time_to_close_band_concentration.get("time_to_close_band_count") or 0) < max(min_time_to_close_band_count, 0):
         failures.append("time_to_close_band_count")
-    if max_top_trader_accepted_share > 0 and float(trader_concentration.get("top_accepted_share") or 0.0) > max_top_trader_accepted_share:
-        failures.append("top_trader_accepted_share")
-    if max_top_trader_abs_pnl_share > 0 and float(trader_concentration.get("top_abs_pnl_share") or 0.0) > max_top_trader_abs_pnl_share:
-        failures.append("top_trader_abs_pnl_share")
-    if max_top_trader_size_share > 0 and float(trader_concentration.get("top_size_share") or 0.0) > max_top_trader_size_share:
-        failures.append("top_trader_size_share")
-    if max_top_market_accepted_share > 0 and float(market_concentration.get("top_accepted_share") or 0.0) > max_top_market_accepted_share:
-        failures.append("top_market_accepted_share")
-    if max_top_market_abs_pnl_share > 0 and float(market_concentration.get("top_abs_pnl_share") or 0.0) > max_top_market_abs_pnl_share:
-        failures.append("top_market_abs_pnl_share")
-    if max_top_market_size_share > 0 and float(market_concentration.get("top_size_share") or 0.0) > max_top_market_size_share:
-        failures.append("top_market_size_share")
-    if max_top_entry_price_band_accepted_share > 0 and float(entry_price_band_concentration.get("top_accepted_share") or 0.0) > max_top_entry_price_band_accepted_share:
-        failures.append("top_entry_price_band_accepted_share")
-    if max_top_entry_price_band_abs_pnl_share > 0 and float(entry_price_band_concentration.get("top_abs_pnl_share") or 0.0) > max_top_entry_price_band_abs_pnl_share:
-        failures.append("top_entry_price_band_abs_pnl_share")
-    if max_top_entry_price_band_size_share > 0 and float(entry_price_band_concentration.get("top_size_share") or 0.0) > max_top_entry_price_band_size_share:
-        failures.append("top_entry_price_band_size_share")
-    if max_top_time_to_close_band_accepted_share > 0 and float(time_to_close_band_concentration.get("top_accepted_share") or 0.0) > max_top_time_to_close_band_accepted_share:
-        failures.append("top_time_to_close_band_accepted_share")
-    if max_top_time_to_close_band_abs_pnl_share > 0 and float(time_to_close_band_concentration.get("top_abs_pnl_share") or 0.0) > max_top_time_to_close_band_abs_pnl_share:
-        failures.append("top_time_to_close_band_abs_pnl_share")
-    if max_top_time_to_close_band_size_share > 0 and float(time_to_close_band_concentration.get("top_size_share") or 0.0) > max_top_time_to_close_band_size_share:
-        failures.append("top_time_to_close_band_size_share")
+    for raw_value, max_value, failure_name in (
+        (trader_concentration.get("top_accepted_share"), max_top_trader_accepted_share, "top_trader_accepted_share"),
+        (trader_concentration.get("top_abs_pnl_share"), max_top_trader_abs_pnl_share, "top_trader_abs_pnl_share"),
+        (trader_concentration.get("top_size_share"), max_top_trader_size_share, "top_trader_size_share"),
+        (market_concentration.get("top_accepted_share"), max_top_market_accepted_share, "top_market_accepted_share"),
+        (market_concentration.get("top_abs_pnl_share"), max_top_market_abs_pnl_share, "top_market_abs_pnl_share"),
+        (market_concentration.get("top_size_share"), max_top_market_size_share, "top_market_size_share"),
+        (
+            entry_price_band_concentration.get("top_accepted_share"),
+            max_top_entry_price_band_accepted_share,
+            "top_entry_price_band_accepted_share",
+        ),
+        (
+            entry_price_band_concentration.get("top_abs_pnl_share"),
+            max_top_entry_price_band_abs_pnl_share,
+            "top_entry_price_band_abs_pnl_share",
+        ),
+        (
+            entry_price_band_concentration.get("top_size_share"),
+            max_top_entry_price_band_size_share,
+            "top_entry_price_band_size_share",
+        ),
+        (
+            time_to_close_band_concentration.get("top_accepted_share"),
+            max_top_time_to_close_band_accepted_share,
+            "top_time_to_close_band_accepted_share",
+        ),
+        (
+            time_to_close_band_concentration.get("top_abs_pnl_share"),
+            max_top_time_to_close_band_abs_pnl_share,
+            "top_time_to_close_band_abs_pnl_share",
+        ),
+        (
+            time_to_close_band_concentration.get("top_size_share"),
+            max_top_time_to_close_band_size_share,
+            "top_time_to_close_band_size_share",
+        ),
+    ):
+        _append_if_high_metric(
+            failures,
+            raw_value=raw_value,
+            max_value=max_value,
+            failure_name=failure_name,
+        )
     return failures
 
 

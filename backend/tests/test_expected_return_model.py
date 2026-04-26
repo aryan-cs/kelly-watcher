@@ -553,10 +553,12 @@ class ExpectedReturnModelTest(unittest.TestCase):
             }
             joblib.dump(artifact, model_file)
 
-            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)), patch(
+                "kelly_watcher.engine.signal_engine.allow_heuristic",
+                return_value=True,
+            ):
                 engine = signal_engine.SignalEngine()
-
-            runtime = engine.runtime_info()
+                runtime = engine.runtime_info()
             self.assertEqual(runtime["loaded_scorer"], "heuristic")
             self.assertTrue(runtime["model_artifact_exists"])
             self.assertEqual(runtime["model_artifact_backend"], "hist_gradient_boosting")
@@ -583,10 +585,12 @@ class ExpectedReturnModelTest(unittest.TestCase):
             }
             joblib.dump(artifact, model_file)
 
-            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
+            with patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)), patch(
+                "kelly_watcher.engine.signal_engine.allow_heuristic",
+                return_value=True,
+            ):
                 engine = signal_engine.SignalEngine()
-
-            runtime = engine.runtime_info()
+                runtime = engine.runtime_info()
             self.assertEqual(runtime["loaded_scorer"], "heuristic")
             self.assertEqual(runtime["loaded_model_backend"], "heuristic")
             self.assertTrue(runtime["model_artifact_exists"])
@@ -627,10 +631,12 @@ class ExpectedReturnModelTest(unittest.TestCase):
             with patch(
                 "kelly_watcher.engine.signal_engine.read_shadow_evidence_epoch",
                 return_value={"shadow_evidence_epoch_started_at": 1_700_000_400},
-            ), patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)):
+            ), patch("kelly_watcher.engine.signal_engine.model_path", return_value=str(model_file)), patch(
+                "kelly_watcher.engine.signal_engine.allow_heuristic",
+                return_value=True,
+            ):
                 engine = signal_engine.SignalEngine()
-
-            runtime = engine.runtime_info()
+                runtime = engine.runtime_info()
             self.assertEqual(runtime["loaded_scorer"], "heuristic")
             self.assertEqual(runtime["loaded_model_backend"], "heuristic")
             self.assertFalse(runtime["model_runtime_compatible"])

@@ -1,5 +1,4 @@
 import { endCodesSet, linkEndCode } from './node_modules/@alcalzone/ansi-tokenize/build/ansiCodes.js';
-
 const DEFAULT_DECIMAL_PLACES = 3;
 // Ink's ANSI tokenizer does not register OSC-8 link terminators as end codes,
 // so hyperlink close sequences can leak into later cells and break cmd-click.

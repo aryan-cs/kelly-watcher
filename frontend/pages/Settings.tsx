@@ -267,7 +267,7 @@ function SettingsSummaryBox({
 
   return (
     <Box title={title} width={width} height={height}>
-      <InkBox width="100%" marginTop={1} flexDirection="column">
+      <InkBox width="100%" flexDirection="column">
         <InkBox width="100%">
           {columns.map((column, columnIndex) => (
             <React.Fragment key={`${title}-column-${columnIndex}`}>
@@ -286,7 +286,6 @@ function SettingsSummaryBox({
             </React.Fragment>
           ))}
         </InkBox>
-        <Text> </Text>
       </InkBox>
     </Box>
   )
@@ -445,7 +444,7 @@ export function Settings({editor}: SettingsProps) {
   const liveTradingEnabled = isLiveTradingEnabled(envData.rawValues)
   const topRowGap = stacked ? 0 : 1
   const topRowWidth = Math.max(24, terminal.width - 4)
-  const topBoxWidth = stacked ? '100%' : Math.max(28, Math.floor((topRowWidth - topRowGap) / 2))
+  const topBoxWidth = stacked ? topRowWidth : Math.max(28, Math.floor((topRowWidth - topRowGap) / 2))
   const topBoxContentWidth = typeof topBoxWidth === 'number' ? Math.max(24, topBoxWidth - 4) : 24
   const topBoxColumnCount = topBoxContentWidth >= 34 ? 2 : 1
   const shadowHistoryStateKnown = Boolean(state.shadow_history_state_known)
@@ -1158,19 +1157,19 @@ export function Settings({editor}: SettingsProps) {
     {label: 'Duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-'},
     {label: 'Integrity', value: dbIntegrityStatus, color: dbIntegrityColor}
   ]
-  const topSummaryHeight = Math.max(
-    7,
-    Math.ceil(Math.max(botStateStats.length, databaseStats.length) / Math.max(1, topBoxColumnCount)) + 5
-  )
+  const topSummaryRows = Math.ceil(Math.max(botStateStats.length, databaseStats.length) / Math.max(1, topBoxColumnCount))
+  const topSummaryHeight = Math.max(5, topSummaryRows + 3)
   const topRegionHeight = stacked ? topSummaryHeight * 2 + 1 : topSummaryHeight
-  const settingsBodyHeight = Math.max(1, terminal.height - 8)
-  const middleSectionHeight = 16
+  const settingsBodyHeight = Math.max(1, terminal.height - 6)
+  const middleSectionHeight = 15
   const environmentRowGap = stacked ? 0 : 2
   const environmentRowWidth = Math.max(24, terminal.width - 4)
-  const environmentBoxHeight = Math.max(
-    7,
-    settingsBodyHeight - topRegionHeight - 1 - middleSectionHeight - 1
+  const environmentMaxHeight = Math.max(5, settingsBodyHeight - topRegionHeight - middleSectionHeight)
+  const environmentDesiredHeight = Math.max(
+    5,
+    Math.min(12, Math.max(envData.rows.length + 3, Math.min(envData.watchedWallets.length + 4, 12)))
   )
+  const environmentBoxHeight = Math.min(environmentMaxHeight, environmentDesiredHeight)
   const environmentStatsBoxWidth = stacked
     ? '100%'
     : Math.max(36, Math.floor((environmentRowWidth - environmentRowGap) * 0.4))
@@ -1209,7 +1208,7 @@ export function Settings({editor}: SettingsProps) {
         <SettingsSummaryBox title="Database" width={topBoxWidth} height={topSummaryHeight} items={databaseStats} columnCount={topBoxColumnCount} />
       </InkBox>
 
-      <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'} width="100%">
+      <InkBox flexDirection={stacked ? 'column' : 'row'} width="100%">
         <Box title="Editable Config" width={stacked ? '100%' : configBoxWidth} accent>
           <InkBox width="100%">
             {configColumns.map((column, columnIndex) => (
@@ -1354,7 +1353,7 @@ export function Settings({editor}: SettingsProps) {
         </InkBox>
       </InkBox>
 
-      <InkBox marginTop={1} flexDirection={stacked ? 'column' : 'row'} width="100%">
+      <InkBox flexDirection={stacked ? 'column' : 'row'} width="100%">
         <Box title="Environment Stats" width={environmentStatsBoxWidth} height={environmentBoxHeight}>
           {envRows.length || hiddenEnvRowCount > 0 ? (
             <>

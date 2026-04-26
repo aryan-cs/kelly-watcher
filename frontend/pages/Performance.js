@@ -4,7 +4,6 @@ import { BarSparkline } from '../components/BarSparkline.js';
 import { Box } from '../components/Box.js';
 import { ModalOverlay } from '../components/ModalOverlay.js';
 import { StatRow } from '../components/StatRow.js';
-import { buildPerformanceResolutionDisplay } from './performanceResolution.js';
 import { fit, fitRight, formatAdaptiveDollar, formatAdaptiveNumber, formatDisplayId, formatShortDateTime, formatDollar, formatNumber, formatPct, secondsAgo, truncate, terminalHyperlink, timeUntil, shortAddress } from '../format.js';
 import { stackPanels } from '../responsive.js';
 import { useTerminalSize } from '../terminal.js';
@@ -13,6 +12,7 @@ import { useBotState } from '../useBotState.js';
 import { useQuery } from '../useDb.js';
 import { useEventStream } from '../useEventStream.js';
 import { useTradeIdIndex } from '../useTradeIdIndex.js';
+import { buildPerformanceResolutionDisplay } from './performanceResolution.js';
 import { editablePositionStatuses } from '../positionEditor.js';
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
@@ -257,6 +257,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
         AND tl.placed_at <= p.entered_at
       ORDER BY tl.placed_at DESC, tl.id DESC
@@ -267,6 +268,7 @@ SELECT
       FROM trade_log tl
       WHERE tl.market_id = p.market_id
         AND ((p.token_id <> '' AND tl.token_id = p.token_id) OR (p.token_id = '' AND LOWER(tl.side) = LOWER(p.side)))
+        AND ${CHAMPION_TRADE_LOG_WHERE}
         AND ${EXECUTED_ENTRY_WHERE}
       ORDER BY tl.placed_at DESC, tl.id DESC
       LIMIT 1
@@ -392,6 +394,7 @@ SELECT
   updated_at
 FROM position_manual_edits
 `;
+const PNL_BUCKET_MINUTES = 60;
 function getPositionsLayout(width) {
     const showId = width >= 132;
     const showUser = width >= 110;
@@ -455,16 +458,42 @@ function getPositionsLayout(width) {
         showUser
     };
 }
-function getPositionPaneMetrics(terminalHeight, stacked) {
-    const outerReserve = 10;
+function getPositionPaneMetrics(terminalHeight, stacked, currentCount = 0, pastCount = 0) {
+    const outerReserve = 8;
     const statsHeight = 9;
     const dailyHeight = 9;
     const topRowHeight = stacked ? statsHeight + 1 + dailyHeight : Math.max(statsHeight, dailyHeight);
-    const sectionGaps = stacked ? 3 : 2;
-    const availableHeight = Math.max(12, terminalHeight - outerReserve - topRowHeight - sectionGaps);
-    const paneHeight = Math.max(6, Math.floor((availableHeight - 3) / 2));
-    const visibleRows = Math.max(1, paneHeight - 5);
-    return { paneHeight, visibleRows };
+    const availableHeight = Math.max(8, terminalHeight - outerReserve - topRowHeight);
+    const gapHeight = 0;
+    const minPaneHeight = 4;
+    const maxPaneHeight = Math.max(minPaneHeight, availableHeight - gapHeight - minPaneHeight);
+    const desiredCurrentPaneHeight = currentCount > 0
+        ? Math.min(maxPaneHeight, Math.max(5, currentCount + 4))
+        : minPaneHeight;
+    const desiredPastPaneHeight = pastCount > 0
+        ? Math.min(maxPaneHeight, Math.max(5, pastCount + 4))
+        : minPaneHeight;
+    const desiredTotal = desiredCurrentPaneHeight + gapHeight + desiredPastPaneHeight;
+    if (desiredTotal <= availableHeight) {
+        return {
+            currentPaneHeight: desiredCurrentPaneHeight,
+            pastPaneHeight: desiredPastPaneHeight,
+            currentVisibleRows: Math.max(1, desiredCurrentPaneHeight - 4),
+            pastVisibleRows: Math.max(1, desiredPastPaneHeight - 4)
+        };
+    }
+    const remainingAfterMinimums = Math.max(0, availableHeight - gapHeight - minPaneHeight * 2);
+    const currentWeight = currentCount > 0 ? Math.max(1, Math.min(currentCount, 12)) : 1;
+    const pastWeight = pastCount > 0 ? Math.max(1, Math.min(pastCount, 12)) : 1;
+    const currentExtra = Math.floor(remainingAfterMinimums * currentWeight / (currentWeight + pastWeight));
+    const currentPaneHeight = minPaneHeight + currentExtra;
+    const pastPaneHeight = Math.max(minPaneHeight, availableHeight - gapHeight - currentPaneHeight);
+    return {
+        currentPaneHeight,
+        pastPaneHeight,
+        currentVisibleRows: Math.max(1, currentPaneHeight - 4),
+        pastVisibleRows: Math.max(1, pastPaneHeight - 4)
+    };
 }
 function getDailyPanelContentWidth(terminalWidth, stacked) {
     const pageContentWidth = Math.max(1, terminalWidth - 8);
@@ -484,7 +513,6 @@ function getDailyQueueLayout(contentWidth, valueWidth) {
         valueWidth: resolvedValueWidth
     };
 }
-const PNL_BUCKET_MINUTES = 60;
 function parsePnlBucket(bucket) {
     const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(String(bucket || '').trim());
     if (!match) {
@@ -1367,6 +1395,30 @@ function groupTodayHourlyPnl(rows, nowDate) {
     }
     return filledEntries;
 }
+function groupHistoricalHourlyPnl(rows, nowDate) {
+    const totals = new Map();
+    const dayStart = new Date(nowDate.getTime());
+    dayStart.setHours(0, 0, 0, 0);
+    rows.forEach((row) => {
+        const pnl = row.pnl_usd;
+        if (pnl == null) {
+            return;
+        }
+        const ts = row.resolution_ts || row.market_close_ts || row.entered_at;
+        if (!ts) {
+            return;
+        }
+        const bucketDate = floorToPnlBucket(new Date(ts * 1000));
+        if (bucketDate >= dayStart) {
+            return;
+        }
+        const bucket = formatPnlBucketKey(bucketDate);
+        totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3));
+    });
+    return Array.from(totals.entries())
+        .sort(([left], [right]) => right.localeCompare(left))
+        .map(([bucket, pnl]) => ({ day: bucket, pnl, label: formatDollar(pnl) }));
+}
 function DailyPnlPreviewChart({ entries, width }) {
     const levelCount = 4;
     const gapWidth = 0;
@@ -1512,13 +1564,10 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
             avg_size: avgSize
         };
     }, [confidenceRows, effectivePositions, resolvedPerformancePositions]);
-    const dailyEntries = useMemo(() => groupTodayHourlyPnl(pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), new Date(nowTs * 1000)), [nowTs, pastPositions]);
-    const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
-    const summaryStatColumnWidth = useMemo(() => Math.max(1, Math.floor((dailyPanelContentWidth - 2) / 2)), [dailyPanelContentWidth]);
-    const dailyPreviewCapacity = useMemo(() => dailyEntries.length
-        ? Math.min(dailyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
-        : 0, [dailyEntries.length, dailyPanelContentWidth]);
-    const dailyPreviewEntries = useMemo(() => dailyEntries.slice(0, dailyPreviewCapacity).reverse(), [dailyEntries, dailyPreviewCapacity]);
+    const hourlyPnlRows = useMemo(() => pastPositions.filter((row) => row.status === 'win' || row.status === 'lose' || row.status === 'exit'), [pastPositions]);
+    const todayHourlyEntries = useMemo(() => groupTodayHourlyPnl(hourlyPnlRows, new Date(nowTs * 1000)), [hourlyPnlRows, nowTs]);
+    const historicalHourlyEntries = useMemo(() => groupHistoricalHourlyPnl(hourlyPnlRows, new Date(nowTs * 1000)), [hourlyPnlRows, nowTs]);
+    const dailyEntries = useMemo(() => [...todayHourlyEntries, ...historicalHourlyEntries], [historicalHourlyEntries, todayHourlyEntries]);
     useEffect(() => {
         if (!pendingPerfExits.length || !onPendingPerfExitSettlement) {
             return;
@@ -1536,21 +1585,33 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         if (settledKeys.length > 0) {
             onPendingPerfExitSettlement(settledKeys);
         }
-    }, [effectiveOpenPositions, effectiveResolvedPositions, nowTs, onPendingPerfExitSettlement, pendingPerfExits]);
+    }, [
+        effectiveOpenPositions,
+        effectiveResolvedPositions,
+        nowTs,
+        onPendingPerfExitSettlement,
+        pendingPerfExits
+    ]);
+    const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
+    const summaryStatColumnWidth = useMemo(() => Math.max(1, Math.floor((dailyPanelContentWidth - 2) / 2)), [dailyPanelContentWidth]);
+    const dailyPreviewCapacity = useMemo(() => todayHourlyEntries.length
+        ? Math.min(todayHourlyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
+        : 0, [dailyPanelContentWidth, todayHourlyEntries.length]);
+    const dailyPreviewEntries = useMemo(() => todayHourlyEntries.slice(0, dailyPreviewCapacity).reverse(), [dailyPreviewCapacity, todayHourlyEntries]);
     const dailyValueWidth = useMemo(() => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10), [dailyEntries]);
-    const paneMetrics = getPositionPaneMetrics(terminal.height, stacked);
+    const paneMetrics = getPositionPaneMetrics(terminal.height, stacked, currentPositions.length, pastPositions.length);
     const currentMaxOffset = Math.max(currentPositions.length - 1, 0);
     const pastMaxOffset = Math.max(pastPositions.length - 1, 0);
     const effectiveCurrentScrollOffset = Math.min(currentScrollOffset, currentMaxOffset);
     const effectivePastScrollOffset = Math.min(pastScrollOffset, pastMaxOffset);
-    const currentWindowStart = currentPositions.length > paneMetrics.visibleRows
-        ? Math.min(Math.max(effectiveCurrentScrollOffset - Math.floor(paneMetrics.visibleRows / 2), 0), Math.max(0, currentPositions.length - paneMetrics.visibleRows))
+    const currentWindowStart = currentPositions.length > paneMetrics.currentVisibleRows
+        ? Math.min(Math.max(effectiveCurrentScrollOffset - Math.floor(paneMetrics.currentVisibleRows / 2), 0), Math.max(0, currentPositions.length - paneMetrics.currentVisibleRows))
         : 0;
-    const pastWindowStart = pastPositions.length > paneMetrics.visibleRows
-        ? Math.min(Math.max(effectivePastScrollOffset - Math.floor(paneMetrics.visibleRows / 2), 0), Math.max(0, pastPositions.length - paneMetrics.visibleRows))
+    const pastWindowStart = pastPositions.length > paneMetrics.pastVisibleRows
+        ? Math.min(Math.max(effectivePastScrollOffset - Math.floor(paneMetrics.pastVisibleRows / 2), 0), Math.max(0, pastPositions.length - paneMetrics.pastVisibleRows))
         : 0;
-    const visibleCurrentPositions = currentPositions.slice(currentWindowStart, currentWindowStart + paneMetrics.visibleRows);
-    const visiblePastPositions = pastPositions.slice(pastWindowStart, pastWindowStart + paneMetrics.visibleRows);
+    const visibleCurrentPositions = currentPositions.slice(currentWindowStart, currentWindowStart + paneMetrics.currentVisibleRows);
+    const visiblePastPositions = pastPositions.slice(pastWindowStart, pastWindowStart + paneMetrics.pastVisibleRows);
     const selectedCurrentRow = currentPositions[effectiveCurrentScrollOffset] ?? null;
     const selectedPastRow = pastPositions[effectivePastScrollOffset] ?? null;
     const shadowBalance = botState.mode === 'shadow' && botState.bankroll_usd != null ? botState.bankroll_usd : null;
@@ -1972,16 +2033,14 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                     React.createElement(InkBox, { width: 2 }),
                     React.createElement(InkBox, { flexDirection: "column", width: summaryStatColumnWidth, flexShrink: 0 }, summaryRightStats.map((stat) => (React.createElement(StatRow, { key: stat.label, label: stat.label, value: stat.value, color: stat.color, width: summaryStatColumnWidth })))))),
             !stacked ? React.createElement(InkBox, { width: 1 }) : React.createElement(InkBox, { height: 1 }),
-            React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(EmptyDailyPnlPanel, { message: `No resolved ${activeTitle.toLowerCase()} trades yet.`, width: dailyPanelContentWidth }))),
-            null),
-        React.createElement(InkBox, { marginTop: 1, flexDirection: "column", height: paneMetrics.paneHeight * 2 + 1 },
-            React.createElement(InkBox, { height: paneMetrics.paneHeight },
+            React.createElement(Box, { title: `Hourly ${activeTitle} P&L`, width: stacked ? '100%' : '50%', accent: selectedBox === 'daily' }, dailyPreviewEntries.length ? (React.createElement(DailyPnlPreviewChart, { entries: dailyPreviewEntries, width: dailyPanelContentWidth })) : (React.createElement(EmptyDailyPnlPanel, { message: `No resolved ${activeTitle.toLowerCase()} trades yet.`, width: dailyPanelContentWidth })))),
+        React.createElement(InkBox, { flexDirection: "column", height: paneMetrics.currentPaneHeight + paneMetrics.pastPaneHeight },
+            React.createElement(InkBox, { height: paneMetrics.currentPaneHeight },
                 React.createElement(Box, { title: `Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`, height: "100%", accent: selectedBox === 'current' }, visibleCurrentPositions.length ? (renderPositionsTable(visibleCurrentPositions, {
                     profitScaleRows: currentPositions,
                     selectedRowKey: selectedCurrentRow?.row_key
                 })) : (React.createElement(Text, { color: theme.dim }, "No open positions right now.")))),
-            React.createElement(InkBox, { height: 1 }),
-            React.createElement(InkBox, { height: paneMetrics.paneHeight },
+            React.createElement(InkBox, { height: paneMetrics.pastPaneHeight },
                 React.createElement(Box, { title: `Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`, height: "100%", accent: selectedBox === 'past' }, visiblePastPositions.length ? (renderPositionsTable(visiblePastPositions, {
                     showStatus: true,
                     showTtr: false,

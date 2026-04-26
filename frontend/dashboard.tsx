@@ -543,7 +543,7 @@ function AppContent({
           ? 'r refresh  q exit'
           : 'r: refresh  q: exit'
   const frameLineWidth = Math.max(12, terminal.width - 6)
-  const frameBodyHeight = Math.max(1, terminal.height - 8)
+  const frameBodyHeight = Math.max(1, terminal.height - 6)
   const headerStatusText = `${backendStatusTag} ${mode}`
   const preferredHeaderStatusWidth = Math.min(frameLineWidth, terminal.compact ? 18 : 26)
   const headerStatusWidth = Math.max(1, Math.min(preferredHeaderStatusWidth, Math.max(1, frameLineWidth - 4)))
@@ -610,7 +610,7 @@ function AppContent({
         </Box>
       </Box>
 
-      <Box paddingX={1} paddingY={1} height={frameBodyHeight} flexShrink={1} overflow="hidden">
+      <Box paddingX={1} height={frameBodyHeight} flexShrink={1} overflow="hidden">
         {renderPage(
           page,
           settingsEditor,

@@ -122,6 +122,29 @@ SELECT
   updated_at
 FROM wallet_watch_state
 `;
+const WALLET_POLICY_METRICS_SQL = `
+SELECT
+  wallet_address,
+  total_buy_signals,
+  resolved_copied_count,
+  resolved_copied_wins,
+  resolved_copied_win_rate,
+  resolved_copied_avg_return,
+  resolved_copied_total_pnl_usd,
+  recent_window_seconds,
+  recent_resolved_copied_count,
+  recent_resolved_copied_wins,
+  recent_resolved_copied_win_rate,
+  recent_resolved_copied_avg_return,
+  recent_resolved_copied_total_pnl_usd,
+  last_resolved_at,
+  local_quality_score,
+  local_weight,
+  local_drop_ready,
+  local_drop_reason,
+  updated_at
+FROM wallet_policy_metrics
+`;
 const SHADOW_WALLETS_SQL = `
 SELECT
   trader_address,
@@ -148,21 +171,6 @@ WHERE trader_address=?
   AND ${RESOLVED_EXECUTED_ENTRY_WHERE}
 ORDER BY resolved_ts ASC, id ASC
 `;
-function shadowWalletPnl(row) {
-    const pnl = Number(row.pnl ?? 0);
-    return Number.isFinite(pnl) ? pnl : 0;
-}
-function pickShadowLeaderboards(rows) {
-    const best = [...rows]
-        .filter((row) => shadowWalletPnl(row) >= 0)
-        .sort((left, right) => shadowWalletPnl(right) - shadowWalletPnl(left) ||
-        String(left.trader_address || '').localeCompare(String(right.trader_address || '')));
-    const worst = [...rows]
-        .filter((row) => shadowWalletPnl(row) <= 0)
-        .sort((left, right) => shadowWalletPnl(left) - shadowWalletPnl(right) ||
-        String(left.trader_address || '').localeCompare(String(right.trader_address || '')));
-    return { best, worst };
-}
 function readWatchConfig(envValues) {
     const wallets = String(envValues.WATCHED_WALLETS || '')
         .split(',')
@@ -288,8 +296,51 @@ function formatAge(days) {
     }
     return `${Math.max(0, Math.round(days))}d`;
 }
+function shadowWalletPnl(row) {
+    const pnl = Number(row.pnl ?? 0);
+    return Number.isFinite(pnl) ? pnl : 0;
+}
+function pickShadowLeaderboards(rows) {
+    const best = [...rows]
+        .filter((row) => shadowWalletPnl(row) >= 0)
+        .sort((left, right) => (shadowWalletPnl(right) - shadowWalletPnl(left) ||
+        String(left.trader_address || '').localeCompare(String(right.trader_address || ''))));
+    const worst = [...rows]
+        .filter((row) => shadowWalletPnl(row) <= 0)
+        .sort((left, right) => (shadowWalletPnl(left) - shadowWalletPnl(right) ||
+        String(left.trader_address || '').localeCompare(String(right.trader_address || ''))));
+    return { best, worst };
+}
 function clip(value, low = 0, high = 1) {
     return Math.max(low, Math.min(high, value));
+}
+function scoreLocalCopiedPerformance(params) {
+    const resolvedCopiedCount = Math.max(0, params.resolvedCopiedCount ?? 0);
+    const recentResolvedCopiedCount = Math.max(0, params.recentResolvedCopiedCount ?? 0);
+    if (resolvedCopiedCount <= 0 && recentResolvedCopiedCount <= 0) {
+        return { qualityScore: null, localWeight: 0 };
+    }
+    const scoreWindow = (count, winRate, avgReturn, totalPnlUsd) => {
+        if (count <= 0 || winRate == null || avgReturn == null) {
+            return null;
+        }
+        const winScore = clip((winRate - 0.45) / 0.25);
+        const returnScore = clip((avgReturn + 0.05) / 0.2);
+        const pnlScore = clip(0.5 + (Math.atan((totalPnlUsd ?? 0) / 25) / Math.PI));
+        const sampleScore = clip(Math.log1p(count) / Math.log1p(24));
+        return ((0.30 * winScore) +
+            (0.35 * returnScore) +
+            (0.20 * pnlScore) +
+            (0.15 * sampleScore));
+    };
+    const allTimeQuality = scoreWindow(resolvedCopiedCount, params.resolvedCopiedWinRate, params.resolvedCopiedAvgReturn, params.resolvedCopiedTotalPnlUsd);
+    const recentQuality = scoreWindow(recentResolvedCopiedCount, params.recentResolvedCopiedWinRate, params.recentResolvedCopiedAvgReturn, params.recentResolvedCopiedTotalPnlUsd);
+    const qualityScore = recentQuality != null && allTimeQuality != null
+        ? ((0.65 * recentQuality) + (0.35 * allTimeQuality))
+        : recentQuality ?? allTimeQuality;
+    const localWeight = clip((0.60 * clip(resolvedCopiedCount / 20)) +
+        (0.40 * clip(recentResolvedCopiedCount / 8)));
+    return { qualityScore, localWeight: Number(localWeight.toFixed(4)) };
 }
 function scoreWalletForTier(params) {
     const winRate = params.winRate ?? 0.5;
@@ -320,10 +371,23 @@ function scoreWalletForTier(params) {
     const uncopyablePenalty = buySignals >= params.uncopyablePenaltyMinBuys && params.uncopyablePenaltyWeight > 0
         ? params.uncopyablePenaltyWeight * clip(buySignals / Math.max(params.uncopyablePenaltyMinBuys * 3, 1)) * uncopyableSkipRate
         : 0;
-    const qualityScore = (0.45 * winScore) +
+    const publicQualityScore = (0.45 * winScore) +
         (0.2 * returnScore) +
         (0.2 * sampleScore) +
         (0.15 * pnlScore);
+    const { qualityScore: localQualityScore, localWeight } = scoreLocalCopiedPerformance({
+        resolvedCopiedCount: params.resolvedCopiedCount,
+        resolvedCopiedWinRate: params.resolvedCopiedWinRate,
+        resolvedCopiedAvgReturn: params.resolvedCopiedAvgReturn,
+        resolvedCopiedTotalPnlUsd: params.resolvedCopiedTotalPnlUsd,
+        recentResolvedCopiedCount: params.recentResolvedCopiedCount,
+        recentResolvedCopiedWinRate: params.recentResolvedCopiedWinRate,
+        recentResolvedCopiedAvgReturn: params.recentResolvedCopiedAvgReturn,
+        recentResolvedCopiedTotalPnlUsd: params.recentResolvedCopiedTotalPnlUsd
+    });
+    const qualityScore = localQualityScore == null
+        ? publicQualityScore
+        : (((1 - localWeight) * publicQualityScore) + (localWeight * localQualityScore));
     return Number((((0.7 * qualityScore) +
         (0.25 * activityScore) +
         (0.05 * openScore)) - freshnessPenalty - uncopyablePenalty).toFixed(4));
@@ -599,7 +663,9 @@ function buildWalletPnlChart(points, width, height = 7) {
         const y = mapValueToY(point.pnl);
         return { x, y };
     };
-    const color = (sampled[sampled.length - 1]?.pnl || 0) >= 0 ? theme.green : theme.red;
+    const color = (sampled[sampled.length - 1]?.pnl || 0) >= 0
+        ? theme.green
+        : theme.red;
     const mapped = sampled.map(mapPoint);
     for (let index = 0; index < mapped.length - 1; index += 1) {
         const current = mapped[index];
@@ -667,6 +733,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
     const traderCacheRows = useQuery(TRADER_CACHE_SQL);
     const walletCursorRows = useQuery(WALLET_CURSOR_SQL);
     const watchStateRows = useQuery(WALLET_WATCH_STATE_SQL);
+    const walletPolicyRows = useQuery(WALLET_POLICY_METRICS_SQL);
     const shadowWalletRows = useQuery(SHADOW_WALLETS_SQL);
     const events = useEventStream(1000);
     const config = useDashboardConfig();
@@ -691,10 +758,11 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
             ...activityRows.map((row) => row.trader_address.toLowerCase()),
             ...traderCacheRows.map((row) => row.trader_address.toLowerCase()),
             ...walletCursorRows.map((row) => row.wallet_address.toLowerCase()),
-            ...watchStateRows.map((row) => row.wallet_address.toLowerCase())
+            ...watchStateRows.map((row) => row.wallet_address.toLowerCase()),
+            ...walletPolicyRows.map((row) => row.wallet_address.toLowerCase())
         ]));
         return watchedWallets.length ? watchedWallets : fallbackWallets;
-    }, [activityRows, traderCacheRows, walletCursorRows, watchStateRows, watchedWallets]);
+    }, [activityRows, traderCacheRows, walletCursorRows, walletPolicyRows, watchStateRows, watchedWallets]);
     const watchStateByWallet = useMemo(() => new Map(watchStateRows.map((row) => [
         row.wallet_address.toLowerCase(),
         {
@@ -711,12 +779,14 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
     const tierByWallet = useMemo(() => {
         const cacheByWallet = new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row]));
         const activityByWallet = new Map(activityRows.map((row) => [row.trader_address.toLowerCase(), row]));
+        const policyByWallet = new Map(walletPolicyRows.map((row) => [row.wallet_address.toLowerCase(), row]));
         const activeWallets = sourceWallets.filter((wallet) => watchStateByWallet.get(wallet)?.status !== 'dropped');
         const nowTs = Math.floor(Date.now() / 1000);
         const ranked = activeWallets.map((wallet, index) => {
             const cached = cacheByWallet.get(wallet);
             const cursor = cursorByWallet.get(wallet);
             const activity = activityByWallet.get(wallet);
+            const policy = policyByWallet.get(wallet);
             return {
                 wallet,
                 index,
@@ -734,6 +804,14 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                         : 0,
                     uncopyablePenaltyMinBuys: watchConfig.uncopyablePenaltyMinBuys,
                     uncopyablePenaltyWeight: watchConfig.uncopyablePenaltyWeight,
+                    resolvedCopiedCount: policy?.resolved_copied_count,
+                    resolvedCopiedWinRate: policy?.resolved_copied_win_rate,
+                    resolvedCopiedAvgReturn: policy?.resolved_copied_avg_return,
+                    resolvedCopiedTotalPnlUsd: policy?.resolved_copied_total_pnl_usd,
+                    recentResolvedCopiedCount: policy?.recent_resolved_copied_count,
+                    recentResolvedCopiedWinRate: policy?.recent_resolved_copied_win_rate,
+                    recentResolvedCopiedAvgReturn: policy?.recent_resolved_copied_avg_return,
+                    recentResolvedCopiedTotalPnlUsd: policy?.recent_resolved_copied_total_pnl_usd,
                     nowTs
                 }),
                 lastSourceTs: cursor?.last_source_ts ?? 0,
@@ -757,6 +835,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
         cursorByWallet,
         sourceWallets,
         traderCacheRows,
+        walletPolicyRows,
         watchConfig.hotCount,
         watchConfig.uncopyablePenaltyMinBuys,
         watchConfig.uncopyablePenaltyWeight,
@@ -766,11 +845,13 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
     const wallets = useMemo(() => {
         const activityByWallet = new Map(activityRows.map((row) => [row.trader_address.toLowerCase(), row]));
         const cacheByWallet = new Map(traderCacheRows.map((row) => [row.trader_address.toLowerCase(), row]));
+        const policyByWallet = new Map(walletPolicyRows.map((row) => [row.wallet_address.toLowerCase(), row]));
         return sourceWallets.map((wallet, index) => {
             const activity = activityByWallet.get(wallet);
             const cached = cacheByWallet.get(wallet);
             const cursor = cursorByWallet.get(wallet);
             const watchState = watchStateByWallet.get(wallet);
+            const policy = policyByWallet.get(wallet);
             return {
                 trader_address: wallet,
                 username: usernames.get(wallet) || '',
@@ -818,10 +899,20 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                 reactivated_at: watchState?.reactivated_at ?? null,
                 tracking_started_at: watchState?.tracking_started_at ?? watchState?.reactivated_at ?? watchState?.updated_at ?? null,
                 last_source_ts_at_status: watchState?.last_source_ts_at_status ?? null,
-                watch_index: index
+                watch_index: index,
+                resolved_copied_avg_return: policy?.resolved_copied_avg_return ?? null,
+                resolved_copied_total_pnl_usd: policy?.resolved_copied_total_pnl_usd ?? null,
+                recent_resolved_copied_count: policy?.recent_resolved_copied_count ?? null,
+                recent_resolved_copied_avg_return: policy?.recent_resolved_copied_avg_return ?? null,
+                recent_resolved_copied_total_pnl_usd: policy?.recent_resolved_copied_total_pnl_usd ?? null,
+                recent_window_seconds: policy?.recent_window_seconds ?? null,
+                local_quality_score: policy?.local_quality_score ?? null,
+                local_weight: policy?.local_weight ?? null,
+                local_drop_ready: Boolean(policy?.local_drop_ready ?? 0),
+                local_drop_reason: policy?.local_drop_reason ?? null
             };
         });
-    }, [activityRows, cursorByWallet, sourceWallets, tierByWallet, traderCacheRows, usernames, watchStateByWallet]);
+    }, [activityRows, cursorByWallet, sourceWallets, tierByWallet, traderCacheRows, usernames, walletPolicyRows, watchStateByWallet]);
     const trackedWallets = useMemo(() => wallets.filter((wallet) => wallet.status !== 'dropped'), [wallets]);
     const droppedWallets = useMemo(() => wallets.filter((wallet) => wallet.status === 'dropped'), [wallets]);
     const layout = useMemo(() => getWalletsLayout(tableWidth, trackedWallets.length ? trackedWallets : wallets), [tableWidth, trackedWallets, wallets]);
@@ -1008,6 +1099,63 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                         color: selectedWallet.local_pnl == null
                             ? theme.dim
                             : centeredGradientColor(selectedWallet.local_pnl, maxAbsLocalPnl)
+                    },
+                    {
+                        label: 'Copy Avg Ret',
+                        value: selectedWallet.resolved_copied_avg_return == null ? '-' : formatPct(selectedWallet.resolved_copied_avg_return, 2),
+                        color: selectedWallet.resolved_copied_avg_return == null
+                            ? theme.dim
+                            : probabilityColor(clip(0.5 + (selectedWallet.resolved_copied_avg_return / 2)))
+                    }
+                ]
+            },
+            {
+                title: 'Policy',
+                metrics: [
+                    {
+                        label: 'Local Weight',
+                        value: selectedWallet.local_weight == null ? '-' : formatPct(selectedWallet.local_weight, 1),
+                        color: selectedWallet.local_weight == null ? theme.dim : probabilityColor(selectedWallet.local_weight)
+                    },
+                    {
+                        label: 'Local Score',
+                        value: selectedWallet.local_quality_score == null ? '-' : selectedWallet.local_quality_score.toFixed(3),
+                        color: selectedWallet.local_quality_score == null
+                            ? theme.dim
+                            : probabilityColor(selectedWallet.local_quality_score)
+                    },
+                    {
+                        label: 'Recent Window',
+                        value: secondsAgo(selectedWallet.recent_window_seconds == null
+                            ? undefined
+                            : Math.floor(Date.now() / 1000) - selectedWallet.recent_window_seconds)
+                    },
+                    {
+                        label: 'Recent Copied',
+                        value: formatFullCount(selectedWallet.recent_resolved_copied_count)
+                    },
+                    {
+                        label: 'Recent Avg Ret',
+                        value: selectedWallet.recent_resolved_copied_avg_return == null ? '-' : formatPct(selectedWallet.recent_resolved_copied_avg_return, 2),
+                        color: selectedWallet.recent_resolved_copied_avg_return == null
+                            ? theme.dim
+                            : probabilityColor(clip(0.5 + (selectedWallet.recent_resolved_copied_avg_return / 2)))
+                    },
+                    {
+                        label: 'Recent P&L',
+                        value: formatSignedMoney(selectedWallet.recent_resolved_copied_total_pnl_usd, 18),
+                        color: selectedWallet.recent_resolved_copied_total_pnl_usd == null
+                            ? theme.dim
+                            : centeredGradientColor(selectedWallet.recent_resolved_copied_total_pnl_usd, maxAbsLocalPnl)
+                    },
+                    {
+                        label: 'Drop Signal',
+                        value: selectedWallet.local_drop_ready ? 'Ready' : 'Clear',
+                        color: selectedWallet.local_drop_ready ? theme.red : theme.green
+                    },
+                    {
+                        label: 'Drop Reason',
+                        value: selectedWallet.local_drop_reason || '-'
                     }
                 ]
             },
@@ -1229,7 +1377,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
         React.createElement(InkBox, { width: "100%", flexDirection: shadowPanelsWide ? 'row' : 'column', columnGap: 1, rowGap: 1, flexShrink: 0 },
             renderShadowWalletBox('Best Wallets', 'best', bestShadowWallets),
             renderShadowWalletBox('Worst Wallets', 'worst', worstShadowWallets)),
-        React.createElement(InkBox, { marginTop: 1, flexGrow: 1, flexDirection: "column" },
+        React.createElement(InkBox, { flexGrow: 1, flexDirection: "column" },
             React.createElement(InkBox, { flexGrow: 1 },
                 React.createElement(Box, { height: "100%", accent: activePane === 'tracked' },
                     React.createElement(InkBox, { width: "100%", flexShrink: 0 },
@@ -1295,40 +1443,39 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                             React.createElement(Text, { color: usernameColor, backgroundColor: rowBackground, bold: isSelected }, linkedUsername),
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: addressColor, backgroundColor: rowBackground, bold: isSelected }, formatAddress(wallet.trader_address, layout.addressWidth)),
-                            layout.showTrackingSince ? React.createElement(React.Fragment, null,
+                            layout.showTrackingSince ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.tracking_started_at || undefined), layout.trackingSinceWidth))) : null,
+                                React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.tracking_started_at || undefined), layout.trackingSinceWidth)))) : null,
                             layout.showTier ? React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
                                 React.createElement(Text, { color: tierTextColor, backgroundColor: rowBackground, bold: isSelected }, fit(tierText, layout.tierWidth))) : null,
-                            layout.showSkippedTrades ? React.createElement(React.Fragment, null,
+                            layout.showSkippedTrades ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: skippedTradesColor, backgroundColor: rowBackground }, fitRight(wallet.skip_rate == null ? '-' : formatPct(wallet.skip_rate, 0), layout.skippedTradesWidth))) : null,
-                            layout.showSeenTrades ? React.createElement(React.Fragment, null,
+                                React.createElement(Text, { color: skippedTradesColor, backgroundColor: rowBackground }, fitRight(wallet.skip_rate == null ? '-' : formatPct(wallet.skip_rate, 0), layout.skippedTradesWidth)))) : null,
+                            layout.showSeenTrades ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { backgroundColor: rowBackground }, fitRight(formatCount(wallet.seen_trades, layout.seenTradesWidth), layout.seenTradesWidth))) : null,
-                            layout.showSeenWinRate ? React.createElement(React.Fragment, null,
+                                React.createElement(Text, { backgroundColor: rowBackground }, fitRight(formatCount(wallet.seen_trades, layout.seenTradesWidth), layout.seenTradesWidth)))) : null,
+                            layout.showSeenWinRate ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: seenWinRateColor, backgroundColor: rowBackground }, fitRight(wallet.seen_win_rate == null ? '-' : formatPct(wallet.seen_win_rate), layout.seenWinRateWidth))) : null,
-                            layout.showObservedResolved ? React.createElement(React.Fragment, null,
+                                React.createElement(Text, { color: seenWinRateColor, backgroundColor: rowBackground }, fitRight(wallet.seen_win_rate == null ? '-' : formatPct(wallet.seen_win_rate), layout.seenWinRateWidth)))) : null,
+                            layout.showObservedResolved ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { backgroundColor: rowBackground }, fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth))) : null,
-                            layout.showObservedWinRate ? React.createElement(React.Fragment, null,
+                                React.createElement(Text, { backgroundColor: rowBackground }, fitRight(formatCount(wallet.observed_resolved, layout.observedResolvedWidth), layout.observedResolvedWidth)))) : null,
+                            layout.showObservedWinRate ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: observedWinRateColor, backgroundColor: rowBackground }, fitRight(wallet.observed_win_rate == null ? '-' : formatPct(wallet.observed_win_rate), layout.observedWinRateWidth))) : null,
-                            layout.showProfileWinRate ? React.createElement(React.Fragment, null,
+                                React.createElement(Text, { color: observedWinRateColor, backgroundColor: rowBackground }, fitRight(wallet.observed_win_rate == null ? '-' : formatPct(wallet.observed_win_rate), layout.observedWinRateWidth)))) : null,
+                            layout.showProfileWinRate ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: winRateColor, backgroundColor: rowBackground }, fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.profileWinRateWidth))) : null,
-                            layout.showCopyPnl ? React.createElement(React.Fragment, null,
+                                React.createElement(Text, { color: winRateColor, backgroundColor: rowBackground }, fitRight(wallet.win_rate == null ? '-' : formatPct(wallet.win_rate), layout.profileWinRateWidth)))) : null,
+                            layout.showCopyPnl ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: localPnlColor, backgroundColor: rowBackground }, fitRight(formatSignedMoney(wallet.local_pnl, layout.copyPnlWidth), layout.copyPnlWidth))) : null,
-                            layout.showLastSeen ? React.createElement(React.Fragment, null,
+                                React.createElement(Text, { color: localPnlColor, backgroundColor: rowBackground }, fitRight(formatSignedMoney(wallet.local_pnl, layout.copyPnlWidth), layout.copyPnlWidth)))) : null,
+                            layout.showLastSeen ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth))) : null));
+                                React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth)))) : null));
                     })) : (React.createElement(Text, { color: theme.dim }, "No watched wallets configured yet."))),
                     React.createElement(InkBox, { width: "100%", height: 1, flexShrink: 0 },
                         React.createElement(Text, { color: theme.dim }, trackedFooterText)))),
-            React.createElement(InkBox, { height: 1 }),
             React.createElement(InkBox, { flexGrow: 1 },
                 React.createElement(Box, { height: "100%", accent: activePane === 'dropped' },
                     React.createElement(InkBox, { width: "100%", flexShrink: 0 },
@@ -1359,12 +1506,12 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                             React.createElement(Text, { color: addressColor, backgroundColor: rowBackground, bold: isSelected }, formatAddress(wallet.trader_address, droppedLayout.addressWidth)),
                             React.createElement(Text, { backgroundColor: rowBackground }, " "),
                             React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fit(wallet.status_reason || '-', droppedLayout.reasonWidth)),
-                            droppedLayout.showLastSeen ? React.createElement(React.Fragment, null,
+                            droppedLayout.showLastSeen ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.last_seen || undefined), droppedLayout.lastSeenWidth))) : null,
-                            droppedLayout.showDropped ? React.createElement(React.Fragment, null,
+                                React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.last_seen || undefined), droppedLayout.lastSeenWidth)))) : null,
+                            droppedLayout.showDropped ? (React.createElement(React.Fragment, null,
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
-                                React.createElement(Text, { color: isSelected ? theme.accent : theme.red, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth))) : null));
+                                React.createElement(Text, { color: isSelected ? theme.accent : theme.red, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth)))) : null));
                     })) : (React.createElement(Text, { color: theme.dim }, "No dropped wallets."))),
                     React.createElement(InkBox, { width: "100%", height: 1, flexShrink: 0 },
                         React.createElement(Text, { color: theme.dim }, droppedFooterText)))))));

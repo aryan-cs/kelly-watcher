@@ -675,20 +675,45 @@ function getPositionsLayout(width: number): PositionsLayout {
   }
 }
 
-function getPositionPaneMetrics(terminalHeight: number, stacked: boolean) {
-  const outerReserve = 10
+function getPositionPaneMetrics(terminalHeight: number, stacked: boolean, currentCount = 0, pastCount = 0) {
+  const outerReserve = 8
   const statsHeight = 9
   const dailyHeight = 9
   const topRowHeight = stacked ? statsHeight + 1 + dailyHeight : Math.max(statsHeight, dailyHeight)
-  const sectionGaps = stacked ? 3 : 2
-  const availableHeight = Math.max(
-    12,
-    terminalHeight - outerReserve - topRowHeight - sectionGaps
-  )
-  const paneHeight = Math.max(6, Math.floor((availableHeight - 3) / 2))
-  const visibleRows = Math.max(1, paneHeight - 5)
+  const availableHeight = Math.max(8, terminalHeight - outerReserve - topRowHeight)
+  const gapHeight = 0
+  const minPaneHeight = 4
+  const maxPaneHeight = Math.max(minPaneHeight, availableHeight - gapHeight - minPaneHeight)
+  const desiredCurrentPaneHeight = currentCount > 0
+    ? Math.min(maxPaneHeight, Math.max(5, currentCount + 4))
+    : minPaneHeight
+  const desiredPastPaneHeight = pastCount > 0
+    ? Math.min(maxPaneHeight, Math.max(5, pastCount + 4))
+    : minPaneHeight
+  const desiredTotal = desiredCurrentPaneHeight + gapHeight + desiredPastPaneHeight
 
-  return {paneHeight, visibleRows}
+  if (desiredTotal <= availableHeight) {
+    return {
+      currentPaneHeight: desiredCurrentPaneHeight,
+      pastPaneHeight: desiredPastPaneHeight,
+      currentVisibleRows: Math.max(1, desiredCurrentPaneHeight - 4),
+      pastVisibleRows: Math.max(1, desiredPastPaneHeight - 4)
+    }
+  }
+
+  const remainingAfterMinimums = Math.max(0, availableHeight - gapHeight - minPaneHeight * 2)
+  const currentWeight = currentCount > 0 ? Math.max(1, Math.min(currentCount, 12)) : 1
+  const pastWeight = pastCount > 0 ? Math.max(1, Math.min(pastCount, 12)) : 1
+  const currentExtra = Math.floor(remainingAfterMinimums * currentWeight / (currentWeight + pastWeight))
+  const currentPaneHeight = minPaneHeight + currentExtra
+  const pastPaneHeight = Math.max(minPaneHeight, availableHeight - gapHeight - currentPaneHeight)
+
+  return {
+    currentPaneHeight,
+    pastPaneHeight,
+    currentVisibleRows: Math.max(1, currentPaneHeight - 4),
+    pastVisibleRows: Math.max(1, pastPaneHeight - 4)
+  }
 }
 
 function getDailyPanelContentWidth(terminalWidth: number, stacked: boolean): number {
@@ -2343,32 +2368,32 @@ export function Performance({
     () => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10),
     [dailyEntries]
   )
-  const paneMetrics = getPositionPaneMetrics(terminal.height, stacked)
+  const paneMetrics = getPositionPaneMetrics(terminal.height, stacked, currentPositions.length, pastPositions.length)
   const currentMaxOffset = Math.max(currentPositions.length - 1, 0)
   const pastMaxOffset = Math.max(pastPositions.length - 1, 0)
   const effectiveCurrentScrollOffset = Math.min(currentScrollOffset, currentMaxOffset)
   const effectivePastScrollOffset = Math.min(pastScrollOffset, pastMaxOffset)
   const currentWindowStart =
-    currentPositions.length > paneMetrics.visibleRows
+    currentPositions.length > paneMetrics.currentVisibleRows
       ? Math.min(
-          Math.max(effectiveCurrentScrollOffset - Math.floor(paneMetrics.visibleRows / 2), 0),
-          Math.max(0, currentPositions.length - paneMetrics.visibleRows)
+          Math.max(effectiveCurrentScrollOffset - Math.floor(paneMetrics.currentVisibleRows / 2), 0),
+          Math.max(0, currentPositions.length - paneMetrics.currentVisibleRows)
         )
       : 0
   const pastWindowStart =
-    pastPositions.length > paneMetrics.visibleRows
+    pastPositions.length > paneMetrics.pastVisibleRows
       ? Math.min(
-          Math.max(effectivePastScrollOffset - Math.floor(paneMetrics.visibleRows / 2), 0),
-          Math.max(0, pastPositions.length - paneMetrics.visibleRows)
+          Math.max(effectivePastScrollOffset - Math.floor(paneMetrics.pastVisibleRows / 2), 0),
+          Math.max(0, pastPositions.length - paneMetrics.pastVisibleRows)
         )
       : 0
   const visibleCurrentPositions = currentPositions.slice(
     currentWindowStart,
-    currentWindowStart + paneMetrics.visibleRows
+    currentWindowStart + paneMetrics.currentVisibleRows
   )
   const visiblePastPositions = pastPositions.slice(
     pastWindowStart,
-    pastWindowStart + paneMetrics.visibleRows
+    pastWindowStart + paneMetrics.pastVisibleRows
   )
   const selectedCurrentRow = currentPositions[effectiveCurrentScrollOffset] ?? null
   const selectedPastRow = pastPositions[effectivePastScrollOffset] ?? null
@@ -2998,8 +3023,8 @@ export function Performance({
         </Box>
       </InkBox>
 
-      <InkBox marginTop={1} flexDirection="column" height={paneMetrics.paneHeight * 2 + 1}>
-        <InkBox height={paneMetrics.paneHeight}>
+      <InkBox flexDirection="column" height={paneMetrics.currentPaneHeight + paneMetrics.pastPaneHeight}>
+        <InkBox height={paneMetrics.currentPaneHeight}>
           <Box
             title={`Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`}
             height="100%"
@@ -3016,9 +3041,7 @@ export function Performance({
           </Box>
         </InkBox>
 
-        <InkBox height={1} />
-
-        <InkBox height={paneMetrics.paneHeight}>
+        <InkBox height={paneMetrics.pastPaneHeight}>
           <Box
             title={`Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`}
             height="100%"

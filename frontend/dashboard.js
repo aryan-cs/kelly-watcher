@@ -185,15 +185,15 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                 ? shadowRestartMessage
                 : dataHealthIssue
                     ? dataHealthIssue.tag
-            : startupInProgress && startupDetail
-                ? startupDetail
-                : describeBackendStatus({
-                startedAt,
-                lastPollAt,
-                activityIsFresh,
-                pollIsFresh,
-                loopInProgress
-            });
+                    : startupInProgress && startupDetail
+                        ? startupDetail
+                        : describeBackendStatus({
+                            startedAt,
+                            lastPollAt,
+                            activityIsFresh,
+                            pollIsFresh,
+                            loopInProgress
+                        });
     const backendStatusTag = formatHeaderStatusTag(backendStatusText);
     const navLabels = terminal.compact
         ? { 1: 'F', 2: 'S', 3: 'P', 4: 'M', 5: 'W', 6: 'C' }
@@ -219,32 +219,32 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                 ? shadowRestartMessage
                 : dataHealthIssue
                     ? `${dataHealthIssue.detail} | ${lastPollText}`
-            : retrainInProgress
-                ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
-                : startupInProgress
-                    ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
-                    : recentRetrainText
-                        ? `${recentRetrainText} | ${lastPollText}`
-                        : lastPollText;
+                    : retrainInProgress
+                        ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
+                        : startupInProgress
+                            ? `starting up...${startupElapsedText ? ` ${startupElapsedText}` : ''}`
+                            : recentRetrainText
+                                ? `${recentRetrainText} | ${lastPollText}`
+                                : lastPollText;
     const footerStatusColor = apiError
         ? theme.red
         : shadowRestartPending
             ? theme.yellow
-        : activeTransientNotice
-            ? activeTransientNotice.tone === 'error'
-                ? theme.red
-                : activeTransientNotice.tone === 'success'
-                    ? theme.green
-                    : theme.accent
-            : dataHealthIssue
-                ? theme.yellow
-            : isRefreshing
-                ? theme.accent
-                : retrainInProgress
+            : activeTransientNotice
+                ? activeTransientNotice.tone === 'error'
+                    ? theme.red
+                    : activeTransientNotice.tone === 'success'
+                        ? theme.green
+                        : theme.accent
+                : dataHealthIssue
                     ? theme.yellow
-                    : startupInProgress
-                        ? theme.yellow
-                        : theme.dim;
+                    : isRefreshing
+                        ? theme.accent
+                        : retrainInProgress
+                            ? theme.yellow
+                            : startupInProgress
+                                ? theme.yellow
+                                : theme.dim;
     const footerControls = page === 1
         ? terminal.compact
             ? '↑↓ scroll  ↑↑ latest  r refresh  q exit'
@@ -310,10 +310,10 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                                                 ? '←→ box  ↑↓ select  enter open  r refresh  q exit'
                                                 : '←/→: switch box  ↑/↓: select  enter: edit/open  r: refresh  q: exit'
                             : terminal.compact
-                        ? 'r refresh  q exit'
-                        : 'r: refresh  q: exit';
+                                ? 'r refresh  q exit'
+                                : 'r: refresh  q: exit';
     const frameLineWidth = Math.max(12, terminal.width - 6);
-    const frameBodyHeight = Math.max(1, terminal.height - 8);
+    const frameBodyHeight = Math.max(1, terminal.height - 6);
     const headerStatusText = `${backendStatusTag} ${mode}`;
     const preferredHeaderStatusWidth = Math.min(frameLineWidth, terminal.compact ? 18 : 26);
     const headerStatusWidth = Math.max(1, Math.min(preferredHeaderStatusWidth, Math.max(1, frameLineWidth - 4)));
@@ -352,7 +352,7 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
             showHeaderLeft ? React.createElement(Spacer, null) : null,
             React.createElement(Box, { width: headerStatusWidth, justifyContent: "flex-end", flexShrink: 0 },
                 React.createElement(Text, { color: backendDotColor, bold: true }, truncate(headerStatusText, headerStatusWidth)))),
-        React.createElement(Box, { paddingX: 1, paddingY: 1, height: frameBodyHeight, flexShrink: 1, overflow: "hidden" }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
+        React.createElement(Box, { paddingX: 1, height: frameBodyHeight, flexShrink: 1, overflow: "hidden" }, renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsEditor.values, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange)),
         React.createElement(Box, { borderStyle: "round", borderColor: theme.border, paddingX: 1, height: 3, flexShrink: 0, width: "100%" },
             React.createElement(Text, { color: theme.dim }, fit(footerControls, footerControlsWidth)),
             React.createElement(Spacer, null),

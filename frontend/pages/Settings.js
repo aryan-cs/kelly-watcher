@@ -204,15 +204,14 @@ function SettingsSummaryBox({ title, width, height, items, columnCount }) {
     const valueWidth = Math.max(8, Math.min(14, Math.floor(rowWidth * 0.52)));
     const labelWidth = Math.max(8, rowWidth - valueWidth - 1);
     return (React.createElement(Box, { title: title, width: width, height: height },
-        React.createElement(InkBox, { width: "100%", marginTop: 1, flexDirection: "column" },
+        React.createElement(InkBox, { width: "100%", flexDirection: "column" },
             React.createElement(InkBox, { width: "100%" }, columns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `${title}-column-${columnIndex}` },
                 React.createElement(InkBox, { flexDirection: "column", width: columnWidth }, column.map((item) => (React.createElement(InkBox, { key: `${title}-${item.label}`, width: rowWidth },
                     React.createElement(Text, { color: theme.dim }, fit(item.label, labelWidth)),
                     React.createElement(Text, null, " "),
                     React.createElement(InkBox, { width: valueWidth, justifyContent: "flex-end", flexShrink: 0 },
                         React.createElement(Text, { color: item.color ?? theme.white }, truncate(item.value, valueWidth))))))),
-                columnIndex < columns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))),
-            React.createElement(Text, null, " "))));
+                columnIndex < columns.length - 1 ? React.createElement(InkBox, { width: 2 }) : null)))))));
 }
 export function Settings({ editor }) {
     const terminal = useTerminalSize();
@@ -353,7 +352,7 @@ export function Settings({ editor }) {
     const liveTradingEnabled = isLiveTradingEnabled(envData.rawValues);
     const topRowGap = stacked ? 0 : 1;
     const topRowWidth = Math.max(24, terminal.width - 4);
-    const topBoxWidth = stacked ? '100%' : Math.max(28, Math.floor((topRowWidth - topRowGap) / 2));
+    const topBoxWidth = stacked ? topRowWidth : Math.max(28, Math.floor((topRowWidth - topRowGap) / 2));
     const topBoxContentWidth = typeof topBoxWidth === 'number' ? Math.max(24, topBoxWidth - 4) : 24;
     const topBoxColumnCount = topBoxContentWidth >= 34 ? 2 : 1;
     const shadowHistoryStateKnown = Boolean(state.shadow_history_state_known);
@@ -1044,13 +1043,16 @@ export function Settings({ editor }) {
         { label: 'Duration', value: state.last_poll_duration_s != null ? `${formatNumber(state.last_poll_duration_s)}s` : '-' },
         { label: 'Integrity', value: dbIntegrityStatus, color: dbIntegrityColor }
     ];
-    const topSummaryHeight = Math.max(7, Math.ceil(Math.max(botStateStats.length, databaseStats.length) / Math.max(1, topBoxColumnCount)) + 5);
+    const topSummaryRows = Math.ceil(Math.max(botStateStats.length, databaseStats.length) / Math.max(1, topBoxColumnCount));
+    const topSummaryHeight = Math.max(5, topSummaryRows + 3);
     const topRegionHeight = stacked ? topSummaryHeight * 2 + 1 : topSummaryHeight;
-    const settingsBodyHeight = Math.max(1, terminal.height - 8);
-    const middleSectionHeight = 16;
+    const settingsBodyHeight = Math.max(1, terminal.height - 6);
+    const middleSectionHeight = 15;
     const environmentRowGap = stacked ? 0 : 2;
     const environmentRowWidth = Math.max(24, terminal.width - 4);
-    const environmentBoxHeight = Math.max(7, settingsBodyHeight - topRegionHeight - 1 - middleSectionHeight - 1);
+    const environmentMaxHeight = Math.max(5, settingsBodyHeight - topRegionHeight - middleSectionHeight);
+    const environmentDesiredHeight = Math.max(5, Math.min(12, Math.max(envData.rows.length + 3, Math.min(envData.watchedWallets.length + 4, 12))));
+    const environmentBoxHeight = Math.min(environmentMaxHeight, environmentDesiredHeight);
     const environmentStatsBoxWidth = stacked
         ? '100%'
         : Math.max(36, Math.floor((environmentRowWidth - environmentRowGap) * 0.4));
@@ -1085,7 +1087,7 @@ export function Settings({ editor }) {
             React.createElement(SettingsSummaryBox, { title: "Bot State", width: topBoxWidth, height: topSummaryHeight, items: botStateStats, columnCount: topBoxColumnCount }),
             !stacked ? React.createElement(InkBox, { width: topRowGap }) : React.createElement(InkBox, { height: 1 }),
             React.createElement(SettingsSummaryBox, { title: "Database", width: topBoxWidth, height: topSummaryHeight, items: databaseStats, columnCount: topBoxColumnCount })),
-        React.createElement(InkBox, { marginTop: 1, flexDirection: stacked ? 'column' : 'row', width: "100%" },
+        React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row', width: "100%" },
             React.createElement(Box, { title: "Editable Config", width: stacked ? '100%' : configBoxWidth, accent: true },
                 React.createElement(InkBox, { width: "100%" }, configColumns.map((column, columnIndex) => (React.createElement(React.Fragment, { key: `config-column-${columnIndex}` },
                     React.createElement(InkBox, { flexDirection: "column", flexGrow: 1 }, column.map(({ field, index }) => {
@@ -1152,7 +1154,7 @@ export function Settings({ editor }) {
                 React.createElement(InkBox, { flexDirection: "column", marginTop: 1 },
                     startupBlockedHelperLines.map((line, index) => (React.createElement(Text, { key: `danger-blocked-${index}`, color: theme.yellow }, line))),
                     dangerHelperLines.map((line, index) => (React.createElement(Text, { key: `danger-status-${index}`, color: statusColor }, line)))))),
-        React.createElement(InkBox, { marginTop: 1, flexDirection: stacked ? 'column' : 'row', width: "100%" },
+        React.createElement(InkBox, { flexDirection: stacked ? 'column' : 'row', width: "100%" },
             React.createElement(Box, { title: "Environment Stats", width: environmentStatsBoxWidth, height: environmentBoxHeight }, envRows.length || hiddenEnvRowCount > 0 ? (React.createElement(React.Fragment, null,
                 envRows.map((row) => (React.createElement(StatRow, { key: row.key, label: row.key, value: row.value, width: environmentStatsContentWidth }))),
                 hiddenEnvRowCount > 0 ? (React.createElement(Text, { color: theme.dim }, truncate(`... and ${hiddenEnvRowCount} more settings`, environmentStatsContentWidth))) : null)) : (React.createElement(Text, { color: theme.dim }, "No active env file found yet."))),

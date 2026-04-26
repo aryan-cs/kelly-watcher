@@ -24,8 +24,8 @@ export function Signals({
   onHorizontalOffsetChange
 }: SignalsProps) {
   const terminal = useTerminalSize()
-  const lineBudget = rowsForHeight(terminal.height, 10, 4)
-  const visibleWidth = Math.max(1, terminal.width - 8)
+  const lineBudget = rowsForHeight(terminal.height, 14, 4)
+  const visibleWidth = Math.max(1, terminal.width - 10)
   const events = useEventStream(1000)
   const {lookup: tradeIdLookup} = useTradeIdIndex(events)
   const incomingActionByTradeId = useMemo(() => {
@@ -78,7 +78,7 @@ export function Signals({
   return (
     <Box height="100%">
       <Text color={theme.dim}>{headerText}</Text>
-      <InkBox flexDirection="column" marginTop={1}>
+      <InkBox flexDirection="column">
         {signals.length ? (
           signals.map((event, index) => (
             <TradeRow
@@ -106,7 +106,7 @@ export function Signals({
           <Text color={theme.dim}>No scored signals yet.</Text>
         )}
       </InkBox>
-      <InkBox marginTop={1}>
+      <InkBox>
         <Text color={theme.dim}>
           showing {signals.length} of {allSignals.length} signals
           {effectiveOffset > 0 ? `  scroll: +${effectiveOffset}` : ''}

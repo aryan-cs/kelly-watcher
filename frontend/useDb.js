@@ -77,6 +77,6 @@ export function useQuery(sql, params = [], intervalMs = 1000) {
             activeController?.abort();
             queryHealthStore.unregister(cacheKey);
         };
-    }, [cacheKey, sql, paramsKey, intervalMs, refreshToken]);
+    }, [cacheKey, intervalMs, paramsKey, refreshToken, sql]);
     return rows;
 }

@@ -1986,7 +1986,7 @@ export function Wallets({
         {renderShadowWalletBox('Worst Wallets', 'worst', worstShadowWallets)}
       </InkBox>
 
-      <InkBox marginTop={1} flexGrow={1} flexDirection="column">
+      <InkBox flexGrow={1} flexDirection="column">
         <InkBox flexGrow={1}>
           <Box height="100%" accent={activePane === 'tracked'}>
             <InkBox width="100%" flexShrink={0}>
@@ -2087,8 +2087,6 @@ export function Wallets({
             </InkBox>
           </Box>
         </InkBox>
-
-        <InkBox height={1} />
 
         <InkBox flexGrow={1}>
           <Box height="100%" accent={activePane === 'dropped'}>

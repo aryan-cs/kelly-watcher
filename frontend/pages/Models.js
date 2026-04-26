@@ -1,5 +1,4 @@
-import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box as InkBox, Text } from 'ink';
 import { Box } from '../components/Box.js';
 import { ModalOverlay } from '../components/ModalOverlay.js';
@@ -222,9 +221,10 @@ export const MODEL_PANEL_DEFS = [
     }
 ];
 export const MODEL_PANEL_COLUMN_LAYOUT = [
-    [0, 1, 2],
-    [3, 4],
-    [5, 6]
+    [0, 1],
+    [2],
+    [3],
+    [4, 5, 6]
 ];
 const EXECUTED_ENTRY_WHERE = `
 skipped=0
@@ -831,7 +831,11 @@ function ConfusionMatrixCell({ label, value, width, kind, scale }) {
     const fillColor = confusionHeatColor(value, scale, kind);
     const innerWidth = Math.max(1, width - 2);
     const centeredValue = centerLine(`${label} ${formatCount(value)}`, innerWidth);
-    return (_jsxs(InkBox, { width: width, height: 6, borderStyle: "round", borderColor: fillColor, flexDirection: "column", children: [_jsx(Text, { color: theme.modalBackground, backgroundColor: fillColor, children: ' '.repeat(innerWidth) }), _jsx(Text, { color: theme.modalBackground, backgroundColor: fillColor, bold: true, children: ' '.repeat(innerWidth) }), _jsx(Text, { color: theme.modalBackground, backgroundColor: fillColor, bold: true, children: centeredValue }), _jsx(Text, { color: theme.modalBackground, backgroundColor: fillColor, children: ' '.repeat(innerWidth) })] }));
+    return (React.createElement(InkBox, { width: width, height: 6, borderStyle: "round", borderColor: fillColor, flexDirection: "column" },
+        React.createElement(Text, { color: theme.modalBackground, backgroundColor: fillColor }, ' '.repeat(innerWidth)),
+        React.createElement(Text, { color: theme.modalBackground, backgroundColor: fillColor, bold: true }, ' '.repeat(innerWidth)),
+        React.createElement(Text, { color: theme.modalBackground, backgroundColor: fillColor, bold: true }, centeredValue),
+        React.createElement(Text, { color: theme.modalBackground, backgroundColor: fillColor }, ' '.repeat(innerWidth))));
 }
 function ratio(numerator, denominator) {
     if (numerator == null || denominator == null || denominator <= 0)
@@ -1251,6 +1255,8 @@ function modeLabel(mode) {
         return 'XGBoost';
     if (normalized === 'hist_gradient_boosting')
         return 'XGBoost';
+    if (normalized === 'heuristic_bootstrap')
+        return 'Shadow bootstrap';
     if (normalized === 'heuristic')
         return 'Heuristic';
     if (normalized === 'disabled')
@@ -4871,7 +4877,10 @@ function DenseModelsRow({ label, value, width, color = theme.white, selected = f
     const boundedLabelWidth = Math.max(1, Math.min(maxLabelWidth, preferredLabelWidth));
     const valueWidth = Math.max(0, safeWidth - boundedLabelWidth - gapWidth);
     const rowBackground = selected ? backgroundColor : undefined;
-    return (_jsxs(InkBox, { width: safeWidth, children: [_jsx(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected, children: fit(label, boundedLabelWidth) }), gapWidth ? _jsx(Text, { backgroundColor: rowBackground, children: " " }) : null, valueWidth > 0 ? (_jsx(Text, { color: color, backgroundColor: rowBackground, bold: selected, children: valueAlign === 'left' ? fit(value, valueWidth) : fitRight(value, valueWidth) })) : null] }));
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, fit(label, boundedLabelWidth)),
+        gapWidth ? React.createElement(Text, { backgroundColor: rowBackground }, " ") : null,
+        valueWidth > 0 ? (React.createElement(Text, { color: color, backgroundColor: rowBackground, bold: selected }, valueAlign === 'left' ? fit(value, valueWidth) : fitRight(value, valueWidth))) : null));
 }
 function recentRunsColumnWidths(width) {
     const safeWidth = Math.max(18, width);
@@ -4883,11 +4892,25 @@ function recentRunsColumnWidths(width) {
 }
 function RecentRunsHeaderRow({ width }) {
     const { safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth } = recentRunsColumnWidths(width);
-    return (_jsxs(InkBox, { width: safeWidth, children: [_jsx(Text, { color: theme.accent, bold: true, children: fit('Timestamp', timestampWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: theme.accent, bold: true, children: fitRight('Log Loss', logLossWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: theme.accent, bold: true, children: fitRight('Brier', brierWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: theme.accent, bold: true, children: fitRight('Result', resultWidth) })] }));
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Timestamp', timestampWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Log Loss', logLossWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Brier', brierWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Result', resultWidth))));
 }
 function RecentRunsDataRow({ width, timestamp, timestampColor, logLoss, logLossColor, brier, brierColor, result, resultColor }) {
     const { safeWidth, timestampWidth, logLossWidth, brierWidth, resultWidth } = recentRunsColumnWidths(width);
-    return (_jsxs(InkBox, { width: safeWidth, children: [_jsx(Text, { color: timestampColor, children: fit(timestamp, timestampWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: logLossColor, children: fitRight(logLoss, logLossWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: brierColor, children: fitRight(brier, brierWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: resultColor, children: fitRight(result, resultWidth) })] }));
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: timestampColor }, fit(timestamp, timestampWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: logLossColor }, fitRight(logLoss, logLossWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: brierColor }, fitRight(brier, brierWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: resultColor }, fitRight(result, resultWidth))));
 }
 function recentExitColumnWidths(width) {
     const safeWidth = Math.max(18, width);
@@ -4899,22 +4922,36 @@ function recentExitColumnWidths(width) {
 }
 function RecentExitHeaderRow({ width }) {
     const { safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth } = recentExitColumnWidths(width);
-    return (_jsxs(InkBox, { width: safeWidth, children: [_jsx(Text, { color: theme.accent, bold: true, children: fit('Timestamp', timestampWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: theme.accent, bold: true, children: fit('Action', actionWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: theme.accent, bold: true, children: fitRight('Return', returnWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: theme.accent, bold: true, children: fit('Reason', reasonWidth) })] }));
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Timestamp', timestampWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Action', actionWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fitRight('Return', returnWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: theme.accent, bold: true }, fit('Reason', reasonWidth))));
 }
 function RecentExitDataRow({ width, timestamp, timestampColor, action, actionColor, estimatedReturn, estimatedReturnColor, reason, reasonColor }) {
     const { safeWidth, timestampWidth, actionWidth, returnWidth, reasonWidth } = recentExitColumnWidths(width);
-    return (_jsxs(InkBox, { width: safeWidth, children: [_jsx(Text, { color: timestampColor, children: fit(timestamp, timestampWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: actionColor, children: fit(action, actionWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: estimatedReturnColor, children: fitRight(estimatedReturn, returnWidth) }), _jsx(Text, { children: " " }), _jsx(Text, { color: reasonColor, children: fit(reason, reasonWidth) })] }));
+    return (React.createElement(InkBox, { width: safeWidth },
+        React.createElement(Text, { color: timestampColor }, fit(timestamp, timestampWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: actionColor }, fit(action, actionWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: estimatedReturnColor }, fitRight(estimatedReturn, returnWidth)),
+        React.createElement(Text, null, " "),
+        React.createElement(Text, { color: reasonColor }, fit(reason, reasonWidth))));
 }
 function ModelsSectionTitle({ title, width, selected, backgroundColor }) {
     const prefix = selected ? '> ' : '';
-    return (_jsx(Text, { color: selected ? theme.accent : theme.white, backgroundColor: selected ? backgroundColor : undefined, bold: true, children: fit(`${prefix}${title}`, Math.max(1, width)) }));
+    return (React.createElement(Text, { color: selected ? theme.accent : theme.white, backgroundColor: selected ? backgroundColor : undefined, bold: true }, fit(`${prefix}${title}`, Math.max(1, width))));
 }
 function ModelsSubsectionTitle({ title, width, color = theme.accent }) {
     const safeWidth = Math.max(1, width);
-    return (_jsx(Text, { color: color, bold: true, children: fit(title.trimStart(), safeWidth) }));
+    return (React.createElement(Text, { color: color, bold: true }, fit(title.trimStart(), safeWidth)));
 }
 function ModelsSpacer() {
-    return _jsx(Text, { children: " " });
+    return React.createElement(Text, null, " ");
 }
 export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, settingsValues }) {
     const terminal = useTerminalSize();
@@ -5824,6 +5861,23 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         : loadedScorerLabel === 'No scorer'
             ? theme.red
             : theme.yellow;
+    const xgboostRuntimeStatus = useMemo(() => {
+        const xgboostEnabled = botState.xgboost_enabled;
+        if (xgboostEnabled === false)
+            return 'Disabled';
+        if (loadedScorerLabel === 'XGBoost')
+            return 'Active';
+        if (xgboostEnabled === true) {
+            const reason = String(botState.model_fallback_reason || '').trim();
+            return reason ? `Fallback: ${reason.replace(/_/g, ' ')}` : 'Fallback';
+        }
+        return '-';
+    }, [botState.model_fallback_reason, botState.xgboost_enabled, loadedScorerLabel]);
+    const xgboostRuntimeColor = xgboostRuntimeStatus === 'Active'
+        ? theme.green
+        : xgboostRuntimeStatus === '-' || xgboostRuntimeStatus === 'Disabled'
+            ? theme.dim
+            : theme.red;
     const scorerConfigLabel = useMemo(() => {
         const heuristicEnabled = botState.heuristic_enabled;
         const xgboostEnabled = botState.xgboost_enabled;
@@ -6277,7 +6331,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
     ]);
     const scoringMixColumns = useMemo(() => splitIntoColumns(scoringMixStats, 2), [scoringMixStats]);
     const modelsContentWidth = Math.max(3, terminal.width - 14);
-    const modelsColumnCount = 5;
+    const modelsColumnCount = 4;
     const modelsColumnGap = modelsContentWidth >= 40 ? 1 : 0;
     const modelsUsableWidth = Math.max(3, modelsContentWidth - modelsColumnGap * (modelsColumnCount - 1));
     const baseModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth / modelsColumnCount));
@@ -6285,8 +6339,7 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         baseModelsColumnWidth,
         baseModelsColumnWidth,
         baseModelsColumnWidth,
-        baseModelsColumnWidth,
-        Math.max(1, modelsUsableWidth - baseModelsColumnWidth * 4)
+        Math.max(1, modelsUsableWidth - baseModelsColumnWidth * 3)
     ];
     const modelPanelHeight = Math.max(12, terminal.height - 9);
     const predictionQualityStats = useMemo(() => [
@@ -6299,6 +6352,11 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
             label: 'Loaded scorer',
             value: loadedScorerLabel,
             color: loadedScorerColor
+        },
+        {
+            label: 'XGB runtime',
+            value: xgboostRuntimeStatus,
+            color: xgboostRuntimeColor
         },
         {
             label: 'Model artifact',
@@ -6389,7 +6447,9 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         shadowValidationColor,
         shadowValidationValue,
         loadedScorerColor,
-        loadedScorerLabel
+        loadedScorerLabel,
+        xgboostRuntimeColor,
+        xgboostRuntimeStatus
     ]);
     const recentRetrainRuns = useMemo(() => retrainRuns.slice(0, historyLimit), [historyLimit, retrainRuns]);
     const howItWorksScoreRows = useMemo(() => scoringMixStats.slice(0, 4), [scoringMixStats]);
@@ -6406,32 +6466,99 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         color: retrainRunStateColor(row.status, row.deployed)
     }));
     const modelRowLabelWidth = (width) => Math.max(8, Math.min(13, Math.floor(width * 0.43)));
-    const renderModelRows = (items, width, labelWidth = modelRowLabelWidth(width)) => items.map((item) => (_jsx(DenseModelsRow, { label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 6 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: width, labelWidth: labelWidth, minValueWidth: 8 }, item.label)));
-    const renderPageBody = () => (_jsxs(InkBox, { width: "100%", flexDirection: "column", children: [_jsx(InkBox, { width: modelsContentWidth, height: 1, flexShrink: 0, children: _jsx(Text, { color: theme.accent, bold: true, children: fit('Model', modelsContentWidth) }) }), _jsxs(InkBox, { width: "100%", children: [_jsxs(InkBox, { width: modelsColumnWidths[0], flexDirection: "column", children: [_jsx(ModelsSectionTitle, { title: "Prediction Quality", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 0, backgroundColor: selectedRowBackground }), renderModelRows(predictionQualityStats, modelsColumnWidths[0]), _jsx(ModelsSpacer, {}), _jsx(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }), renderModelRows(trackerHealthStats, modelsColumnWidths[0]), _jsx(ModelsSpacer, {}), _jsx(ModelsSubsectionTitle, { title: "Shadow Snapshot", width: modelsColumnWidths[0] }), renderModelRows(shadowSnapshotPerformanceRows, modelsColumnWidths[0])] }), _jsx(InkBox, { width: modelsColumnGap }), _jsxs(InkBox, { width: modelsColumnWidths[1], flexDirection: "column", children: [_jsx(ModelsSectionTitle, { title: "Replay Lab A", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }), renderModelRows(replayLabColumns[0] ?? [], modelsColumnWidths[1])] }), _jsx(InkBox, { width: modelsColumnGap }), _jsxs(InkBox, { width: modelsColumnWidths[2], flexDirection: "column", children: [_jsx(ModelsSectionTitle, { title: "Replay Lab B", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }), renderModelRows(replayLabColumns[1] ?? [], modelsColumnWidths[2]), _jsx(ModelsSpacer, {}), _jsx(ModelsSectionTitle, { title: "Confidence", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }), confusionCells.map((cell) => (_jsx(DenseModelsRow, { label: cell.label, value: formatCount(cell.value), color: confusionHeatColor(cell.value, confusionScale, cell.kind), width: modelsColumnWidths[2], labelWidth: modelRowLabelWidth(modelsColumnWidths[2]), minValueWidth: 8 }, cell.label))), renderModelRows(confidenceCheckStats, modelsColumnWidths[2])] }), _jsx(InkBox, { width: modelsColumnGap }), _jsxs(InkBox, { width: modelsColumnWidths[3], flexDirection: "column", children: [_jsx(ModelsSectionTitle, { title: "Modes + Exits", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }), _jsx(DenseModelsRow, { label: "Recent path", value: activeScorerLabel, color: activeScorerColor, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 }), _jsx(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 }), signalModeCards.length ? (signalModeCards.flatMap((card) => [
-                                _jsx(ModelsSubsectionTitle, { title: card.title, width: modelsColumnWidths[3], color: card.titleColor ?? theme.white }, `${card.title}-title`),
-                                ...card.rows.map((item) => (_jsx(DenseModelsRow, { label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 }, `${card.title}-${item.label}`)))
-                            ])) : (_jsx(Text, { color: theme.dim, children: fit('No tracker signals yet.', modelsColumnWidths[3]) })), _jsx(ModelsSpacer, {}), _jsx(ModelsSubsectionTitle, { title: "Exit Guard", width: modelsColumnWidths[3] }), renderModelRows(exitGuardStats, modelsColumnWidths[3]), compactRecentExitRows.length ? renderModelRows(compactRecentExitRows, modelsColumnWidths[3]) : null, _jsx(ModelsSpacer, {}), _jsx(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }), renderModelRows(howItWorksScoreRows, modelsColumnWidths[3]), _jsx(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[3] }), renderModelRows(howItWorksHistoryRows, modelsColumnWidths[3])] }), _jsx(InkBox, { width: modelsColumnGap }), _jsxs(InkBox, { width: modelsColumnWidths[4], flexDirection: "column", children: [_jsx(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[4], selected: clampedSelectedPanelIndex === 6, backgroundColor: selectedRowBackground }), renderModelRows(trainingCycleDisplayStats, modelsColumnWidths[4]), latestSharedHoldoutRun && latestSharedHoldout ? (_jsx(_Fragment, { children: renderModelRows([
-                                    {
-                                        label: 'Holdout gate',
-                                        value: sharedHoldoutGateReadCompact(latestSharedHoldoutRun),
-                                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
-                                    },
-                                    { label: 'Gate run', value: formatShortDateTime(latestSharedHoldoutRun.finished_at) },
-                                    {
-                                        label: 'LL c / i',
-                                        value: `${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} / ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}`,
-                                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
-                                    },
-                                    {
-                                        label: 'Brier c/i',
-                                        value: `${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`,
-                                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
-                                    }
-                                ], modelsColumnWidths[4]) })) : null, _jsx(ModelsSpacer, {}), _jsx(ModelsSubsectionTitle, { title: "Recent Training", width: modelsColumnWidths[4] }), compactRecentRetrainRows.length ? (renderModelRows(compactRecentRetrainRows, modelsColumnWidths[4])) : (_jsx(Text, { color: theme.dim, children: fit('No retrain attempts logged yet.', modelsColumnWidths[4]) }))] })] })] }));
-    return (_jsxs(InkBox, { flexDirection: "column", width: "100%", children: [_jsx(Box, { width: "100%", height: modelPanelHeight, children: renderPageBody() }), detailOpen ? (_jsx(ModalOverlay, { backgroundColor: terminal.backgroundColor, children: _jsxs(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: helpModalWidth, children: [_jsxs(InkBox, { width: "100%", children: [_jsx(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true, children: ` ${fit(selectedPanel.title, helpTitleWidth)}` }), _jsx(Text, { backgroundColor: modalBackground, children: " " }), _jsx(Text, { color: theme.dim, backgroundColor: modalBackground, children: `${fitRight(helpIndexLabel, helpIndexLabel.length)} ` })] }), selectedPanel.summary.map((line) => (_jsx(Text, { color: theme.white, backgroundColor: modalBackground, children: ` ${fit(line, helpContentWidth)} ` }, line))), _jsx(Text, { backgroundColor: modalBackground, children: helpSpacerLine }), _jsxs(InkBox, { flexDirection: "column", children: [_jsx(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true, children: ` ${fit('Label Guide', helpContentWidth)} ` }), selectedPanel.rows.map((row) => (_jsx(Text, { color: theme.white, backgroundColor: modalBackground, children: ` ${fit(`${row.label}: ${row.text}`, helpContentWidth)} ` }, `${selectedPanel.id}-${row.label}`)))] }), _jsx(Text, { backgroundColor: modalBackground, children: helpSpacerLine }), _jsxs(InkBox, { flexDirection: "column", children: [_jsx(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true, children: ` ${fit('Related Settings', helpContentWidth)} ` }), relatedSettings.length ? (_jsxs(_Fragment, { children: [relatedSettings.map((field, index) => {
-                                            const selected = index === clampedSelectedSettingIndex;
-                                            const label = `${selected ? '> ' : '  '}${field.label}`;
-                                            const rowBackground = selected ? selectedRowBackground : modalBackground;
-                                            return (_jsxs(InkBox, { width: "100%", children: [_jsx(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected, children: ` ${fit(label, helpSettingLabelWidth)}` }), _jsx(Text, { backgroundColor: rowBackground, children: " " }), _jsx(Text, { color: theme.white, backgroundColor: rowBackground, bold: selected, children: `${fitRight(formatEditableConfigValue(field, settingsValues[field.key] || field.defaultValue), helpSettingValueWidth)} ` })] }, `${selectedPanel.id}-${field.key}`));
-                                        }), _jsx(Text, { color: theme.dim, backgroundColor: modalBackground, children: ` ${fit('Up/down selects a setting. Enter opens it in Config. Esc closes.', helpContentWidth)} ` })] })) : (_jsx(Text, { color: theme.dim, backgroundColor: modalBackground, children: ` ${fit('No direct settings are tied to this box yet. Esc closes.', helpContentWidth)} ` }))] })] }) })) : null] }));
+    const renderModelRows = (items, width, labelWidth = modelRowLabelWidth(width)) => items.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 6 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: width, labelWidth: labelWidth, minValueWidth: 8 })));
+    const renderPageBody = () => (React.createElement(InkBox, { width: "100%", flexDirection: "column" },
+        React.createElement(InkBox, { width: modelsContentWidth, height: 1, flexShrink: 0 },
+            React.createElement(Text, { color: theme.accent, bold: true }, fit('Model', modelsContentWidth))),
+        React.createElement(InkBox, { width: "100%" },
+            React.createElement(InkBox, { width: modelsColumnWidths[0], flexDirection: "column" },
+                React.createElement(ModelsSectionTitle, { title: "Prediction Quality", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 0, backgroundColor: selectedRowBackground }),
+                renderModelRows(predictionQualityStats, modelsColumnWidths[0]),
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
+                renderModelRows(trackerHealthStats, modelsColumnWidths[0]),
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSubsectionTitle, { title: "Shadow Snapshot", width: modelsColumnWidths[0] }),
+                renderModelRows(shadowSnapshotPerformanceRows, modelsColumnWidths[0])),
+            React.createElement(InkBox, { width: modelsColumnGap }),
+            React.createElement(InkBox, { width: modelsColumnWidths[1], flexDirection: "column" },
+                React.createElement(ModelsSectionTitle, { title: "Replay Lab A", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
+                renderModelRows(replayLabColumns[0] ?? [], modelsColumnWidths[1])),
+            React.createElement(InkBox, { width: modelsColumnGap }),
+            React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
+                React.createElement(ModelsSectionTitle, { title: "Replay Lab B", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
+                renderModelRows(replayLabColumns[1] ?? [], modelsColumnWidths[2]),
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSectionTitle, { title: "Confidence", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
+                confusionCells.map((cell) => (React.createElement(DenseModelsRow, { key: cell.label, label: cell.label, value: formatCount(cell.value), color: confusionHeatColor(cell.value, confusionScale, cell.kind), width: modelsColumnWidths[2], labelWidth: modelRowLabelWidth(modelsColumnWidths[2]), minValueWidth: 8 }))),
+                renderModelRows(confidenceCheckStats, modelsColumnWidths[2])),
+            React.createElement(InkBox, { width: modelsColumnGap }),
+            React.createElement(InkBox, { width: modelsColumnWidths[3], flexDirection: "column" },
+                React.createElement(ModelsSectionTitle, { title: "Modes + Exits", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
+                React.createElement(DenseModelsRow, { label: "Recent path", value: activeScorerLabel, color: activeScorerColor, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 }),
+                React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 }),
+                signalModeCards.length ? (signalModeCards.flatMap((card) => [
+                    React.createElement(ModelsSubsectionTitle, { key: `${card.title}-title`, title: card.title, width: modelsColumnWidths[3], color: card.titleColor ?? theme.white }),
+                    ...card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 })))
+                ])) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[3]))),
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSubsectionTitle, { title: "Exit Guard", width: modelsColumnWidths[3] }),
+                renderModelRows(exitGuardStats, modelsColumnWidths[3]),
+                compactRecentExitRows.length ? renderModelRows(compactRecentExitRows, modelsColumnWidths[3]) : null,
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),
+                renderModelRows(howItWorksScoreRows, modelsColumnWidths[3]),
+                React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[3] }),
+                renderModelRows(howItWorksHistoryRows, modelsColumnWidths[3]),
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 6, backgroundColor: selectedRowBackground }),
+                renderModelRows(trainingCycleDisplayStats, modelsColumnWidths[3]),
+                latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(React.Fragment, null, renderModelRows([
+                    {
+                        label: 'Holdout gate',
+                        value: sharedHoldoutGateReadCompact(latestSharedHoldoutRun),
+                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                    },
+                    { label: 'Gate run', value: formatShortDateTime(latestSharedHoldoutRun.finished_at) },
+                    {
+                        label: 'LL c / i',
+                        value: `${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} / ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}`,
+                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                    },
+                    {
+                        label: 'Brier c/i',
+                        value: `${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`,
+                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                    }
+                ], modelsColumnWidths[3]))) : null,
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSubsectionTitle, { title: "Recent Training", width: modelsColumnWidths[3] }),
+                compactRecentRetrainRows.length ? (renderModelRows(compactRecentRetrainRows, modelsColumnWidths[3])) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[3])))))));
+    return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
+        React.createElement(Box, { width: "100%", height: modelPanelHeight }, renderPageBody()),
+        detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
+            React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: helpModalWidth },
+                React.createElement(InkBox, { width: "100%" },
+                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(selectedPanel.title, helpTitleWidth)}`),
+                    React.createElement(Text, { backgroundColor: modalBackground }, " "),
+                    React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, `${fitRight(helpIndexLabel, helpIndexLabel.length)} `)),
+                selectedPanel.summary.map((line) => (React.createElement(Text, { key: line, color: theme.white, backgroundColor: modalBackground }, ` ${fit(line, helpContentWidth)} `))),
+                React.createElement(Text, { backgroundColor: modalBackground }, helpSpacerLine),
+                React.createElement(InkBox, { flexDirection: "column" },
+                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit('Label Guide', helpContentWidth)} `),
+                    selectedPanel.rows.map((row) => (React.createElement(Text, { key: `${selectedPanel.id}-${row.label}`, color: theme.white, backgroundColor: modalBackground }, ` ${fit(`${row.label}: ${row.text}`, helpContentWidth)} `)))),
+                React.createElement(Text, { backgroundColor: modalBackground }, helpSpacerLine),
+                React.createElement(InkBox, { flexDirection: "column" },
+                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit('Related Settings', helpContentWidth)} `),
+                    relatedSettings.length ? (React.createElement(React.Fragment, null,
+                        relatedSettings.map((field, index) => {
+                            const selected = index === clampedSelectedSettingIndex;
+                            const label = `${selected ? '> ' : '  '}${field.label}`;
+                            const rowBackground = selected ? selectedRowBackground : modalBackground;
+                            return (React.createElement(InkBox, { key: `${selectedPanel.id}-${field.key}`, width: "100%" },
+                                React.createElement(Text, { color: selected ? theme.accent : theme.dim, backgroundColor: rowBackground, bold: selected }, ` ${fit(label, helpSettingLabelWidth)}`),
+                                React.createElement(Text, { backgroundColor: rowBackground }, " "),
+                                React.createElement(Text, { color: theme.white, backgroundColor: rowBackground, bold: selected }, `${fitRight(formatEditableConfigValue(field, settingsValues[field.key] || field.defaultValue), helpSettingValueWidth)} `)));
+                        }),
+                        React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, ` ${fit('Up/down selects a setting. Enter opens it in Config. Esc closes.', helpContentWidth)} `))) : (React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, ` ${fit('No direct settings are tied to this box yet. Esc closes.', helpContentWidth)} `)))))) : null));
 }

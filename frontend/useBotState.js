@@ -62,6 +62,8 @@ function resolveShadowRestartState(nextState) {
         clearShadowRestartPending();
         return nextState;
     }
+    // Successful backend reads are authoritative. If the backend no longer reports
+    // a restart as pending, stop forcing the local placeholder state.
     clearShadowRestartPending();
     return nextState;
 }
@@ -81,6 +83,9 @@ function shadowRestartPlaceholderState(state, kind, message = '') {
         startup_failure_message: '',
         startup_validation_failed: false,
         startup_validation_message: '',
+        startup_blocked: false,
+        startup_recovery_only: false,
+        startup_block_reason: '',
         mode: 'shadow',
         n_wallets: 0,
         loop_in_progress: false,
@@ -102,7 +107,12 @@ function shadowRestartPlaceholderState(state, kind, message = '') {
         model_fallback_reason: '',
         model_load_error: '',
         model_prediction_mode: '',
-        model_loaded_at: 0
+        model_loaded_at: 0,
+        model_training_scope: 'unknown',
+        model_training_since_ts: 0,
+        model_training_routed_only: false,
+        model_training_provenance_trusted: false,
+        model_training_block_reason: ''
     };
 }
 function shadowRestartWaitingState(nextState) {
@@ -115,7 +125,10 @@ function shadowRestartWaitingState(nextState) {
         shadow_restart_pending: true,
         shadow_restart_kind: nextKind,
         shadow_restart_message: String(nextState.shadow_restart_message || '').trim() || shadowRestartPendingMessage(nextKind),
-        startup_detail: String(nextState.startup_detail || '').trim() || (nextKind === 'db_recovery' ? 'Recovering shadow database' : 'Restarting shadow bot')
+        startup_detail: String(nextState.startup_detail || '').trim() || (nextKind === 'db_recovery' ? 'Recovering shadow database' : 'Restarting shadow bot'),
+        startup_blocked: false,
+        startup_recovery_only: false,
+        startup_block_reason: ''
     };
 }
 export function beginShadowRestartBotState(kind, message = '') {
@@ -192,10 +205,10 @@ export function useBotState(intervalMs = 1000) {
                     shadow_restart_kind: effectiveShadowRestartKind,
                     shadow_restart_message: effectiveShadowRestartMessage
                 };
-            botStateCache = nextState;
-            if (!cancelled) {
-                setState(nextState);
-            }
+                botStateCache = nextState;
+                if (!cancelled) {
+                    setState(nextState);
+                }
             }
             finally {
                 if (activeController === controller) {

@@ -16,8 +16,8 @@ interface LiveFeedProps {
 
 export function LiveFeed({scrollOffset = 0, onScrollOffsetChange}: LiveFeedProps) {
   const terminal = useTerminalSize()
-  const rowCount = rowsForHeight(terminal.height, 10, 4)
-  const tableWidth = Math.max(1, terminal.width - 8)
+  const rowCount = rowsForHeight(terminal.height, 14, 4)
+  const tableWidth = Math.max(1, terminal.width - 10)
   const allEvents = useEventStream(1000)
   const {lookup: tradeIdLookup} = useTradeIdIndex(allEvents)
   const allIncoming = allEvents.filter((event) => event.type === 'incoming').reverse()
@@ -34,7 +34,7 @@ export function LiveFeed({scrollOffset = 0, onScrollOffsetChange}: LiveFeedProps
   return (
     <Box height="100%">
       <Text color={theme.dim}>{feedHeader(tableWidth)}</Text>
-      <InkBox flexDirection="column" marginTop={1}>
+      <InkBox flexDirection="column">
         {events.length ? (
           events.map((event, index) => (
             <TradeRow
@@ -58,7 +58,7 @@ export function LiveFeed({scrollOffset = 0, onScrollOffsetChange}: LiveFeedProps
           <Text color={theme.dim}>Waiting for incoming trade events...</Text>
         )}
       </InkBox>
-      <InkBox marginTop={1}>
+      <InkBox>
         <Text color={theme.dim}>
           showing {events.length} of {allIncoming.length} events{effectiveOffset > 0 ? `  scroll: +${effectiveOffset}` : ''}
         </Text>

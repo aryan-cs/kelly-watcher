@@ -632,7 +632,7 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_source_queue_claims_oldest_valid_rows_within_tier_first(self) -> None:
+    def test_source_queue_claims_newest_valid_rows_within_tier_first(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -668,7 +668,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 finally:
                     tracker_obj.close()
 
-                self.assertEqual([row["trade_id"] for row in rows], ["hot-oldest", "hot-middle"])
+                self.assertEqual([row["trade_id"] for row in rows], ["hot-newest", "hot-middle"])
             finally:
                 db.DB_PATH = original_db_path
 
@@ -708,7 +708,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 finally:
                     tracker_obj.close()
 
-                self.assertEqual([row["trade_id"] for row in rows], ["base-fresh-older"])
+                self.assertEqual([row["trade_id"] for row in rows], ["base-fresh-newer"])
                 conn = db.get_conn()
                 try:
                     statuses = {
@@ -717,8 +717,8 @@ class ProductionReadinessTest(unittest.TestCase):
                     }
                 finally:
                     conn.close()
-                self.assertEqual(statuses["base-fresh-older"], "processing")
-                self.assertEqual(statuses["base-fresh-newer"], "pending")
+                self.assertEqual(statuses["base-fresh-newer"], "processing")
+                self.assertEqual(statuses["base-fresh-older"], "pending")
                 self.assertEqual(statuses["older-backlog"], "pending")
             finally:
                 db.DB_PATH = original_db_path
@@ -1098,7 +1098,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 finally:
                     tracker_obj.close()
 
-                self.assertEqual([event.trade_id for event in events], ["older", "newer"])
+                self.assertEqual([event.trade_id for event in events], ["newer", "older"])
             finally:
                 db.DB_PATH = original_db_path
 

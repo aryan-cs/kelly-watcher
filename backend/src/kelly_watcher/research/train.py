@@ -1247,24 +1247,41 @@ def _compare_against_incumbent(
             "challenger_shared_log_loss": round(float(challenger_report["log_loss"]), 4),
             "challenger_shared_brier_score": round(float(challenger_report["brier_score"]), 4),
             "challenger_shared_total_pnl": round(float(challenger_report["total_pnl"]), 4),
+            "challenger_shared_avg_pnl": round(float(challenger_report["avg_pnl"]), 4),
             "challenger_shared_selected_trades": int(challenger_report["selected_trades"]),
             "incumbent_log_loss": round(float(incumbent_report["log_loss"]), 4),
             "incumbent_brier_score": round(float(incumbent_report["brier_score"]), 4),
             "incumbent_total_pnl": round(float(incumbent_report["total_pnl"]), 4),
+            "incumbent_avg_pnl": round(float(incumbent_report["avg_pnl"]), 4),
             "incumbent_selected_trades": int(incumbent_report["selected_trades"]),
         }
     )
 
-    beats_incumbent = _report_dominates(challenger_report, incumbent_report)
+    challenger_pnl = float(challenger_report["total_pnl"])
+    incumbent_pnl = float(incumbent_report["total_pnl"])
+    challenger_avg_pnl = float(challenger_report["avg_pnl"])
+    incumbent_avg_pnl = float(incumbent_report["avg_pnl"])
+    pnl_non_regression = (
+        challenger_pnl >= incumbent_pnl - 1e-9
+        and challenger_avg_pnl >= incumbent_avg_pnl - 1e-9
+    )
+    beats_incumbent = _report_dominates(challenger_report, incumbent_report) and pnl_non_regression
     result["beats_incumbent"] = beats_incumbent
     if beats_incumbent:
         return result
 
-    result["reject_reason"] = (
-        "challenger did not beat the deployed model on the shared final holdout "
-        f"(ll {float(challenger_report['log_loss']):.4f} vs {float(incumbent_report['log_loss']):.4f}, "
-        f"brier {float(challenger_report['brier_score']):.4f} vs {float(incumbent_report['brier_score']):.4f})"
-    )
+    if not pnl_non_regression:
+        result["reject_reason"] = (
+            "challenger regressed selected-trade P&L on the shared final holdout "
+            f"(pnl {challenger_pnl:.4f} vs {incumbent_pnl:.4f}, "
+            f"avg {challenger_avg_pnl:.4f} vs {incumbent_avg_pnl:.4f})"
+        )
+    else:
+        result["reject_reason"] = (
+            "challenger did not beat the deployed model on the shared final holdout "
+            f"(ll {float(challenger_report['log_loss']):.4f} vs {float(incumbent_report['log_loss']):.4f}, "
+            f"brier {float(challenger_report['brier_score']):.4f} vs {float(incumbent_report['brier_score']):.4f})"
+        )
     return result
 
 

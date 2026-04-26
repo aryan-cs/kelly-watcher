@@ -531,6 +531,48 @@ class TrainingSearchTest(unittest.TestCase):
         self.assertFalse(report["beats_incumbent"])
         self.assertIn("challenger did not beat the deployed model", report["reject_reason"])
 
+    def test_compare_against_incumbent_rejects_lower_shared_pnl_challenger(self) -> None:
+        final_train_df, holdout_df = self._comparison_frames()
+        challenger_report = {
+            "n_eval": len(holdout_df),
+            "log_loss": 0.20,
+            "brier_score": 0.08,
+            "total_pnl": 1.0,
+            "avg_pnl": 0.10,
+            "selected_trades": 10,
+        }
+        incumbent_report = {
+            "n_eval": len(holdout_df),
+            "log_loss": 0.25,
+            "brier_score": 0.10,
+            "total_pnl": 2.0,
+            "avg_pnl": 0.20,
+            "selected_trades": 10,
+        }
+
+        with mock.patch(
+            "kelly_watcher.research.train._evaluate_prediction_report",
+            side_effect=[challenger_report, incumbent_report],
+        ):
+            report = train._compare_against_incumbent(
+                incumbent_artifact={
+                    "model": object(),
+                    "probability_calibrator": None,
+                    "prediction_mode": "expected_return",
+                    "feature_cols": ["f_price"],
+                    "path": "model.joblib",
+                },
+                final_train_df=final_train_df,
+                holdout_df=holdout_df,
+                challenger_model=object(),
+                challenger_feature_cols=["f_price"],
+                challenger_probability_calibrator=None,
+                challenger_prediction_mode="expected_return",
+            )
+
+        self.assertFalse(report["beats_incumbent"])
+        self.assertIn("regressed selected-trade P&L", report["reject_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

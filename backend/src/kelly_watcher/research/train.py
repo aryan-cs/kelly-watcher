@@ -996,15 +996,6 @@ def _should_deploy_candidate(
     if recovery_standard_gate:
         return True, "recovery_incompatible_incumbent_standard_gate"
 
-    recovery_shared_holdout = (
-        incumbent_present
-        and not incumbent_runtime_compatible
-        and meets_holdout_gate
-        and bool(beats_incumbent)
-    )
-    if recovery_shared_holdout:
-        return True, "recovery_incompatible_incumbent_shared_holdout"
-
     return False, "rejected"
 
 

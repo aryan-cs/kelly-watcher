@@ -149,7 +149,7 @@ class TrainingSearchTest(unittest.TestCase):
         self.assertTrue(deployable)
         self.assertEqual(mode, "standard")
 
-    def test_should_deploy_candidate_allows_recovery_for_incompatible_incumbent(self) -> None:
+    def test_should_deploy_candidate_rejects_recovery_without_search_gate(self) -> None:
         deployable, mode = train._should_deploy_candidate(
             best_candidate={
                 "search_passed": False,
@@ -168,8 +168,8 @@ class TrainingSearchTest(unittest.TestCase):
             beats_incumbent=True,
         )
 
-        self.assertTrue(deployable)
-        self.assertEqual(mode, "recovery_incompatible_incumbent_shared_holdout")
+        self.assertFalse(deployable)
+        self.assertEqual(mode, "rejected")
 
     def test_should_deploy_candidate_allows_standard_gate_recovery_for_incompatible_incumbent(self) -> None:
         deployable, mode = train._should_deploy_candidate(

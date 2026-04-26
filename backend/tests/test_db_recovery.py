@@ -101,6 +101,23 @@ class DbRecoveryToolingTest(unittest.TestCase):
                 self.assertTrue(integrity["db_integrity_known"])
                 self.assertTrue(integrity["db_integrity_ok"])
 
+    def test_create_verified_backup_removes_temp_file_when_finalize_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "data" / "trading.db"
+            primary_backup = Path(f"{db_path}.bak")
+            legacy_tmp_backup = primary_backup.with_suffix(primary_backup.suffix + ".tmp")
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            db.init_db(path=db_path)
+            legacy_tmp_backup.write_text("stale temp backup", encoding="utf-8")
+
+            with patch.object(db, "_fsync_file", side_effect=OSError("fsync failed")):
+                with self.assertRaisesRegex(OSError, "fsync failed"):
+                    db.create_verified_backup(db_path)
+
+            self.assertFalse(primary_backup.exists())
+            self.assertFalse(legacy_tmp_backup.exists())
+            self.assertEqual(list(db_path.parent.glob(f"{primary_backup.name}*.tmp")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

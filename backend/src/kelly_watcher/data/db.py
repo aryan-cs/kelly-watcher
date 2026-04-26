@@ -7,6 +7,7 @@ import re
 import time
 import sqlite3
 import threading
+import uuid
 from pathlib import Path
 
 from kelly_watcher.data.market_urls import market_url_from_metadata
@@ -225,59 +226,72 @@ def create_verified_backup(path: Path | None = None) -> dict[str, object]:
         }
 
     primary_backup = _primary_backup_path(source)
-    tmp_backup = primary_backup.with_suffix(primary_backup.suffix + ".tmp")
-    if tmp_backup.exists():
+    legacy_tmp_backup = primary_backup.with_suffix(primary_backup.suffix + ".tmp")
+    if legacy_tmp_backup.exists():
         try:
-            tmp_backup.unlink()
+            legacy_tmp_backup.unlink()
         except OSError:
-            pass
-
-    src_conn: sqlite3.Connection | None = None
-    dst_conn: sqlite3.Connection | None = None
+            logger.warning("Failed to remove stale DB backup temp file %s", legacy_tmp_backup, exc_info=True)
+    tmp_backup = primary_backup.with_name(
+        f"{primary_backup.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+    )
     try:
-        src_conn = _connect_sqlite(source, apply_runtime_pragmas=False)
-        dst_conn = _connect_sqlite(tmp_backup, apply_runtime_pragmas=False)
-        src_conn.backup(dst_conn)
-    finally:
-        if dst_conn is not None:
-            dst_conn.close()
-        if src_conn is not None:
-            src_conn.close()
+        src_conn: sqlite3.Connection | None = None
+        dst_conn: sqlite3.Connection | None = None
+        try:
+            src_conn = _connect_sqlite(source, apply_runtime_pragmas=False)
+            dst_conn = _connect_sqlite(tmp_backup, apply_runtime_pragmas=False)
+            src_conn.backup(dst_conn)
+        finally:
+            if dst_conn is not None:
+                dst_conn.close()
+            if src_conn is not None:
+                src_conn.close()
 
-    backup_integrity = database_integrity_state(tmp_backup)
-    if backup_integrity.get("db_integrity_known") and not backup_integrity.get("db_integrity_ok"):
+        backup_integrity = database_integrity_state(tmp_backup)
+        if backup_integrity.get("db_integrity_known") and not backup_integrity.get("db_integrity_ok"):
+            try:
+                tmp_backup.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("Failed to remove invalid DB backup temp file %s", tmp_backup, exc_info=True)
+            return {
+                "ok": False,
+                "backup_path": "",
+                "message": "verified backup integrity check failed",
+                "created_at": 0,
+            }
+        _fsync_file(tmp_backup)
+
+        if primary_backup.exists():
+            previous_integrity = database_integrity_state(primary_backup)
+            if previous_integrity.get("db_integrity_known") and previous_integrity.get("db_integrity_ok"):
+                archived_backup = _timestamped_backup_path(source)
+                primary_backup.replace(archived_backup)
+            else:
+                try:
+                    primary_backup.unlink()
+                except OSError:
+                    logger.warning("Failed to remove stale DB backup %s", primary_backup, exc_info=True)
+
+        tmp_backup.replace(primary_backup)
+        _fsync_parent(primary_backup)
+        _prune_verified_backup_history(source)
+        return {
+            "ok": True,
+            "backup_path": str(primary_backup),
+            "message": "verified backup created",
+            "created_at": int(primary_backup.stat().st_mtime),
+        }
+    except BaseException:
         try:
             tmp_backup.unlink()
-        except OSError:
+        except FileNotFoundError:
             pass
-        return {
-            "ok": False,
-            "backup_path": "",
-            "message": "verified backup integrity check failed",
-            "created_at": 0,
-        }
-    _fsync_file(tmp_backup)
-
-    if primary_backup.exists():
-        previous_integrity = database_integrity_state(primary_backup)
-        if previous_integrity.get("db_integrity_known") and previous_integrity.get("db_integrity_ok"):
-            archived_backup = _timestamped_backup_path(source)
-            primary_backup.replace(archived_backup)
-        else:
-            try:
-                primary_backup.unlink()
-            except OSError:
-                logger.warning("Failed to remove stale DB backup %s", primary_backup, exc_info=True)
-
-    tmp_backup.replace(primary_backup)
-    _fsync_parent(primary_backup)
-    _prune_verified_backup_history(source)
-    return {
-        "ok": True,
-        "backup_path": str(primary_backup),
-        "message": "verified backup created",
-        "created_at": int(primary_backup.stat().st_mtime),
-    }
+        except OSError:
+            logger.warning("Failed to remove DB backup temp file %s", tmp_backup, exc_info=True)
+        raise
 
 
 def _backup_candidates(path: Path) -> list[Path]:

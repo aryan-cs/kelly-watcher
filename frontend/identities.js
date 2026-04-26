@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react';
 import { fetchApiJson } from './api.js';
+import { createPollingHealthStore, pollingErrorMessage } from './pollingHealth.js';
 import { useRefreshToken } from './refresh.js';
 import { isShadowRestartPending } from './useBotState.js';
 let identityCache = new Map();
+const IDENTITY_HEALTH_KEY = 'identity-cache';
+const identityHealthStore = createPollingHealthStore();
 export function clearIdentityCache() {
     identityCache = new Map();
+    identityHealthStore.clear();
+}
+export function useIdentityHealth() {
+    return identityHealthStore.useHealth();
 }
 export function isPlaceholderUsername(username, wallet) {
     const display = (username || '').trim();
@@ -46,6 +53,7 @@ export function useIdentityMap(intervalMs = 1000) {
         let cancelled = false;
         let timer = null;
         setLookup(new Map(identityCache));
+        identityHealthStore.register(IDENTITY_HEALTH_KEY);
         const schedule = () => {
             if (cancelled) {
                 return;
@@ -63,16 +71,19 @@ export function useIdentityMap(intervalMs = 1000) {
                 return;
             }
             try {
+                identityHealthStore.recordAttempt(IDENTITY_HEALTH_KEY);
                 const payload = await fetchApiJson('/api/identities');
                 const nextLookup = normalizeIdentityMap(payload);
                 identityCache = nextLookup;
+                identityHealthStore.recordSuccess(IDENTITY_HEALTH_KEY);
                 if (!cancelled) {
                     setLookup(new Map(nextLookup));
                 }
             }
-            catch {
+            catch (error) {
                 if (!cancelled) {
                     setLookup(new Map(identityCache));
+                    identityHealthStore.recordFailure(IDENTITY_HEALTH_KEY, pollingErrorMessage(error, 'Identity cache request failed.'));
                 }
             }
             finally {
@@ -85,6 +96,7 @@ export function useIdentityMap(intervalMs = 1000) {
             if (timer) {
                 clearTimeout(timer);
             }
+            identityHealthStore.unregister(IDENTITY_HEALTH_KEY);
         };
     }, [intervalMs, refreshToken]);
     return lookup;

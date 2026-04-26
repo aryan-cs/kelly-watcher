@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react'
 import {fetchApiJson} from './api.js'
+import {createPollingHealthStore, pollingErrorMessage, type PollingHealth} from './pollingHealth.js'
 import {useRefreshToken} from './refresh.js'
 import {isShadowRestartPending} from './useBotState.js'
 
@@ -8,9 +9,18 @@ interface IdentityResponse {
 }
 
 let identityCache = new Map<string, string>()
+const IDENTITY_HEALTH_KEY = 'identity-cache'
+const identityHealthStore = createPollingHealthStore()
+
+export type IdentityHealth = PollingHealth
 
 export function clearIdentityCache(): void {
   identityCache = new Map<string, string>()
+  identityHealthStore.clear()
+}
+
+export function useIdentityHealth(): IdentityHealth {
+  return identityHealthStore.useHealth()
 }
 
 export function isPlaceholderUsername(username: string | undefined, wallet?: string): boolean {
@@ -61,6 +71,7 @@ export function useIdentityMap(intervalMs = 1000): Map<string, string> {
     let timer: ReturnType<typeof setTimeout> | null = null
 
     setLookup(new Map(identityCache))
+    identityHealthStore.register(IDENTITY_HEALTH_KEY)
 
     const schedule = () => {
       if (cancelled) {
@@ -80,15 +91,21 @@ export function useIdentityMap(intervalMs = 1000): Map<string, string> {
         return
       }
       try {
+        identityHealthStore.recordAttempt(IDENTITY_HEALTH_KEY)
         const payload = await fetchApiJson<IdentityResponse>('/api/identities')
         const nextLookup = normalizeIdentityMap(payload)
         identityCache = nextLookup
+        identityHealthStore.recordSuccess(IDENTITY_HEALTH_KEY)
         if (!cancelled) {
           setLookup(new Map(nextLookup))
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
           setLookup(new Map(identityCache))
+          identityHealthStore.recordFailure(
+            IDENTITY_HEALTH_KEY,
+            pollingErrorMessage(error, 'Identity cache request failed.')
+          )
         }
       } finally {
         schedule()
@@ -102,6 +119,7 @@ export function useIdentityMap(intervalMs = 1000): Map<string, string> {
       if (timer) {
         clearTimeout(timer)
       }
+      identityHealthStore.unregister(IDENTITY_HEALTH_KEY)
     }
   }, [intervalMs, refreshToken])
 

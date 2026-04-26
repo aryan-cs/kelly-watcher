@@ -6,7 +6,9 @@ import {
   isPresetDurationField,
   readEnvValues,
   readEditableConfigValues,
+  type DashboardConfigHealth,
   useDashboardConfig,
+  useDashboardConfigHealth,
   validateEditableConfigValue,
   writeEditableConfigValue
 } from './configEditor.js'
@@ -38,9 +40,9 @@ import {detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize} fr
 import {useBotState, type BotState} from './useBotState.js'
 import {dropTrackedWallet, reactivateDroppedWallet} from './walletWatchState.js'
 import {editablePositionStatuses, savePositionManualEdit, type PositionManualEditStatus} from './positionEditor.js'
-import {clearEventStreamCache} from './useEventStream.js'
-import {clearQueryCache} from './useDb.js'
-import {clearIdentityCache} from './identities.js'
+import {clearEventStreamCache, type EventStreamHealth, useEventStreamHealth} from './useEventStream.js'
+import {clearQueryCache, type QueryHealth, useQueryHealth} from './useDb.js'
+import {clearIdentityCache, type IdentityHealth, useIdentityHealth} from './identities.js'
 import {beginShadowRestartBotState} from './useBotState.js'
 
 type Page = 1 | 2 | 3 | 4 | 5 | 6
@@ -133,6 +135,40 @@ function describeBackendStatus({
 
 function formatHeaderStatusTag(status: string): string {
   return `[${status.trim().toUpperCase()}]`
+}
+
+interface PollingHealthSourceStatus {
+  label: string
+  health: QueryHealth | EventStreamHealth | DashboardConfigHealth | IdentityHealth
+}
+
+interface DataHealthIssue {
+  tag: string
+  detail: string
+}
+
+function compactHealthText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function describeDataHealthIssue(sources: PollingHealthSourceStatus[]): DataHealthIssue | null {
+  const staleSources = sources.filter((source) => source.health.staleSourceCount > 0)
+  if (!staleSources.length) {
+    return null
+  }
+
+  const tag = staleSources.length > 1 ? 'data stale' : `${staleSources[0].label} stale`
+  const detail = staleSources
+    .map((source) => {
+      const count = source.health.staleSourceCount
+      const countText = count > 1 ? ` x${count}` : ''
+      const ageText = source.health.lastErrorAt > 0 ? secondsAgo(source.health.lastErrorAt / 1000) : 'recently'
+      const errorText = compactHealthText(source.health.lastError)
+      return `${source.label} stale${countText} (${ageText})${errorText ? `: ${truncate(errorText, 90)}` : ''}`
+    })
+    .join('; ')
+
+  return {tag, detail}
 }
 
 interface AppContentProps {
@@ -308,6 +344,10 @@ function AppContent({
   transientNotice
 }: AppContentProps) {
   const terminal = useTerminalSize()
+  const queryHealth = useQueryHealth()
+  const eventStreamHealth = useEventStreamHealth()
+  const dashboardConfigHealth = useDashboardConfigHealth()
+  const identityHealth = useIdentityHealth()
   const mode = botState.mode === 'live' ? '[LIVE]' : '[SHADOW]'
   const modeColor = botState.mode === 'live' ? theme.green : theme.dim
   const now = Date.now() / 1000
@@ -345,13 +385,17 @@ function AppContent({
     selectedDangerAction?.id === 'live_trading' && (shadowRestartPending || startupRecoveryOnly)
   const apiError = String(botState.api_error || '').trim()
   const apiIssueTag = /token|unauthorized/i.test(apiError) ? 'api auth error' : 'api offline'
+  const dataHealthIssue = describeDataHealthIssue([
+    {label: 'queries', health: queryHealth},
+    {label: 'events', health: eventStreamHealth},
+    {label: 'config', health: dashboardConfigHealth},
+    {label: 'identity', health: identityHealth}
+  ])
   const startupInProgress = startedAt > 0 && lastPollAt <= 0
-  const backendDotColor = startupFailed
+  const backendDotColor = startupFailed || apiError
     ? theme.red
-    : apiError
-    ? theme.red
-    : shadowRestartPending
-    ? theme.yellow
+    : shadowRestartPending || dataHealthIssue
+      ? theme.yellow
     : pollIsFresh
       ? theme.green
       : startupInProgress || (startedAt > 0 && activityIsFresh && loopInProgress)
@@ -366,6 +410,8 @@ function AppContent({
       ? apiIssueTag
       : shadowRestartPending
       ? shadowRestartMessage
+      : dataHealthIssue
+        ? dataHealthIssue.tag
       : startupInProgress && startupDetail
       ? startupDetail
       : describeBackendStatus({
@@ -400,6 +446,8 @@ function AppContent({
       ? apiError
       : shadowRestartPending
         ? shadowRestartMessage
+      : dataHealthIssue
+        ? `${dataHealthIssue.detail} | ${lastPollText}`
       : retrainInProgress
         ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
         : startupInProgress
@@ -417,6 +465,8 @@ function AppContent({
         : activeTransientNotice.tone === 'success'
           ? theme.green
           : theme.accent
+    : dataHealthIssue
+      ? theme.yellow
     : isRefreshing
       ? theme.accent
       : retrainInProgress

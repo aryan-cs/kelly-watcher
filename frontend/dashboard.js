@@ -1,6 +1,6 @@
 import React, { startTransition, useEffect, useRef, useState } from 'react';
 import { Box, Spacer, Text, render, useInput } from 'ink';
-import { cycleDurationPreset, editableConfigFields, isPresetDurationField, readEnvValues, readEditableConfigValues, useDashboardConfig, validateEditableConfigValue, writeEditableConfigValue } from './configEditor.js';
+import { cycleDurationPreset, editableConfigFields, isPresetDurationField, readEnvValues, readEditableConfigValues, useDashboardConfig, useDashboardConfigHealth, validateEditableConfigValue, writeEditableConfigValue } from './configEditor.js';
 import { MODEL_PANEL_COLUMN_LAYOUT, MODEL_PANEL_DEFS, Models } from './pages/Models.js';
 import { requestManualRetrain } from './retrainControl.js';
 import { stackPanels } from './responsive.js';
@@ -18,9 +18,9 @@ import { detectTerminalBackgroundColor, TerminalSizeProvider, useTerminalSize } 
 import { useBotState } from './useBotState.js';
 import { dropTrackedWallet, reactivateDroppedWallet } from './walletWatchState.js';
 import { editablePositionStatuses, savePositionManualEdit } from './positionEditor.js';
-import { clearEventStreamCache } from './useEventStream.js';
-import { clearQueryCache } from './useDb.js';
-import { clearIdentityCache } from './identities.js';
+import { clearEventStreamCache, useEventStreamHealth } from './useEventStream.js';
+import { clearQueryCache, useQueryHealth } from './useDb.js';
+import { clearIdentityCache, useIdentityHealth } from './identities.js';
 import { beginShadowRestartBotState } from './useBotState.js';
 const DOUBLE_UP_JUMP_MS = 350;
 const DOUBLE_UP_CONFIRM_MS = 140;
@@ -81,6 +81,26 @@ function describeBackendStatus({ startedAt, lastPollAt, activityIsFresh, pollIsF
 function formatHeaderStatusTag(status) {
     return `[${status.trim().toUpperCase()}]`;
 }
+function compactHealthText(value) {
+    return value.replace(/\s+/g, ' ').trim();
+}
+function describeDataHealthIssue(sources) {
+    const staleSources = sources.filter((source) => source.health.staleSourceCount > 0);
+    if (!staleSources.length) {
+        return null;
+    }
+    const tag = staleSources.length > 1 ? 'data stale' : `${staleSources[0].label} stale`;
+    const detail = staleSources
+        .map((source) => {
+        const count = source.health.staleSourceCount;
+        const countText = count > 1 ? ` x${count}` : '';
+        const ageText = source.health.lastErrorAt > 0 ? secondsAgo(source.health.lastErrorAt / 1000) : 'recently';
+        const errorText = compactHealthText(source.health.lastError);
+        return `${source.label} stale${countText} (${ageText})${errorText ? `: ${truncate(errorText, 90)}` : ''}`;
+    })
+        .join('; ');
+    return { tag, detail };
+}
 function renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, settingsValues, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange) {
     switch (page) {
         case 1:
@@ -99,6 +119,10 @@ function renderPage(page, settingsEditor, feedScrollOffset, onFeedScrollOffsetCh
 }
 function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOffset, onFeedScrollOffsetChange, signalsScrollOffset, onSignalsScrollOffsetChange, signalsHorizontalOffset, onSignalsHorizontalOffsetChange, perfCurrentScrollOffset, perfPastScrollOffset, perfActivePane, perfSelectedBox, perfDailyDetailOpen, perfDailyDetailScrollOffset, perfPositionAction, perfPositionEdit, pendingPerfExits, modelSelectionIndex, modelDetailOpen, modelSettingSelectionIndex, walletPane, walletBestSelectionIndex, walletWorstSelectionIndex, walletTrackedSelectionIndex, walletDroppedSelectionIndex, walletDetailOpen, onWalletMetaChange, onPerfCurrentScrollOffsetChange, onPerfPastScrollOffsetChange, onPerfDailyDetailScrollOffsetChange, onPerfSelectionMetaChange, onPerfDetailHistoryMetaChange, onPendingPerfExitSettlement, transientNotice }) {
     const terminal = useTerminalSize();
+    const queryHealth = useQueryHealth();
+    const eventStreamHealth = useEventStreamHealth();
+    const dashboardConfigHealth = useDashboardConfigHealth();
+    const identityHealth = useIdentityHealth();
     const mode = botState.mode === 'live' ? '[LIVE]' : '[SHADOW]';
     const modeColor = botState.mode === 'live' ? theme.green : theme.dim;
     const now = Date.now() / 1000;
@@ -135,13 +159,17 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
     const liveModeSelectionBlocked = selectedDangerAction?.id === 'live_trading' && (shadowRestartPending || startupRecoveryOnly);
     const apiError = String(botState.api_error || '').trim();
     const apiIssueTag = /token|unauthorized/i.test(apiError) ? 'api auth error' : 'api offline';
+    const dataHealthIssue = describeDataHealthIssue([
+        { label: 'queries', health: queryHealth },
+        { label: 'events', health: eventStreamHealth },
+        { label: 'config', health: dashboardConfigHealth },
+        { label: 'identity', health: identityHealth }
+    ]);
     const startupInProgress = startedAt > 0 && lastPollAt <= 0;
-    const backendDotColor = startupFailed
+    const backendDotColor = startupFailed || apiError
         ? theme.red
-        : apiError
-            ? theme.red
-            : shadowRestartPending
-                ? theme.yellow
+        : shadowRestartPending || dataHealthIssue
+            ? theme.yellow
             : pollIsFresh
                 ? theme.green
                 : startupInProgress || (startedAt > 0 && activityIsFresh && loopInProgress)
@@ -155,6 +183,8 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
             ? apiIssueTag
             : shadowRestartPending
                 ? shadowRestartMessage
+                : dataHealthIssue
+                    ? dataHealthIssue.tag
             : startupInProgress && startupDetail
                 ? startupDetail
                 : describeBackendStatus({
@@ -187,6 +217,8 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
             ? apiError
             : shadowRestartPending
                 ? shadowRestartMessage
+                : dataHealthIssue
+                    ? `${dataHealthIssue.detail} | ${lastPollText}`
             : retrainInProgress
                 ? `training...${retrainElapsedText ? ` ${retrainElapsedText}` : ''} | ${lastPollText}`
                 : startupInProgress
@@ -204,6 +236,8 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                 : activeTransientNotice.tone === 'success'
                     ? theme.green
                     : theme.accent
+            : dataHealthIssue
+                ? theme.yellow
             : isRefreshing
                 ? theme.accent
                 : retrainInProgress

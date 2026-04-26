@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react'
 import {postApiJson} from './api.js'
+import {createPollingHealthStore, pollingErrorMessage, type PollingHealth} from './pollingHealth.js'
 import {useRefreshToken} from './refresh.js'
 import {isShadowRestartPending} from './useBotState.js'
 
@@ -8,9 +9,17 @@ interface QueryResponse<T> {
 }
 
 const queryCache = new Map<string, unknown[]>()
+const queryHealthStore = createPollingHealthStore()
+
+export type QueryHealth = PollingHealth
 
 export function clearQueryCache(): void {
   queryCache.clear()
+  queryHealthStore.clear()
+}
+
+export function useQueryHealth(): QueryHealth {
+  return queryHealthStore.useHealth()
 }
 
 export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 1000): T[] {
@@ -25,6 +34,7 @@ export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 10
     let activeController: AbortController | null = null
 
     setRows((queryCache.get(cacheKey) as T[] | undefined) || [])
+    queryHealthStore.register(cacheKey)
 
     const schedule = () => {
       if (cancelled) {
@@ -45,10 +55,12 @@ export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 10
       }
       const controller = new AbortController()
       activeController = controller
+      queryHealthStore.recordAttempt(cacheKey)
       try {
         const response = await postApiJson<QueryResponse<T>>('/api/query', {sql, params}, {signal: controller.signal})
         const nextRows = Array.isArray(response.rows) ? response.rows : []
         queryCache.set(cacheKey, nextRows as unknown[])
+        queryHealthStore.recordSuccess(cacheKey)
         if (!cancelled) {
           setRows(nextRows)
         }
@@ -60,6 +72,7 @@ export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 10
         if (!cancelled && cachedRows) {
           setRows(cachedRows as T[])
         }
+        queryHealthStore.recordFailure(cacheKey, pollingErrorMessage(error, 'Query API request failed.'))
       } finally {
         if (activeController === controller) {
           activeController = null
@@ -76,6 +89,7 @@ export function useQuery<T>(sql: string, params: unknown[] = [], intervalMs = 10
         clearTimeout(timer)
       }
       activeController?.abort()
+      queryHealthStore.unregister(cacheKey)
     }
   }, [cacheKey, intervalMs, paramsKey, refreshToken, sql])
 

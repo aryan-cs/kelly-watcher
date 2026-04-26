@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react'
 import {fetchApiJson, postApiJson} from './api.js'
+import {createPollingHealthStore, pollingErrorMessage, type PollingHealth} from './pollingHealth.js'
 import {useRefreshToken} from './refresh.js'
 
 export type EditableConfigKind = 'int' | 'float' | 'bool' | 'duration' | 'choice' | 'text'
@@ -771,6 +772,10 @@ let dashboardConfigCache: DashboardConfigData = {
     return acc
   }, {})
 }
+const DASHBOARD_CONFIG_HEALTH_KEY = 'dashboard-config'
+const dashboardConfigHealthStore = createPollingHealthStore()
+
+export type DashboardConfigHealth = PollingHealth
 
 function isPercentEditableField(field: EditableConfigField): boolean {
   return percentEditableFieldKeys.has(field.key)
@@ -841,8 +846,23 @@ function updateDashboardConfigCache(payload: DashboardConfigResponse = {}): Dash
 }
 
 export async function refreshDashboardConfig(): Promise<DashboardConfigData> {
-  const payload = await fetchApiJson<DashboardConfigResponse>('/api/config')
-  return updateDashboardConfigCache(payload)
+  dashboardConfigHealthStore.recordAttempt(DASHBOARD_CONFIG_HEALTH_KEY)
+  try {
+    const payload = await fetchApiJson<DashboardConfigResponse>('/api/config')
+    const nextConfig = updateDashboardConfigCache(payload)
+    dashboardConfigHealthStore.recordSuccess(DASHBOARD_CONFIG_HEALTH_KEY)
+    return nextConfig
+  } catch (error) {
+    dashboardConfigHealthStore.recordFailure(
+      DASHBOARD_CONFIG_HEALTH_KEY,
+      pollingErrorMessage(error, 'Dashboard config request failed.')
+    )
+    throw error
+  }
+}
+
+export function useDashboardConfigHealth(): DashboardConfigHealth {
+  return dashboardConfigHealthStore.useHealth()
 }
 
 export function useDashboardConfig(intervalMs = 1000): DashboardConfigData {
@@ -852,6 +872,7 @@ export function useDashboardConfig(intervalMs = 1000): DashboardConfigData {
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
+    dashboardConfigHealthStore.register(DASHBOARD_CONFIG_HEALTH_KEY)
 
     const schedule = () => {
       if (cancelled) {
@@ -884,6 +905,7 @@ export function useDashboardConfig(intervalMs = 1000): DashboardConfigData {
       if (timer) {
         clearTimeout(timer)
       }
+      dashboardConfigHealthStore.unregister(DASHBOARD_CONFIG_HEALTH_KEY)
     }
   }, [intervalMs, refreshToken])
 
@@ -901,8 +923,19 @@ export function readEditableConfigValues(): EditableConfigValues {
 export async function writeEditableConfigValue(key: string, value: string): Promise<DashboardConfigData> {
   const field = editableConfigFields.find((candidate) => candidate.key === key)
   const storedValue = field ? storedValueFromEditableValue(field, value) : value
-  const payload = await postApiJson<DashboardConfigResponse>('/api/config/value', {key, value: storedValue})
-  return updateDashboardConfigCache(payload)
+  dashboardConfigHealthStore.recordAttempt(DASHBOARD_CONFIG_HEALTH_KEY)
+  try {
+    const payload = await postApiJson<DashboardConfigResponse>('/api/config/value', {key, value: storedValue})
+    const nextConfig = updateDashboardConfigCache(payload)
+    dashboardConfigHealthStore.recordSuccess(DASHBOARD_CONFIG_HEALTH_KEY)
+    return nextConfig
+  } catch (error) {
+    dashboardConfigHealthStore.recordFailure(
+      DASHBOARD_CONFIG_HEALTH_KEY,
+      pollingErrorMessage(error, 'Dashboard config write failed.')
+    )
+    throw error
+  }
 }
 
 export function validateEditableConfigValue(field: EditableConfigField, raw: string): {ok: true; value: string} | {ok: false; error: string} {

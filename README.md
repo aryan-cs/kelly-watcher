@@ -459,6 +459,8 @@ The dashboard is a terminal app, not a web app. It reads backend state through t
 - `save/data/bot_state.json`
 - `save/data/identity_cache.json`
 
+If a cache-backed dashboard read fails, the header/footer will show stale sources such as `queries stale`, `events stale`, `config stale`, or `identity stale` instead of silently reusing cached rows.
+
 In production, run it on the Mac checkout and set `KELLY_API_BASE_URL=http://100.91.53.63:8765` in the Mac `kelly-secrets.env`.
 
 ## Runtime Files

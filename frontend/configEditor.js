@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchApiJson, postApiJson } from './api.js';
+import { createPollingHealthStore, pollingErrorMessage } from './pollingHealth.js';
 import { useRefreshToken } from './refresh.js';
 export const maxMarketHorizonPresets = [
     '5m',
@@ -735,6 +736,8 @@ let dashboardConfigCache = {
         return acc;
     }, {})
 };
+const DASHBOARD_CONFIG_HEALTH_KEY = 'dashboard-config';
+const dashboardConfigHealthStore = createPollingHealthStore();
 function isPercentEditableField(field) {
     return percentEditableFieldKeys.has(field.key);
 }
@@ -791,8 +794,20 @@ function updateDashboardConfigCache(payload = {}) {
     return dashboardConfigCache;
 }
 export async function refreshDashboardConfig() {
-    const payload = await fetchApiJson('/api/config');
-    return updateDashboardConfigCache(payload);
+    dashboardConfigHealthStore.recordAttempt(DASHBOARD_CONFIG_HEALTH_KEY);
+    try {
+        const payload = await fetchApiJson('/api/config');
+        const nextConfig = updateDashboardConfigCache(payload);
+        dashboardConfigHealthStore.recordSuccess(DASHBOARD_CONFIG_HEALTH_KEY);
+        return nextConfig;
+    }
+    catch (error) {
+        dashboardConfigHealthStore.recordFailure(DASHBOARD_CONFIG_HEALTH_KEY, pollingErrorMessage(error, 'Dashboard config request failed.'));
+        throw error;
+    }
+}
+export function useDashboardConfigHealth() {
+    return dashboardConfigHealthStore.useHealth();
 }
 export function useDashboardConfig(intervalMs = 1000) {
     const [config, setConfig] = useState(() => dashboardConfigCache);
@@ -800,6 +815,7 @@ export function useDashboardConfig(intervalMs = 1000) {
     useEffect(() => {
         let cancelled = false;
         let timer = null;
+        dashboardConfigHealthStore.register(DASHBOARD_CONFIG_HEALTH_KEY);
         const schedule = () => {
             if (cancelled) {
                 return;
@@ -830,6 +846,7 @@ export function useDashboardConfig(intervalMs = 1000) {
             if (timer) {
                 clearTimeout(timer);
             }
+            dashboardConfigHealthStore.unregister(DASHBOARD_CONFIG_HEALTH_KEY);
         };
     }, [intervalMs, refreshToken]);
     return config;
@@ -843,8 +860,17 @@ export function readEditableConfigValues() {
 export async function writeEditableConfigValue(key, value) {
     const field = editableConfigFields.find((candidate) => candidate.key === key);
     const storedValue = field ? storedValueFromEditableValue(field, value) : value;
-    const payload = await postApiJson('/api/config/value', { key, value: storedValue });
-    return updateDashboardConfigCache(payload);
+    dashboardConfigHealthStore.recordAttempt(DASHBOARD_CONFIG_HEALTH_KEY);
+    try {
+        const payload = await postApiJson('/api/config/value', { key, value: storedValue });
+        const nextConfig = updateDashboardConfigCache(payload);
+        dashboardConfigHealthStore.recordSuccess(DASHBOARD_CONFIG_HEALTH_KEY);
+        return nextConfig;
+    }
+    catch (error) {
+        dashboardConfigHealthStore.recordFailure(DASHBOARD_CONFIG_HEALTH_KEY, pollingErrorMessage(error, 'Dashboard config write failed.'));
+        throw error;
+    }
 }
 export function validateEditableConfigValue(field, raw) {
     const value = raw.trim();

@@ -21,6 +21,7 @@ def _insert_trade(
     confidence: float,
     price_at_signal: float,
     placed_at: int,
+    market_close_ts: int | None = None,
     resolved_at: int | None = None,
     skipped: bool = False,
     actual_entry_price: float | None = None,
@@ -38,8 +39,8 @@ def _insert_trade(
             price_at_signal, signal_size_usd, actual_entry_price, actual_entry_shares,
             actual_entry_size_usd, confidence, kelly_fraction, signal_mode, real_money,
             skipped, skip_reason, placed_at, resolved_at, counterfactual_return, actual_pnl_usd, shadow_pnl_usd,
-            decision_context_json
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            market_close_ts, decision_context_json
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             trade_id,
@@ -65,6 +66,7 @@ def _insert_trade(
             counterfactual_return,
             actual_pnl_usd,
             shadow_pnl_usd,
+            market_close_ts,
             json.dumps({"signal": signal_payload or {}}, separators=(",", ":")),
         ),
     )
@@ -1149,7 +1151,8 @@ class ReplayTest(unittest.TestCase):
                     actual_entry_size_usd=100.0,
                     shadow_pnl_usd=18.0,
                     placed_at=1_700_000_000,
-                    resolved_at=1_700_010_800,
+                    market_close_ts=1_700_010_800,
+                    resolved_at=1_700_000_200,
                     signal_payload={"mode": "heuristic", "market": {"score": 0.82}},
                 )
                 _insert_trade(
@@ -1164,6 +1167,7 @@ class ReplayTest(unittest.TestCase):
                     actual_entry_size_usd=100.0,
                     shadow_pnl_usd=18.0,
                     placed_at=1_700_000_010,
+                    market_close_ts=1_700_010_810,
                     resolved_at=1_700_010_810,
                     signal_payload={"mode": "heuristic", "market": {"score": 0.82}},
                 )
@@ -1179,7 +1183,8 @@ class ReplayTest(unittest.TestCase):
                     actual_entry_size_usd=100.0,
                     shadow_pnl_usd=18.0,
                     placed_at=1_700_000_020,
-                    resolved_at=1_700_000_200,
+                    market_close_ts=1_700_000_200,
+                    resolved_at=1_700_010_820,
                     signal_payload={"mode": "heuristic", "market": {"score": 0.82}},
                 )
                 conn.commit()

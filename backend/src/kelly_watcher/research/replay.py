@@ -300,6 +300,7 @@ def _simulate(
             skipped,
             skip_reason,
             placed_at,
+            market_close_ts,
             COALESCE(exited_at, resolved_at, market_close_ts, placed_at) AS close_ts,
             resolved_at,
             exited_at,
@@ -479,7 +480,9 @@ def _simulate(
         signal = decision_context.get("signal") if isinstance(decision_context.get("signal"), dict) else {}
         signal_mode = _canonical_signal_mode(row["signal_mode"] or signal.get("mode") or "heuristic")
         close_ts = int(row["close_ts"] or placed_at)
-        time_to_close_seconds = max(0, close_ts - placed_at)
+        market_close_ts = int(row["market_close_ts"] or 0)
+        horizon_close_ts = market_close_ts if market_close_ts > placed_at else close_ts
+        time_to_close_seconds = max(0, horizon_close_ts - placed_at)
         time_to_close_band = _time_to_close_band(time_to_close_seconds)
         entry_price = _coalesce_float(
             row["actual_entry_price"],

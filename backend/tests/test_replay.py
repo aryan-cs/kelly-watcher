@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import kelly_watcher.data.db as db
-from kelly_watcher.research.replay import ReplayPolicy, run_replay
+from kelly_watcher.research.replay import ReplayPolicy, policy_to_config_payload, run_replay
 
 
 def _insert_trade(
@@ -86,6 +86,12 @@ class ReplayTest(unittest.TestCase):
 
         self.assertEqual(policy.allowed_entry_price_bands, ("0.60-0.69", ">=0.70"))
         self.assertEqual(policy.allowed_time_to_close_bands, ("15m-1h", "1h-2h"))
+
+    def test_replay_policy_config_payload_excludes_artifact_owned_base_edge_threshold(self) -> None:
+        payload = policy_to_config_payload(ReplayPolicy.from_payload({"edge_threshold": 0.05}))
+
+        self.assertNotIn("MODEL_BASE_EDGE_THRESHOLD", payload)
+        self.assertIn("MODEL_EDGE_MID_THRESHOLD", payload)
 
     def test_replay_policy_normalizes_segment_filters(self) -> None:
         policy = ReplayPolicy.from_payload(

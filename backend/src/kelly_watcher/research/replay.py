@@ -53,7 +53,6 @@ REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "heuristic_min_time_to_close_seconds": "HEURISTIC_MIN_TIME_TO_CLOSE",
     "model_edge_mid_confidence": "MODEL_EDGE_MID_CONFIDENCE",
     "model_edge_high_confidence": "MODEL_EDGE_HIGH_CONFIDENCE",
-    "edge_threshold": "MODEL_BASE_EDGE_THRESHOLD",
     "model_edge_mid_threshold": "MODEL_EDGE_MID_THRESHOLD",
     "model_edge_high_threshold": "MODEL_EDGE_HIGH_THRESHOLD",
     "xgboost_allowed_entry_price_bands": "XGBOOST_ALLOWED_ENTRY_PRICE_BANDS",

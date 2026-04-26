@@ -112,8 +112,10 @@ class DbRecoveryToolingTest(unittest.TestCase):
             db_path.unlink()
             wal_path = Path(f"{db_path}-wal")
             shm_path = Path(f"{db_path}-shm")
+            journal_path = Path(f"{db_path}-journal")
             wal_path.write_text("stale wal", encoding="utf-8")
             shm_path.write_text("stale shm", encoding="utf-8")
+            journal_path.write_text("stale journal", encoding="utf-8")
 
             result = db.recover_db_from_verified_backup(path=db_path, backup_path=backup_path)
 
@@ -121,13 +123,17 @@ class DbRecoveryToolingTest(unittest.TestCase):
             self.assertTrue(db_path.exists())
             self.assertFalse(wal_path.exists())
             self.assertFalse(shm_path.exists())
+            self.assertFalse(journal_path.exists())
             quarantine_dir = db_path.parent / "db_recovery_quarantine"
             archived_wal = list(quarantine_dir.glob(f"{db_path.stem}.pre_recovery.*{db_path.suffix}-wal"))
             archived_shm = list(quarantine_dir.glob(f"{db_path.stem}.pre_recovery.*{db_path.suffix}-shm"))
+            archived_journal = list(quarantine_dir.glob(f"{db_path.stem}.pre_recovery.*{db_path.suffix}-journal"))
             self.assertEqual(len(archived_wal), 1)
             self.assertEqual(len(archived_shm), 1)
+            self.assertEqual(len(archived_journal), 1)
             self.assertEqual(archived_wal[0].read_text(encoding="utf-8"), "stale wal")
             self.assertEqual(archived_shm[0].read_text(encoding="utf-8"), "stale shm")
+            self.assertEqual(archived_journal[0].read_text(encoding="utf-8"), "stale journal")
             integrity = db.database_integrity_state(db_path)
             self.assertTrue(integrity["db_integrity_known"])
             self.assertTrue(integrity["db_integrity_ok"])
@@ -136,25 +142,54 @@ class DbRecoveryToolingTest(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "data" / "trading.db"
             backup_path = db_path.with_suffix(".db.bak")
-            temp_restore = db_path.with_name(f"{db_path.name}.{os.getpid()}.recovering")
+            legacy_temp_restore = db_path.with_name(f"{db_path.name}.{os.getpid()}.recovering")
             db_path.parent.mkdir(parents=True, exist_ok=True)
             db.init_db(path=db_path)
             shutil.copy2(db_path, backup_path)
+            seen_temp_restore: list[Path] = []
 
             def _fail_fsync(path: Path) -> None:
-                self.assertEqual(path, temp_restore)
+                self.assertNotEqual(path, legacy_temp_restore)
+                self.assertTrue(path.name.startswith(f"{db_path.name}.{os.getpid()}."))
+                self.assertTrue(path.name.endswith(".recovering"))
+                seen_temp_restore.append(path)
                 Path(f"{path}-wal").write_text("temp wal", encoding="utf-8")
                 Path(f"{path}-shm").write_text("temp shm", encoding="utf-8")
+                Path(f"{path}-journal").write_text("temp journal", encoding="utf-8")
                 raise OSError("fsync failed")
 
             with patch.object(db, "_fsync_file", side_effect=_fail_fsync):
                 with self.assertRaisesRegex(OSError, "fsync failed"):
                     db.recover_db_from_verified_backup(path=db_path, backup_path=backup_path)
 
+            self.assertEqual(len(seen_temp_restore), 1)
+            temp_restore = seen_temp_restore[0]
             self.assertTrue(db_path.exists())
             self.assertFalse(temp_restore.exists())
             self.assertFalse(Path(f"{temp_restore}-wal").exists())
             self.assertFalse(Path(f"{temp_restore}-shm").exists())
+            self.assertFalse(Path(f"{temp_restore}-journal").exists())
+
+    def test_recover_db_from_verified_backup_cleans_legacy_temp_restore_sidecars(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "data" / "trading.db"
+            backup_path = db_path.with_suffix(".db.bak")
+            legacy_temp_restore = db_path.with_name(f"{db_path.name}.{os.getpid()}.recovering")
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            db.init_db(path=db_path)
+            shutil.copy2(db_path, backup_path)
+            legacy_temp_restore.write_text("stale temp restore", encoding="utf-8")
+            Path(f"{legacy_temp_restore}-wal").write_text("stale wal", encoding="utf-8")
+            Path(f"{legacy_temp_restore}-shm").write_text("stale shm", encoding="utf-8")
+            Path(f"{legacy_temp_restore}-journal").write_text("stale journal", encoding="utf-8")
+
+            result = db.recover_db_from_verified_backup(path=db_path, backup_path=backup_path)
+
+            self.assertTrue(result["ok"])
+            self.assertFalse(legacy_temp_restore.exists())
+            self.assertFalse(Path(f"{legacy_temp_restore}-wal").exists())
+            self.assertFalse(Path(f"{legacy_temp_restore}-shm").exists())
+            self.assertFalse(Path(f"{legacy_temp_restore}-journal").exists())
 
     def test_create_verified_backup_removes_temp_file_when_finalize_fails(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -164,13 +199,21 @@ class DbRecoveryToolingTest(unittest.TestCase):
             db_path.parent.mkdir(parents=True, exist_ok=True)
             db.init_db(path=db_path)
             legacy_tmp_backup.write_text("stale temp backup", encoding="utf-8")
+            seen_temp_backup: list[Path] = []
 
-            with patch.object(db, "_fsync_file", side_effect=OSError("fsync failed")):
+            def _fail_fsync(path: Path) -> None:
+                seen_temp_backup.append(path)
+                Path(f"{path}-journal").write_text("temp journal", encoding="utf-8")
+                raise OSError("fsync failed")
+
+            with patch.object(db, "_fsync_file", side_effect=_fail_fsync):
                 with self.assertRaisesRegex(OSError, "fsync failed"):
                     db.create_verified_backup(db_path)
 
+            self.assertEqual(len(seen_temp_backup), 1)
             self.assertFalse(primary_backup.exists())
             self.assertFalse(legacy_tmp_backup.exists())
+            self.assertFalse(Path(f"{seen_temp_backup[0]}-journal").exists())
             self.assertEqual(list(db_path.parent.glob(f"{primary_backup.name}*.tmp")), [])
 
 

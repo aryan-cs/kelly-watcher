@@ -20,6 +20,7 @@ RECOVERY_QUARANTINE_RETENTION = 5
 logger = logging.getLogger(__name__)
 _RUNTIME_JOURNAL_MODE_LOCK = threading.Lock()
 _RUNTIME_JOURNAL_MODE_PATHS: set[str] = set()
+_DB_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _SHARED_HOLDOUT_MESSAGE_RE = re.compile(
     r"shared holdout ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+).*?"
     r"incumbent ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+)",
@@ -105,8 +106,12 @@ def _fsync_parent(path: Path) -> None:
         os.close(directory_fd)
 
 
+def _db_sidecar_paths(path: Path) -> tuple[Path, ...]:
+    return tuple(Path(f"{path}{suffix}") for suffix in _DB_SIDECAR_SUFFIXES)
+
+
 def _remove_db_file_and_sidecars(path: Path, *, label: str) -> None:
-    for cleanup_path in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+    for cleanup_path in (path, *_db_sidecar_paths(path)):
         try:
             cleanup_path.unlink()
         except FileNotFoundError:
@@ -260,12 +265,7 @@ def create_verified_backup(path: Path | None = None) -> dict[str, object]:
 
         backup_integrity = database_integrity_state(tmp_backup)
         if backup_integrity.get("db_integrity_known") and not backup_integrity.get("db_integrity_ok"):
-            try:
-                tmp_backup.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                logger.warning("Failed to remove invalid DB backup temp file %s", tmp_backup, exc_info=True)
+            _remove_db_file_and_sidecars(tmp_backup, label="invalid DB backup temp file")
             return {
                 "ok": False,
                 "backup_path": "",
@@ -295,12 +295,7 @@ def create_verified_backup(path: Path | None = None) -> dict[str, object]:
             "created_at": int(primary_backup.stat().st_mtime),
         }
     except BaseException:
-        try:
-            tmp_backup.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            logger.warning("Failed to remove DB backup temp file %s", tmp_backup, exc_info=True)
+        _remove_db_file_and_sidecars(tmp_backup, label="DB backup temp file")
         raise
 
 
@@ -363,7 +358,7 @@ def _recovery_quarantine_root(path: Path) -> Path:
 
 def _timestamped_recovery_quarantine_path(path: Path) -> Path:
     def _candidate_available(candidate: Path) -> bool:
-        return not candidate.exists() and not Path(f"{candidate}-wal").exists() and not Path(f"{candidate}-shm").exists()
+        return not candidate.exists() and not any(sidecar.exists() for sidecar in _db_sidecar_paths(candidate))
 
     quarantine_dir = _recovery_quarantine_root(path)
     quarantine_dir.mkdir(parents=True, exist_ok=True)
@@ -392,11 +387,7 @@ def _recovery_quarantine_db_paths(path: Path) -> list[Path]:
 
 def _prune_recovery_quarantine(path: Path, *, keep: int = RECOVERY_QUARANTINE_RETENTION) -> None:
     for candidate in _recovery_quarantine_db_paths(path)[max(int(keep or 0), 0):]:
-        for cleanup_path in (
-            candidate,
-            Path(f"{candidate}-wal"),
-            Path(f"{candidate}-shm"),
-        ):
+        for cleanup_path in (candidate, *_db_sidecar_paths(candidate)):
             try:
                 cleanup_path.unlink()
             except FileNotFoundError:
@@ -447,16 +438,11 @@ def recover_db_from_verified_backup(
         }
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp_restore = target.with_name(f"{target.name}.{os.getpid()}.recovering")
-    for stale_path in (
-        temp_restore,
-        Path(f"{temp_restore}-wal"),
-        Path(f"{temp_restore}-shm"),
-    ):
-        try:
-            stale_path.unlink()
-        except FileNotFoundError:
-            pass
+    legacy_temp_restore = target.with_name(f"{target.name}.{os.getpid()}.recovering")
+    _remove_db_file_and_sidecars(legacy_temp_restore, label="stale DB recovery temp file")
+    temp_restore = target.with_name(
+        f"{target.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.recovering"
+    )
 
     try:
         src_conn: sqlite3.Connection | None = None
@@ -491,10 +477,7 @@ def recover_db_from_verified_backup(
         quarantined_target: Path | None = None
         sidecar_quarantine_base: Path | None = None
         quarantined_sidecars: list[tuple[Path, Path]] = []
-        sidecar_paths = (
-            Path(f"{target}-wal"),
-            Path(f"{target}-shm"),
-        )
+        sidecar_paths = _db_sidecar_paths(target)
         try:
             if target.exists():
                 quarantined_target = _timestamped_recovery_quarantine_path(target)

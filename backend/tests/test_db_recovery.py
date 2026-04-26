@@ -101,6 +101,36 @@ class DbRecoveryToolingTest(unittest.TestCase):
                 self.assertTrue(integrity["db_integrity_known"])
                 self.assertTrue(integrity["db_integrity_ok"])
 
+    def test_recover_db_from_verified_backup_quarantines_orphaned_sidecars(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "data" / "trading.db"
+            backup_path = db_path.with_suffix(".db.bak")
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            db.init_db(path=db_path)
+            shutil.copy2(db_path, backup_path)
+            db_path.unlink()
+            wal_path = Path(f"{db_path}-wal")
+            shm_path = Path(f"{db_path}-shm")
+            wal_path.write_text("stale wal", encoding="utf-8")
+            shm_path.write_text("stale shm", encoding="utf-8")
+
+            result = db.recover_db_from_verified_backup(path=db_path, backup_path=backup_path)
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(db_path.exists())
+            self.assertFalse(wal_path.exists())
+            self.assertFalse(shm_path.exists())
+            quarantine_dir = db_path.parent / "db_recovery_quarantine"
+            archived_wal = list(quarantine_dir.glob(f"{db_path.stem}.pre_recovery.*{db_path.suffix}-wal"))
+            archived_shm = list(quarantine_dir.glob(f"{db_path.stem}.pre_recovery.*{db_path.suffix}-shm"))
+            self.assertEqual(len(archived_wal), 1)
+            self.assertEqual(len(archived_shm), 1)
+            self.assertEqual(archived_wal[0].read_text(encoding="utf-8"), "stale wal")
+            self.assertEqual(archived_shm[0].read_text(encoding="utf-8"), "stale shm")
+            integrity = db.database_integrity_state(db_path)
+            self.assertTrue(integrity["db_integrity_known"])
+            self.assertTrue(integrity["db_integrity_ok"])
+
     def test_create_verified_backup_removes_temp_file_when_finalize_fails(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "data" / "trading.db"

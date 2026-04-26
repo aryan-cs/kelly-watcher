@@ -352,15 +352,18 @@ def _recovery_quarantine_root(path: Path) -> Path:
 
 
 def _timestamped_recovery_quarantine_path(path: Path) -> Path:
+    def _candidate_available(candidate: Path) -> bool:
+        return not candidate.exists() and not Path(f"{candidate}-wal").exists() and not Path(f"{candidate}-shm").exists()
+
     quarantine_dir = _recovery_quarantine_root(path)
     quarantine_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     candidate = quarantine_dir / f"{path.stem}.pre_recovery.{timestamp}{path.suffix}"
-    if not candidate.exists():
+    if _candidate_available(candidate):
         return candidate
     for attempt in range(1, 1000):
         fallback = quarantine_dir / f"{path.stem}.pre_recovery.{timestamp}_{attempt}{path.suffix}"
-        if not fallback.exists():
+        if _candidate_available(fallback):
             return fallback
     return quarantine_dir / f"{path.stem}.pre_recovery.{timestamp}_{time.time_ns()}{path.suffix}"
 
@@ -481,6 +484,7 @@ def recover_db_from_verified_backup(
 
     quarantined_path = ""
     quarantined_target: Path | None = None
+    sidecar_quarantine_base: Path | None = None
     quarantined_sidecars: list[tuple[Path, Path]] = []
     sidecar_paths = (
         Path(f"{target}-wal"),
@@ -489,14 +493,17 @@ def recover_db_from_verified_backup(
     try:
         if target.exists():
             quarantined_target = _timestamped_recovery_quarantine_path(target)
+            sidecar_quarantine_base = quarantined_target
             target.replace(quarantined_target)
             quarantined_path = str(quarantined_target)
-            for sidecar_path in sidecar_paths:
-                if not sidecar_path.exists():
-                    continue
-                archived_sidecar = Path(f"{quarantined_target}{sidecar_path.name[len(target.name):]}")
-                sidecar_path.replace(archived_sidecar)
-                quarantined_sidecars.append((archived_sidecar, sidecar_path))
+        for sidecar_path in sidecar_paths:
+            if not sidecar_path.exists():
+                continue
+            if sidecar_quarantine_base is None:
+                sidecar_quarantine_base = _timestamped_recovery_quarantine_path(target)
+            archived_sidecar = Path(f"{sidecar_quarantine_base}{sidecar_path.name[len(target.name):]}")
+            sidecar_path.replace(archived_sidecar)
+            quarantined_sidecars.append((archived_sidecar, sidecar_path))
         temp_restore.replace(target)
         _fsync_parent(target)
     except Exception:
@@ -505,17 +512,17 @@ def recover_db_from_verified_backup(
                 quarantined_target.replace(target)
             except OSError:
                 logger.warning("Failed to roll back quarantined DB %s", quarantined_target, exc_info=True)
-            for archived_sidecar, original_sidecar in reversed(quarantined_sidecars):
-                if not archived_sidecar.exists() or original_sidecar.exists():
-                    continue
-                try:
-                    archived_sidecar.replace(original_sidecar)
-                except OSError:
-                    logger.warning(
-                        "Failed to roll back quarantined DB sidecar %s",
-                        archived_sidecar,
-                        exc_info=True,
-                    )
+        for archived_sidecar, original_sidecar in reversed(quarantined_sidecars):
+            if not archived_sidecar.exists() or original_sidecar.exists():
+                continue
+            try:
+                archived_sidecar.replace(original_sidecar)
+            except OSError:
+                logger.warning(
+                    "Failed to roll back quarantined DB sidecar %s",
+                    archived_sidecar,
+                    exc_info=True,
+                )
         raise
     finally:
         try:

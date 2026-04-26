@@ -1235,6 +1235,22 @@ class RuntimeFixesTest(unittest.TestCase):
 
         self.assertFalse(delivered)
 
+    def test_runtime_log_handlers_skip_production_file_logging_under_pytest(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            handlers = main._runtime_log_handlers()
+
+        self.assertFalse(any(isinstance(handler, main.RotatingFileHandler) for handler in handlers))
+
+    def test_runtime_log_handlers_allow_explicit_test_file_logging_opt_in(self) -> None:
+        with patch.dict(os.environ, {"KELLY_ENABLE_PRODUCTION_LOGS_IN_TESTS": "1"}):
+            handlers = main._runtime_log_handlers()
+
+        try:
+            self.assertTrue(any(isinstance(handler, main.RotatingFileHandler) for handler in handlers))
+        finally:
+            for handler in handlers:
+                handler.close()
+
     def test_database_integrity_state_reports_sqlite_error(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trading.db"

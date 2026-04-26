@@ -45,6 +45,7 @@ MARKET_METADATA_CACHE_TTL_S = 300
 ORDERBOOK_CACHE_TTL_S = 2
 PRICE_HISTORY_CACHE_TTL_S = 60
 INTRADAY_MARKET_METADATA_CACHE_TTL_S = 30
+SOURCE_QUEUE_CLAIM_MAX_BATCHES = 4
 
 
 class HostRateLimiter:
@@ -520,6 +521,8 @@ class PolymarketTracker:
         now_ts = int(time.time())
         self.expire_stale_source_queue_rows(now_ts=now_ts)
         stale_processing_cutoff = now_ts - 300
+        base_age_limit = max_source_trade_age_seconds()
+        base_stale_cutoff = now_ts - int(base_age_limit) if base_age_limit > 0 else 0
         limit_clause = ""
         params: list[Any] = [stale_processing_cutoff]
         tier_clause = ""
@@ -532,6 +535,7 @@ class PolymarketTracker:
             placeholders = ",".join("?" for _ in normalized_tiers)
             tier_clause = f" AND LOWER(watch_tier) IN ({placeholders})"
             params.extend(normalized_tiers)
+        params.extend([base_stale_cutoff, base_stale_cutoff])
         if limit is not None and int(limit) > 0:
             limit_clause = " LIMIT ?"
             params.append(int(limit))
@@ -556,6 +560,7 @@ class PolymarketTracker:
                         WHEN 'discovery' THEN 2
                         ELSE 3
                     END,
+                    CASE WHEN ? > 0 AND source_ts > 0 AND source_ts < ? THEN 1 ELSE 0 END,
                     CASE WHEN source_ts > 0 THEN 0 ELSE 1 END,
                     source_ts ASC,
                     first_seen_at ASC
@@ -589,86 +594,97 @@ class PolymarketTracker:
         limit: int | None = None,
         watch_tiers: tuple[str, ...] | list[str] | None = None,
     ) -> list[TradeEvent]:
-        rows = self._claim_source_queue_rows(limit=limit, watch_tiers=watch_tiers)
-        if not rows:
-            return []
-
-        candidates: list[RawTradeCandidate] = []
-        for row in rows:
-            trade_id = str(row["trade_id"] or "").strip()
-            try:
-                raw_payload = json.loads(str(row["source_trade_json"] or "{}"))
-            except json.JSONDecodeError as exc:
-                self.mark_source_event_failed(trade_id, f"malformed source json: {exc}", terminal=True)
-                continue
-            if not isinstance(raw_payload, dict):
-                self.mark_source_event_failed(trade_id, "source json was not an object", terminal=True)
-                continue
-            candidates.append(
-                RawTradeCandidate(
-                    wallet=str(row["wallet_address"] or "").strip().lower(),
-                    trade_id=trade_id,
-                    timestamp=int(row["source_ts"] or 0),
-                    condition_id=str(row["condition_id"] or "").strip().lower(),
-                    token_id=str(row["token_id"] or "").strip(),
-                    raw=dict(raw_payload),
-                    watch_tier=str(row["watch_tier"] or ""),
-                    first_seen_at=int(row["first_seen_at"] or 0),
-                    observed_at=int(row["observed_at"] or 0),
-                )
-            )
-
-        metadata_by_condition = self._fetch_market_metadata_batch(
-            [candidate.condition_id for candidate in candidates]
-        )
-        fresh_events: list[tuple[RawTradeCandidate, TradeEvent]] = []
-        now_ts = int(time.time())
-        for candidate in candidates:
-            meta, metadata_fetched_at = metadata_by_condition.get(candidate.condition_id, ({}, 0))
-            event = self._parse_raw_trade(
-                candidate.raw,
-                candidate.wallet,
-                candidate.first_seen_at or int(time.time()),
-                market_meta=meta,
-                metadata_fetched_at=metadata_fetched_at,
-                watch_tier=candidate.watch_tier,
-            )
-            if event is None:
-                self.mark_source_event_failed(candidate.trade_id, "source event could not be parsed", terminal=True)
-                continue
-            if self._is_stale_event(event, now_ts):
-                max_age = source_trade_age_limit_seconds(getattr(event, "market_close_ts", 0), now_ts=now_ts)
-                source_age_s = now_ts - int(getattr(event, "timestamp", 0) or now_ts)
-                self.mark_source_event_stale(
-                    candidate.trade_id,
-                    f"source trade stale before processing ({source_age_s}s old, limit {max_age}s)",
-                )
-                continue
-            fresh_events.append((candidate, event))
-
-        orderbooks_by_token = (
-            self._fetch_orderbook_snapshots_batch([candidate.token_id for candidate, _ in fresh_events])
-            if fresh_events
-            else {}
-        )
-
+        requested_limit = int(limit) if limit is not None and int(limit) > 0 else None
+        max_batches = SOURCE_QUEUE_CLAIM_MAX_BATCHES if requested_limit is not None else 1
         events: list[TradeEvent] = []
-        for candidate, event in fresh_events:
-            snap, raw_book, orderbook_fetched_at = orderbooks_by_token.get(
-                candidate.token_id,
-                (None, None, 0),
-            )
-            merged_snapshot = dict(snap or {})
-            if event.snapshot:
-                merged_snapshot.update(event.snapshot)
+        batches = 0
 
-            event.snapshot = merged_snapshot or None
-            event.raw_orderbook = raw_book
-            if candidate.observed_at > 0:
-                event.observed_at = candidate.observed_at
-            event.orderbook_fetched_at = orderbook_fetched_at
-            event.watch_tier = candidate.watch_tier or event.watch_tier or ""
-            events.append(event)
+        while batches < max_batches:
+            claim_limit = None
+            if requested_limit is not None:
+                claim_limit = requested_limit - len(events)
+                if claim_limit <= 0:
+                    break
+            rows = self._claim_source_queue_rows(limit=claim_limit, watch_tiers=watch_tiers)
+            if not rows:
+                break
+            batches += 1
+
+            candidates: list[RawTradeCandidate] = []
+            for row in rows:
+                trade_id = str(row["trade_id"] or "").strip()
+                try:
+                    raw_payload = json.loads(str(row["source_trade_json"] or "{}"))
+                except json.JSONDecodeError as exc:
+                    self.mark_source_event_failed(trade_id, f"malformed source json: {exc}", terminal=True)
+                    continue
+                if not isinstance(raw_payload, dict):
+                    self.mark_source_event_failed(trade_id, "source json was not an object", terminal=True)
+                    continue
+                candidates.append(
+                    RawTradeCandidate(
+                        wallet=str(row["wallet_address"] or "").strip().lower(),
+                        trade_id=trade_id,
+                        timestamp=int(row["source_ts"] or 0),
+                        condition_id=str(row["condition_id"] or "").strip().lower(),
+                        token_id=str(row["token_id"] or "").strip(),
+                        raw=dict(raw_payload),
+                        watch_tier=str(row["watch_tier"] or ""),
+                        first_seen_at=int(row["first_seen_at"] or 0),
+                        observed_at=int(row["observed_at"] or 0),
+                    )
+                )
+
+            metadata_by_condition = self._fetch_market_metadata_batch(
+                [candidate.condition_id for candidate in candidates]
+            )
+            fresh_events: list[tuple[RawTradeCandidate, TradeEvent]] = []
+            now_ts = int(time.time())
+            for candidate in candidates:
+                meta, metadata_fetched_at = metadata_by_condition.get(candidate.condition_id, ({}, 0))
+                event = self._parse_raw_trade(
+                    candidate.raw,
+                    candidate.wallet,
+                    candidate.first_seen_at or int(time.time()),
+                    market_meta=meta,
+                    metadata_fetched_at=metadata_fetched_at,
+                    watch_tier=candidate.watch_tier,
+                )
+                if event is None:
+                    self.mark_source_event_failed(candidate.trade_id, "source event could not be parsed", terminal=True)
+                    continue
+                if self._is_stale_event(event, now_ts):
+                    max_age = source_trade_age_limit_seconds(getattr(event, "market_close_ts", 0), now_ts=now_ts)
+                    source_age_s = now_ts - int(getattr(event, "timestamp", 0) or now_ts)
+                    self.mark_source_event_stale(
+                        candidate.trade_id,
+                        f"source trade stale before processing ({source_age_s}s old, limit {max_age}s)",
+                    )
+                    continue
+                fresh_events.append((candidate, event))
+
+            orderbooks_by_token = (
+                self._fetch_orderbook_snapshots_batch([candidate.token_id for candidate, _ in fresh_events])
+                if fresh_events
+                else {}
+            )
+
+            for candidate, event in fresh_events:
+                snap, raw_book, orderbook_fetched_at = orderbooks_by_token.get(
+                    candidate.token_id,
+                    (None, None, 0),
+                )
+                merged_snapshot = dict(snap or {})
+                if event.snapshot:
+                    merged_snapshot.update(event.snapshot)
+
+                event.snapshot = merged_snapshot or None
+                event.raw_orderbook = raw_book
+                if candidate.observed_at > 0:
+                    event.observed_at = candidate.observed_at
+                event.orderbook_fetched_at = orderbook_fetched_at
+                event.watch_tier = candidate.watch_tier or event.watch_tier or ""
+                events.append(event)
 
         events.sort(key=lambda event: event.timestamp)
         return events

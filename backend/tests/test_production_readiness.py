@@ -619,6 +619,55 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_source_queue_claim_prioritizes_base_fresh_rows_under_stale_backlog(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, '{}', 'pending', 0, ?, ?, ?, '')
+                        """,
+                        [
+                            ("older-backlog", "market-old", "token-old", now_ts - 70, now_ts - 70, now_ts - 70, now_ts - 70),
+                            ("base-fresh", "market-new", "token-new", now_ts - 10, now_ts - 10, now_ts - 10, now_ts - 10),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=45
+                    ), patch("kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=180):
+                        rows = tracker_obj._claim_source_queue_rows(limit=1, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in rows], ["base-fresh"])
+                conn = db.get_conn()
+                try:
+                    statuses = {
+                        row["trade_id"]: row["status"]
+                        for row in conn.execute("SELECT trade_id, status FROM source_event_queue").fetchall()
+                    }
+                finally:
+                    conn.close()
+                self.assertEqual(statuses["base-fresh"], "processing")
+                self.assertEqual(statuses["older-backlog"], "pending")
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_source_queue_claim_uses_immediate_transaction(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
@@ -791,6 +840,123 @@ class ProductionReadinessTest(unittest.TestCase):
                 self.assertEqual(statuses["late-near"][0], "stale")
                 self.assertIn("source trade stale before processing", statuses["late-near"][1])
                 self.assertEqual(statuses["fresh-far"][0], "processing")
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_load_queued_events_refills_after_stale_near_row_to_preserve_far_market_event(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                stale_near_raw = {
+                    "id": "stale-near",
+                    "conditionId": "market-near",
+                    "side": "BUY",
+                    "asset": "token-near",
+                    "size": 10,
+                    "price": 0.41,
+                    "timestamp": now_ts - 60,
+                    "outcome": "Yes",
+                }
+                valid_far_raw = {
+                    "id": "valid-far",
+                    "conditionId": "market-far",
+                    "side": "BUY",
+                    "asset": "token-far",
+                    "size": 10,
+                    "price": 0.42,
+                    "timestamp": now_ts - 60,
+                    "outcome": "Yes",
+                }
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, ?, 'pending', 0, ?, ?, ?, '')
+                        """,
+                        [
+                            (
+                                "stale-near",
+                                "market-near",
+                                "token-near",
+                                now_ts - 60,
+                                json.dumps(stale_near_raw),
+                                now_ts - 59,
+                                now_ts - 59,
+                                now_ts - 59,
+                            ),
+                            (
+                                "valid-far",
+                                "market-far",
+                                "token-far",
+                                now_ts - 60,
+                                json.dumps(valid_far_raw),
+                                now_ts - 58,
+                                now_ts - 58,
+                                now_ts - 58,
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                def metadata_batch(condition_ids):
+                    payloads = {
+                        "market-near": ({"question": "Near market"}, now_ts),
+                        "market-far": ({"question": "Far market", "endDate": str(now_ts + 7200)}, now_ts),
+                    }
+                    return {condition_id: payloads[condition_id] for condition_id in condition_ids}
+
+                def age_limit(market_close_ts, *, now_ts=None):
+                    now_value = int(now_ts or 0)
+                    if int(market_close_ts or 0) >= now_value + 3600:
+                        return 180
+                    return 45
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                tracker_obj._fetch_market_metadata_batch = Mock(side_effect=metadata_batch)
+                tracker_obj._fetch_orderbook_snapshots_batch = Mock(
+                    return_value={
+                        "token-far": (
+                            {"best_bid": 0.41, "best_ask": 0.43, "mid": 0.42},
+                            {"bids": [], "asks": []},
+                            now_ts,
+                        )
+                    }
+                )
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=45
+                    ), patch("kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=180), patch(
+                        "kelly_watcher.runtime.tracker.source_trade_age_limit_seconds", side_effect=age_limit
+                    ):
+                        events = tracker_obj.load_queued_events(limit=1, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([event.trade_id for event in events], ["valid-far"])
+                self.assertEqual(tracker_obj._fetch_market_metadata_batch.call_count, 2)
+                tracker_obj._fetch_orderbook_snapshots_batch.assert_called_once_with(["token-far"])
+                conn = db.get_conn()
+                try:
+                    statuses = {
+                        row["trade_id"]: (row["status"], row["last_error"])
+                        for row in conn.execute(
+                            "SELECT trade_id, status, last_error FROM source_event_queue ORDER BY trade_id"
+                        ).fetchall()
+                    }
+                finally:
+                    conn.close()
+                self.assertEqual(statuses["stale-near"][0], "stale")
+                self.assertIn("source trade stale before processing", statuses["stale-near"][1])
+                self.assertEqual(statuses["valid-far"][0], "processing")
             finally:
                 db.DB_PATH = original_db_path
 

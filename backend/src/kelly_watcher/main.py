@@ -181,13 +181,33 @@ from kelly_watcher.engine.watchlist_manager import WatchlistManager
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _running_under_pytest() -> bool:
+    return "pytest" in sys.modules
+
+
+def _production_file_logging_enabled() -> bool:
+    if not _running_under_pytest():
+        return True
+    return str(os.getenv("KELLY_ENABLE_PRODUCTION_LOGS_IN_TESTS", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _runtime_log_handlers() -> list[logging.Handler]:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if _production_file_logging_enabled():
+        handlers.insert(0, RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10 * 1024 * 1024, backupCount=5))
+    return handlers
+
+
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10 * 1024 * 1024, backupCount=5),
-        logging.StreamHandler(),
-    ],
+    handlers=_runtime_log_handlers(),
 )
 
 if str(os.getenv("KELLY_VERBOSE_HTTP_LOGS", "")).strip().lower() not in {"1", "true", "yes", "on"}:
@@ -6960,9 +6980,9 @@ def main() -> None:
                 source_events_malformed = 0
                 source_events_duplicate = 0
                 queue_counts: dict[str, int] = {}
-                loop_error_at = 0
-                loop_error_stage = ""
-                loop_error_message = ""
+                loop_error_at = int(bot_state_snapshot.get("last_loop_error_at") or 0)
+                loop_error_stage = str(bot_state_snapshot.get("last_loop_error_stage") or "")
+                loop_error_message = str(bot_state_snapshot.get("last_loop_error_message") or "")
                 try:
                     _persist_bot_state(poll_stage="checking_balance")
                     bankroll = executor.get_usdc_balance()

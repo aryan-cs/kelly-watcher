@@ -617,8 +617,8 @@ class PolymarketTracker:
                 ORDER BY
                     CASE status
                         WHEN 'pending' THEN 0
-                        WHEN 'failed' THEN 1
-                        WHEN 'processing' THEN 2
+                        WHEN 'processing' THEN 1
+                        WHEN 'failed' THEN 2
                         ELSE 3
                     END,
                     CASE LOWER(watch_tier)

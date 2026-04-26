@@ -783,6 +783,89 @@ class ProductionReadinessTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_source_queue_claim_prioritizes_expired_processing_before_failed_retries(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.executemany(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES (?, '0xhot', 'hot', ?, ?, ?, '{}', ?, ?, ?, ?, ?, '')
+                        """,
+                        [
+                            (
+                                "pending-oldest",
+                                "market-pending",
+                                "token-pending",
+                                now_ts - 30,
+                                "pending",
+                                0,
+                                now_ts - 30,
+                                now_ts - 30,
+                                now_ts - 30,
+                            ),
+                            (
+                                "failed-newest",
+                                "market-failed",
+                                "token-failed",
+                                now_ts - 5,
+                                "failed",
+                                3,
+                                now_ts - 5,
+                                now_ts - 5,
+                                now_ts - 40,
+                            ),
+                            (
+                                "processing-middle",
+                                "market-processing",
+                                "token-processing",
+                                now_ts - 10,
+                                "processing",
+                                1,
+                                now_ts - 10,
+                                now_ts - 10,
+                                now_ts - 40,
+                            ),
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.time.time", return_value=now_ts), patch(
+                        "kelly_watcher.runtime.tracker.max_source_trade_age_seconds", return_value=45
+                    ), patch("kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=180):
+                        rows = tracker_obj._claim_source_queue_rows(limit=2, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in rows], ["pending-oldest", "processing-middle"])
+                conn = db.get_conn()
+                try:
+                    statuses = {
+                        row["trade_id"]: (row["status"], row["attempts"])
+                        for row in conn.execute(
+                            "SELECT trade_id, status, attempts FROM source_event_queue ORDER BY trade_id"
+                        ).fetchall()
+                    }
+                finally:
+                    conn.close()
+                self.assertEqual(statuses["pending-oldest"], ("processing", 1))
+                self.assertEqual(statuses["processing-middle"], ("processing", 2))
+                self.assertEqual(statuses["failed-newest"], ("failed", 3))
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_source_queue_claim_respects_failed_retry_backoff(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

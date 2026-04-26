@@ -415,6 +415,47 @@ class RuntimeFixesTest(unittest.TestCase):
             finally:
                 identity_cache.CACHE_PATH = original_cache_path
 
+    def test_identity_cache_write_cleans_temp_file_when_replace_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_cache_path = identity_cache.CACHE_PATH
+            try:
+                cache_path = Path(tmpdir) / "identity_cache.json"
+                identity_cache.CACHE_PATH = cache_path
+
+                with patch.object(Path, "replace", side_effect=OSError("replace failed")):
+                    with self.assertRaises(OSError):
+                        identity_cache.remember_identity(
+                            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "TraderName",
+                            checked_at=1_700_000_000,
+                        )
+
+                self.assertFalse(cache_path.exists())
+                self.assertEqual(list(cache_path.parent.glob(f".{cache_path.name}.*.tmp")), [])
+            finally:
+                identity_cache.CACHE_PATH = original_cache_path
+
+    def test_should_retrain_early_closes_connection_when_query_fails(self) -> None:
+        class ClosingConnection:
+            closed = False
+
+            def execute(self, *_args, **_kwargs):
+                raise RuntimeError("query failed")
+
+            def close(self) -> None:
+                self.closed = True
+
+        conn = ClosingConnection()
+        with patch("kelly_watcher.research.auto_retrain._retrain_training_scope_block_reason", return_value=""), patch(
+            "kelly_watcher.research.auto_retrain._active_retrain_training_scope", return_value=(None, False)
+        ), patch("kelly_watcher.research.auto_retrain.retrain_min_new_labels", return_value=1), patch(
+            "kelly_watcher.research.auto_retrain.get_conn", return_value=conn
+        ):
+            with self.assertRaises(RuntimeError):
+                auto_retrain.should_retrain_early(None)
+
+        self.assertTrue(conn.closed)
+
     def test_live_account_equity_includes_open_positions(self) -> None:
         executor = object.__new__(PolymarketExecutor)
         executor.get_usdc_balance = lambda: 80.0

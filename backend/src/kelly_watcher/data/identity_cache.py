@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -77,9 +78,36 @@ def load_identity_cache() -> dict:
         return _default_cache()
 
 
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_parent(path: Path) -> None:
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _write_identity_cache(cache: dict) -> None:
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path = CACHE_PATH.with_name(f".{CACHE_PATH.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+        _fsync_file(tmp_path)
+        tmp_path.replace(CACHE_PATH)
+        _fsync_parent(CACHE_PATH)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _clear_placeholder_identity(cache: dict, wallet: str) -> None:

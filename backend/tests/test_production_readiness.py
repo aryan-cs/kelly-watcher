@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 import kelly_watcher.config as config
@@ -543,6 +543,87 @@ class ProductionReadinessTest(unittest.TestCase):
                 self.assertEqual([row["trade_id"] for row in rows], ["hot-oldest", "hot-middle"])
             finally:
                 db.DB_PATH = original_db_path
+
+    def test_source_queue_claim_uses_immediate_transaction(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                now_ts = 1_700_000_100
+                conn = db.get_conn()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO source_event_queue (
+                            trade_id, wallet_address, watch_tier, condition_id, token_id,
+                            source_ts, source_trade_json, status, attempts, first_seen_at,
+                            observed_at, updated_at, last_error
+                        ) VALUES ('claim-1', '0xhot', 'hot', 'market-1', 'token-1', ?, '{}', 'pending', 0, ?, ?, ?, '')
+                        """,
+                        (now_ts - 5, now_ts - 5, now_ts - 5, now_ts - 5),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                statements: list[str] = []
+
+                def traced_conn():
+                    traced = db.get_conn()
+                    traced.set_trace_callback(lambda statement: statements.append(" ".join(statement.upper().split())))
+                    return traced
+
+                tracker_obj = tracker.PolymarketTracker(["0xhot"])
+                try:
+                    with patch("kelly_watcher.runtime.tracker.get_conn", side_effect=traced_conn), patch(
+                        "kelly_watcher.runtime.tracker.time.time", return_value=now_ts
+                    ), patch("kelly_watcher.runtime.tracker.max_source_trade_age_ceiling_seconds", return_value=300):
+                        rows = tracker_obj._claim_source_queue_rows(limit=1, watch_tiers=("hot",))
+                finally:
+                    tracker_obj.close()
+
+                self.assertEqual([row["trade_id"] for row in rows], ["claim-1"])
+                begin_index = next(index for index, statement in enumerate(statements) if statement == "BEGIN IMMEDIATE")
+                select_index = next(
+                    index
+                    for index, statement in enumerate(statements)
+                    if statement.startswith("SELECT *") and "FROM SOURCE_EVENT_QUEUE" in statement
+                )
+                update_index = next(
+                    index
+                    for index, statement in enumerate(statements)
+                    if statement.startswith("UPDATE SOURCE_EVENT_QUEUE") and "STATUS='PROCESSING'" in statement
+                )
+                commit_index = next(
+                    index
+                    for index, statement in enumerate(statements)
+                    if index > update_index and statement == "COMMIT"
+                )
+                self.assertLess(begin_index, select_index)
+                self.assertLess(select_index, update_index)
+                self.assertLess(update_index, commit_index)
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_load_training_data_closes_connection_when_read_fails(self) -> None:
+        class ClosingConnection:
+            closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        conn = ClosingConnection()
+        fake_numpy = ModuleType("numpy")
+        fake_pandas = ModuleType("pandas")
+        fake_pandas.read_sql_query = Mock(side_effect=RuntimeError("read failed"))
+        with patch.dict("sys.modules", {"numpy": fake_numpy, "pandas": fake_pandas}), patch(
+            "kelly_watcher.research.train.get_conn", return_value=conn
+        ):
+            with self.assertRaises(RuntimeError):
+                train.load_training_data()
+
+        self.assertTrue(conn.closed)
 
     def test_wallet_trade_pagination_continues_past_cursor_duplicate_page(self) -> None:
         with TemporaryDirectory() as tmpdir:

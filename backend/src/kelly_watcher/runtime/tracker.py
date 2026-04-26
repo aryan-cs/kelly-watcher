@@ -538,6 +538,7 @@ class PolymarketTracker:
 
         conn = get_conn()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 f"""
                 SELECT *
@@ -574,8 +575,11 @@ class PolymarketTracker:
                     """,
                     [(now_ts, str(row["trade_id"])) for row in rows],
                 )
-                conn.commit()
+            conn.commit()
             return list(rows)
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

@@ -295,10 +295,12 @@ def should_retrain_early(_signal_engine) -> bool:
     threshold = retrain_min_new_labels()
     since_ts, routed_only = _active_retrain_training_scope()
     conn = get_conn()
-    row = conn.execute(
-        "SELECT trained_at FROM model_history WHERE deployed=1 ORDER BY trained_at DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
+    try:
+        row = conn.execute(
+            "SELECT trained_at FROM model_history WHERE deployed=1 ORDER BY trained_at DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
 
     if row is None:
         return len(load_training_data(since_ts=since_ts, routed_only=routed_only)) >= min_samples_required()
@@ -315,15 +317,17 @@ def should_retrain_early(_signal_engine) -> bool:
         )
         params.extend(_ROUTED_RETRAIN_SEGMENT_IDS)
     conn = get_conn()
-    new_labeled = conn.execute(
-        f"""
-        SELECT COUNT(*) AS n
-        FROM trade_log
-        WHERE {" AND ".join(where_clauses)}
-        """,
-        tuple(params),
-    ).fetchone()["n"]
-    conn.close()
+    try:
+        new_labeled = conn.execute(
+            f"""
+            SELECT COUNT(*) AS n
+            FROM trade_log
+            WHERE {" AND ".join(where_clauses)}
+            """,
+            tuple(params),
+        ).fetchone()["n"]
+    finally:
+        conn.close()
 
     if new_labeled >= threshold:
         logger.info("Early retrain triggered: %s new labeled samples (threshold %s)", new_labeled, threshold)

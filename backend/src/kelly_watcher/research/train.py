@@ -152,32 +152,34 @@ def load_training_data(
         )
         params.extend(_ROUTED_TRAINING_SEGMENT_IDS)
 
-    df = pd.read_sql_query(
-        f"""
-        SELECT
-            id,
-            trade_id,
-            placed_at,
-            {label_ts_expr} AS label_ts,
-            source_action,
-            skipped,
-            skip_reason,
-            price_at_signal,
-            signal_size_usd,
-            COALESCE(actual_entry_price, price_at_signal) AS effective_price,
-            COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
-            counterfactual_return,
-            {TRAINING_RETURN_SQL} AS {RETURN_COL},
-            {TRAINING_OUTCOME_SQL} AS {OUTCOME_COL},
-            {", ".join(FEATURE_COLS)}
-        FROM trade_log
-        WHERE {" AND ".join(where_clauses)}
-        ORDER BY label_ts ASC, placed_at ASC, id ASC
-        """,
-        conn,
-        params=params,
-    )
-    conn.close()
+    try:
+        df = pd.read_sql_query(
+            f"""
+            SELECT
+                id,
+                trade_id,
+                placed_at,
+                {label_ts_expr} AS label_ts,
+                source_action,
+                skipped,
+                skip_reason,
+                price_at_signal,
+                signal_size_usd,
+                COALESCE(actual_entry_price, price_at_signal) AS effective_price,
+                COALESCE(actual_entry_size_usd, signal_size_usd) AS effective_size_usd,
+                counterfactual_return,
+                {TRAINING_RETURN_SQL} AS {RETURN_COL},
+                {TRAINING_OUTCOME_SQL} AS {OUTCOME_COL},
+                {", ".join(FEATURE_COLS)}
+            FROM trade_log
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY label_ts ASC, placed_at ASC, id ASC
+            """,
+            conn,
+            params=params,
+        )
+    finally:
+        conn.close()
 
     if df.empty:
         df[LABEL_COL] = []

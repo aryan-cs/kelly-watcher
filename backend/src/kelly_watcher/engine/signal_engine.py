@@ -368,7 +368,7 @@ class SignalEngine:
         *,
         watch_tier: str | None,
     ) -> dict[str, object]:
-        time_to_close_seconds = max(float(getattr(market_features, "days_to_res", 0.0) or 0.0) * 86400.0, 0.0)
+        time_to_close_seconds = _time_to_close_seconds(getattr(market_features, "days_to_res", 0.0))
         time_to_close_band = time_to_close_band_label(int(time_to_close_seconds))
         route = segment_route_for_trade(
             watch_tier=watch_tier,
@@ -816,6 +816,16 @@ def _artifact_feature_cols(value: object) -> list[str] | None:
     if any(column not in allowed for column in cols):
         return None
     return cols
+
+
+def _time_to_close_seconds(days_to_res: object) -> float:
+    try:
+        days = float(days_to_res)
+    except (TypeError, ValueError):
+        return 0.0
+    if not np.isfinite(days) or days <= 0.0:
+        return 0.0
+    return days * 86400.0
 
 
 def _sanitize_model_policy(policy: object) -> dict[str, float]:

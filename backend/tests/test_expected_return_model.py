@@ -180,6 +180,26 @@ class ExpectedReturnModelTest(unittest.TestCase):
         self.assertEqual(result["segment"]["segment_policy"]["segment_id"], "warm_mid")
         self.assertEqual(result["segment"]["policy_bundle_version"], 1)
 
+    def test_signal_engine_returns_veto_when_horizon_is_nonfinite(self) -> None:
+        with patch(
+            "kelly_watcher.engine.signal_engine.model_path",
+            return_value="/tmp/kelly-watcher-missing-model.joblib",
+        ):
+            engine = signal_engine.SignalEngine()
+
+        market_features = SimpleNamespace(execution_price=0.42, mid=0.42, days_to_res=float("nan"))
+        with patch.object(
+            engine.market_scorer,
+            "score",
+            return_value={"score": 0.0, "veto": "invalid market numeric value", "components": {}},
+        ):
+            result = engine.evaluate(SimpleNamespace(), market_features, 10.0, watch_tier="warm")
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["veto"], "invalid market numeric value")
+        self.assertEqual(result["segment"]["time_to_close_seconds"], 0.0)
+        self.assertEqual(result["segment"]["time_to_close_band"], "<=5m")
+
     def test_signal_engine_relaxes_edge_threshold_for_high_confidence_predictions(self) -> None:
         with TemporaryDirectory() as tmpdir:
             model_file = Path(tmpdir) / "model.joblib"

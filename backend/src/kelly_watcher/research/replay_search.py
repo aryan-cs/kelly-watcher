@@ -5426,7 +5426,7 @@ def main() -> None:
     parser.add_argument("--min-resolved-share", type=float, default=0.0, help="Minimum fraction of accepted replay trades that must be resolved.")
     parser.add_argument("--min-resolved-size-share", type=float, default=0.0, help="Minimum fraction of accepted replay deployed dollars that must be resolved.")
     parser.add_argument("--min-win-rate", type=float, default=0.0, help="Minimum replay win rate required for a candidate to be feasible.")
-    parser.add_argument("--min-total-pnl-usd", type=float, default=-1_000_000_000.0, help="Minimum total replay P&L required for a candidate to be feasible.")
+    parser.add_argument("--min-total-pnl-usd", type=float, default=0.0, help="Minimum total replay P&L required for a candidate to be feasible.")
     parser.add_argument("--max-drawdown-pct", type=float, default=0.0, help="Maximum replay drawdown allowed for a candidate to be feasible.")
     parser.add_argument("--max-open-exposure-share", type=float, default=0.0, help="Maximum open-exposure share of replay equity allowed at any point during the replay.")
     parser.add_argument("--max-window-end-open-exposure-share", type=float, default=0.0, help="Maximum carried open-exposure share allowed at the end of any replay window.")

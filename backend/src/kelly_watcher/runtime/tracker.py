@@ -570,7 +570,7 @@ class PolymarketTracker:
                     END,
                     CASE WHEN ? > 0 AND source_ts > 0 AND source_ts < ? THEN 1 ELSE 0 END,
                     CASE WHEN source_ts > 0 THEN 0 ELSE 1 END,
-                    source_ts DESC,
+                    source_ts ASC,
                     first_seen_at ASC
                 {limit_clause}
                 """,

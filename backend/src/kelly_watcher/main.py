@@ -6255,6 +6255,24 @@ def main() -> None:
             _persist_replay_promotion_state(result)
             return result
 
+        best_total_pnl_usd = float((best_candidate_row or {}).get("total_pnl_usd") or 0.0)
+        if not math.isfinite(best_total_pnl_usd) or best_total_pnl_usd <= 0.0:
+            result = _record_replay_promotion(
+                trigger=trigger,
+                run_row=run_row,
+                candidate_row=best_candidate_row,
+                current_candidate_row=current_candidate_row,
+                status="skipped_nonpositive_pnl",
+                reason=(
+                    "Best feasible replay candidate did not produce positive P&L "
+                    f"(${best_total_pnl_usd:.2f}); auto-promotion requires profitable replay evidence"
+                ),
+                score_delta=score_delta,
+                pnl_delta_usd=pnl_delta_usd,
+            )
+            _persist_replay_promotion_state(result)
+            return result
+
         if current_feasible:
             score_threshold = replay_auto_promote_min_score_delta()
             if score_delta is None or score_delta <= score_threshold:

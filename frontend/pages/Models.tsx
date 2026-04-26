@@ -505,9 +505,10 @@ export const MODEL_PANEL_DEFS: ModelPanelDefinition[] = [
 ]
 
 export const MODEL_PANEL_COLUMN_LAYOUT: number[][] = [
-  [0, 1, 2],
-  [3, 4],
-  [5, 6]
+  [0, 1],
+  [2],
+  [3],
+  [4, 5, 6]
 ]
 
 interface ModelsProps {
@@ -6769,16 +6770,15 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
     [scoringMixStats]
   )
   const modelsContentWidth = Math.max(3, terminal.width - 14)
-  const modelsColumnCount = 5
+  const modelsColumnCount = 4
   const modelsColumnGap = modelsContentWidth >= 40 ? 1 : 0
   const modelsUsableWidth = Math.max(3, modelsContentWidth - modelsColumnGap * (modelsColumnCount - 1))
   const baseModelsColumnWidth = Math.max(1, Math.floor(modelsUsableWidth / modelsColumnCount))
-  const modelsColumnWidths: [number, number, number, number, number] = [
+  const modelsColumnWidths: [number, number, number, number] = [
     baseModelsColumnWidth,
     baseModelsColumnWidth,
     baseModelsColumnWidth,
-    baseModelsColumnWidth,
-    Math.max(1, modelsUsableWidth - baseModelsColumnWidth * 4)
+    Math.max(1, modelsUsableWidth - baseModelsColumnWidth * 3)
   ]
   const modelPanelHeight = Math.max(12, terminal.height - 9)
   const predictionQualityStats = useMemo<CompactStatItem[]>(
@@ -7067,18 +7067,14 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
           {renderModelRows(howItWorksScoreRows, modelsColumnWidths[3])}
           <ModelsSubsectionTitle title="History Nudge" width={modelsColumnWidths[3]} />
           {renderModelRows(howItWorksHistoryRows, modelsColumnWidths[3])}
-        </InkBox>
-
-        <InkBox width={modelsColumnGap} />
-
-        <InkBox width={modelsColumnWidths[4]} flexDirection="column">
+          <ModelsSpacer />
           <ModelsSectionTitle
             title="Training Cycle"
-            width={modelsColumnWidths[4]}
+            width={modelsColumnWidths[3]}
             selected={clampedSelectedPanelIndex === 6}
             backgroundColor={selectedRowBackground}
           />
-          {renderModelRows(trainingCycleDisplayStats, modelsColumnWidths[4])}
+          {renderModelRows(trainingCycleDisplayStats, modelsColumnWidths[3])}
           {latestSharedHoldoutRun && latestSharedHoldout ? (
             <>
               {renderModelRows(
@@ -7100,16 +7096,16 @@ export function Models({selectedPanelIndex, detailOpen, selectedSettingIndex, se
                     color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
                   }
                 ],
-                modelsColumnWidths[4]
+                modelsColumnWidths[3]
               )}
             </>
           ) : null}
           <ModelsSpacer />
-          <ModelsSubsectionTitle title="Recent Training" width={modelsColumnWidths[4]} />
+          <ModelsSubsectionTitle title="Recent Training" width={modelsColumnWidths[3]} />
           {compactRecentRetrainRows.length ? (
-            renderModelRows(compactRecentRetrainRows, modelsColumnWidths[4])
+            renderModelRows(compactRecentRetrainRows, modelsColumnWidths[3])
           ) : (
-            <Text color={theme.dim}>{fit('No retrain attempts logged yet.', modelsColumnWidths[4])}</Text>
+            <Text color={theme.dim}>{fit('No retrain attempts logged yet.', modelsColumnWidths[3])}</Text>
           )}
         </InkBox>
       </InkBox>

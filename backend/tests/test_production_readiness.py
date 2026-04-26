@@ -886,6 +886,16 @@ class ProductionReadinessTest(unittest.TestCase):
                                 now_ts - 12,
                                 now_ts - 20,
                             ),
+                            (
+                                "failed-final-window-high-attempts",
+                                "market-final",
+                                "token-final",
+                                now_ts - 40,
+                                8,
+                                now_ts - 40,
+                                now_ts - 40,
+                                now_ts - 20,
+                            ),
                         ],
                     )
                     conn.commit()
@@ -901,7 +911,10 @@ class ProductionReadinessTest(unittest.TestCase):
                 finally:
                     tracker_obj.close()
 
-                self.assertEqual([row["trade_id"] for row in rows], ["failed-ready-high-attempts"])
+                self.assertEqual(
+                    [row["trade_id"] for row in rows],
+                    ["failed-ready-high-attempts", "failed-final-window-high-attempts"],
+                )
                 conn = db.get_conn()
                 try:
                     states = {
@@ -915,6 +928,7 @@ class ProductionReadinessTest(unittest.TestCase):
                 self.assertEqual(states["failed-recent-high-attempts"], ("failed", 8))
                 self.assertEqual(states["failed-delayed-high-attempts"], ("failed", 8))
                 self.assertEqual(states["failed-ready-high-attempts"], ("processing", 9))
+                self.assertEqual(states["failed-final-window-high-attempts"], ("processing", 9))
             finally:
                 db.DB_PATH = original_db_path
 

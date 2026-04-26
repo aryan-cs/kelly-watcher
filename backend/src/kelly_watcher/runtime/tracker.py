@@ -557,6 +557,12 @@ class PolymarketTracker:
             now_ts,
             SOURCE_QUEUE_FAILED_RETRY_MAX_BACKOFF_SECONDS,
             SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS,
+            int(base_age_limit or 0),
+            base_stale_cutoff,
+            base_stale_cutoff,
+            SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS,
+            int(base_age_limit or 0),
+            SOURCE_QUEUE_FAILED_RETRY_BACKOFF_SECONDS,
             stale_processing_cutoff,
         ]
         tier_clause = ""
@@ -585,14 +591,23 @@ class PolymarketTracker:
                     status='pending'
                     OR (
                         status='failed'
-                        AND updated_at <= ? - MIN(
-                            ?,
-                            ? * CASE
-                                WHEN attempts <= 1 THEN 1
-                                WHEN attempts = 2 THEN 2
-                                WHEN attempts = 3 THEN 4
-                                ELSE 8
-                            END
+                        AND (
+                            updated_at <= ? - MIN(
+                                ?,
+                                ? * CASE
+                                    WHEN attempts <= 1 THEN 1
+                                    WHEN attempts = 2 THEN 2
+                                    WHEN attempts = 3 THEN 4
+                                    ELSE 8
+                                END
+                            )
+                            OR (
+                                ? > 0
+                                AND source_ts > 0
+                                AND source_ts >= ?
+                                AND source_ts <= ? + ?
+                                AND updated_at <= source_ts + MAX(? - ?, 0)
+                            )
                         )
                     )
                     OR (status='processing' AND updated_at < ?)

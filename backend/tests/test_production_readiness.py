@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import sqlite3
 import time
 import unittest
 from pathlib import Path
@@ -1142,6 +1143,39 @@ class ProductionReadinessTest(unittest.TestCase):
                 self.assertLess(update_index, commit_index)
             finally:
                 db.DB_PATH = original_db_path
+
+    def test_source_queue_claim_preserves_original_error_when_rollback_fails(self) -> None:
+        class _FailingConnection:
+            def __init__(self) -> None:
+                self.rolled_back = False
+                self.closed = False
+
+            def execute(self, statement, *_args, **_kwargs):
+                if "BEGIN" in str(statement).upper():
+                    return None
+                raise sqlite3.OperationalError("claim failed")
+
+            def rollback(self) -> None:
+                self.rolled_back = True
+                raise sqlite3.OperationalError("rollback failed")
+
+            def close(self) -> None:
+                self.closed = True
+
+        conn = _FailingConnection()
+        tracker_obj = object.__new__(tracker.PolymarketTracker)
+        with patch.object(
+            tracker.PolymarketTracker,
+            "expire_stale_source_queue_rows",
+            return_value=0,
+        ), patch("kelly_watcher.runtime.tracker.get_conn", return_value=conn), patch(
+            "kelly_watcher.runtime.tracker.time.time", return_value=1_700_000_100
+        ):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "claim failed"):
+                tracker_obj._claim_source_queue_rows(limit=1, watch_tiers=("hot",))
+
+        self.assertTrue(conn.rolled_back)
+        self.assertTrue(conn.closed)
 
     def test_load_queued_events_marks_stale_after_metadata_before_orderbook_fetch(self) -> None:
         with TemporaryDirectory() as tmpdir:

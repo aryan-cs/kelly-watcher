@@ -24,7 +24,7 @@ from kelly_watcher.config import (
     source_trade_age_limit_seconds,
     wallet_trade_fetch_workers,
 )
-from kelly_watcher.data.db import get_conn, init_db
+from kelly_watcher.data.db import get_conn, init_db, rollback_safely
 from kelly_watcher.data.identity_cache import hydrate_observed_identity, resolve_username_for_wallet
 
 logger = logging.getLogger(__name__)
@@ -604,7 +604,7 @@ class PolymarketTracker:
             conn.commit()
             return list(rows)
         except Exception:
-            conn.rollback()
+            rollback_safely(conn, label="source queue claim")
             raise
         finally:
             conn.close()

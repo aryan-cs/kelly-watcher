@@ -1600,6 +1600,19 @@ class RuntimeFixesTest(unittest.TestCase):
         fake_conn.close.assert_called_once()
         fake_conn.rollback.assert_called_once()
 
+    def test_init_db_preserves_schema_error_when_rollback_fails(self) -> None:
+        fake_conn = Mock()
+        fake_conn.executescript.side_effect = sqlite3.OperationalError("schema failed")
+        fake_conn.rollback.side_effect = sqlite3.OperationalError("rollback failed")
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trading.db"
+            with patch.object(db, "get_conn_for_path", return_value=fake_conn):
+                with self.assertRaisesRegex(sqlite3.OperationalError, "schema failed"):
+                    db.init_db(db_path, run_heavy_maintenance=False)
+
+        fake_conn.rollback.assert_called_once()
+        fake_conn.close.assert_called_once()
+
     def test_log_trade_rolls_back_failed_insert_before_close(self) -> None:
         fake_conn = Mock()
         fake_conn.execute.side_effect = sqlite3.OperationalError("database is locked")

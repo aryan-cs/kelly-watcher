@@ -762,10 +762,7 @@ def init_db(path: Path | None = None, *, run_heavy_maintenance: bool | None = No
     try:
         _init_db_with_connection(conn, target, run_heavy_maintenance=run_heavy_maintenance)
     except BaseException:
-        try:
-            conn.rollback()
-        except sqlite3.Error:
-            pass
+        rollback_safely(conn, label="database initialization")
         raise
     finally:
         conn.close()
@@ -1814,7 +1811,7 @@ def _init_db_with_connection(
             )
             conn.commit()
         except sqlite3.DatabaseError:
-            conn.rollback()
+            rollback_safely(conn, label="heavy startup DB maintenance")
             logger.exception("Heavy startup DB maintenance failed; keeping core schema changes")
     else:
         logger.info(

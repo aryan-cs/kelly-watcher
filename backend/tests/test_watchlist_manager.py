@@ -1106,6 +1106,87 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
+    def test_legacy_uncopyable_drops_are_reactivated(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                db.DB_PATH = Path(tmpdir) / "data" / "trading.db"
+                db.init_db()
+                conn = db.get_conn()
+                conn.executemany(
+                    """
+                    INSERT INTO trader_cache (
+                        trader_address, win_rate, n_trades, consistency, volume_usd, avg_size_usd,
+                        diversity, account_age_d, wins, ties, realized_pnl_usd, avg_return,
+                        open_positions, open_value_usd, open_pnl_usd, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ("0xbot", 0.72, 80, 0.4, 10_000.0, 40.0, 10, 200, 58, 0, 1_200.0, 0.09, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xstale", 0.72, 80, 0.4, 10_000.0, 40.0, 10, 200, 58, 0, 1_200.0, 0.09, 0, 0.0, 0.0, 1_700_000_000),
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO wallet_watch_state (
+                        wallet_address,
+                        status,
+                        status_reason,
+                        dropped_at,
+                        tracking_started_at,
+                        updated_at
+                    ) VALUES (?, 'dropped', ?, ?, ?, ?)
+                    """,
+                    (
+                        ("0xbot", "uncopyable 100% 25/25 buys", 1_700_000_100, 1_700_000_000, 1_700_000_100),
+                        ("0xstale", "inactive>1h", 1_700_000_100, 1_700_000_000, 1_700_000_100),
+                    ),
+                )
+                insert_logged_trade(
+                    conn,
+                    "0xbot",
+                    1_700_000_200,
+                    actual_entry_price=0.50,
+                    actual_entry_shares=2.0,
+                    actual_entry_size_usd=1.0,
+                    shadow_pnl_usd=0.25,
+                )
+                conn.commit()
+                conn.close()
+
+                with patch("kelly_watcher.engine.watchlist_manager.hot_wallet_count", return_value=2), patch(
+                    "kelly_watcher.engine.watchlist_manager.warm_wallet_count", return_value=0
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
+                ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=999
+                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400):
+                    manager = WatchlistManager(["0xbot", "0xstale"])
+                    snapshot = manager.refresh()
+
+                self.assertIn("0xbot", snapshot.hot)
+                self.assertEqual(snapshot.dropped, ("0xstale",))
+
+                conn = db.get_conn()
+                bot_row = conn.execute(
+                    "SELECT status, status_reason, dropped_at, reactivated_at FROM wallet_watch_state WHERE wallet_address=?",
+                    ("0xbot",),
+                ).fetchone()
+                stale_row = conn.execute(
+                    "SELECT status, status_reason, dropped_at, reactivated_at FROM wallet_watch_state WHERE wallet_address=?",
+                    ("0xstale",),
+                ).fetchone()
+                conn.close()
+
+                self.assertEqual(bot_row["status"], "active")
+                self.assertIsNone(bot_row["status_reason"])
+                self.assertEqual(int(bot_row["dropped_at"] or 0), 0)
+                self.assertEqual(int(bot_row["reactivated_at"] or 0), 1_700_000_400)
+                self.assertEqual(stale_row["status"], "dropped")
+                self.assertEqual(stale_row["status_reason"], "inactive>1h")
+            finally:
+                db.DB_PATH = original_db_path
+
     def test_profitable_discovery_wallet_is_not_slow_dropped(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH

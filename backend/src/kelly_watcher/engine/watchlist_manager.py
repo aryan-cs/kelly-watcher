@@ -824,6 +824,35 @@ def _ensure_tracking_started(wallet_addresses: list[str]) -> None:
         conn.close()
 
 
+def _reactivate_legacy_uncopyable_drops(wallet_addresses: list[str]) -> int:
+    wallets = _normalize_wallets(wallet_addresses)
+    if not wallets:
+        return 0
+
+    now_ts = int(time.time())
+    placeholders = ",".join("?" for _ in wallets)
+    conn = get_conn()
+    try:
+        cursor = conn.execute(
+            f"""
+            UPDATE wallet_watch_state
+            SET status='active',
+                status_reason=NULL,
+                dropped_at=NULL,
+                reactivated_at=?,
+                updated_at=?
+            WHERE wallet_address IN ({placeholders})
+              AND status='dropped'
+              AND LOWER(COALESCE(status_reason, '')) LIKE 'uncopyable%'
+            """,
+            (now_ts, now_ts, *wallets),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
+
+
 def _auto_drop_underperforming_wallets(wallet_addresses: list[str], protected_wallets: set[str] | None = None) -> None:
     minimum_trades = wallet_performance_drop_min_trades()
     if minimum_trades <= 0:
@@ -1135,6 +1164,8 @@ class WatchlistManager:
 
     def _build_snapshot(self, *, run_auto_drop: bool = True) -> WatchTierSnapshot:
         _ensure_tracking_started(self.wallets)
+        if run_auto_drop:
+            _reactivate_legacy_uncopyable_drops(self.wallets)
         _refresh_wallet_policy_metrics(self.wallets)
         profitable_local_wallets = _profitable_local_wallets(self.wallets)
         inactivity_protected_wallets = _protected_best_wallets(self.wallets) | profitable_local_wallets

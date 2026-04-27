@@ -2008,7 +2008,7 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
   const levelCount = DAILY_PREVIEW_LEVELS
   const gapWidth = 0
   const columnWidth = DAILY_PREVIEW_COLUMN_WIDTH
-  const chartWidth = Math.max(1, width - 2)
+  const chartWidth = Math.max(1, width + 2)
   const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth))
   const visibleEntries = entries.slice(-visibleCapacity)
   const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)))

@@ -458,36 +458,17 @@ function getPositionsLayout(width) {
         showUser
     };
 }
-function getPositionPaneMetrics(terminalHeight, stacked, currentCount = 0, pastCount = 0) {
+function getPositionPaneMetrics(terminalHeight, stacked) {
     const outerReserve = 8;
     const statsHeight = 9;
     const dailyHeight = 9;
     const topRowHeight = stacked ? statsHeight + 1 + dailyHeight : Math.max(statsHeight, dailyHeight);
     const availableHeight = Math.max(8, terminalHeight - outerReserve - topRowHeight);
     const gapHeight = 0;
-    const minPaneHeight = 4;
-    const maxPaneHeight = Math.max(minPaneHeight, availableHeight - gapHeight - minPaneHeight);
-    const desiredCurrentPaneHeight = currentCount > 0
-        ? Math.min(maxPaneHeight, Math.max(5, currentCount + 4))
-        : minPaneHeight;
-    const desiredPastPaneHeight = pastCount > 0
-        ? Math.min(maxPaneHeight, Math.max(5, pastCount + 4))
-        : minPaneHeight;
-    const desiredTotal = desiredCurrentPaneHeight + gapHeight + desiredPastPaneHeight;
-    if (desiredTotal <= availableHeight) {
-        return {
-            currentPaneHeight: desiredCurrentPaneHeight,
-            pastPaneHeight: desiredPastPaneHeight,
-            currentVisibleRows: Math.max(1, desiredCurrentPaneHeight - 4),
-            pastVisibleRows: Math.max(1, desiredPastPaneHeight - 4)
-        };
-    }
-    const remainingAfterMinimums = Math.max(0, availableHeight - gapHeight - minPaneHeight * 2);
-    const currentWeight = currentCount > 0 ? Math.max(1, Math.min(currentCount, 12)) : 1;
-    const pastWeight = pastCount > 0 ? Math.max(1, Math.min(pastCount, 12)) : 1;
-    const currentExtra = Math.floor(remainingAfterMinimums * currentWeight / (currentWeight + pastWeight));
-    const currentPaneHeight = minPaneHeight + currentExtra;
-    const pastPaneHeight = Math.max(minPaneHeight, availableHeight - gapHeight - currentPaneHeight);
+    const minPaneHeight = 5;
+    const usableHeight = Math.max(minPaneHeight * 2, availableHeight - gapHeight);
+    const currentPaneHeight = Math.max(minPaneHeight, Math.min(usableHeight - minPaneHeight, Math.floor(usableHeight * 0.35)));
+    const pastPaneHeight = Math.max(minPaneHeight, usableHeight - currentPaneHeight);
     return {
         currentPaneHeight,
         pastPaneHeight,
@@ -1599,7 +1580,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         : 0, [dailyPanelContentWidth, todayHourlyEntries.length]);
     const dailyPreviewEntries = useMemo(() => todayHourlyEntries.slice(0, dailyPreviewCapacity).reverse(), [dailyPreviewCapacity, todayHourlyEntries]);
     const dailyValueWidth = useMemo(() => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10), [dailyEntries]);
-    const paneMetrics = getPositionPaneMetrics(terminal.height, stacked, currentPositions.length, pastPositions.length);
+    const paneMetrics = getPositionPaneMetrics(terminal.height, stacked);
     const currentMaxOffset = Math.max(currentPositions.length - 1, 0);
     const pastMaxOffset = Math.max(pastPositions.length - 1, 0);
     const effectiveCurrentScrollOffset = Math.min(currentScrollOffset, currentMaxOffset);

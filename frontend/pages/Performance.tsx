@@ -595,6 +595,11 @@ interface DailyQueueLayout {
   valueWidth: number
 }
 
+const DAILY_PREVIEW_LEVELS = 3
+const DAILY_PREVIEW_COLUMN_WIDTH = 2
+const DAILY_DETAIL_MAX_MODAL_WIDTH = 76
+const DAILY_DETAIL_MAX_BAR_WIDTH = 42
+
 interface ComputedSummary {
   acted: number
   resolved: number
@@ -704,14 +709,16 @@ function getDailyPanelContentWidth(terminalWidth: number, stacked: boolean): num
 
 function getDailyQueueLayout(contentWidth: number, valueWidth: number): DailyQueueLayout {
   const dateWidth = 14
-  const resolvedValueWidth = Math.max(12, valueWidth)
-  const minBarWidth = 9
-  const rawBarWidth = Math.max(minBarWidth, contentWidth - dateWidth - resolvedValueWidth - 2)
+  const resolvedValueWidth = Math.max(10, Math.min(14, valueWidth))
+  const minBarWidth = 7
+  const spacingWidth = 4
+  const availableBarWidth = Math.max(1, contentWidth - dateWidth - resolvedValueWidth - spacingWidth)
+  const rawBarWidth = Math.max(minBarWidth, Math.min(DAILY_DETAIL_MAX_BAR_WIDTH, availableBarWidth))
   const centeredBarWidth = rawBarWidth % 2 === 0 ? rawBarWidth - 1 : rawBarWidth
 
   return {
     dateWidth,
-    barWidth: Math.max(minBarWidth, centeredBarWidth),
+    barWidth: Math.max(1, centeredBarWidth),
     valueWidth: resolvedValueWidth
   }
 }
@@ -1998,13 +2005,12 @@ function groupHistoricalHourlyPnl(rows: PositionRow[], nowDate: Date): DailyPnlE
 }
 
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
-  const levelCount = 4
+  const levelCount = DAILY_PREVIEW_LEVELS
   const gapWidth = 0
-  const columnWidth = 2
-  const chartWidth = Math.max(1, width)
+  const columnWidth = DAILY_PREVIEW_COLUMN_WIDTH
+  const chartWidth = Math.max(1, width - 2)
   const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth))
   const visibleEntries = entries.slice(-visibleCapacity)
-  const leftPaddingWidth = Math.max(0, chartWidth - (visibleEntries.length * columnWidth))
   const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)))
   const heights = visibleEntries.map((entry) => {
     const magnitude = Math.abs(entry.pnl)
@@ -2016,11 +2022,6 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
 
   const renderRow = (rowIndex: number, negative: boolean) => (
     <InkBox width={chartWidth} flexShrink={0}>
-      {leftPaddingWidth > 0 ? (
-        <InkBox width={leftPaddingWidth}>
-          <Text>{' '.repeat(leftPaddingWidth)}</Text>
-        </InkBox>
-      ) : null}
       {visibleEntries.map((entry, index) => {
         const filled =
           negative
@@ -2036,6 +2037,7 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
           </React.Fragment>
         )
       })}
+      <Text>{' '.repeat(Math.max(0, chartWidth - (visibleEntries.length * columnWidth)))}</Text>
     </InkBox>
   )
 
@@ -2051,8 +2053,8 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
 }
 
 function EmptyDailyPnlPanel({message, width}: {message: string; width: number}) {
-  const panelWidth = Math.max(1, width)
-  const panelRows = 9
+  const panelWidth = Math.max(1, width - 2)
+  const panelRows = (DAILY_PREVIEW_LEVELS * 2) + 1
   return (
     <InkBox flexDirection="column" width={panelWidth} flexShrink={0}>
       {Array.from({length: panelRows}, (_, index) => (
@@ -2581,7 +2583,7 @@ export function Performance({
   const modalBackground = terminal.backgroundColor || theme.modalBackground
   const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
   const detailMaxModalWidth = Math.max(1, terminal.width - 8)
-  const detailModalWidth = Math.max(1, Math.min(detailMaxModalWidth, terminal.wide ? 110 : 88))
+  const detailModalWidth = Math.max(1, Math.min(detailMaxModalWidth, DAILY_DETAIL_MAX_MODAL_WIDTH))
   const detailModalContentWidth = Math.max(1, detailModalWidth - 4)
   const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12))
   const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows)
@@ -3207,9 +3209,9 @@ export function Performance({
                 {`${fitRight(detailRangeLabel, detailRangeLabel.length)} `}
               </Text>
             </InkBox>
-            <Text backgroundColor={modalBackground}>{' '.repeat(detailModalWidth - 2)}</Text>
+            <Text backgroundColor={modalBackground}>{' '.repeat(Math.max(0, detailModalWidth - 2))}</Text>
             {paddedDetailEntries.map((row, index) => {
-              const detailPnlColor = row ? centeredGradientColor(row.pnl, 100) : theme.dim
+              const detailPnlColor = row ? centeredGradientColor(row.pnl, detailMaxAbsPnl) : theme.dim
 
               return (
                 <InkBox key={`detail-${row?.day || `empty-${index}`}`} width="100%">

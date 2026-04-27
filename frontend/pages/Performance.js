@@ -394,6 +394,10 @@ SELECT
   updated_at
 FROM position_manual_edits
 `;
+const DAILY_PREVIEW_LEVELS = 3;
+const DAILY_PREVIEW_COLUMN_WIDTH = 2;
+const DAILY_DETAIL_MAX_MODAL_WIDTH = 76;
+const DAILY_DETAIL_MAX_BAR_WIDTH = 42;
 const PNL_BUCKET_MINUTES = 60;
 function getPositionsLayout(width) {
     const showId = width >= 132;
@@ -484,13 +488,15 @@ function getDailyPanelContentWidth(terminalWidth, stacked) {
 }
 function getDailyQueueLayout(contentWidth, valueWidth) {
     const dateWidth = 14;
-    const resolvedValueWidth = Math.max(12, valueWidth);
-    const minBarWidth = 9;
-    const rawBarWidth = Math.max(minBarWidth, contentWidth - dateWidth - resolvedValueWidth - 2);
+    const resolvedValueWidth = Math.max(10, Math.min(14, valueWidth));
+    const minBarWidth = 7;
+    const spacingWidth = 4;
+    const availableBarWidth = Math.max(1, contentWidth - dateWidth - resolvedValueWidth - spacingWidth);
+    const rawBarWidth = Math.max(minBarWidth, Math.min(DAILY_DETAIL_MAX_BAR_WIDTH, availableBarWidth));
     const centeredBarWidth = rawBarWidth % 2 === 0 ? rawBarWidth - 1 : rawBarWidth;
     return {
         dateWidth,
-        barWidth: Math.max(minBarWidth, centeredBarWidth),
+        barWidth: Math.max(1, centeredBarWidth),
         valueWidth: resolvedValueWidth
     };
 }
@@ -1401,13 +1407,12 @@ function groupHistoricalHourlyPnl(rows, nowDate) {
         .map(([bucket, pnl]) => ({ day: bucket, pnl, label: formatDollar(pnl) }));
 }
 function DailyPnlPreviewChart({ entries, width }) {
-    const levelCount = 4;
+    const levelCount = DAILY_PREVIEW_LEVELS;
     const gapWidth = 0;
-    const columnWidth = 2;
-    const chartWidth = Math.max(1, width);
+    const columnWidth = DAILY_PREVIEW_COLUMN_WIDTH;
+    const chartWidth = Math.max(1, width - 2);
     const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth));
     const visibleEntries = entries.slice(-visibleCapacity);
-    const leftPaddingWidth = Math.max(0, chartWidth - (visibleEntries.length * columnWidth));
     const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)));
     const heights = visibleEntries.map((entry) => {
         const magnitude = Math.abs(entry.pnl);
@@ -1417,8 +1422,6 @@ function DailyPnlPreviewChart({ entries, width }) {
         return Math.max(1, Math.min(levelCount, Math.round((magnitude / maxAbsPnl) * levelCount)));
     });
     const renderRow = (rowIndex, negative) => (React.createElement(InkBox, { width: chartWidth, flexShrink: 0 },
-        leftPaddingWidth > 0 ? (React.createElement(InkBox, { width: leftPaddingWidth },
-            React.createElement(Text, null, ' '.repeat(leftPaddingWidth)))) : null,
         visibleEntries.map((entry, index) => {
             const filled = negative
                 ? entry.pnl < 0 && heights[index] >= rowIndex
@@ -1428,7 +1431,8 @@ function DailyPnlPreviewChart({ entries, width }) {
                 React.createElement(InkBox, { width: columnWidth },
                     React.createElement(Text, { color: filled ? color : undefined }, filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth))),
                 index < visibleEntries.length - 1 ? React.createElement(Text, null, ' '.repeat(gapWidth)) : null));
-        })));
+        }),
+        React.createElement(Text, null, ' '.repeat(Math.max(0, chartWidth - (visibleEntries.length * columnWidth))))));
     return (React.createElement(InkBox, { flexDirection: "column" },
         Array.from({ length: levelCount }, (_, index) => renderRow(levelCount - index, false)),
         React.createElement(InkBox, { width: chartWidth, flexShrink: 0 },
@@ -1436,8 +1440,8 @@ function DailyPnlPreviewChart({ entries, width }) {
         Array.from({ length: levelCount }, (_, index) => renderRow(index + 1, true))));
 }
 function EmptyDailyPnlPanel({ message, width }) {
-    const panelWidth = Math.max(1, width);
-    const panelRows = 9;
+    const panelWidth = Math.max(1, width - 2);
+    const panelRows = (DAILY_PREVIEW_LEVELS * 2) + 1;
     return (React.createElement(InkBox, { flexDirection: "column", width: panelWidth, flexShrink: 0 }, Array.from({ length: panelRows }, (_, index) => (React.createElement(Text, { key: `empty-daily-pnl-${index}`, color: index === 0 ? theme.dim : undefined }, fit(index === 0 ? message : '', panelWidth))))));
 }
 export function Performance({ currentScrollOffset, pastScrollOffset, activePane, selectedBox, dailyDetailOpen, dailyDetailScrollOffset, actionState, editState, pendingPerfExits = [], onCurrentScrollOffsetChange, onPastScrollOffsetChange, onDailyDetailScrollOffsetChange, onSelectionMetaChange, onDetailHistoryMetaChange, onPendingPerfExitSettlement }) {
@@ -1764,7 +1768,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const modalBackground = terminal.backgroundColor || theme.modalBackground;
     const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);
     const detailMaxModalWidth = Math.max(1, terminal.width - 8);
-    const detailModalWidth = Math.max(1, Math.min(detailMaxModalWidth, terminal.wide ? 110 : 88));
+    const detailModalWidth = Math.max(1, Math.min(detailMaxModalWidth, DAILY_DETAIL_MAX_MODAL_WIDTH));
     const detailModalContentWidth = Math.max(1, detailModalWidth - 4);
     const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12));
     const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows);
@@ -2115,9 +2119,9 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                     React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`),
                     React.createElement(Text, { backgroundColor: modalBackground }, " "),
                     React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, `${fitRight(detailRangeLabel, detailRangeLabel.length)} `)),
-                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailModalWidth - 2)),
+                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(Math.max(0, detailModalWidth - 2))),
                 paddedDetailEntries.map((row, index) => {
-                    const detailPnlColor = row ? centeredGradientColor(row.pnl, 100) : theme.dim;
+                    const detailPnlColor = row ? centeredGradientColor(row.pnl, detailMaxAbsPnl) : theme.dim;
                     return (React.createElement(InkBox, { key: `detail-${row?.day || `empty-${index}`}`, width: "100%" },
                         React.createElement(Text, { color: row ? theme.white : theme.dim, backgroundColor: modalBackground }, ` ${fitRight(row ? formatPnlBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`),
                         React.createElement(Text, { backgroundColor: modalBackground }, " "),

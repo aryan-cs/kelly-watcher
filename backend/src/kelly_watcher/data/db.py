@@ -20,12 +20,29 @@ RECOVERY_QUARANTINE_RETENTION = 5
 logger = logging.getLogger(__name__)
 _RUNTIME_JOURNAL_MODE_LOCK = threading.Lock()
 _RUNTIME_JOURNAL_MODE_PATHS: set[str] = set()
+_SQLITE_CONNECTION_LIFECYCLE_LOCK = threading.RLock()
 _DB_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _SHARED_HOLDOUT_MESSAGE_RE = re.compile(
     r"shared holdout ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+).*?"
     r"incumbent ll/brier:\s*([-+]?[0-9]*\.?[0-9]+)\s*/\s*([-+]?[0-9]*\.?[0-9]+)",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+class RuntimeSQLiteConnection(sqlite3.Connection):
+    """Serialize SQLite connection teardown with connection open.
+
+    The runtime has several background threads that open short-lived SQLite
+    connections. On macOS/Python 3.13 we have observed the process deadlock
+    inside SQLite's reusable-file-descriptor mutex when one thread opens a
+    connection while another closes a WAL connection. Keeping open/close on one
+    process lock avoids that native mutex inversion without changing transaction
+    semantics for normal reads and writes.
+    """
+
+    def close(self) -> None:
+        with _SQLITE_CONNECTION_LIFECYCLE_LOCK:
+            super().close()
 
 
 def _resolved_db_path_text(path: Path) -> str:
@@ -64,7 +81,13 @@ def _connect_sqlite(path: Path, *, apply_runtime_pragmas: bool) -> sqlite3.Conne
         busy_timeout_ms = max(int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "30000") or 30000), 1000)
     except ValueError:
         busy_timeout_ms = 30000
-    conn = sqlite3.connect(path, timeout=connect_timeout_s, check_same_thread=False)
+    with _SQLITE_CONNECTION_LIFECYCLE_LOCK:
+        conn = sqlite3.connect(
+            path,
+            timeout=connect_timeout_s,
+            check_same_thread=False,
+            factory=RuntimeSQLiteConnection,
+        )
     try:
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")

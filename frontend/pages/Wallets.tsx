@@ -2082,6 +2082,7 @@ export function Wallets({
                 <Text color={theme.dim}>No watched wallets configured yet.</Text>
               )}
             </InkBox>
+            <InkBox flexGrow={1} minHeight={0} />
             <InkBox width="100%" height={1} flexShrink={0}>
               <Text color={theme.dim}>{trackedFooterText}</Text>
             </InkBox>
@@ -2139,6 +2140,7 @@ export function Wallets({
                 <Text color={theme.dim}>No dropped wallets.</Text>
               )}
             </InkBox>
+            <InkBox flexGrow={1} minHeight={0} />
             <InkBox width="100%" height={1} flexShrink={0}>
               <Text color={theme.dim}>{droppedFooterText}</Text>
             </InkBox>

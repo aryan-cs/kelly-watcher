@@ -1474,6 +1474,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
                                 React.createElement(Text, { color: isSelected ? theme.white : theme.dim, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.last_seen || undefined), layout.lastSeenWidth)))) : null));
                     })) : (React.createElement(Text, { color: theme.dim }, "No watched wallets configured yet."))),
+                    React.createElement(InkBox, { flexGrow: 1, minHeight: 0 }),
                     React.createElement(InkBox, { width: "100%", height: 1, flexShrink: 0 },
                         React.createElement(Text, { color: theme.dim }, trackedFooterText)))),
             React.createElement(InkBox, { flexGrow: 1 },
@@ -1513,6 +1514,7 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                                 React.createElement(Text, { backgroundColor: rowBackground }, " "),
                                 React.createElement(Text, { color: isSelected ? theme.accent : theme.red, backgroundColor: rowBackground, bold: isSelected }, fitRight(secondsAgo(wallet.dropped_at || undefined), droppedLayout.droppedWidth)))) : null));
                     })) : (React.createElement(Text, { color: theme.dim }, "No dropped wallets."))),
+                    React.createElement(InkBox, { flexGrow: 1, minHeight: 0 }),
                     React.createElement(InkBox, { width: "100%", height: 1, flexShrink: 0 },
                         React.createElement(Text, { color: theme.dim }, droppedFooterText)))))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%", height: "100%" },

@@ -12,11 +12,6 @@ from kelly_watcher.config import (
     wallet_local_drop_max_avg_return,
     wallet_local_drop_max_total_pnl_usd,
     wallet_local_drop_min_resolved_copied_buys,
-    wallet_uncopyable_drop_max_resolved_copied,
-    wallet_uncopyable_drop_max_skip_rate,
-    wallet_uncopyable_drop_min_buys,
-    wallet_uncopyable_penalty_min_buys,
-    wallet_uncopyable_penalty_weight,
     wallet_slow_drop_max_tracking_age_seconds,
     wallet_performance_drop_max_avg_return,
     wallet_performance_drop_max_win_rate,
@@ -34,21 +29,6 @@ class RankedWallet:
     follow_score: float
     last_source_ts: int
     cache_updated_at: int
-
-
-@dataclass(frozen=True)
-class WalletSkipMetrics:
-    total_buy_signals: int
-    uncopyable_skips: int
-    timing_skips: int
-    liquidity_skips: int
-    resolved_copied_count: int
-
-    @property
-    def uncopyable_skip_rate(self) -> float:
-        if self.total_buy_signals <= 0:
-            return 0.0
-        return self.uncopyable_skips / self.total_buy_signals
 
 
 @dataclass(frozen=True)
@@ -102,24 +82,6 @@ AND actual_entry_shares IS NOT NULL
 AND actual_entry_size_usd IS NOT NULL
 AND COALESCE(actual_pnl_usd, shadow_pnl_usd) IS NOT NULL
 """
-_UNCOPYABLE_TIMING_SQL = """
-(
-    market_veto LIKE 'expires in <%'
-    OR market_veto LIKE 'beyond max horizon %'
-)
-"""
-_UNCOPYABLE_LIQUIDITY_SQL = """
-(
-    market_veto='missing order book'
-    OR market_veto='no visible order book depth'
-    OR skip_reason LIKE 'shadow simulation rejected the buy because the order book had no asks%'
-    OR skip_reason LIKE 'shadow simulation rejected the buy because there was not enough ask depth%'
-)
-"""
-_UNCOPYABLE_SKIP_SQL = f"""(
-    {_UNCOPYABLE_TIMING_SQL}
-    OR {_UNCOPYABLE_LIQUIDITY_SQL}
-)"""
 _RESOLVED_PNL_SQL = "COALESCE(actual_pnl_usd, shadow_pnl_usd)"
 
 
@@ -166,10 +128,6 @@ def _score_wallet(
     last_source_ts: int,
     cache_updated_at: int,
     now_ts: int,
-    total_buy_signals: int,
-    uncopyable_skip_rate: float,
-    uncopyable_penalty_min_buys: int,
-    uncopyable_penalty_weight: float,
     local_policy: WalletPolicyMetrics | None = None,
 ) -> float:
     shrunk_win_rate = ((max(n_trades, 0) * win_rate) + (20 * 0.5)) / (max(n_trades, 0) + 20)
@@ -193,10 +151,6 @@ def _score_wallet(
     freshness_penalty = 0.0
     if cache_updated_at > 0 and (now_ts - cache_updated_at) > 86400:
         freshness_penalty = 0.10
-    uncopyable_penalty = 0.0
-    if total_buy_signals >= uncopyable_penalty_min_buys and uncopyable_penalty_weight > 0:
-        sample_weight = _clip(total_buy_signals / max(uncopyable_penalty_min_buys * 3.0, 1.0))
-        uncopyable_penalty = uncopyable_penalty_weight * sample_weight * _clip(uncopyable_skip_rate)
 
     public_quality_score = (
         0.35 * win_score
@@ -217,7 +171,7 @@ def _score_wallet(
         0.70 * quality_score
         + 0.25 * activity_score
         + 0.05 * open_score
-    ) - freshness_penalty - uncopyable_penalty
+    ) - freshness_penalty
     return round(_clip(composite), 4)
 
 
@@ -312,47 +266,6 @@ def _wallet_logged_activity_map(wallet_addresses: list[str]) -> dict[str, int]:
         str(row["trader_address"] or "").strip().lower(): int(row["last_logged_ts"] or 0)
         for row in rows
     }
-
-
-def _wallet_skip_metrics_map(wallet_addresses: list[str]) -> dict[str, WalletSkipMetrics]:
-    wallets = _normalize_wallets(wallet_addresses)
-    if not wallets:
-        return {}
-
-    placeholders = ",".join("?" for _ in wallets)
-    conn = get_conn()
-    try:
-        rows = conn.execute(
-            f"""
-            SELECT
-                LOWER(trader_address) AS trader_address,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} THEN 1 ELSE 0 END) AS total_buy_signals,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} AND {_UNCOPYABLE_TIMING_SQL} THEN 1 ELSE 0 END) AS timing_skips,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} AND {_UNCOPYABLE_LIQUIDITY_SQL} THEN 1 ELSE 0 END) AS liquidity_skips,
-                SUM(CASE WHEN COALESCE(source_action, 'buy')='buy' AND {NON_CHALLENGER_EXPERIMENT_ARM_SQL} AND {_UNCOPYABLE_SKIP_SQL} THEN 1 ELSE 0 END) AS uncopyable_skips,
-                SUM(CASE WHEN {_RESOLVED_COPIED_BUY_SQL} THEN 1 ELSE 0 END) AS resolved_copied_count
-            FROM trade_log
-            WHERE trader_address IN ({placeholders})
-            GROUP BY LOWER(trader_address)
-            """,
-            tuple(wallets),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    metrics: dict[str, WalletSkipMetrics] = {}
-    for row in rows:
-        wallet = str(row["trader_address"] or "").strip().lower()
-        if not wallet:
-            continue
-        metrics[wallet] = WalletSkipMetrics(
-            total_buy_signals=int(row["total_buy_signals"] or 0),
-            uncopyable_skips=int(row["uncopyable_skips"] or 0),
-            timing_skips=int(row["timing_skips"] or 0),
-            liquidity_skips=int(row["liquidity_skips"] or 0),
-            resolved_copied_count=int(row["resolved_copied_count"] or 0),
-        )
-    return metrics
 
 
 def _score_local_copied_performance(metrics: WalletPolicyMetrics) -> tuple[float | None, float]:
@@ -1010,55 +923,6 @@ def _auto_drop_local_underperforming_wallets(wallet_addresses: list[str], protec
     _drop_wallets(to_drop)
 
 
-def _auto_drop_uncopyable_wallets(wallet_addresses: list[str], protected_wallets: set[str] | None = None) -> None:
-    minimum_buys = wallet_uncopyable_drop_min_buys()
-    max_skip_rate = wallet_uncopyable_drop_max_skip_rate()
-    max_resolved_copied = wallet_uncopyable_drop_max_resolved_copied()
-    if minimum_buys <= 0:
-        return
-
-    wallets = _normalize_wallets(wallet_addresses)
-    if not wallets:
-        return
-    protected = protected_wallets or set()
-
-    status_rows = _wallet_status_rows(wallets)
-    logged_activity_map = _wallet_logged_activity_map(wallets)
-    skip_metrics = _wallet_skip_metrics_map(wallets)
-    now_ts = int(time.time())
-    to_drop: list[tuple[str, str, int, int]] = []
-
-    for wallet in wallets:
-        if wallet in protected:
-            continue
-        status_row = status_rows.get(wallet, {})
-        if status_row.get("status") == "dropped":
-            continue
-
-        metrics = skip_metrics.get(wallet)
-        if metrics is None:
-            continue
-        if metrics.total_buy_signals < minimum_buys:
-            continue
-        if metrics.uncopyable_skip_rate < max_skip_rate:
-            continue
-        if metrics.resolved_copied_count > max_resolved_copied:
-            continue
-
-        reactivated_at = int(status_row.get("reactivated_at") or 0)
-        last_logged_ts = int(logged_activity_map.get(wallet, 0))
-        if reactivated_at > 0 and last_logged_ts <= reactivated_at:
-            continue
-
-        reason = (
-            f"uncopyable {metrics.uncopyable_skip_rate * 100.0:.0f}% "
-            f"{metrics.uncopyable_skips}/{metrics.total_buy_signals} buys"
-        )
-        to_drop.append((wallet, reason, now_ts, last_logged_ts))
-
-    _drop_wallets(to_drop)
-
-
 def reactivate_wallet(wallet_address: str) -> bool:
     wallet = str(wallet_address or "").strip().lower()
     if not wallet:
@@ -1209,7 +1073,6 @@ def _load_watch_metrics(wallet_addresses: list[str]) -> list[RankedWallet]:
         str(row["trader_address"] or "").strip().lower(): row
         for row in trader_rows
     }
-    skip_metrics_map = _wallet_skip_metrics_map(wallets)
     policy_metrics_map = _wallet_policy_metrics_map(wallets)
     cursor_map = {
         str(row["wallet_address"] or "").strip().lower(): int(row["last_source_ts"] or 0)
@@ -1218,12 +1081,9 @@ def _load_watch_metrics(wallet_addresses: list[str]) -> list[RankedWallet]:
     now_ts = int(time.time())
     ranked: list[RankedWallet] = []
     order_index = {wallet: index for index, wallet in enumerate(wallets)}
-    uncopyable_penalty_min_buys = wallet_uncopyable_penalty_min_buys()
-    uncopyable_penalty_weight = wallet_uncopyable_penalty_weight()
 
     for wallet in wallets:
         row = trader_map.get(wallet)
-        skip_metrics = skip_metrics_map.get(wallet)
         win_rate = float(row["win_rate"] or 0.5) if row else 0.5
         n_trades = int(row["n_trades"] or 0) if row else 0
         avg_return = float(row["avg_return"] or 0.0) if row else 0.0
@@ -1244,10 +1104,6 @@ def _load_watch_metrics(wallet_addresses: list[str]) -> list[RankedWallet]:
             last_source_ts=last_source_ts,
             cache_updated_at=cache_updated_at,
             now_ts=now_ts,
-            total_buy_signals=(skip_metrics.total_buy_signals if skip_metrics else 0),
-            uncopyable_skip_rate=(skip_metrics.uncopyable_skip_rate if skip_metrics else 0.0),
-            uncopyable_penalty_min_buys=uncopyable_penalty_min_buys,
-            uncopyable_penalty_weight=uncopyable_penalty_weight,
             local_policy=policy_metrics_map.get(wallet),
         )
         ranked.append(
@@ -1287,7 +1143,6 @@ class WatchlistManager:
             _auto_drop_inactive_wallets(self.wallets, inactivity_protected_wallets)
             _auto_drop_local_underperforming_wallets(self.wallets, quality_protected_wallets)
             _auto_drop_underperforming_wallets(self.wallets, quality_protected_wallets)
-            _auto_drop_uncopyable_wallets(self.wallets, quality_protected_wallets)
         status_rows = _wallet_status_rows(self.wallets)
         dropped_wallets = tuple(
             wallet for wallet in self.wallets if status_rows.get(wallet, {}).get("status") == "dropped"

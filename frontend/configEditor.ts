@@ -202,46 +202,6 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: true
   },
   {
-    key: 'WALLET_UNCOPYABLE_PENALTY_MIN_BUYS',
-    label: 'Uncopy Penalty Min Buys',
-    kind: 'int',
-    description: 'Minimum observed buys before repeated uncopyable behavior starts reducing wallet quality. Applies live on the next loop.',
-    defaultValue: '12',
-    liveApplies: true
-  },
-  {
-    key: 'WALLET_UNCOPYABLE_PENALTY_WEIGHT',
-    label: 'Uncopy Penalty Weight',
-    kind: 'float',
-    description: 'How strongly repeated uncopyable behavior penalizes wallet quality. Applies live on the next loop.',
-    defaultValue: '0.25',
-    liveApplies: true
-  },
-  {
-    key: 'WALLET_UNCOPYABLE_DROP_MIN_BUYS',
-    label: 'Uncopy Drop Min Buys',
-    kind: 'int',
-    description: 'Minimum observed buys before an uncopyable wallet can be fully dropped. Applies live on the next loop.',
-    defaultValue: '24',
-    liveApplies: true
-  },
-  {
-    key: 'WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE',
-    label: 'Uncopy Drop Max Skip',
-    kind: 'float',
-    description: 'Maximum tolerated skip rate before an uncopyable wallet is dropped. Applies live on the next loop.',
-    defaultValue: '0.75',
-    liveApplies: true
-  },
-  {
-    key: 'WALLET_UNCOPYABLE_DROP_MAX_RESOLVED_COPIED',
-    label: 'Uncopy Drop Max Copied',
-    kind: 'int',
-    description: 'Keeps a low-sample wallet from being dropped too early for uncopyable behavior. Applies live on the next loop.',
-    defaultValue: '3',
-    liveApplies: true
-  },
-  {
     key: 'WALLET_COLD_START_MIN_OBSERVED_BUYS',
     label: 'Cold Start Min Buys',
     kind: 'int',
@@ -1028,12 +988,10 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
       field.key === 'MIN_CONFIDENCE' ||
       isCostField ||
       field.key === 'MAX_BET_FRACTION' ||
-      field.key === 'WALLET_UNCOPYABLE_PENALTY_WEIGHT' ||
       field.key === 'MODEL_EDGE_MID_CONFIDENCE' ||
       field.key === 'MODEL_EDGE_HIGH_CONFIDENCE' ||
       field.key === 'MODEL_EDGE_MID_THRESHOLD' ||
-      field.key === 'MODEL_EDGE_HIGH_THRESHOLD' ||
-      field.key === 'WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE'
+      field.key === 'MODEL_EDGE_HIGH_THRESHOLD'
     ) &&
     (numeric < 0 || (!isCostField && numeric > 1))
   ) {
@@ -1065,9 +1023,6 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
     (
       field.key === 'WARM_WALLET_COUNT' ||
       field.key === 'WALLET_PERFORMANCE_DROP_MIN_TRADES' ||
-      field.key === 'WALLET_UNCOPYABLE_PENALTY_MIN_BUYS' ||
-      field.key === 'WALLET_UNCOPYABLE_DROP_MIN_BUYS' ||
-      field.key === 'WALLET_UNCOPYABLE_DROP_MAX_RESOLVED_COPIED' ||
       field.key === 'WALLET_COLD_START_MIN_OBSERVED_BUYS' ||
       field.key === 'WALLET_DISCOVERY_MIN_OBSERVED_BUYS' ||
       field.key === 'WALLET_DISCOVERY_MIN_RESOLVED_BUYS' ||

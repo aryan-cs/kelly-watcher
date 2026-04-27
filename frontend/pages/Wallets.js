@@ -178,8 +178,6 @@ function readWatchConfig(envValues) {
         .filter(Boolean);
     let hotCount = 12;
     let warmCount = 24;
-    let uncopyablePenaltyMinBuys = 12;
-    let uncopyablePenaltyWeight = 0.25;
     const parsedHotCount = Number.parseInt(String(envValues.HOT_WALLET_COUNT || ''), 10);
     if (Number.isFinite(parsedHotCount) && parsedHotCount > 0) {
         hotCount = parsedHotCount;
@@ -188,15 +186,7 @@ function readWatchConfig(envValues) {
     if (Number.isFinite(parsedWarmCount) && parsedWarmCount >= 0) {
         warmCount = parsedWarmCount;
     }
-    const parsedPenaltyMinBuys = Number.parseInt(String(envValues.WALLET_UNCOPYABLE_PENALTY_MIN_BUYS || ''), 10);
-    if (Number.isFinite(parsedPenaltyMinBuys) && parsedPenaltyMinBuys >= 0) {
-        uncopyablePenaltyMinBuys = parsedPenaltyMinBuys;
-    }
-    const parsedPenaltyWeight = Number.parseFloat(String(envValues.WALLET_UNCOPYABLE_PENALTY_WEIGHT || ''));
-    if (Number.isFinite(parsedPenaltyWeight) && parsedPenaltyWeight >= 0) {
-        uncopyablePenaltyWeight = parsedPenaltyWeight;
-    }
-    return { wallets, hotCount, warmCount, uncopyablePenaltyMinBuys, uncopyablePenaltyWeight };
+    return { wallets, hotCount, warmCount };
 }
 function formatAddress(value, width) {
     if (width <= 0)
@@ -350,8 +340,6 @@ function scoreWalletForTier(params) {
     const openPositions = params.openPositions ?? 0;
     const lastSourceTs = params.lastSourceTs ?? 0;
     const cacheUpdatedAt = params.cacheUpdatedAt ?? 0;
-    const buySignals = Math.max(0, params.buySignals ?? 0);
-    const uncopyableSkipRate = clip(params.uncopyableSkipRate ?? 0);
     const shrunkWinRate = ((nTrades * winRate) + (20 * 0.5)) / (nTrades + 20);
     const winScore = clip((shrunkWinRate - 0.45) / 0.25);
     const sampleScore = clip(Math.log1p(nTrades) / Math.log1p(80));
@@ -368,9 +356,6 @@ function scoreWalletForTier(params) {
     }
     const openScore = clip(openPositions / 3);
     const freshnessPenalty = cacheUpdatedAt > 0 && (params.nowTs - cacheUpdatedAt) > 86400 ? 0.1 : 0;
-    const uncopyablePenalty = buySignals >= params.uncopyablePenaltyMinBuys && params.uncopyablePenaltyWeight > 0
-        ? params.uncopyablePenaltyWeight * clip(buySignals / Math.max(params.uncopyablePenaltyMinBuys * 3, 1)) * uncopyableSkipRate
-        : 0;
     const publicQualityScore = (0.45 * winScore) +
         (0.2 * returnScore) +
         (0.2 * sampleScore) +
@@ -390,7 +375,7 @@ function scoreWalletForTier(params) {
         : (((1 - localWeight) * publicQualityScore) + (localWeight * localQualityScore));
     return Number((((0.7 * qualityScore) +
         (0.25 * activityScore) +
-        (0.05 * openScore)) - freshnessPenalty - uncopyablePenalty).toFixed(4));
+        (0.05 * openScore)) - freshnessPenalty).toFixed(4));
 }
 function tierLabel(tier) {
     if (tier === 'HOT')
@@ -798,12 +783,6 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
                     openPositions: cached?.open_positions,
                     lastSourceTs: cursor?.last_source_ts,
                     cacheUpdatedAt: cached?.updated_at,
-                    buySignals: activity?.buy_signals,
-                    uncopyableSkipRate: (activity?.buy_signals ?? 0) > 0
-                        ? (activity?.uncopyable_skips ?? 0) / (activity?.buy_signals ?? 0)
-                        : 0,
-                    uncopyablePenaltyMinBuys: watchConfig.uncopyablePenaltyMinBuys,
-                    uncopyablePenaltyWeight: watchConfig.uncopyablePenaltyWeight,
                     resolvedCopiedCount: policy?.resolved_copied_count,
                     resolvedCopiedWinRate: policy?.resolved_copied_win_rate,
                     resolvedCopiedAvgReturn: policy?.resolved_copied_avg_return,
@@ -837,8 +816,6 @@ export function Wallets({ activePane, bestSelectedIndex, worstSelectedIndex, tra
         traderCacheRows,
         walletPolicyRows,
         watchConfig.hotCount,
-        watchConfig.uncopyablePenaltyMinBuys,
-        watchConfig.uncopyablePenaltyWeight,
         watchConfig.warmCount,
         watchStateByWallet
     ]);

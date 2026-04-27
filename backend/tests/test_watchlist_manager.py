@@ -213,7 +213,7 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_uncopyable_skip_penalty_pushes_veto_heavy_wallet_below_similar_peer(self) -> None:
+    def test_uncopyable_skip_rate_does_not_demote_stronger_wallet(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -229,8 +229,8 @@ class WatchlistManagerTest(unittest.TestCase):
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
-                        ("0xcopyable", 0.64, 45, 0.3, 1_500.0, 40.0, 10, 10, 29, 0, 300.0, 0.04, 0, 0.0, 0.0, 1_700_000_000),
-                        ("0xuncopyable", 0.64, 45, 0.3, 1_500.0, 40.0, 10, 10, 29, 0, 300.0, 0.04, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xcopyable", 0.60, 45, 0.3, 1_500.0, 40.0, 10, 10, 27, 0, 250.0, 0.03, 0, 0.0, 0.0, 1_700_000_000),
+                        ("0xuncopyable", 0.70, 60, 0.3, 2_500.0, 80.0, 10, 10, 42, 0, 900.0, 0.10, 0, 0.0, 0.0, 1_700_000_000),
                     ),
                 )
                 for index in range(18):
@@ -252,15 +252,13 @@ class WatchlistManagerTest(unittest.TestCase):
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
                     "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("kelly_watcher.engine.watchlist_manager.wallet_uncopyable_penalty_min_buys", return_value=12), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_penalty_weight", return_value=0.25
-                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
+                ):
                     manager = WatchlistManager(["0xcopyable", "0xuncopyable"])
                     snapshot = manager.refresh()
 
-                self.assertEqual(snapshot.hot, ("0xcopyable",))
-                self.assertEqual(snapshot.warm, ("0xuncopyable",))
+                self.assertEqual(snapshot.hot, ("0xuncopyable",))
+                self.assertEqual(snapshot.warm, ("0xcopyable",))
             finally:
                 db.DB_PATH = original_db_path
 
@@ -312,8 +310,7 @@ class WatchlistManagerTest(unittest.TestCase):
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
                     "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=999
+                    "kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=999
                 ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_500):
                     manager = WatchlistManager(["0xflashy", "0xsteady"])
                     snapshot = manager.refresh(run_auto_drop=False)
@@ -611,8 +608,8 @@ class WatchlistManagerTest(unittest.TestCase):
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=40), patch(
                     "kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_win_rate", return_value=0.40
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_max_avg_return", return_value=-0.03), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
+                ):
                     manager = WatchlistManager(["0xbest", "0xweak"])
                     snapshot = manager.refresh()
 
@@ -889,8 +886,8 @@ class WatchlistManagerTest(unittest.TestCase):
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
                     "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=10), patch(
+                    "kelly_watcher.engine.watchlist_manager.wallet_local_drop_min_resolved_copied_buys", return_value=10
+                ), patch(
                     "kelly_watcher.engine.watchlist_manager.wallet_local_drop_max_avg_return", return_value=-0.08
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_local_drop_max_total_pnl_usd", return_value=0.0), patch(
                     "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_500
@@ -924,7 +921,7 @@ class WatchlistManagerTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_uncopyable_wallets_are_auto_dropped_after_large_structural_skip_sample(self) -> None:
+    def test_structural_skip_rate_alone_does_not_auto_drop_wallet(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -1002,23 +999,22 @@ class WatchlistManagerTest(unittest.TestCase):
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
                     "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=20
-                ), patch("kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_max_skip_rate", return_value=0.75), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_max_resolved_copied", return_value=3
-                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400):
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400
+                ):
                     manager = WatchlistManager(["0xusable", "0xbot"])
                     snapshot = manager.refresh()
 
-                self.assertEqual(snapshot.hot, ("0xusable",))
-                self.assertEqual(snapshot.dropped, ("0xbot",))
+                self.assertEqual(snapshot.hot, ("0xusable", "0xbot"))
+                self.assertNotIn("0xbot", snapshot.dropped)
 
                 conn = db.get_conn()
                 row = conn.execute(
-                    "SELECT status_reason FROM wallet_watch_state WHERE wallet_address=?",
+                    "SELECT status, status_reason FROM wallet_watch_state WHERE wallet_address=?",
                     ("0xbot",),
                 ).fetchone()
                 conn.close()
-                self.assertIn("uncopyable", row["status_reason"])
+                self.assertEqual(row["status"], "active")
+                self.assertIsNone(row["status_reason"])
             finally:
                 db.DB_PATH = original_db_path
 
@@ -1092,10 +1088,8 @@ class WatchlistManagerTest(unittest.TestCase):
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
                     "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=float("inf")
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=20
-                ), patch("kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_max_skip_rate", return_value=0.75), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_max_resolved_copied", return_value=3
-                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400):
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_400
+                ):
                     manager = WatchlistManager(tracked_wallets)
                     snapshot = manager.refresh()
 
@@ -1178,8 +1172,8 @@ class WatchlistManagerTest(unittest.TestCase):
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_inactivity_limit_seconds", return_value=float("inf")), patch(
                     "kelly_watcher.engine.watchlist_manager.wallet_slow_drop_max_tracking_age_seconds", return_value=3600.0
                 ), patch("kelly_watcher.engine.watchlist_manager.wallet_performance_drop_min_trades", return_value=999), patch(
-                    "kelly_watcher.engine.watchlist_manager.wallet_uncopyable_drop_min_buys", return_value=999
-                ), patch("kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200):
+                    "kelly_watcher.engine.watchlist_manager.time.time", return_value=1_700_000_200
+                ):
                     manager = WatchlistManager(["0xhot", "0xwarm", "0xprofit"])
                     snapshot = manager.refresh()
 

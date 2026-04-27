@@ -365,7 +365,7 @@ It also manages cursors so old trades do not replay forever.
 - discovery
 - dropped
 
-Hot wallets are polled most frequently. Lower tiers are polled less often. Wallets can be demoted or dropped when they become stale, underperform, or repeatedly produce uncopyable signals.
+Hot wallets are polled most frequently. Lower tiers are polled less often. Wallets can be demoted or dropped when they become stale or underperform on copied trades.
 
 ### 3. Trader and Market Scoring
 
@@ -685,11 +685,6 @@ All env parsing lives in `config.py`. Duration values typically accept forms suc
 - `WALLET_PERFORMANCE_DROP_MIN_TRADES`
 - `WALLET_PERFORMANCE_DROP_MAX_WIN_RATE`
 - `WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN`
-- `WALLET_UNCOPYABLE_PENALTY_MIN_BUYS`
-- `WALLET_UNCOPYABLE_PENALTY_WEIGHT`
-- `WALLET_UNCOPYABLE_DROP_MIN_BUYS`
-- `WALLET_UNCOPYABLE_DROP_MAX_SKIP_RATE`
-- `WALLET_UNCOPYABLE_DROP_MAX_RESOLVED_COPIED`
 - `WALLET_COLD_START_MIN_OBSERVED_BUYS`
 - `WALLET_DISCOVERY_MIN_OBSERVED_BUYS`
 - `WALLET_DISCOVERY_MIN_RESOLVED_BUYS`

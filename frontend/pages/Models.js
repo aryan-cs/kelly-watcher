@@ -274,11 +274,22 @@ LIMIT 12
 const RETRAIN_RUN_SQL = `
 SELECT
   finished_at,
+  trigger,
+  ok,
   sample_count,
+  min_samples,
   brier_score,
   log_loss,
   status,
   deployed,
+  candidate_name,
+  candidate_count,
+  val_selected_trades,
+  val_total_pnl,
+  challenger_shared_log_loss,
+  challenger_shared_brier_score,
+  incumbent_log_loss,
+  incumbent_brier_score,
   message
 FROM retrain_runs
 ORDER BY finished_at DESC, id DESC
@@ -1000,6 +1011,17 @@ function retrainRunStateColor(status, deployed) {
     if (normalized === 'already_running')
         return theme.yellow;
     return theme.white;
+}
+function retrainRunHumanSummary(row) {
+    const result = retrainRunStateCompactLabel(row.status, row.deployed);
+    const samples = `${formatCount(row.sample_count)}${row.min_samples ? `/${formatCount(row.min_samples)}` : ''} smp`;
+    const metrics = row.log_loss != null || row.brier_score != null
+        ? `ll ${formatNumber(row.log_loss, 3)} br ${formatNumber(row.brier_score, 3)}`
+        : '';
+    const validation = row.val_total_pnl != null || row.val_selected_trades != null
+        ? `val ${formatDollar(row.val_total_pnl)}${row.val_selected_trades != null ? `/${formatCount(row.val_selected_trades)}` : ''}`
+        : '';
+    return [result, samples, metrics, validation].filter(Boolean).join(' | ');
 }
 function replaySearchScopeLabel(scope) {
     const normalized = String(scope || '').trim().toLowerCase();
@@ -6461,79 +6483,139 @@ export function Models({ selectedPanelIndex, detailOpen, selectedSettingIndex, s
         color: exitDecisionColor(row.decision, row.reason)
     }));
     const compactRecentRetrainRows = recentRetrainRuns.slice(0, 6).map((row, index) => ({
-        label: index === 0 ? 'Last train' : `Train ${index + 1}`,
-        value: `${formatShortDateTime(row.finished_at)} ${retrainRunStateCompactLabel(row.status, row.deployed)}`,
+        label: index === 0 ? 'Last run' : `Run ${index + 1}`,
+        value: `${formatShortDateTime(row.finished_at)} ${retrainRunHumanSummary(row)}`,
         color: retrainRunStateColor(row.status, row.deployed)
     }));
+    const humanModelStatusStats = [
+        { label: 'Runtime', value: xgboostRuntimeStatus, color: xgboostRuntimeColor },
+        { label: 'Loaded', value: loadedScorerLabel, color: loadedScorerColor },
+        { label: 'Artifact', value: deployedModelLabel, color: deployedModelColor },
+        { label: 'Fallback', value: fallbackLabel, color: fallbackColor },
+        { label: 'Contract', value: contractLabel, color: contractColor },
+        { label: 'Startup', value: startupValue, color: startupColor },
+        { label: 'Manual run', value: manualRequestValue, color: manualRequestColor }
+    ];
+    const humanModelArtifactStats = [
+        { label: 'Trained', value: latest ? `${formatShortDateTime(latest.trained_at)} (${secondsAgo(latest.trained_at)})` : '-' },
+        { label: 'Samples', value: formatCount(latest?.n_samples) },
+        { label: 'Features', value: featureCount != null ? formatCount(featureCount) : '-' },
+        { label: 'Brier / LL', value: `${formatNumber(latest?.brier_score, 4)} / ${formatNumber(latest?.log_loss, 4)}`, color: lowerIsBetterColor(latest?.brier_score, 0.18, 0.25) }
+    ];
+    const humanEvidenceStats = [
+        { label: 'Shadow gate', value: shadowSnapshotReadyForOptimization ? 'ready' : 'blocked', color: shadowSnapshotReadyForOptimization ? theme.green : theme.yellow },
+        { label: 'Window', value: shadowSnapshotEvidenceValue, color: shadowSnapshotReadyForOptimization ? theme.green : theme.white },
+        { label: 'Shadow P&L', value: shadowSnapshotPerformanceValue, color: shadowSnapshotReadyForOptimization ? theme.green : theme.yellow },
+        { label: 'Coverage', value: shadowSnapshotCoveragePct == null ? '-' : formatPct(shadowSnapshotCoveragePct, 1), color: shadowSnapshotCoveragePct == null ? theme.dim : theme.white },
+        { label: 'Tracker P&L', value: formatDollar(tracker?.total_pnl), color: dollarColor(tracker?.total_pnl) },
+        { label: 'Resolved/win', value: `${formatCount(tracker?.resolved)} / ${formatPct(trackerWinRate, 1)}`, color: trackerWinRate != null ? probabilityColor(trackerWinRate) : theme.dim },
+        { label: 'Signals/taken', value: `${formatCount(tracker?.signals)} / ${formatCount(tracker?.taken)}`, color: theme.white }
+    ];
+    const humanTrainingStats = [
+        { label: 'Cadence', value: `${baseCadenceValue} @ ${retrainHourValue}` },
+        { label: 'Next run', value: `${formatShortDateTime(nextScheduledRetrainTs)} (${timeUntil(nextScheduledRetrainTs)})` },
+        { label: 'Early trigger', value: `${earlyTriggerValue} / check ${earlyCheckValue}` },
+        { label: 'Progress', value: triggerProgressValue, color: progressStatColor(triggerProgressCurrent, triggerProgressTarget) },
+        manualRunItem,
+        { label: 'Runs logged', value: formatCount(trainingSummary?.total_runs) }
+    ];
+    const humanReplayStats = [
+        { label: 'Last replay', value: latestReplay?.finished_at ? `${secondsAgo(latestReplay.finished_at)} ${formatDollar(latestReplay.total_pnl_usd)}` : '-', color: dollarColor(latestReplay?.total_pnl_usd) },
+        { label: 'Replay win', value: latestReplay ? `${formatCount(latestReplay.accepted_count)} / ${formatPct(latestReplay.win_rate, 1)}` : '-', color: latestReplay?.win_rate != null ? probabilityColor(latestReplay.win_rate) : theme.dim },
+        { label: 'Search', value: replaySearchValue, color: replaySearchValueColor },
+        { label: 'Current', value: latestReplaySearch ? `${Number(latestReplaySearch.current_candidate_feasible || 0) > 0 ? 'feasible' : 'blocked'} ${formatDollar(latestReplaySearch.current_candidate_total_pnl_usd)} / DD ${formatPct(latestReplaySearch.current_candidate_max_drawdown_pct, 1)}` : '-', color: latestReplaySearch ? (Number(latestReplaySearch.current_candidate_feasible || 0) > 0 ? dollarColor(latestReplaySearch.current_candidate_total_pnl_usd) : theme.yellow) : theme.dim },
+        { label: 'Best delta', value: latestReplaySearch ? `${formatDollar(latestReplaySearch.best_vs_current_pnl_usd)} / score ${formatNumber(latestReplaySearch.best_vs_current_score, 2)}` : '-', color: dollarColor(latestReplaySearch?.best_vs_current_pnl_usd) },
+        { label: 'Suggestion', value: replaySearchSuggestedConfig?.summary || '-', color: replaySearchSuggestedConfig ? replaySearchSuggestedConfig.aligned ? theme.green : theme.white : theme.dim },
+        { label: 'Apply scope', value: replaySearchApplyScopeSummary?.summary || '-', color: replaySearchApplyScopeSummary ? replaySearchApplyScopeSummary.aligned ? theme.green : theme.yellow : theme.dim },
+        { label: 'Promotion', value: promotionValue, color: promotionValueColor }
+    ];
+    const humanConfidenceStats = [
+        { label: 'Resolved', value: formatCount(calibration?.resolved) },
+        { label: 'Pred/actual', value: `${formatPct(calibration?.avg_confidence, 1)} / ${formatPct(calibration?.actual_win_rate, 1)}`, color: biasColor(calibrationBias) },
+        { label: 'Bias', value: formatPointDelta(calibrationBias, 1), color: biasColor(calibrationBias) },
+        { label: 'Avg miss', value: formatPct(calibration?.avg_gap, 1), color: lowerIsBetterColor(calibration?.avg_gap, 0.12, 0.2) }
+    ];
+    const humanSignalModeStats = signalModes
+        .filter((row) => row.mode.trim().toLowerCase() !== 'veto')
+        .slice()
+        .sort((left, right) => Number(right.taken || 0) - Number(left.taken || 0))
+        .slice(0, 4)
+        .map((row) => {
+        const modeWinRate = ratio(row.wins, row.resolved);
+        const modeUseRate = ratio(row.taken, row.signals);
+        return {
+            label: modeLabel(row.mode),
+            value: `${formatCount(row.taken)}/${formatCount(row.signals)} | win ${formatPct(modeWinRate, 1)} | use ${formatPct(modeUseRate, 1)} | ${formatDollar(row.total_pnl)}`,
+            color: dollarColor(row.total_pnl)
+        };
+    });
+    const humanExitStats = [
+        { label: 'Mode', value: botState.mode === 'live' ? 'Live' : 'Shadow', color: botState.mode === 'live' ? theme.red : theme.blue },
+        { label: 'Audits 7d', value: formatCount(exitAuditSummary?.audits_7d) },
+        { label: 'Exit / hold', value: `${formatCount(exitAuditSummary?.exits_7d)} / ${formatCount(exitAuditSummary?.holds_7d)}` },
+        { label: 'Hard exits', value: formatCount(exitAuditSummary?.hard_exits_7d), color: Number(exitAuditSummary?.hard_exits_7d || 0) > 0 ? theme.red : theme.dim },
+        { label: 'Saved/gave up', value: `${formatDollar(exitAttribution?.dollars_saved_usd)} / ${formatDollar(exitAttribution?.dollars_given_up_usd)}` },
+        { label: 'Exit alpha', value: formatDollar(exitAttribution?.total_exit_alpha_usd), color: dollarColor(exitAttribution?.total_exit_alpha_usd) }
+    ];
     const modelRowLabelWidth = (width) => Math.max(8, Math.min(13, Math.floor(width * 0.43)));
     const renderModelRows = (items, width, labelWidth = modelRowLabelWidth(width)) => items.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 6 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: width, labelWidth: labelWidth, minValueWidth: 8 })));
+    const renderModelRowsLeft = (items, width, labelWidth = modelRowLabelWidth(width)) => items.map((item) => (React.createElement(DenseModelsRow, { key: item.label, label: item.label, value: item.value, color: item.color ?? theme.white, selected: clampedSelectedPanelIndex === 6 && item.label === 'Manual run', backgroundColor: selectedRowBackground, width: width, labelWidth: labelWidth, minValueWidth: 8, valueAlign: "left" })));
     const renderPageBody = () => (React.createElement(InkBox, { width: "100%", flexDirection: "column" },
         React.createElement(InkBox, { width: modelsContentWidth, height: 1, flexShrink: 0 },
             React.createElement(Text, { color: theme.accent, bold: true }, fit('Model', modelsContentWidth))),
         React.createElement(InkBox, { width: "100%" },
             React.createElement(InkBox, { width: modelsColumnWidths[0], flexDirection: "column" },
-                React.createElement(ModelsSectionTitle, { title: "Prediction Quality", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 0, backgroundColor: selectedRowBackground }),
-                renderModelRows(predictionQualityStats, modelsColumnWidths[0]),
+                React.createElement(ModelsSectionTitle, { title: "Model Status", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 0, backgroundColor: selectedRowBackground }),
+                renderModelRows(humanModelStatusStats, modelsColumnWidths[0]),
                 React.createElement(ModelsSpacer, null),
-                React.createElement(ModelsSectionTitle, { title: "Tracker Health", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
-                renderModelRows(trackerHealthStats, modelsColumnWidths[0]),
+                React.createElement(ModelsSubsectionTitle, { title: "Artifact Quality", width: modelsColumnWidths[0] }),
+                renderModelRows(humanModelArtifactStats, modelsColumnWidths[0]),
                 React.createElement(ModelsSpacer, null),
-                React.createElement(ModelsSubsectionTitle, { title: "Shadow Snapshot", width: modelsColumnWidths[0] }),
-                renderModelRows(shadowSnapshotPerformanceRows, modelsColumnWidths[0])),
+                React.createElement(ModelsSectionTitle, { title: "Evidence", width: modelsColumnWidths[0], selected: clampedSelectedPanelIndex === 1, backgroundColor: selectedRowBackground }),
+                renderModelRows(humanEvidenceStats, modelsColumnWidths[0])),
             React.createElement(InkBox, { width: modelsColumnGap }),
             React.createElement(InkBox, { width: modelsColumnWidths[1], flexDirection: "column" },
-                React.createElement(ModelsSectionTitle, { title: "Replay Lab A", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
-                renderModelRows(replayLabColumns[0] ?? [], modelsColumnWidths[1])),
+                React.createElement(ModelsSectionTitle, { title: "Training", width: modelsColumnWidths[1], selected: clampedSelectedPanelIndex === 6, backgroundColor: selectedRowBackground }),
+                renderModelRows(humanTrainingStats, modelsColumnWidths[1]),
+                latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(React.Fragment, null,
+                    React.createElement(ModelsSpacer, null),
+                    React.createElement(ModelsSubsectionTitle, { title: "Holdout Gate", width: modelsColumnWidths[1] }),
+                    renderModelRows([
+                        {
+                            label: 'Result',
+                            value: sharedHoldoutGateReadCompact(latestSharedHoldoutRun),
+                            color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                        },
+                        { label: 'Gate run', value: formatShortDateTime(latestSharedHoldoutRun.finished_at) },
+                        {
+                            label: 'LL c / i',
+                            value: `${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} / ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}`,
+                            color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                        },
+                        {
+                            label: 'Brier c/i',
+                            value: `${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`,
+                            color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
+                        }
+                    ], modelsColumnWidths[1]))) : null,
+                React.createElement(ModelsSpacer, null),
+                React.createElement(ModelsSubsectionTitle, { title: "Recent Training Runs", width: modelsColumnWidths[1] }),
+                compactRecentRetrainRows.length ? (renderModelRowsLeft(compactRecentRetrainRows, modelsColumnWidths[1], 8)) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[1])))),
             React.createElement(InkBox, { width: modelsColumnGap }),
             React.createElement(InkBox, { width: modelsColumnWidths[2], flexDirection: "column" },
-                React.createElement(ModelsSectionTitle, { title: "Replay Lab B", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
-                renderModelRows(replayLabColumns[1] ?? [], modelsColumnWidths[2]),
+                React.createElement(ModelsSectionTitle, { title: "Replay Decision", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 2, backgroundColor: selectedRowBackground }),
+                renderModelRows(humanReplayStats, modelsColumnWidths[2]),
                 React.createElement(ModelsSpacer, null),
-                React.createElement(ModelsSectionTitle, { title: "Confidence", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
-                confusionCells.map((cell) => (React.createElement(DenseModelsRow, { key: cell.label, label: cell.label, value: formatCount(cell.value), color: confusionHeatColor(cell.value, confusionScale, cell.kind), width: modelsColumnWidths[2], labelWidth: modelRowLabelWidth(modelsColumnWidths[2]), minValueWidth: 8 }))),
-                renderModelRows(confidenceCheckStats, modelsColumnWidths[2])),
+                React.createElement(ModelsSectionTitle, { title: "Calibration", width: modelsColumnWidths[2], selected: clampedSelectedPanelIndex === 3, backgroundColor: selectedRowBackground }),
+                renderModelRows(humanConfidenceStats, modelsColumnWidths[2])),
             React.createElement(InkBox, { width: modelsColumnGap }),
             React.createElement(InkBox, { width: modelsColumnWidths[3], flexDirection: "column" },
-                React.createElement(ModelsSectionTitle, { title: "Modes + Exits", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
-                React.createElement(DenseModelsRow, { label: "Recent path", value: activeScorerLabel, color: activeScorerColor, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 }),
-                React.createElement(DenseModelsRow, { label: "Primary path", value: primaryMode ? modeLabel(primaryMode) : '-', color: primaryMode ? theme.accent : theme.dim, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 }),
-                signalModeCards.length ? (signalModeCards.flatMap((card) => [
-                    React.createElement(ModelsSubsectionTitle, { key: `${card.title}-title`, title: card.title, width: modelsColumnWidths[3], color: card.titleColor ?? theme.white }),
-                    ...card.rows.map((item) => (React.createElement(DenseModelsRow, { key: `${card.title}-${item.label}`, label: item.label, value: item.value, color: item.color ?? theme.white, width: modelsColumnWidths[3], labelWidth: modelRowLabelWidth(modelsColumnWidths[3]), minValueWidth: 8 })))
-                ])) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[3]))),
+                React.createElement(ModelsSectionTitle, { title: "Signal Modes", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
+                humanSignalModeStats.length ? (renderModelRowsLeft(humanSignalModeStats, modelsColumnWidths[3], 10)) : (React.createElement(Text, { color: theme.dim }, fit('No tracker signals yet.', modelsColumnWidths[3]))),
                 React.createElement(ModelsSpacer, null),
-                React.createElement(ModelsSubsectionTitle, { title: "Exit Guard", width: modelsColumnWidths[3] }),
-                renderModelRows(exitGuardStats, modelsColumnWidths[3]),
-                compactRecentExitRows.length ? renderModelRows(compactRecentExitRows, modelsColumnWidths[3]) : null,
-                React.createElement(ModelsSpacer, null),
-                React.createElement(ModelsSectionTitle, { title: "How It Works", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 5, backgroundColor: selectedRowBackground }),
-                renderModelRows(howItWorksScoreRows, modelsColumnWidths[3]),
-                React.createElement(ModelsSubsectionTitle, { title: "History Nudge", width: modelsColumnWidths[3] }),
-                renderModelRows(howItWorksHistoryRows, modelsColumnWidths[3]),
-                React.createElement(ModelsSpacer, null),
-                React.createElement(ModelsSectionTitle, { title: "Training Cycle", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 6, backgroundColor: selectedRowBackground }),
-                renderModelRows(trainingCycleDisplayStats, modelsColumnWidths[3]),
-                latestSharedHoldoutRun && latestSharedHoldout ? (React.createElement(React.Fragment, null, renderModelRows([
-                    {
-                        label: 'Holdout gate',
-                        value: sharedHoldoutGateReadCompact(latestSharedHoldoutRun),
-                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
-                    },
-                    { label: 'Gate run', value: formatShortDateTime(latestSharedHoldoutRun.finished_at) },
-                    {
-                        label: 'LL c / i',
-                        value: `${formatNumber(latestSharedHoldout.challenger_log_loss, 4)} / ${formatNumber(latestSharedHoldout.incumbent_log_loss, 4)}`,
-                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
-                    },
-                    {
-                        label: 'Brier c/i',
-                        value: `${formatNumber(latestSharedHoldout.challenger_brier_score, 4)} / ${formatNumber(latestSharedHoldout.incumbent_brier_score, 4)}`,
-                        color: sharedHoldoutGateReadColor(latestSharedHoldoutRun)
-                    }
-                ], modelsColumnWidths[3]))) : null,
-                React.createElement(ModelsSpacer, null),
-                React.createElement(ModelsSubsectionTitle, { title: "Recent Training", width: modelsColumnWidths[3] }),
-                compactRecentRetrainRows.length ? (renderModelRows(compactRecentRetrainRows, modelsColumnWidths[3])) : (React.createElement(Text, { color: theme.dim }, fit('No retrain attempts logged yet.', modelsColumnWidths[3])))))));
+                React.createElement(ModelsSectionTitle, { title: "Exit Health", width: modelsColumnWidths[3], selected: clampedSelectedPanelIndex === 4, backgroundColor: selectedRowBackground }),
+                renderModelRows(humanExitStats, modelsColumnWidths[3]),
+                compactRecentExitRows.length ? renderModelRows(compactRecentExitRows, modelsColumnWidths[3]) : null))));
     return (React.createElement(InkBox, { flexDirection: "column", width: "100%" },
         React.createElement(Box, { width: "100%", height: modelPanelHeight }, renderPageBody()),
         detailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },

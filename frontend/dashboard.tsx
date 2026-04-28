@@ -2078,7 +2078,7 @@ function App() {
     }
 
     if (page === 4) {
-      if (!modelDetailOpen && normalized === 't' && selectedModelPanel.id === 'training_cycle') {
+      if (!modelDetailOpen && normalized === 't') {
         if (manualRetrainBlockedMessage) {
           showTransientNotice(manualRetrainBlockedMessage, shadowRestartPending ? 'info' : 'error')
           return

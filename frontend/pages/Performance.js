@@ -1408,11 +1408,14 @@ function groupHistoricalHourlyPnl(rows, nowDate) {
 }
 function DailyPnlPreviewChart({ entries, width }) {
     const levelCount = DAILY_PREVIEW_LEVELS;
-    const gapWidth = 0;
     const columnWidth = DAILY_PREVIEW_COLUMN_WIDTH;
-    const chartWidth = Math.max(1, width + 3);
+    const chartWidth = Math.max(1, width + 4);
     const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth));
     const visibleEntries = entries.slice(-visibleCapacity);
+    const baseSlotWidth = Math.max(columnWidth, Math.floor(chartWidth / Math.max(1, visibleEntries.length)));
+    const slotWidths = visibleEntries.map((_, index) => index === visibleEntries.length - 1
+        ? Math.max(1, chartWidth - (baseSlotWidth * (visibleEntries.length - 1)))
+        : baseSlotWidth);
     const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)));
     const heights = visibleEntries.map((entry) => {
         const magnitude = Math.abs(entry.pnl);
@@ -1427,12 +1430,10 @@ function DailyPnlPreviewChart({ entries, width }) {
                 ? entry.pnl < 0 && heights[index] >= rowIndex
                 : entry.pnl > 0 && heights[index] >= rowIndex;
             const color = negative ? theme.red : theme.green;
-            return (React.createElement(React.Fragment, { key: `${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}` },
-                React.createElement(InkBox, { width: columnWidth },
-                    React.createElement(Text, { color: filled ? color : undefined }, filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth))),
-                index < visibleEntries.length - 1 ? React.createElement(Text, null, ' '.repeat(gapWidth)) : null));
-        }),
-        React.createElement(Text, null, ' '.repeat(Math.max(0, chartWidth - (visibleEntries.length * columnWidth))))));
+            const slotWidth = slotWidths[index] || columnWidth;
+            return (React.createElement(InkBox, { key: `${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}`, width: slotWidth, flexShrink: 0 },
+                React.createElement(Text, { color: filled ? color : undefined }, filled ? '█'.repeat(slotWidth) : ' '.repeat(slotWidth))));
+        })));
     return (React.createElement(InkBox, { flexDirection: "column" },
         Array.from({ length: levelCount }, (_, index) => renderRow(levelCount - index, false)),
         React.createElement(InkBox, { width: chartWidth, flexShrink: 0 },

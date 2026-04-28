@@ -2006,11 +2006,16 @@ function groupHistoricalHourlyPnl(rows: PositionRow[], nowDate: Date): DailyPnlE
 
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
   const levelCount = DAILY_PREVIEW_LEVELS
-  const gapWidth = 0
   const columnWidth = DAILY_PREVIEW_COLUMN_WIDTH
-  const chartWidth = Math.max(1, width + 3)
+  const chartWidth = Math.max(1, width + 4)
   const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth))
   const visibleEntries = entries.slice(-visibleCapacity)
+  const baseSlotWidth = Math.max(columnWidth, Math.floor(chartWidth / Math.max(1, visibleEntries.length)))
+  const slotWidths = visibleEntries.map((_, index) =>
+    index === visibleEntries.length - 1
+      ? Math.max(1, chartWidth - (baseSlotWidth * (visibleEntries.length - 1)))
+      : baseSlotWidth,
+  )
   const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)))
   const heights = visibleEntries.map((entry) => {
     const magnitude = Math.abs(entry.pnl)
@@ -2028,16 +2033,17 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
             ? entry.pnl < 0 && heights[index] >= rowIndex
             : entry.pnl > 0 && heights[index] >= rowIndex
         const color = negative ? theme.red : theme.green
+        const slotWidth = slotWidths[index] || columnWidth
         return (
-          <React.Fragment key={`${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}`}>
-            <InkBox width={columnWidth}>
-              <Text color={filled ? color : undefined}>{filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth)}</Text>
-            </InkBox>
-            {index < visibleEntries.length - 1 ? <Text>{' '.repeat(gapWidth)}</Text> : null}
-          </React.Fragment>
+          <InkBox
+            key={`${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}`}
+            width={slotWidth}
+            flexShrink={0}
+          >
+            <Text color={filled ? color : undefined}>{filled ? '█'.repeat(slotWidth) : ' '.repeat(slotWidth)}</Text>
+          </InkBox>
         )
       })}
-      <Text>{' '.repeat(Math.max(0, chartWidth - (visibleEntries.length * columnWidth)))}</Text>
     </InkBox>
   )
 

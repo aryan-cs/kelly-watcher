@@ -346,6 +346,54 @@ export const editableConfigFields: EditableConfigField[] = [
     liveApplies: true
   },
   {
+    key: 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_ENABLED',
+    label: 'Adaptive Heur Bands',
+    kind: 'bool',
+    description: 'Refreshes heuristic entry-price bands from recent resolved shadow evidence instead of relying on the static fallback range. Applies live on the next loop.',
+    defaultValue: 'true',
+    liveApplies: true
+  },
+  {
+    key: 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_LOOKBACK',
+    label: 'Adaptive Band Lookback',
+    kind: 'duration',
+    description: 'How much recent resolved shadow evidence is used to recompute heuristic entry-price bands. Applies live after the next refresh.',
+    defaultValue: '14d',
+    liveApplies: true
+  },
+  {
+    key: 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_REFRESH',
+    label: 'Adaptive Band Refresh',
+    kind: 'duration',
+    description: 'How often the bot reloads evidence and recomputes heuristic entry-price bands. Applies live on the next refresh.',
+    defaultValue: '5m',
+    liveApplies: true
+  },
+  {
+    key: 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_SAMPLES',
+    label: 'Adaptive Band Min N',
+    kind: 'int',
+    description: 'Minimum total resolved evidence rows required before adaptive heuristic entry-price bands replace the fallback range.',
+    defaultValue: '12',
+    liveApplies: true
+  },
+  {
+    key: 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_BAND_SAMPLES',
+    label: 'Adaptive Band Min Bin',
+    kind: 'int',
+    description: 'Minimum resolved evidence rows required inside a specific entry-price band before that band can be selected.',
+    defaultValue: '2',
+    liveApplies: true
+  },
+  {
+    key: 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_AVG_RETURN',
+    label: 'Adaptive Band Min Ret',
+    kind: 'float',
+    description: 'Minimum weighted average return a heuristic entry-price band must clear before it can be selected.',
+    defaultValue: '0.00',
+    liveApplies: true
+  },
+  {
     key: 'HEURISTIC_MIN_TIME_TO_CLOSE',
     label: 'Heur Min Horizon',
     kind: 'duration',
@@ -993,6 +1041,16 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
 
   if (
     (
+      field.key === 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_SAMPLES' ||
+      field.key === 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_BAND_SAMPLES'
+    ) &&
+    numeric < 1
+  ) {
+    return {ok: false, error: `${field.label} must be at least 1.`}
+  }
+
+  if (
+    (
       field.key === 'WARM_WALLET_COUNT' ||
       field.key === 'WALLET_COLD_START_MIN_OBSERVED_BUYS' ||
       field.key === 'WALLET_DISCOVERY_MIN_OBSERVED_BUYS' ||
@@ -1018,6 +1076,7 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
   if (
     (field.key === 'DUPLICATE_SIDE_OVERRIDE_MIN_AVG_RETURN' ||
       field.key === 'EXPOSURE_OVERRIDE_MIN_AVG_RETURN' ||
+      field.key === 'ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_AVG_RETURN' ||
       field.key === 'WALLET_LOCAL_PERFORMANCE_PENALTY_MAX_AVG_RETURN') &&
     (numeric < -1 || numeric > 1)
   ) {

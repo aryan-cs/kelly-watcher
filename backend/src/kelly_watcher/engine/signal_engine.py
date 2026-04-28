@@ -8,6 +8,7 @@ import time
 import numpy as np
 
 from kelly_watcher.engine.adaptive_confidence import adaptive_min_confidence_for_signal
+from kelly_watcher.engine.adaptive_entry_price import adaptive_heuristic_entry_price_band
 from kelly_watcher.engine.beliefs import adjust_heuristic_confidence
 from kelly_watcher.config import (
     allow_heuristic,
@@ -522,12 +523,17 @@ class SignalEngine:
         time_to_close_seconds = float(segment_context["time_to_close_seconds"])
         time_to_close_band = str(segment_context["time_to_close_band"])
         min_time_to_close_seconds = segment_policy.heuristic_min_time_to_close_seconds
-        min_entry_price = segment_policy.heuristic_min_entry_price
-        max_entry_price = segment_policy.heuristic_max_entry_price
+        adaptive_entry_price = adaptive_heuristic_entry_price_band(
+            base_min_price=segment_policy.heuristic_min_entry_price,
+            base_max_price=segment_policy.heuristic_max_entry_price,
+        )
+        min_entry_price = adaptive_entry_price.min_price
+        max_entry_price = adaptive_entry_price.max_price
         entry_price_band = entry_price_band_label(execution_price)
         global_allowed_entry_price_bands = segment_policy.allowed_entry_price_bands
         global_allowed_time_to_close_bands = segment_policy.allowed_time_to_close_bands
         mode_allowed_entry_price_bands = segment_policy.heuristic_allowed_entry_price_bands
+        adaptive_allowed_entry_price_bands = adaptive_entry_price.allowed_bands
         min_market_score, band_progress = self._heuristic_min_market_score(
             execution_price,
             min_entry_price,
@@ -539,6 +545,9 @@ class SignalEngine:
             not global_allowed_time_to_close_bands or time_to_close_band in global_allowed_time_to_close_bands
         )
         passed_band_filter = not mode_allowed_entry_price_bands or entry_price_band in mode_allowed_entry_price_bands
+        passed_adaptive_band_filter = (
+            not adaptive_allowed_entry_price_bands or entry_price_band in adaptive_allowed_entry_price_bands
+        )
         passed_entry_price = execution_price >= min_entry_price and execution_price < max_entry_price
         passed_market_score = market_score >= min_market_score
         passed_horizon = time_to_close_seconds >= min_time_to_close_seconds
@@ -547,6 +556,7 @@ class SignalEngine:
             and passed_global_band_filter
             and passed_global_horizon_filter
             and passed_band_filter
+            and passed_adaptive_band_filter
             and passed_entry_price
             and passed_market_score
             and passed_horizon
@@ -570,6 +580,11 @@ class SignalEngine:
             reason = (
                 f"heuristic entry band {entry_price_band} outside allowlist "
                 f"{','.join(mode_allowed_entry_price_bands)}"
+            )
+        elif not passed_adaptive_band_filter:
+            reason = (
+                f"heuristic entry band {entry_price_band} outside adaptive allowlist "
+                f"{','.join(adaptive_allowed_entry_price_bands)}"
             )
         elif not passed_entry_price:
             reason = (
@@ -596,6 +611,8 @@ class SignalEngine:
             "min_entry_price": round(min_entry_price, 4),
             "max_entry_price": round(max_entry_price, 4),
             "allowed_entry_price_bands": list(mode_allowed_entry_price_bands),
+            "adaptive_entry_price": adaptive_entry_price.as_dict(),
+            "adaptive_allowed_entry_price_bands": list(adaptive_allowed_entry_price_bands),
             "min_market_score": round(min_market_score, 4),
             "band_progress": round(band_progress, 4),
             "time_to_close_seconds": round(time_to_close_seconds, 3),

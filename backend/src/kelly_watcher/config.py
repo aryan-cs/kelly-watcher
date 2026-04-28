@@ -315,6 +315,45 @@ def heuristic_allowed_entry_price_bands() -> tuple[str, ...]:
     )
 
 
+def adaptive_heuristic_entry_price_enabled() -> bool:
+    return _get_env_file_bool("ADAPTIVE_HEURISTIC_ENTRY_PRICE_ENABLED", "true")
+
+
+def adaptive_heuristic_entry_price_lookback_seconds() -> float:
+    return _get_duration_seconds(
+        "ADAPTIVE_HEURISTIC_ENTRY_PRICE_LOOKBACK",
+        "14d",
+        minimum_seconds=3600.0,
+        allow_unlimited=False,
+    )
+
+
+def adaptive_heuristic_entry_price_cache_seconds() -> float:
+    return _get_duration_seconds(
+        "ADAPTIVE_HEURISTIC_ENTRY_PRICE_REFRESH",
+        "5m",
+        minimum_seconds=1.0,
+        allow_unlimited=False,
+    )
+
+
+def adaptive_heuristic_entry_price_min_samples() -> int:
+    return _get_bounded_int("ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_SAMPLES", "12", minimum=1)
+
+
+def adaptive_heuristic_entry_price_min_band_samples() -> int:
+    return _get_bounded_int("ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_BAND_SAMPLES", "2", minimum=1)
+
+
+def adaptive_heuristic_entry_price_min_avg_return() -> float:
+    return _get_bounded_float(
+        "ADAPTIVE_HEURISTIC_ENTRY_PRICE_MIN_AVG_RETURN",
+        "0.00",
+        minimum=-1.0,
+        maximum=10.0,
+    )
+
+
 def allow_heuristic() -> bool:
     return _get_env_file_bool("ALLOW_HEURISTIC", "false")
 

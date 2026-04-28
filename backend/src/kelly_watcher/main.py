@@ -34,6 +34,12 @@ from kelly_watcher.research.auto_retrain import retrain_cycle_report, should_ret
 from kelly_watcher.engine.beliefs import sync_belief_priors
 from kelly_watcher.config import (
     ConfigError,
+    adaptive_heuristic_entry_price_cache_seconds,
+    adaptive_heuristic_entry_price_enabled,
+    adaptive_heuristic_entry_price_lookback_seconds,
+    adaptive_heuristic_entry_price_min_avg_return,
+    adaptive_heuristic_entry_price_min_band_samples,
+    adaptive_heuristic_entry_price_min_samples,
     duplicate_side_override_min_avg_return,
     duplicate_side_override_min_skips,
     exposure_override_min_avg_return,
@@ -5418,6 +5424,12 @@ def _validate_startup() -> None:
     ):
         errors.append("HEURISTIC_MIN_ENTRY_PRICE must be smaller than HEURISTIC_MAX_ENTRY_PRICE")
     _capture_config(heuristic_allowed_entry_price_bands)
+    _capture_config(adaptive_heuristic_entry_price_enabled)
+    _capture_config(adaptive_heuristic_entry_price_lookback_seconds)
+    _capture_config(adaptive_heuristic_entry_price_cache_seconds)
+    _capture_config(adaptive_heuristic_entry_price_min_samples)
+    _capture_config(adaptive_heuristic_entry_price_min_band_samples)
+    _capture_config(adaptive_heuristic_entry_price_min_avg_return)
     _capture_config(heuristic_min_time_to_close_seconds)
     _capture_config(xgboost_allowed_entry_price_bands)
     _capture_config(model_min_time_to_close_seconds)

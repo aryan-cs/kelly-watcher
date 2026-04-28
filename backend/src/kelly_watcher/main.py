@@ -103,9 +103,6 @@ from kelly_watcher.config import (
     wallet_inactivity_limit_seconds,
     wallet_slow_drop_max_tracking_age_seconds,
     wallet_cold_start_min_observed_buys,
-    wallet_performance_drop_max_avg_return,
-    wallet_performance_drop_max_win_rate,
-    wallet_performance_drop_min_trades,
     wallet_discovery_min_observed_buys,
     wallet_discovery_min_resolved_buys,
     wallet_discovery_size_multiplier,
@@ -5441,9 +5438,6 @@ def _validate_startup() -> None:
     _capture_config(source_event_process_batch_size)
     _capture_config(wallet_inactivity_limit_seconds)
     _capture_config(wallet_slow_drop_max_tracking_age_seconds)
-    _capture_config(wallet_performance_drop_min_trades)
-    _capture_config(wallet_performance_drop_max_win_rate)
-    _capture_config(wallet_performance_drop_max_avg_return)
     cold_start_min_observed = _capture_config(wallet_cold_start_min_observed_buys)
     discovery_min_observed = _capture_config(wallet_discovery_min_observed_buys)
     discovery_min_resolved = _capture_config(wallet_discovery_min_resolved_buys)

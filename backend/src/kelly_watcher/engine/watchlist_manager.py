@@ -13,9 +13,6 @@ from kelly_watcher.config import (
     wallet_local_drop_max_total_pnl_usd,
     wallet_local_drop_min_resolved_copied_buys,
     wallet_slow_drop_max_tracking_age_seconds,
-    wallet_performance_drop_max_avg_return,
-    wallet_performance_drop_max_win_rate,
-    wallet_performance_drop_min_trades,
     warm_poll_interval_multiplier,
     warm_wallet_count,
 )
@@ -824,13 +821,16 @@ def _ensure_tracking_started(wallet_addresses: list[str]) -> None:
         conn.close()
 
 
-def _reactivate_legacy_uncopyable_drops(wallet_addresses: list[str]) -> int:
-    wallets = _normalize_wallets(wallet_addresses)
-    if not wallets:
-        return 0
-
+def _reactivate_legacy_uncopyable_drops(wallet_addresses: list[str] | None = None) -> int:
+    wallets = _normalize_wallets(wallet_addresses or [])
     now_ts = int(time.time())
-    placeholders = ",".join("?" for _ in wallets)
+    wallet_filter_sql = ""
+    params: tuple[object, ...] = (now_ts, now_ts)
+    if wallets:
+        placeholders = ",".join("?" for _ in wallets)
+        wallet_filter_sql = f"AND wallet_address IN ({placeholders})"
+        params = (now_ts, now_ts, *wallets)
+
     conn = get_conn()
     try:
         cursor = conn.execute(
@@ -841,81 +841,16 @@ def _reactivate_legacy_uncopyable_drops(wallet_addresses: list[str]) -> int:
                 dropped_at=NULL,
                 reactivated_at=?,
                 updated_at=?
-            WHERE wallet_address IN ({placeholders})
-              AND status='dropped'
+            WHERE status='dropped'
               AND LOWER(COALESCE(status_reason, '')) LIKE 'uncopyable%'
+              {wallet_filter_sql}
             """,
-            (now_ts, now_ts, *wallets),
+            params,
         )
         conn.commit()
         return int(cursor.rowcount or 0)
     finally:
         conn.close()
-
-
-def _auto_drop_underperforming_wallets(wallet_addresses: list[str], protected_wallets: set[str] | None = None) -> None:
-    minimum_trades = wallet_performance_drop_min_trades()
-    if minimum_trades <= 0:
-        return
-
-    max_win_rate = wallet_performance_drop_max_win_rate()
-    max_avg_return = wallet_performance_drop_max_avg_return()
-    wallets = _normalize_wallets(wallet_addresses)
-    if not wallets:
-        return
-    protected = protected_wallets or set()
-
-    status_rows = _wallet_status_rows(wallets)
-    logged_activity_map = _wallet_logged_activity_map(wallets)
-    placeholders = ",".join("?" for _ in wallets)
-    conn = get_conn()
-    try:
-        trader_rows = conn.execute(
-            f"""
-            SELECT trader_address, win_rate, n_trades, avg_return
-            FROM trader_cache
-            WHERE trader_address IN ({placeholders})
-            """,
-            tuple(wallets),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    trader_map = {
-        str(row["trader_address"] or "").strip().lower(): row
-        for row in trader_rows
-    }
-    now_ts = int(time.time())
-    to_drop: list[tuple[str, str, int, int]] = []
-
-    for wallet in wallets:
-        if wallet in protected:
-            continue
-        status_row = status_rows.get(wallet, {})
-        if status_row.get("status") == "dropped":
-            continue
-
-        row = trader_map.get(wallet)
-        if row is None:
-            continue
-
-        n_trades = int(row["n_trades"] or 0)
-        win_rate = float(row["win_rate"] or 0.0)
-        avg_return = float(row["avg_return"] or 0.0)
-        if n_trades < minimum_trades or win_rate > max_win_rate or avg_return > max_avg_return:
-            continue
-
-        reactivated_at = int(status_row.get("reactivated_at") or 0)
-        last_logged_ts = int(logged_activity_map.get(wallet, 0))
-        if reactivated_at > 0 and last_logged_ts <= reactivated_at:
-            continue
-
-        reason = (
-            f"poor_perf {n_trades}t {win_rate * 100.0:.1f}%wr {avg_return * 100.0:.1f}%ret"
-        )
-        to_drop.append((wallet, reason, now_ts, last_logged_ts))
-
-    _drop_wallets(to_drop)
 
 
 def _auto_drop_local_underperforming_wallets(wallet_addresses: list[str], protected_wallets: set[str] | None = None) -> None:
@@ -1165,7 +1100,7 @@ class WatchlistManager:
     def _build_snapshot(self, *, run_auto_drop: bool = True) -> WatchTierSnapshot:
         _ensure_tracking_started(self.wallets)
         if run_auto_drop:
-            _reactivate_legacy_uncopyable_drops(self.wallets)
+            _reactivate_legacy_uncopyable_drops()
         _refresh_wallet_policy_metrics(self.wallets)
         profitable_local_wallets = _profitable_local_wallets(self.wallets)
         inactivity_protected_wallets = _protected_best_wallets(self.wallets) | profitable_local_wallets
@@ -1173,7 +1108,6 @@ class WatchlistManager:
         if run_auto_drop:
             _auto_drop_inactive_wallets(self.wallets, inactivity_protected_wallets)
             _auto_drop_local_underperforming_wallets(self.wallets, quality_protected_wallets)
-            _auto_drop_underperforming_wallets(self.wallets, quality_protected_wallets)
         status_rows = _wallet_status_rows(self.wallets)
         dropped_wallets = tuple(
             wallet for wallet in self.wallets if status_rows.get(wallet, {}).get("status") == "dropped"

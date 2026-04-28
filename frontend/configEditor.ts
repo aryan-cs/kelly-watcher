@@ -178,30 +178,6 @@ export const editableConfigFields: EditableConfigField[] = [
     allowUnlimited: true
   },
   {
-    key: 'WALLET_PERFORMANCE_DROP_MIN_TRADES',
-    label: 'Wallet Drop Min Trades',
-    kind: 'int',
-    description: 'Minimum closed profile trades required before poor performance can auto-drop a wallet. Set to 0 to disable. Applies live on the next loop.',
-    defaultValue: '40',
-    liveApplies: true
-  },
-  {
-    key: 'WALLET_PERFORMANCE_DROP_MAX_WIN_RATE',
-    label: 'Wallet Drop Max Win Rate',
-    kind: 'float',
-    description: 'Auto-drop a wallet if its profile win rate is at or below this level after the minimum trade count is reached. Applies live on the next loop.',
-    defaultValue: '0.40',
-    liveApplies: true
-  },
-  {
-    key: 'WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN',
-    label: 'Wallet Drop Max Avg Return',
-    kind: 'float',
-    description: 'Auto-drop a wallet if its profile average return is at or below this level after the minimum trade count is reached. Applies live on the next loop.',
-    defaultValue: '-0.03',
-    liveApplies: true
-  },
-  {
     key: 'WALLET_COLD_START_MIN_OBSERVED_BUYS',
     label: 'Cold Start Min Buys',
     kind: 'int',
@@ -1011,10 +987,6 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
     return {ok: false, error: `${field.label} must be between 0 and 1.`}
   }
 
-  if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_WIN_RATE' && (numeric < 0 || numeric > 1)) {
-    return {ok: false, error: `${field.label} must be between 0 and 1.`}
-  }
-
   if (field.key === 'HOT_WALLET_COUNT' && numeric < 1) {
     return {ok: false, error: `${field.label} must be at least 1.`}
   }
@@ -1022,7 +994,6 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
   if (
     (
       field.key === 'WARM_WALLET_COUNT' ||
-      field.key === 'WALLET_PERFORMANCE_DROP_MIN_TRADES' ||
       field.key === 'WALLET_COLD_START_MIN_OBSERVED_BUYS' ||
       field.key === 'WALLET_DISCOVERY_MIN_OBSERVED_BUYS' ||
       field.key === 'WALLET_DISCOVERY_MIN_RESOLVED_BUYS' ||
@@ -1042,10 +1013,6 @@ export function validateEditableConfigValue(field: EditableConfigField, raw: str
     numeric < 1
   ) {
     return {ok: false, error: `${field.label} must be at least 1.`}
-  }
-
-  if (field.key === 'WALLET_PERFORMANCE_DROP_MAX_AVG_RETURN' && (numeric < -1 || numeric > 1)) {
-    return {ok: false, error: `${field.label} must be between -1 and 1.`}
   }
 
   if (

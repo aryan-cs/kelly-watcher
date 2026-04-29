@@ -689,8 +689,9 @@ function getPositionPaneMetrics(terminalHeight: number, stacked: boolean) {
   const gapHeight = 0
   const minPaneHeight = 5
   const usableHeight = Math.max(minPaneHeight * 2, availableHeight - gapHeight)
-  const currentPaneHeight = Math.max(minPaneHeight, Math.floor(usableHeight / 2))
-  const pastPaneHeight = Math.max(minPaneHeight, usableHeight - currentPaneHeight)
+  const paneHeight = Math.max(minPaneHeight, Math.floor(usableHeight / 2))
+  const currentPaneHeight = paneHeight
+  const pastPaneHeight = paneHeight
 
   return {
     currentPaneHeight,

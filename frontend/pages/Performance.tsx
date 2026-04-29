@@ -2042,7 +2042,7 @@ function groupHistoricalHourlyPnl(rows: PositionRow[], nowDate: Date): DailyPnlE
 function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width: number}) {
   const levelCount = DAILY_PREVIEW_LEVELS
   const columnWidth = DAILY_PREVIEW_COLUMN_WIDTH
-  const chartWidth = Math.max(1, width + 4)
+  const chartWidth = Math.max(1, width + 3)
   const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth))
   const visibleEntries = entries.slice(-visibleCapacity)
   const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)))

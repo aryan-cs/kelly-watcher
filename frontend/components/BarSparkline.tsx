@@ -10,6 +10,7 @@ interface Props {
   centered?: boolean
   axisChar?: string
   color?: string
+  backgroundColor?: string
 }
 
 export function BarSparkline({
@@ -19,7 +20,8 @@ export function BarSparkline({
   positive,
   centered = false,
   axisChar = '|',
-  color
+  color,
+  backgroundColor
 }: Props) {
   const magnitude = Math.max(0, Math.min(1, Math.abs(value)))
   const fillColor = color || ((positive ?? value >= 0) ? theme.green : theme.red)
@@ -39,25 +41,25 @@ export function BarSparkline({
     const filledBar = ' '.repeat(filled * slotWidth)
 
     return (
-      <Text>
+      <Text backgroundColor={backgroundColor}>
         {(positive ?? value >= 0) ? (
           <>
-            <Text>{leftBlank}</Text>
-            <Text color={theme.dim}>{axisChar}</Text>
+            <Text backgroundColor={backgroundColor}>{leftBlank}</Text>
+            <Text color={theme.dim} backgroundColor={backgroundColor}>{axisChar}</Text>
             <Text backgroundColor={fillColor}>{filledBar}</Text>
-            <Text>{rightEmpty}</Text>
-            {trailingPad > 0 ? <Text>{' '.repeat(trailingPad)}</Text> : null}
+            <Text backgroundColor={backgroundColor}>{rightEmpty}</Text>
+            {trailingPad > 0 ? <Text backgroundColor={backgroundColor}>{' '.repeat(trailingPad)}</Text> : null}
           </>
         ) : (
           <>
-            {trailingPad > 0 ? <Text>{' '.repeat(trailingPad)}</Text> : null}
-            <Text>{leftEmpty}</Text>
+            {trailingPad > 0 ? <Text backgroundColor={backgroundColor}>{' '.repeat(trailingPad)}</Text> : null}
+            <Text backgroundColor={backgroundColor}>{leftEmpty}</Text>
             <Text backgroundColor={fillColor}>{filledBar}</Text>
-            <Text color={theme.dim}>{axisChar}</Text>
-            <Text>{rightBlank}</Text>
+            <Text color={theme.dim} backgroundColor={backgroundColor}>{axisChar}</Text>
+            <Text backgroundColor={backgroundColor}>{rightBlank}</Text>
           </>
         )}
-        {label ? <Text color={theme.dim}>  {label}</Text> : null}
+        {label ? <Text color={theme.dim} backgroundColor={backgroundColor}>  {label}</Text> : null}
       </Text>
     )
   }
@@ -67,9 +69,9 @@ export function BarSparkline({
   const bar = '█'.repeat(filled) + '░'.repeat(empty)
 
   return (
-    <Text>
-      <Text color={fillColor}>{bar}</Text>
-      {label ? <Text color={theme.dim}>  {label}</Text> : null}
+    <Text backgroundColor={backgroundColor}>
+      <Text color={fillColor} backgroundColor={backgroundColor}>{bar}</Text>
+      {label ? <Text color={theme.dim} backgroundColor={backgroundColor}>  {label}</Text> : null}
     </Text>
   )
 }

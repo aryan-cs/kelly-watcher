@@ -2616,6 +2616,7 @@ export function Performance({
   const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor)
   const detailMaxModalWidth = Math.max(1, terminal.width - 8)
   const detailModalWidth = Math.max(1, Math.min(detailMaxModalWidth, DAILY_DETAIL_MAX_MODAL_WIDTH))
+  const detailModalInnerWidth = Math.max(1, detailModalWidth - 2)
   const detailModalContentWidth = Math.max(1, detailModalWidth - 4)
   const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12))
   const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows)
@@ -2681,6 +2682,14 @@ export function Performance({
     () => getDailyQueueLayout(detailModalContentWidth, dailyValueWidth),
     [detailModalContentWidth, dailyValueWidth]
   )
+  const detailRowUsedWidth =
+    1 +
+    detailQueueLayout.dateWidth +
+    1 +
+    detailQueueLayout.barWidth +
+    1 +
+    detailQueueLayout.valueWidth
+  const detailRowFillWidth = Math.max(0, detailModalInnerWidth - detailRowUsedWidth)
   const detailMaxAbsPnl = useMemo(
     () => Math.max(1, ...dailyEntries.map((entry) => Math.abs(entry.pnl))),
     [dailyEntries]
@@ -3232,21 +3241,21 @@ export function Performance({
       {dailyDetailOpen ? (
         <ModalOverlay backgroundColor={terminal.backgroundColor}>
           <InkBox borderStyle="round" borderColor={theme.accent} flexDirection="column" width={detailModalWidth}>
-            <InkBox width="100%">
+            <InkBox width={detailModalInnerWidth} flexShrink={0}>
               <Text color={theme.accent} backgroundColor={modalBackground} bold>
-                {` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`}
+                {fit(` ${`Hourly ${activeTitle} P&L Detail`}`, Math.max(1, detailModalInnerWidth - detailRangeLabel.length - 1))}
               </Text>
               <Text backgroundColor={modalBackground}> </Text>
               <Text color={theme.dim} backgroundColor={modalBackground}>
-                {`${fitRight(detailRangeLabel, detailRangeLabel.length)} `}
+                {fitRight(detailRangeLabel, detailRangeLabel.length)}
               </Text>
             </InkBox>
-            <Text backgroundColor={modalBackground}>{' '.repeat(Math.max(0, detailModalWidth - 2))}</Text>
+            <Text backgroundColor={modalBackground}>{' '.repeat(detailModalInnerWidth)}</Text>
             {paddedDetailEntries.map((row, index) => {
               const detailPnlColor = row ? centeredGradientColor(row.pnl, detailMaxAbsPnl) : theme.dim
 
               return (
-                <InkBox key={`detail-${row?.day || `empty-${index}`}`} width="100%">
+                <InkBox key={`detail-${row?.day || `empty-${index}`}`} width={detailModalInnerWidth} flexShrink={0}>
                 <Text color={row ? theme.white : theme.dim} backgroundColor={modalBackground}>
                   {` ${fitRight(row ? formatPnlBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`}
                 </Text>
@@ -3259,6 +3268,7 @@ export function Performance({
                     color={row ? detailPnlColor : undefined}
                     centered
                     axisChar="│"
+                    backgroundColor={modalBackground}
                   />
                 </InkBox>
                 <Text backgroundColor={modalBackground}> </Text>
@@ -3266,8 +3276,11 @@ export function Performance({
                   color={detailPnlColor}
                   backgroundColor={modalBackground}
                 >
-                  {`${fitRight(row?.label || '', detailQueueLayout.valueWidth)} `}
+                  {fitRight(row?.label || '', detailQueueLayout.valueWidth)}
                 </Text>
+                {detailRowFillWidth > 0 ? (
+                  <Text backgroundColor={modalBackground}>{' '.repeat(detailRowFillWidth)}</Text>
+                ) : null}
                 </InkBox>
               )
             })}

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Text } from 'ink';
 import { theme } from '../theme.js';
-export function BarSparkline({ value, width = 20, label, positive, centered = false, axisChar = '|', color }) {
+export function BarSparkline({ value, width = 20, label, positive, centered = false, axisChar = '|', color, backgroundColor }) {
     const magnitude = Math.max(0, Math.min(1, Math.abs(value)));
     const fillColor = color || ((positive ?? value >= 0) ? theme.green : theme.red);
     if (centered) {
@@ -17,28 +17,28 @@ export function BarSparkline({ value, width = 20, label, positive, centered = fa
         const leftBlank = ' '.repeat(halfWidth * slotWidth);
         const rightBlank = ' '.repeat(halfWidth * slotWidth);
         const filledBar = ' '.repeat(filled * slotWidth);
-        return (React.createElement(Text, null,
+        return (React.createElement(Text, { backgroundColor: backgroundColor },
             (positive ?? value >= 0) ? (React.createElement(React.Fragment, null,
-                React.createElement(Text, null, leftBlank),
-                React.createElement(Text, { color: theme.dim }, axisChar),
+                React.createElement(Text, { backgroundColor: backgroundColor }, leftBlank),
+                React.createElement(Text, { color: theme.dim, backgroundColor: backgroundColor }, axisChar),
                 React.createElement(Text, { backgroundColor: fillColor }, filledBar),
-                React.createElement(Text, null, rightEmpty),
-                trailingPad > 0 ? React.createElement(Text, null, ' '.repeat(trailingPad)) : null)) : (React.createElement(React.Fragment, null,
-                trailingPad > 0 ? React.createElement(Text, null, ' '.repeat(trailingPad)) : null,
-                React.createElement(Text, null, leftEmpty),
+                React.createElement(Text, { backgroundColor: backgroundColor }, rightEmpty),
+                trailingPad > 0 ? React.createElement(Text, { backgroundColor: backgroundColor }, ' '.repeat(trailingPad)) : null)) : (React.createElement(React.Fragment, null,
+                trailingPad > 0 ? React.createElement(Text, { backgroundColor: backgroundColor }, ' '.repeat(trailingPad)) : null,
+                React.createElement(Text, { backgroundColor: backgroundColor }, leftEmpty),
                 React.createElement(Text, { backgroundColor: fillColor }, filledBar),
-                React.createElement(Text, { color: theme.dim }, axisChar),
-                React.createElement(Text, null, rightBlank))),
-            label ? React.createElement(Text, { color: theme.dim },
+                React.createElement(Text, { color: theme.dim, backgroundColor: backgroundColor }, axisChar),
+                React.createElement(Text, { backgroundColor: backgroundColor }, rightBlank))),
+            label ? React.createElement(Text, { color: theme.dim, backgroundColor: backgroundColor },
                 "  ",
                 label) : null));
     }
     const filled = Math.round(magnitude * width);
     const empty = Math.max(0, width - filled);
     const bar = '█'.repeat(filled) + '░'.repeat(empty);
-    return (React.createElement(Text, null,
-        React.createElement(Text, { color: fillColor }, bar),
-        label ? React.createElement(Text, { color: theme.dim },
+    return (React.createElement(Text, { backgroundColor: backgroundColor },
+        React.createElement(Text, { color: fillColor, backgroundColor: backgroundColor }, bar),
+        label ? React.createElement(Text, { color: theme.dim, backgroundColor: backgroundColor },
             "  ",
             label) : null));
 }

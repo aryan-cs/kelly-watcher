@@ -1796,6 +1796,7 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     const selectedRowBackground = selectionBackgroundColor(terminal.backgroundColor);
     const detailMaxModalWidth = Math.max(1, terminal.width - 8);
     const detailModalWidth = Math.max(1, Math.min(detailMaxModalWidth, DAILY_DETAIL_MAX_MODAL_WIDTH));
+    const detailModalInnerWidth = Math.max(1, detailModalWidth - 2);
     const detailModalContentWidth = Math.max(1, detailModalWidth - 4);
     const detailVisibleRows = Math.max(12, Math.min(21, terminal.height - 12));
     const detailMaxOffset = Math.max(0, dailyEntries.length - detailVisibleRows);
@@ -1848,6 +1849,13 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
         ? `${detailOffset + 1}-${Math.min(detailOffset + visibleDetailEntries.length, dailyEntries.length)}/${dailyEntries.length}`
         : '0/0';
     const detailQueueLayout = useMemo(() => getDailyQueueLayout(detailModalContentWidth, dailyValueWidth), [detailModalContentWidth, dailyValueWidth]);
+    const detailRowUsedWidth = 1 +
+        detailQueueLayout.dateWidth +
+        1 +
+        detailQueueLayout.barWidth +
+        1 +
+        detailQueueLayout.valueWidth;
+    const detailRowFillWidth = Math.max(0, detailModalInnerWidth - detailRowUsedWidth);
     const detailMaxAbsPnl = useMemo(() => Math.max(1, ...dailyEntries.map((entry) => Math.abs(entry.pnl))), [dailyEntries]);
     const actionModalWidth = Math.max(82, Math.min(terminal.width - 4, terminal.wide ? 128 : 105));
     const actionModalContentWidth = Math.max(57, actionModalWidth - 4);
@@ -2142,19 +2150,20 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
                 React.createElement(Text, { color: toneColor(editState.statusTone), backgroundColor: modalBackground }, ` ${fit((editState.statusMessage || editInstructionText).trim(), editModalContentWidth)} `)))) : null,
         dailyDetailOpen ? (React.createElement(ModalOverlay, { backgroundColor: terminal.backgroundColor },
             React.createElement(InkBox, { borderStyle: "round", borderColor: theme.accent, flexDirection: "column", width: detailModalWidth },
-                React.createElement(InkBox, { width: "100%" },
-                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, ` ${fit(`Hourly ${activeTitle} P&L Detail`, Math.max(1, detailModalContentWidth - detailRangeLabel.length - 1))}`),
+                React.createElement(InkBox, { width: detailModalInnerWidth, flexShrink: 0 },
+                    React.createElement(Text, { color: theme.accent, backgroundColor: modalBackground, bold: true }, fit(` ${`Hourly ${activeTitle} P&L Detail`}`, Math.max(1, detailModalInnerWidth - detailRangeLabel.length - 1))),
                     React.createElement(Text, { backgroundColor: modalBackground }, " "),
-                    React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, `${fitRight(detailRangeLabel, detailRangeLabel.length)} `)),
-                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(Math.max(0, detailModalWidth - 2))),
+                    React.createElement(Text, { color: theme.dim, backgroundColor: modalBackground }, fitRight(detailRangeLabel, detailRangeLabel.length))),
+                React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailModalInnerWidth)),
                 paddedDetailEntries.map((row, index) => {
                     const detailPnlColor = row ? centeredGradientColor(row.pnl, detailMaxAbsPnl) : theme.dim;
-                    return (React.createElement(InkBox, { key: `detail-${row?.day || `empty-${index}`}`, width: "100%" },
+                    return (React.createElement(InkBox, { key: `detail-${row?.day || `empty-${index}`}`, width: detailModalInnerWidth, flexShrink: 0 },
                         React.createElement(Text, { color: row ? theme.white : theme.dim, backgroundColor: modalBackground }, ` ${fitRight(row ? formatPnlBucketLabel(row.day) : '', detailQueueLayout.dateWidth)}`),
                         React.createElement(Text, { backgroundColor: modalBackground }, " "),
                         React.createElement(InkBox, { width: detailQueueLayout.barWidth },
-                            React.createElement(BarSparkline, { value: row ? row.pnl / detailMaxAbsPnl : 0, width: detailQueueLayout.barWidth, positive: row ? row.pnl >= 0 : true, color: row ? detailPnlColor : undefined, centered: true, axisChar: "\u2502" })),
+                            React.createElement(BarSparkline, { value: row ? row.pnl / detailMaxAbsPnl : 0, width: detailQueueLayout.barWidth, positive: row ? row.pnl >= 0 : true, color: row ? detailPnlColor : undefined, centered: true, axisChar: "\u2502", backgroundColor: modalBackground })),
                         React.createElement(Text, { backgroundColor: modalBackground }, " "),
-                        React.createElement(Text, { color: detailPnlColor, backgroundColor: modalBackground }, `${fitRight(row?.label || '', detailQueueLayout.valueWidth)} `)));
+                        React.createElement(Text, { color: detailPnlColor, backgroundColor: modalBackground }, fitRight(row?.label || '', detailQueueLayout.valueWidth)),
+                        detailRowFillWidth > 0 ? (React.createElement(Text, { backgroundColor: modalBackground }, ' '.repeat(detailRowFillWidth))) : null));
                 })))) : null));
 }

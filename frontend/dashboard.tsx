@@ -212,6 +212,7 @@ interface AppContentProps {
 
 function renderPage(
   page: Page,
+  pageBodyHeight: number,
   settingsEditor: SettingsEditorState,
   feedScrollOffset: number,
   onFeedScrollOffsetChange: (offset: number) => void,
@@ -265,6 +266,7 @@ function renderPage(
           pastScrollOffset={perfPastScrollOffset}
           activePane={perfActivePane}
           selectedBox={perfSelectedBox}
+          availableHeight={pageBodyHeight}
           dailyDetailOpen={perfDailyDetailOpen}
           dailyDetailScrollOffset={perfDailyDetailScrollOffset}
           actionState={perfPositionAction}
@@ -615,6 +617,7 @@ function AppContent({
       <Box paddingX={1} height={frameBodyHeight} flexShrink={1} overflow="hidden">
         {renderPage(
           page,
+          frameBodyHeight,
           settingsEditor,
           feedScrollOffset,
           onFeedScrollOffsetChange,

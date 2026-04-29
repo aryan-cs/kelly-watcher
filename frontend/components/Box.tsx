@@ -7,10 +7,11 @@ interface Props {
   children: React.ReactNode
   width?: string | number
   height?: string | number
+  flexShrink?: number
   accent?: boolean
 }
 
-export function Box({title, children, width = '100%', height, accent = false}: Props) {
+export function Box({title, children, width = '100%', height, flexShrink = 1, accent = false}: Props) {
   return (
     <InkBox
       borderStyle="round"
@@ -19,7 +20,7 @@ export function Box({title, children, width = '100%', height, accent = false}: P
       width={width}
       height={height}
       paddingX={1}
-      flexShrink={1}
+      flexShrink={flexShrink}
       overflow="hidden"
     >
       {title ? (

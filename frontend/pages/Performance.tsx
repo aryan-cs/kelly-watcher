@@ -531,6 +531,15 @@ interface PositionRowBudget {
   past: number
 }
 
+interface PerformanceLayoutMetrics {
+  summaryPanelHeight: number
+  dailyPanelHeight: number
+  currentPaneHeight: number
+  pastPaneHeight: number
+  currentVisibleRows: number
+  pastVisibleRows: number
+}
+
 interface RenderPositionsOptions {
   showStatus?: boolean
   showTtr?: boolean
@@ -545,6 +554,7 @@ interface PerformanceProps {
   pastScrollOffset: number
   activePane: 'current' | 'past'
   selectedBox: PerfBox
+  availableHeight?: number
   dailyDetailOpen: boolean
   dailyDetailScrollOffset: number
   actionState?: PerfPositionActionState | null
@@ -597,6 +607,8 @@ interface DailyQueueLayout {
 
 const DAILY_PREVIEW_LEVELS = 3
 const DAILY_PREVIEW_COLUMN_WIDTH = 2
+const SUMMARY_PANEL_HEIGHT = 9
+const DAILY_PANEL_HEIGHT = (DAILY_PREVIEW_LEVELS * 2) + 4
 const DAILY_DETAIL_MAX_MODAL_WIDTH = 76
 const DAILY_DETAIL_MAX_BAR_WIDTH = 42
 
@@ -680,20 +692,34 @@ function getPositionsLayout(width: number): PositionsLayout {
   }
 }
 
-function getPositionPaneMetrics(terminalHeight: number, stacked: boolean) {
-  const outerReserve = 8
-  const statsHeight = 9
-  const dailyHeight = 9
-  const topRowHeight = stacked ? statsHeight + 1 + dailyHeight : Math.max(statsHeight, dailyHeight)
-  const availableHeight = Math.max(8, terminalHeight - outerReserve - topRowHeight)
-  const gapHeight = 0
+function getPerformanceLayoutMetrics(pageBodyHeight: number, stacked: boolean): PerformanceLayoutMetrics {
   const minPaneHeight = 5
-  const usableHeight = Math.max(minPaneHeight * 2, availableHeight - gapHeight)
+  const topPanelGap = stacked ? 1 : 0
+  const desiredTopHeight = stacked
+    ? SUMMARY_PANEL_HEIGHT + topPanelGap + DAILY_PANEL_HEIGHT
+    : Math.max(SUMMARY_PANEL_HEIGHT, DAILY_PANEL_HEIGHT)
+  const maxTopHeight = Math.max(1, pageBodyHeight - (minPaneHeight * 2))
+  const topRowHeight = Math.min(desiredTopHeight, maxTopHeight)
+  const stackedTopContentHeight = Math.max(1, topRowHeight - topPanelGap)
+  const stackedSummaryHeight = Math.max(
+    1,
+    Math.min(
+      SUMMARY_PANEL_HEIGHT,
+      Math.floor((stackedTopContentHeight * SUMMARY_PANEL_HEIGHT) / (SUMMARY_PANEL_HEIGHT + DAILY_PANEL_HEIGHT))
+    )
+  )
+  const summaryPanelHeight = stacked ? stackedSummaryHeight : topRowHeight
+  const dailyPanelHeight = stacked
+    ? Math.max(1, stackedTopContentHeight - stackedSummaryHeight)
+    : topRowHeight
+  const usableHeight = Math.max(minPaneHeight * 2, pageBodyHeight - topRowHeight)
   const paneHeight = Math.max(minPaneHeight, Math.floor(usableHeight / 2))
   const currentPaneHeight = paneHeight
   const pastPaneHeight = paneHeight
 
   return {
+    summaryPanelHeight,
+    dailyPanelHeight,
     currentPaneHeight,
     pastPaneHeight,
     currentVisibleRows: Math.max(1, currentPaneHeight - 4),
@@ -2107,6 +2133,7 @@ export function Performance({
   pastScrollOffset,
   activePane,
   selectedBox,
+  availableHeight,
   dailyDetailOpen,
   dailyDetailScrollOffset,
   actionState,
@@ -2121,6 +2148,7 @@ export function Performance({
 }: PerformanceProps) {
   const terminal = useTerminalSize()
   const stacked = stackPanels(terminal.width)
+  const pageBodyHeight = Math.max(1, availableHeight ?? terminal.height)
   const shadowOpenPositions = useQuery<PositionRow>(SHADOW_OPEN_POSITIONS_SQL)
   const livePositions = useQuery<PositionRow>(LIVE_POSITIONS_SQL)
   const resolvedPositions = useQuery<PositionRow>(RESOLVED_POSITIONS_SQL)
@@ -2382,32 +2410,32 @@ export function Performance({
     () => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10),
     [dailyEntries]
   )
-  const paneMetrics = getPositionPaneMetrics(terminal.height, stacked)
+  const layoutMetrics = getPerformanceLayoutMetrics(pageBodyHeight, stacked)
   const currentMaxOffset = Math.max(currentPositions.length - 1, 0)
   const pastMaxOffset = Math.max(pastPositions.length - 1, 0)
   const effectiveCurrentScrollOffset = Math.min(currentScrollOffset, currentMaxOffset)
   const effectivePastScrollOffset = Math.min(pastScrollOffset, pastMaxOffset)
   const currentWindowStart =
-    currentPositions.length > paneMetrics.currentVisibleRows
+    currentPositions.length > layoutMetrics.currentVisibleRows
       ? Math.min(
-          Math.max(effectiveCurrentScrollOffset - Math.floor(paneMetrics.currentVisibleRows / 2), 0),
-          Math.max(0, currentPositions.length - paneMetrics.currentVisibleRows)
+          Math.max(effectiveCurrentScrollOffset - Math.floor(layoutMetrics.currentVisibleRows / 2), 0),
+          Math.max(0, currentPositions.length - layoutMetrics.currentVisibleRows)
         )
       : 0
   const pastWindowStart =
-    pastPositions.length > paneMetrics.pastVisibleRows
+    pastPositions.length > layoutMetrics.pastVisibleRows
       ? Math.min(
-          Math.max(effectivePastScrollOffset - Math.floor(paneMetrics.pastVisibleRows / 2), 0),
-          Math.max(0, pastPositions.length - paneMetrics.pastVisibleRows)
+          Math.max(effectivePastScrollOffset - Math.floor(layoutMetrics.pastVisibleRows / 2), 0),
+          Math.max(0, pastPositions.length - layoutMetrics.pastVisibleRows)
         )
       : 0
   const visibleCurrentPositions = currentPositions.slice(
     currentWindowStart,
-    currentWindowStart + paneMetrics.currentVisibleRows
+    currentWindowStart + layoutMetrics.currentVisibleRows
   )
   const visiblePastPositions = pastPositions.slice(
     pastWindowStart,
-    pastWindowStart + paneMetrics.pastVisibleRows
+    pastWindowStart + layoutMetrics.pastVisibleRows
   )
   const selectedCurrentRow = currentPositions[effectiveCurrentScrollOffset] ?? null
   const selectedPastRow = pastPositions[effectivePastScrollOffset] ?? null
@@ -3006,7 +3034,13 @@ export function Performance({
   const renderPageBody = () => (
     <>
       <InkBox width="100%" flexDirection={stacked ? 'column' : 'row'}>
-        <Box title={activeTitle} width={stacked ? '100%' : '50%'} accent={selectedBox === 'summary'}>
+        <Box
+          title={activeTitle}
+          width={stacked ? '100%' : '50%'}
+          height={layoutMetrics.summaryPanelHeight}
+          flexShrink={0}
+          accent={selectedBox === 'summary'}
+        >
           <InkBox width="100%" flexDirection="row">
             <InkBox flexDirection="column" width={summaryStatColumnWidth} flexShrink={0}>
               {summaryLeftStats.map((stat) => (
@@ -3034,7 +3068,13 @@ export function Performance({
           </InkBox>
         </Box>
         {!stacked ? <InkBox width={1} /> : <InkBox height={1} />}
-        <Box title={`Hourly ${activeTitle} P&L`} width={stacked ? '100%' : '50%'} accent={selectedBox === 'daily'}>
+        <Box
+          title={`Hourly ${activeTitle} P&L`}
+          width={stacked ? '100%' : '50%'}
+          height={layoutMetrics.dailyPanelHeight}
+          flexShrink={0}
+          accent={selectedBox === 'daily'}
+        >
           {dailyPreviewEntries.length ? (
             <DailyPnlPreviewChart entries={dailyPreviewEntries} width={dailyPanelContentWidth} />
           ) : (
@@ -3046,43 +3086,41 @@ export function Performance({
         </Box>
       </InkBox>
 
-      <InkBox flexDirection="column" height={paneMetrics.currentPaneHeight + paneMetrics.pastPaneHeight}>
-        <InkBox height={paneMetrics.currentPaneHeight}>
-          <Box
-            title={`Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`}
-            height="100%"
-            accent={selectedBox === 'current'}
-          >
-            {visibleCurrentPositions.length ? (
-              renderPositionsTable(visibleCurrentPositions, {
-                profitScaleRows: currentPositions,
-                selectedRowKey: selectedCurrentRow?.row_key
-              })
-            ) : (
-              <Text color={theme.dim}>No open positions right now.</Text>
-            )}
-          </Box>
-        </InkBox>
+      <InkBox flexDirection="column" height={layoutMetrics.currentPaneHeight + layoutMetrics.pastPaneHeight} flexShrink={0}>
+        <Box
+          title={`Current Positions (${currentPositions.length}, holding $${currentPositionsTotal.toFixed(3)})`}
+          height={layoutMetrics.currentPaneHeight}
+          flexShrink={0}
+          accent={selectedBox === 'current'}
+        >
+          {visibleCurrentPositions.length ? (
+            renderPositionsTable(visibleCurrentPositions, {
+              profitScaleRows: currentPositions,
+              selectedRowKey: selectedCurrentRow?.row_key
+            })
+          ) : (
+            <Text color={theme.dim}>No open positions right now.</Text>
+          )}
+        </Box>
 
-        <InkBox height={paneMetrics.pastPaneHeight}>
-          <Box
-            title={`Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`}
-            height="100%"
-            accent={selectedBox === 'past'}
-          >
-            {visiblePastPositions.length ? (
-              renderPositionsTable(visiblePastPositions, {
-                showStatus: true,
-                showTtr: false,
-                showCashOut: false,
-                profitScaleRows: pastPositions,
-                selectedRowKey: selectedPastRow?.row_key
-              })
-            ) : (
-              <Text color={theme.dim}>No past positions yet.</Text>
-            )}
-          </Box>
-        </InkBox>
+        <Box
+          title={`Past Positions (${pastPositions.length}, waiting for $${waitingPositionsTotal.toFixed(2)})`}
+          height={layoutMetrics.pastPaneHeight}
+          flexShrink={0}
+          accent={selectedBox === 'past'}
+        >
+          {visiblePastPositions.length ? (
+            renderPositionsTable(visiblePastPositions, {
+              showStatus: true,
+              showTtr: false,
+              showCashOut: false,
+              profitScaleRows: pastPositions,
+              selectedRowKey: selectedPastRow?.row_key
+            })
+          ) : (
+            <Text color={theme.dim}>No past positions yet.</Text>
+          )}
+        </Box>
       </InkBox>
     </>
   )

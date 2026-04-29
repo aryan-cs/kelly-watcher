@@ -1977,6 +1977,41 @@ function groupTodayHourlyPnl(rows: PositionRow[], nowDate: Date): DailyPnlEntry[
   return filledEntries
 }
 
+function groupRecentHourlyPnl(rows: PositionRow[], nowDate: Date, bucketCount: number): DailyPnlEntry[] {
+  const resolvedBucketCount = Math.max(1, Math.floor(bucketCount))
+  const totals = new Map<string, number>()
+  const currentBucket = floorToPnlBucket(nowDate)
+  const oldestBucket = new Date(currentBucket.getTime())
+  oldestBucket.setMinutes(oldestBucket.getMinutes() - (resolvedBucketCount - 1) * PNL_BUCKET_MINUTES)
+
+  rows.forEach((row) => {
+    const pnl = row.pnl_usd
+    if (pnl == null) {
+      return
+    }
+    const ts = row.resolution_ts || row.market_close_ts || row.entered_at
+    if (!ts) {
+      return
+    }
+    const bucketDate = floorToPnlBucket(new Date(ts * 1000))
+    if (bucketDate < oldestBucket || bucketDate > currentBucket) {
+      return
+    }
+    const bucket = formatPnlBucketKey(bucketDate)
+    totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3))
+  })
+
+  const filledEntries: DailyPnlEntry[] = []
+  for (let index = resolvedBucketCount - 1; index >= 0; index -= 1) {
+    const bucketDate = new Date(currentBucket.getTime())
+    bucketDate.setMinutes(bucketDate.getMinutes() - index * PNL_BUCKET_MINUTES)
+    const bucket = formatPnlBucketKey(bucketDate)
+    const pnl = roundTo(totals.get(bucket) || 0, 3)
+    filledEntries.push({day: bucket, pnl, label: formatDollar(pnl)})
+  }
+  return filledEntries
+}
+
 function groupHistoricalHourlyPnl(rows: PositionRow[], nowDate: Date): DailyPnlEntry[] {
   const totals = new Map<string, number>()
   const dayStart = new Date(nowDate.getTime())
@@ -2010,12 +2045,6 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
   const chartWidth = Math.max(1, width + 4)
   const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth))
   const visibleEntries = entries.slice(-visibleCapacity)
-  const baseSlotWidth = Math.max(columnWidth, Math.floor(chartWidth / Math.max(1, visibleEntries.length)))
-  const slotWidths = visibleEntries.map((_, index) =>
-    index === visibleEntries.length - 1
-      ? Math.max(1, chartWidth - (baseSlotWidth * (visibleEntries.length - 1)))
-      : baseSlotWidth,
-  )
   const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)))
   const heights = visibleEntries.map((entry) => {
     const magnitude = Math.abs(entry.pnl)
@@ -2033,17 +2062,17 @@ function DailyPnlPreviewChart({entries, width}: {entries: DailyPnlEntry[]; width
             ? entry.pnl < 0 && heights[index] >= rowIndex
             : entry.pnl > 0 && heights[index] >= rowIndex
         const color = negative ? theme.red : theme.green
-        const slotWidth = slotWidths[index] || columnWidth
         return (
           <InkBox
             key={`${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}`}
-            width={slotWidth}
+            width={columnWidth}
             flexShrink={0}
           >
-            <Text color={filled ? color : undefined}>{filled ? '█'.repeat(slotWidth) : ' '.repeat(slotWidth)}</Text>
+            <Text color={filled ? color : undefined}>{filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth)}</Text>
           </InkBox>
         )
       })}
+      <Text>{' '.repeat(Math.max(0, chartWidth - (visibleEntries.length * columnWidth)))}</Text>
     </InkBox>
   )
 
@@ -2341,15 +2370,12 @@ export function Performance({
     [dailyPanelContentWidth]
   )
   const dailyPreviewCapacity = useMemo(
-    () =>
-      todayHourlyEntries.length
-        ? Math.min(todayHourlyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
-        : 0,
-    [dailyPanelContentWidth, todayHourlyEntries.length]
+    () => Math.max(1, Math.floor((dailyPanelContentWidth + 4) / DAILY_PREVIEW_COLUMN_WIDTH)),
+    [dailyPanelContentWidth]
   )
   const dailyPreviewEntries = useMemo(
-    () => todayHourlyEntries.slice(0, dailyPreviewCapacity).reverse(),
-    [dailyPreviewCapacity, todayHourlyEntries]
+    () => groupRecentHourlyPnl(hourlyPnlRows, new Date(nowTs * 1000), dailyPreviewCapacity),
+    [dailyPreviewCapacity, hourlyPnlRows, nowTs]
   )
   const dailyValueWidth = useMemo(
     () => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10),

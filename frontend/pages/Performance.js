@@ -1382,6 +1382,38 @@ function groupTodayHourlyPnl(rows, nowDate) {
     }
     return filledEntries;
 }
+function groupRecentHourlyPnl(rows, nowDate, bucketCount) {
+    const resolvedBucketCount = Math.max(1, Math.floor(bucketCount));
+    const totals = new Map();
+    const currentBucket = floorToPnlBucket(nowDate);
+    const oldestBucket = new Date(currentBucket.getTime());
+    oldestBucket.setMinutes(oldestBucket.getMinutes() - (resolvedBucketCount - 1) * PNL_BUCKET_MINUTES);
+    rows.forEach((row) => {
+        const pnl = row.pnl_usd;
+        if (pnl == null) {
+            return;
+        }
+        const ts = row.resolution_ts || row.market_close_ts || row.entered_at;
+        if (!ts) {
+            return;
+        }
+        const bucketDate = floorToPnlBucket(new Date(ts * 1000));
+        if (bucketDate < oldestBucket || bucketDate > currentBucket) {
+            return;
+        }
+        const bucket = formatPnlBucketKey(bucketDate);
+        totals.set(bucket, roundTo((totals.get(bucket) || 0) + pnl, 3));
+    });
+    const filledEntries = [];
+    for (let index = resolvedBucketCount - 1; index >= 0; index -= 1) {
+        const bucketDate = new Date(currentBucket.getTime());
+        bucketDate.setMinutes(bucketDate.getMinutes() - index * PNL_BUCKET_MINUTES);
+        const bucket = formatPnlBucketKey(bucketDate);
+        const pnl = roundTo(totals.get(bucket) || 0, 3);
+        filledEntries.push({ day: bucket, pnl, label: formatDollar(pnl) });
+    }
+    return filledEntries;
+}
 function groupHistoricalHourlyPnl(rows, nowDate) {
     const totals = new Map();
     const dayStart = new Date(nowDate.getTime());
@@ -1412,10 +1444,6 @@ function DailyPnlPreviewChart({ entries, width }) {
     const chartWidth = Math.max(1, width + 4);
     const visibleCapacity = Math.max(1, Math.floor(chartWidth / columnWidth));
     const visibleEntries = entries.slice(-visibleCapacity);
-    const baseSlotWidth = Math.max(columnWidth, Math.floor(chartWidth / Math.max(1, visibleEntries.length)));
-    const slotWidths = visibleEntries.map((_, index) => index === visibleEntries.length - 1
-        ? Math.max(1, chartWidth - (baseSlotWidth * (visibleEntries.length - 1)))
-        : baseSlotWidth);
     const maxAbsPnl = Math.max(1, ...visibleEntries.map((entry) => Math.abs(entry.pnl)));
     const heights = visibleEntries.map((entry) => {
         const magnitude = Math.abs(entry.pnl);
@@ -1430,10 +1458,10 @@ function DailyPnlPreviewChart({ entries, width }) {
                 ? entry.pnl < 0 && heights[index] >= rowIndex
                 : entry.pnl > 0 && heights[index] >= rowIndex;
             const color = negative ? theme.red : theme.green;
-            const slotWidth = slotWidths[index] || columnWidth;
-            return (React.createElement(InkBox, { key: `${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}`, width: slotWidth, flexShrink: 0 },
-                React.createElement(Text, { color: filled ? color : undefined }, filled ? '█'.repeat(slotWidth) : ' '.repeat(slotWidth))));
-        })));
+            return (React.createElement(InkBox, { key: `${entry.day}-${negative ? 'neg' : 'pos'}-${rowIndex}`, width: columnWidth, flexShrink: 0 },
+                React.createElement(Text, { color: filled ? color : undefined }, filled ? '█'.repeat(columnWidth) : ' '.repeat(columnWidth))));
+        }),
+        React.createElement(Text, null, ' '.repeat(Math.max(0, chartWidth - (visibleEntries.length * columnWidth))))));
     return (React.createElement(InkBox, { flexDirection: "column" },
         Array.from({ length: levelCount }, (_, index) => renderRow(levelCount - index, false)),
         React.createElement(InkBox, { width: chartWidth, flexShrink: 0 },
@@ -1580,10 +1608,8 @@ export function Performance({ currentScrollOffset, pastScrollOffset, activePane,
     ]);
     const dailyPanelContentWidth = useMemo(() => getDailyPanelContentWidth(terminal.width, stacked), [stacked, terminal.width]);
     const summaryStatColumnWidth = useMemo(() => Math.max(1, Math.floor((dailyPanelContentWidth - 2) / 2)), [dailyPanelContentWidth]);
-    const dailyPreviewCapacity = useMemo(() => todayHourlyEntries.length
-        ? Math.min(todayHourlyEntries.length, Math.max(1, Math.floor(dailyPanelContentWidth / 2)))
-        : 0, [dailyPanelContentWidth, todayHourlyEntries.length]);
-    const dailyPreviewEntries = useMemo(() => todayHourlyEntries.slice(0, dailyPreviewCapacity).reverse(), [dailyPreviewCapacity, todayHourlyEntries]);
+    const dailyPreviewCapacity = useMemo(() => Math.max(1, Math.floor((dailyPanelContentWidth + 4) / DAILY_PREVIEW_COLUMN_WIDTH)), [dailyPanelContentWidth]);
+    const dailyPreviewEntries = useMemo(() => groupRecentHourlyPnl(hourlyPnlRows, new Date(nowTs * 1000), dailyPreviewCapacity), [dailyPreviewCapacity, hourlyPnlRows, nowTs]);
     const dailyValueWidth = useMemo(() => dailyEntries.reduce((max, row) => Math.max(max, row.label.length), 10), [dailyEntries]);
     const paneMetrics = getPositionPaneMetrics(terminal.height, stacked);
     const currentMaxOffset = Math.max(currentPositions.length - 1, 0);

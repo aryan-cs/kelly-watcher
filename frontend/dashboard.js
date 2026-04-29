@@ -313,7 +313,9 @@ function AppContent({ botState, page, isRefreshing, settingsEditor, feedScrollOf
                                 ? 'r refresh  q exit'
                                 : 'r: refresh  q: exit';
     const frameLineWidth = Math.max(12, terminal.width - 6);
-    const frameBodyHeight = Math.max(1, terminal.height - 6);
+    // Outer frame border consumes 2 rows; header and footer consume 3 rows each.
+    // Keep the page body inside the remaining rows so content never renders under the footer.
+    const frameBodyHeight = Math.max(1, terminal.height - 8);
     const headerStatusText = `${backendStatusTag} ${mode}`;
     const preferredHeaderStatusWidth = Math.min(frameLineWidth, terminal.compact ? 18 : 26);
     const headerStatusWidth = Math.max(1, Math.min(preferredHeaderStatusWidth, Math.max(1, frameLineWidth - 4)));

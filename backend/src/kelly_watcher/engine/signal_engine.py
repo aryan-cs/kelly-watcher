@@ -19,6 +19,8 @@ from kelly_watcher.config import (
     heuristic_max_entry_price,
     heuristic_allowed_entry_price_bands,
     heuristic_min_entry_price,
+    heuristic_min_market_score_high_edge,
+    heuristic_min_market_score_low_edge,
     heuristic_min_time_to_close_seconds,
     model_edge_high_confidence,
     model_edge_high_threshold,
@@ -46,8 +48,6 @@ logger = logging.getLogger(__name__)
 
 TRADER_WEIGHT = 0.60
 MARKET_WEIGHT = 0.40
-HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
-HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
 SEGMENT_POLICY_ID = "shadow-runtime-segment-policy-v1"
 SEGMENT_POLICY_BUNDLE_VERSION = 1
 _ARTIFACT_BOOL_TRUE = {"1", "true", "t", "yes", "y", "on"}
@@ -644,7 +644,10 @@ class SignalEngine:
             np.interp(
                 band_progress,
                 [0.0, 1.0],
-                [HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE, HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE],
+                [
+                    heuristic_min_market_score_low_edge(),
+                    heuristic_min_market_score_high_edge(),
+                ],
             )
         )
         return required_market_score, band_progress

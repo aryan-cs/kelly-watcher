@@ -307,6 +307,24 @@ def heuristic_max_entry_price() -> float:
     )
 
 
+def heuristic_min_market_score_low_edge() -> float:
+    return _get_env_file_bounded_float(
+        "HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE",
+        "0.70",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+def heuristic_min_market_score_high_edge() -> float:
+    return _get_env_file_bounded_float(
+        "HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE",
+        "0.60",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
 def heuristic_allowed_entry_price_bands() -> tuple[str, ...]:
     return _get_env_file_csv_choices(
         "HEURISTIC_ALLOWED_ENTRY_PRICE_BANDS",

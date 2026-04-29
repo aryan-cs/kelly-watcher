@@ -10,5 +10,13 @@
   "min_confidence": [
     0.55,
     0.6
+  ],
+  "heuristic_min_market_score_low_edge": [
+    0.7,
+    0.75
+  ],
+  "heuristic_min_market_score_high_edge": [
+    0.6,
+    0.65
   ]
 }

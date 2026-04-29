@@ -74,6 +74,14 @@ def _insert_trade(
 
 
 class ReplayTest(unittest.TestCase):
+    def setUp(self) -> None:
+        allow_heuristic_patch = patch("kelly_watcher.research.replay.allow_heuristic", return_value=True)
+        allow_xgboost_patch = patch("kelly_watcher.research.replay.allow_xgboost", return_value=True)
+        allow_heuristic_patch.start()
+        allow_xgboost_patch.start()
+        self.addCleanup(allow_heuristic_patch.stop)
+        self.addCleanup(allow_xgboost_patch.stop)
+
     def test_default_replay_policy_uses_global_runtime_filters(self) -> None:
         with (
             patch(
@@ -84,11 +92,15 @@ class ReplayTest(unittest.TestCase):
                 "kelly_watcher.research.replay.allowed_time_to_close_bands",
                 return_value=("15m-1h", "1h-2h"),
             ),
+            patch("kelly_watcher.research.replay.allow_heuristic", return_value=False),
+            patch("kelly_watcher.research.replay.allow_xgboost", return_value=True),
         ):
             policy = ReplayPolicy.default()
 
         self.assertEqual(policy.allowed_entry_price_bands, ("0.60-0.69", ">=0.70"))
         self.assertEqual(policy.allowed_time_to_close_bands, ("15m-1h", "1h-2h"))
+        self.assertFalse(policy.allow_heuristic)
+        self.assertTrue(policy.allow_xgboost)
 
     def test_replay_policy_config_payload_excludes_artifact_owned_base_edge_threshold(self) -> None:
         payload = policy_to_config_payload(ReplayPolicy.from_payload({"edge_threshold": 0.05}))
@@ -1628,7 +1640,7 @@ class ReplayTest(unittest.TestCase):
             finally:
                 db.DB_PATH = original_db_path
 
-    def test_run_replay_entry_filters_use_decision_price_before_actual_fill(self) -> None:
+    def test_run_replay_entry_filters_use_actual_fill_price_for_executed_rows(self) -> None:
         with TemporaryDirectory() as tmpdir:
             original_db_path = db.DB_PATH
             try:
@@ -1639,12 +1651,12 @@ class ReplayTest(unittest.TestCase):
                 conn = db.get_conn()
                 _insert_trade(
                     conn,
-                    trade_id="decision-price",
+                    trade_id="actual-fill-price",
                     market_id="market-decision-price",
                     trader_address="0xaaa",
                     signal_mode="heuristic",
                     confidence=0.74,
-                    price_at_signal=0.62,
+                    price_at_signal=0.72,
                     actual_entry_price=0.64,
                     actual_entry_size_usd=100.0,
                     shadow_pnl_usd=18.0,
@@ -1674,13 +1686,70 @@ class ReplayTest(unittest.TestCase):
                     db_path=test_db_path,
                 )
 
-                self.assertEqual(result["accepted_count"], 1)
+                self.assertEqual(result["accepted_count"], 0)
                 conn = sqlite3.connect(str(test_db_path))
                 row = conn.execute(
                     "SELECT decision, reason, entry_price FROM replay_trades ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 conn.close()
-                self.assertEqual(row, ("accept", "accepted", 0.72))
+                self.assertEqual(row, ("reject", "entry_price_band_filter", 0.64))
+            finally:
+                db.DB_PATH = original_db_path
+
+    def test_run_replay_allows_shadow_heuristic_bootstrap_when_heuristic_disabled(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            original_db_path = db.DB_PATH
+            try:
+                test_db_path = Path(tmpdir) / "trading.db"
+                db.DB_PATH = test_db_path
+                db.init_db()
+                conn = db.get_conn()
+                _insert_trade(
+                    conn,
+                    trade_id="bootstrap-shadow",
+                    market_id="market-bootstrap-shadow",
+                    trader_address="0xaaa",
+                    signal_mode="heuristic_bootstrap",
+                    confidence=0.74,
+                    price_at_signal=0.68,
+                    actual_entry_price=0.68,
+                    actual_entry_size_usd=100.0,
+                    shadow_pnl_usd=12.0,
+                    resolved_at=2_000,
+                    market_close_ts=2_000,
+                    placed_at=1_000,
+                    signal_payload={
+                        "mode": "heuristic_bootstrap",
+                        "confidence": 0.74,
+                        "entry_price": 0.68,
+                        "market": {"score": 0.8},
+                    },
+                )
+                conn.commit()
+                conn.close()
+
+                policy = ReplayPolicy.from_payload(
+                    {
+                        "allow_heuristic": False,
+                        "allow_xgboost": True,
+                        "min_confidence": 0.6,
+                        "heuristic_min_entry_price": 0.65,
+                        "heuristic_max_entry_price": 0.75,
+                    }
+                )
+                result = run_replay(
+                    policy=policy,
+                    label="bootstrap-shadow",
+                    db_path=test_db_path,
+                )
+
+                self.assertEqual(result["accepted_count"], 1)
+                conn = sqlite3.connect(str(test_db_path))
+                row = conn.execute(
+                    "SELECT decision, reason, signal_mode FROM replay_trades ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                conn.close()
+                self.assertEqual(row, ("accept", "accepted", "heuristic_bootstrap"))
             finally:
                 db.DB_PATH = original_db_path
 

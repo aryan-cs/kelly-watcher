@@ -11,12 +11,16 @@ from typing import Any
 
 from kelly_watcher.config import (
     ENTRY_PRICE_BAND_CHOICES,
+    allow_heuristic,
+    allow_xgboost,
     allowed_entry_price_bands,
     allowed_time_to_close_bands,
     entry_price_band_label,
     heuristic_max_entry_price,
     heuristic_allowed_entry_price_bands,
     heuristic_min_entry_price,
+    heuristic_min_market_score_high_edge,
+    heuristic_min_market_score_low_edge,
     heuristic_min_time_to_close_seconds,
     max_bet_fraction,
     max_daily_loss_pct,
@@ -37,9 +41,6 @@ from kelly_watcher.config import (
 from kelly_watcher.runtime_paths import TRADING_DB_PATH
 from kelly_watcher.engine.trade_contract import NON_CHALLENGER_EXPERIMENT_ARM_SQL, resolved_pnl_expr
 
-HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE = 0.70
-HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE = 0.60
-
 REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "initial_bankroll_usd": "SHADOW_BANKROLL_USD",
     "min_confidence": "MIN_CONFIDENCE",
@@ -50,6 +51,8 @@ REPLAY_POLICY_CONFIG_KEY_MAP: dict[str, str] = {
     "allow_xgboost": "ALLOW_XGBOOST",
     "heuristic_min_entry_price": "HEURISTIC_MIN_ENTRY_PRICE",
     "heuristic_max_entry_price": "HEURISTIC_MAX_ENTRY_PRICE",
+    "heuristic_min_market_score_low_edge": "HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE",
+    "heuristic_min_market_score_high_edge": "HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE",
     "heuristic_allowed_entry_price_bands": "HEURISTIC_ALLOWED_ENTRY_PRICE_BANDS",
     "heuristic_min_time_to_close_seconds": "HEURISTIC_MIN_TIME_TO_CLOSE",
     "model_edge_mid_confidence": "MODEL_EDGE_MID_CONFIDENCE",
@@ -94,6 +97,8 @@ class ReplayPolicy:
     min_bet_usd: float
     heuristic_min_entry_price: float
     heuristic_max_entry_price: float
+    heuristic_min_market_score_low_edge: float
+    heuristic_min_market_score_high_edge: float
     heuristic_allowed_entry_price_bands: tuple[str, ...]
     heuristic_min_time_to_close_seconds: int
     model_edge_mid_confidence: float
@@ -123,6 +128,8 @@ class ReplayPolicy:
             min_bet_usd=float(min_bet_usd()),
             heuristic_min_entry_price=float(heuristic_min_entry_price()),
             heuristic_max_entry_price=float(heuristic_max_entry_price()),
+            heuristic_min_market_score_low_edge=float(heuristic_min_market_score_low_edge()),
+            heuristic_min_market_score_high_edge=float(heuristic_min_market_score_high_edge()),
             heuristic_allowed_entry_price_bands=tuple(heuristic_allowed_entry_price_bands()),
             heuristic_min_time_to_close_seconds=int(heuristic_min_time_to_close_seconds()),
             model_edge_mid_confidence=float(model_edge_mid_confidence()),
@@ -140,6 +147,8 @@ class ReplayPolicy:
             max_live_drawdown_pct=float(max_live_drawdown_pct()),
             allowed_entry_price_bands=tuple(allowed_entry_price_bands()),
             allowed_time_to_close_bands=tuple(allowed_time_to_close_bands()),
+            allow_heuristic=bool(allow_heuristic()),
+            allow_xgboost=bool(allow_xgboost()),
         )
 
     @classmethod
@@ -161,6 +170,16 @@ class ReplayPolicy:
             ),
             heuristic_max_entry_price=_clamp(
                 finite(base["heuristic_max_entry_price"], "heuristic_max_entry_price"), 0.0, 1.0
+            ),
+            heuristic_min_market_score_low_edge=_clamp(
+                finite(base["heuristic_min_market_score_low_edge"], "heuristic_min_market_score_low_edge"),
+                0.0,
+                1.0,
+            ),
+            heuristic_min_market_score_high_edge=_clamp(
+                finite(base["heuristic_min_market_score_high_edge"], "heuristic_min_market_score_high_edge"),
+                0.0,
+                1.0,
             ),
             heuristic_allowed_entry_price_bands=_normalize_segment_filter(
                 base["heuristic_allowed_entry_price_bands"],
@@ -511,11 +530,7 @@ def _simulate(
         horizon_close_ts = market_close_ts if market_close_ts > placed_at else close_ts
         time_to_close_seconds = max(0, horizon_close_ts - placed_at)
         time_to_close_band = _time_to_close_band(time_to_close_seconds)
-        entry_price = _coalesce_float(
-            signal.get("entry_price"),
-            row["price_at_signal"],
-            row["actual_entry_price"],
-        )
+        entry_price = _replay_entry_price(row, signal)
         entry_price_band = _entry_price_band(entry_price)
         confidence = _coalesce_float(signal.get("confidence"), row["confidence"]) or 0.0
         market_score = _coalesce_float(signal.get("market", {}).get("score"))
@@ -1120,7 +1135,12 @@ def _evaluate_trade(
             return False, "size_below_minimum", 0.0, metadata
         return True, "accepted", requested_size, metadata
 
-    if not policy.allow_heuristic:
+    heuristic_bootstrap_allowed = (
+        signal_mode == "heuristic_bootstrap"
+        and policy.mode == "shadow"
+        and policy.allow_xgboost
+    )
+    if not (policy.allow_heuristic or heuristic_bootstrap_allowed):
         return False, "heuristic_disabled", 0.0, metadata
     metadata["mode_allowed_entry_price_bands"] = list(policy.heuristic_allowed_entry_price_bands)
     metadata["heuristic_min_time_to_close_seconds"] = int(policy.heuristic_min_time_to_close_seconds)
@@ -1137,6 +1157,8 @@ def _evaluate_trade(
         entry_price=entry_price,
         min_entry_price=policy.heuristic_min_entry_price,
         max_entry_price=policy.heuristic_max_entry_price,
+        low_edge=policy.heuristic_min_market_score_low_edge,
+        high_edge=policy.heuristic_min_market_score_high_edge,
     )
     metadata["min_market_score"] = round(min_market_score, 6)
     if market_score is not None and market_score < min_market_score:
@@ -1168,6 +1190,20 @@ def _resolve_return_pct(row: sqlite3.Row) -> tuple[float | None, str]:
     if resolved_pnl is None or actual_entry_size is None or actual_entry_size <= 0:
         return None, "executed_unresolved"
     return resolved_pnl / actual_entry_size, "executed_resolved"
+
+
+def _replay_entry_price(row: sqlite3.Row, signal: dict[str, Any]) -> float | None:
+    if bool(row["skipped"]):
+        return _coalesce_float(
+            signal.get("entry_price"),
+            row["price_at_signal"],
+            row["actual_entry_price"],
+        )
+    return _coalesce_float(
+        row["actual_entry_price"],
+        signal.get("entry_price"),
+        row["price_at_signal"],
+    )
 
 
 def _kelly_size(
@@ -1244,7 +1280,14 @@ def _apply_minimum_bet(size: float, bankroll_usd: float, min_bet: float, max_fra
     return round(min_bet, 2)
 
 
-def _heuristic_min_market_score(*, entry_price: float, min_entry_price: float, max_entry_price: float) -> float:
+def _heuristic_min_market_score(
+    *,
+    entry_price: float,
+    min_entry_price: float,
+    max_entry_price: float,
+    low_edge: float,
+    high_edge: float,
+) -> float:
     band_span = max(max_entry_price - min_entry_price, 0.0)
     if band_span <= 1e-6:
         return 0.65
@@ -1253,7 +1296,7 @@ def _heuristic_min_market_score(*, entry_price: float, min_entry_price: float, m
         np_interp(
             band_progress,
             [0.0, 1.0],
-            [HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE, HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE],
+            [low_edge, high_edge],
         )
     )
 

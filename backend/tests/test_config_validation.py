@@ -69,6 +69,23 @@ class ConfigValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "DATA_API_REQUEST_RATE_PER_SECOND must be finite"):
                 config.data_api_request_rate_per_second()
 
+    def test_heuristic_market_score_edges_are_configurable_and_bounded(self) -> None:
+        with patch("kelly_watcher.config._get_env_file_value", return_value=None):
+            with patch.dict(
+                os.environ,
+                {
+                    "HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE": "0.66",
+                    "HEURISTIC_MIN_MARKET_SCORE_HIGH_EDGE": "0.58",
+                },
+                clear=False,
+            ):
+                self.assertEqual(config.heuristic_min_market_score_low_edge(), 0.66)
+                self.assertEqual(config.heuristic_min_market_score_high_edge(), 0.58)
+
+            with patch.dict(os.environ, {"HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE": "1.5"}, clear=False):
+                with self.assertRaisesRegex(config.ConfigError, "HEURISTIC_MIN_MARKET_SCORE_LOW_EDGE must be <= 1.0"):
+                    config.heuristic_min_market_score_low_edge()
+
     def test_model_gate_booleans_reject_malformed_values(self) -> None:
         with patch("kelly_watcher.config._get_env_file_value", return_value="treu"):
             with self.assertRaisesRegex(config.ConfigError, "ALLOW_XGBOOST must be boolean"):

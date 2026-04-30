@@ -134,6 +134,7 @@ from kelly_watcher.data.db import (
     recover_db_from_verified_backup,
 )
 from kelly_watcher.engine.dedup import DedupeCache
+from kelly_watcher.engine.adaptive_loss_guard import adaptive_loss_guard_reason
 from kelly_watcher.engine.economics import EntryEconomics
 from kelly_watcher.runtime.evaluator import (
     SEGMENT_SHADOW_MIN_RESOLVED,
@@ -2303,6 +2304,9 @@ def _evaluate_signal_for_entry_quote(
         return signal, market_f, _humanize_market_veto(signal["veto"])
     if not signal.get("passed", False):
         return signal, market_f, _humanize_reason(signal.get("reason") or "signal rejected after execution quote")
+    loss_guard_reason = adaptive_loss_guard_reason(event=event, signal=signal)
+    if loss_guard_reason:
+        return signal, market_f, _humanize_reason(loss_guard_reason)
     return signal, market_f, None
 
 
@@ -2572,6 +2576,29 @@ def process_event(
 
     if not signal.get("passed", False):
         reason = _humanize_reason(signal.get("reason") or "signal rejected")
+        executor.log_skip(
+            trade_id=event.trade_id,
+            market_id=event.market_id,
+            question=event.question,
+            trader_address=event.trader_address,
+            side=event.side,
+            price=event.price,
+            size_usd=0.0,
+            confidence=signal["confidence"],
+            kelly_f=0.0,
+            reason=reason,
+            trader_f=trader_f,
+            market_f=market_f,
+            event=event,
+            signal=signal,
+        )
+        dedup.mark_seen(event.trade_id, event.market_id, event.trader_address)
+        _reject_event(event, signal["confidence"], 0.0, reason)
+        return 0.0
+
+    loss_guard_reason = adaptive_loss_guard_reason(event=event, signal=signal)
+    if loss_guard_reason:
+        reason = _humanize_reason(loss_guard_reason)
         executor.log_skip(
             trade_id=event.trade_id,
             market_id=event.market_id,

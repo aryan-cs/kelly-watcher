@@ -372,6 +372,80 @@ def adaptive_heuristic_entry_price_min_avg_return() -> float:
     )
 
 
+def adaptive_loss_guard_enabled() -> bool:
+    return _get_env_file_bool("ADAPTIVE_LOSS_GUARD_ENABLED", "true")
+
+
+def adaptive_loss_guard_lookback_seconds() -> float:
+    return _get_duration_seconds(
+        "ADAPTIVE_LOSS_GUARD_LOOKBACK",
+        "14d",
+        minimum_seconds=3600.0,
+        allow_unlimited=False,
+    )
+
+
+def adaptive_loss_guard_refresh_seconds() -> float:
+    return _get_duration_seconds(
+        "ADAPTIVE_LOSS_GUARD_REFRESH",
+        "60s",
+        minimum_seconds=1.0,
+        allow_unlimited=False,
+    )
+
+
+def adaptive_loss_guard_min_total_resolved() -> int:
+    raw = _get_env_file_value("ADAPTIVE_LOSS_GUARD_MIN_TOTAL_RESOLVED") or _get(
+        "ADAPTIVE_LOSS_GUARD_MIN_TOTAL_RESOLVED", "25"
+    )
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"ADAPTIVE_LOSS_GUARD_MIN_TOTAL_RESOLVED must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ConfigError(f"ADAPTIVE_LOSS_GUARD_MIN_TOTAL_RESOLVED must be >= 1, got {value}")
+    return value
+
+
+def adaptive_loss_guard_min_segment_resolved() -> int:
+    raw = _get_env_file_value("ADAPTIVE_LOSS_GUARD_MIN_SEGMENT_RESOLVED") or _get(
+        "ADAPTIVE_LOSS_GUARD_MIN_SEGMENT_RESOLVED", "8"
+    )
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"ADAPTIVE_LOSS_GUARD_MIN_SEGMENT_RESOLVED must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ConfigError(f"ADAPTIVE_LOSS_GUARD_MIN_SEGMENT_RESOLVED must be >= 1, got {value}")
+    return value
+
+
+def adaptive_loss_guard_max_segment_pnl_usd() -> float:
+    return _get_env_file_bounded_float(
+        "ADAPTIVE_LOSS_GUARD_MAX_SEGMENT_PNL_USD",
+        "-5",
+        maximum=0.0,
+    )
+
+
+def adaptive_loss_guard_max_segment_avg_return() -> float:
+    return _get_env_file_bounded_float(
+        "ADAPTIVE_LOSS_GUARD_MAX_SEGMENT_AVG_RETURN",
+        "-0.08",
+        minimum=-1.0,
+        maximum=0.0,
+    )
+
+
+def adaptive_loss_guard_max_segment_win_rate() -> float:
+    return _get_env_file_bounded_float(
+        "ADAPTIVE_LOSS_GUARD_MAX_SEGMENT_WIN_RATE",
+        "0.40",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
 def allow_heuristic() -> bool:
     return _get_env_file_bool("ALLOW_HEURISTIC", "false")
 

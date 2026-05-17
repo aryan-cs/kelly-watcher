@@ -74,35 +74,33 @@ Notes:
 - The dashboard talks to the backend over HTTP, so it no longer needs direct SQLite access.
 - The repository includes `backend/uv.lock` and `frontend/package-lock.json` so installs are reproducible.
 
-## Split Mac/Windows Runtime
+## Split-Machine Runtime
 
-Production is intended to run split across the two Tailscale-connected machines:
+Production can run split across two network-connected machines (e.g. over Tailscale):
 
-- Windows backend/API: `100.91.53.63`
-- Mac Ink dashboard frontend: `100.104.250.54`
-
-Run the trading backend only on Windows. Run the React Ink terminal dashboard only on the Mac.
+- Machine A runs the trading backend/API.
+- Machine B runs the React Ink terminal dashboard.
 
 Use two repo-root env files per checkout:
 
 - `kelly-config.env`: program settings that are safe to inspect and tune, such as watchlists, thresholds, sizing, polling, and risk limits.
-- `kelly-secrets.env`: private or machine-specific values, such as wallet keys, Telegram tokens, dashboard API tokens, chat IDs, and Tailscale backend URLs.
+- `kelly-secrets.env`: private or machine-specific values, such as wallet keys, Telegram tokens, dashboard API tokens, chat IDs, and backend URLs.
 
-On the Windows backend `kelly-secrets.env`, keep:
+On the backend machine's `kelly-secrets.env`, keep:
 
 ```env
-DASHBOARD_API_HOST=100.91.53.63
+DASHBOARD_API_HOST=<backend-ip>
 DASHBOARD_API_PORT=8765
-KELLY_API_BASE_URL=http://100.91.53.63:8765
+KELLY_API_BASE_URL=http://<backend-ip>:8765
 ```
 
-On the Mac frontend `kelly-secrets.env`, keep:
+On the frontend machine's `kelly-secrets.env`, keep:
 
 ```env
-KELLY_API_BASE_URL=http://100.91.53.63:8765
+KELLY_API_BASE_URL=http://<backend-ip>:8765
 ```
 
-If you set `DASHBOARD_API_TOKEN` on Windows, set the same value as `KELLY_API_TOKEN` on the Mac.
+If you set `DASHBOARD_API_TOKEN` on the backend, set the same value as `KELLY_API_TOKEN` on the frontend.
 
 ## Quick Start
 
@@ -212,7 +210,7 @@ The backend will automatically:
 
 If you want to run the dashboard on another computer, set:
 
-- `DASHBOARD_API_HOST=100.91.53.63` on the Windows backend
+- `DASHBOARD_API_HOST=<backend-ip>` on the backend machine
 - optionally `DASHBOARD_API_TOKEN=some-shared-secret`
 
 ### 7. Start the dashboard
@@ -228,20 +226,20 @@ To run the dashboard on another computer, point it at the backend API:
 
 ```bash
 cd frontend
-KELLY_API_BASE_URL=http://100.91.53.63:8765 npm start
+KELLY_API_BASE_URL=http://<backend-ip>:8765 npm start
 ```
 
 If the backend sets `DASHBOARD_API_TOKEN`, also set:
 
 ```bash
 cd frontend
-KELLY_API_BASE_URL=http://100.91.53.63:8765 KELLY_API_TOKEN=some-shared-secret npm start
+KELLY_API_BASE_URL=http://<backend-ip>:8765 KELLY_API_TOKEN=some-shared-secret npm start
 ```
 
 You can also put those in the dashboard machine's repo-level `kelly-secrets.env` instead of exporting them every time:
 
 ```env
-KELLY_API_BASE_URL=http://100.91.53.63:8765
+KELLY_API_BASE_URL=http://<backend-ip>:8765
 KELLY_API_TOKEN=some-shared-secret
 ```
 
@@ -461,7 +459,7 @@ The dashboard is a terminal app, not a web app. It reads backend state through t
 
 If a cache-backed dashboard read fails, the header/footer will show stale sources such as `queries stale`, `events stale`, `config stale`, or `identity stale` instead of silently reusing cached rows.
 
-In production, run it on the Mac checkout and set `KELLY_API_BASE_URL=http://100.91.53.63:8765` in the Mac `kelly-secrets.env`.
+In production, run it on the frontend machine and set `KELLY_API_BASE_URL=http://<backend-ip>:8765` in its `kelly-secrets.env`.
 
 ## Runtime Files
 

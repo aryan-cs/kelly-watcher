@@ -48,6 +48,8 @@ frontend/coverage/
 frontend/.cache/
 frontend/.eslintcache
 frontend/*.tsbuildinfo
+frontend/*.js
+frontend/**/*.js
 /package-lock.json
 
 # Editor and OS noise
